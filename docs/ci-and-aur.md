@@ -1599,15 +1599,13 @@ Each class checks its own isolation and fails rather than skipping:
 
 #### Kimi account inspection
 
-Kimi signs an account in only through `api.kimi.com`. The Kimi class therefore puts
-an expiring fixture token in the account home and a logged `node` stand-in on `PATH`
-for the one call `hgs account inspect` makes to refresh it. The stand-in prints a
-value its producer, `src/accounts/kimi-read.mjs`, writes: a signed-in profile with no
-usage windows, built from the producer's starting object by changing named keys
-only. `TeamsFixtureProducers` compares it with that file, so a key the producer does
-not write fails. Kimi's account choice is
-not evidence here (a loopback inspection seam is a follow-up for the accounts owner); everything after it
-is the real Kimi image. `kimi-native.py --teams` runs only on a disposable
+The Kimi class writes a current synthetic credential to its private account home.
+Its model fixture serves the identity and usage routes over the inspection
+loopback test endpoint, on the same origin as the native platform URL.
+`TeamsFixtureProducers` uses the source-built CLI to check the synthetic account
+and verifies that removing the loopback seam causes the custom platform to be
+refused. The fixture tests account selection with synthetic identity and quota.
+The agent steps use the real Kimi image. `kimi-native.py --teams` runs only on a disposable
 GitHub-hosted runner. It runs the class in a child of its own under a 2400-second
 bound and sets the `ZERUS_TEAMS_KIMI_HOSTED` marker, without which the class skips.
 A skip is reported as no evidence.

@@ -6947,27 +6947,30 @@ precedence; older authentication problems are labelled **Last reported** when
 their report is stale or offline. Viewing accounts never refreshes Claude's
 credentials on Zerus's behalf.
 
-Kimi Code's quota inspection calls the provider's endpoints with the native
-token. The Zerus test seam `HGS_TEST_KIMI_API_BASE` points a test build at a
-private stand-in only when the value is an `http` or `https` URL whose host is
-`127.0.0.1`, `::1` or `localhost` and whose port, when present, is a number in
-curl's range; the token is sent there exactly as to the provider, and curl runs
-without any config file or proxy (no `~/.curlrc`, `$CURL_HOME`, ambient proxy
-variable or `HTTP_PROXY`). A valid test value takes precedence over
-`KIMI_CODE_BASE_URL`. An empty test value is treated as unset. Any other test
-value is ignored; the `detail` names the variable, and the rule below then
-applies. The seam is read only by the
-inspection. Zerus removes it from the native children it starts for login and
-inspection, and sets it empty (which the inspection treats as unset) in account
-sessions; a launch without an account has no account environment, so it
-inherits whatever the launching environment holds. `KIMI_CODE_BASE_URL`
-keeps the Kimi CLI's own meaning: with a live token, any non-default value,
-including an empty one and a loopback address, makes the inspection send no
-request and no token, and names it in `detail`. An expiring token still runs
-the native CLI's refresh first, as before, so the person keeps that answer; the
-refresh no longer depends on the base. Unset, the value
-`https://api.kimi.com/coding/v1` and that value with a trailing slash use the
-provider as before.
+Kimi Code's account inspection reads the OAuth grant for the account's managed
+region. The official mainland pair uses `api.kimi.com` and `auth.kimi.com`. The
+official global pair uses `api.kimi.ai` and `auth.kimi.ai`, with its own credential
+file. An explicit official `KIMI_CODE_BASE_URL` selects that region when there is
+no managed provider in the account's configuration. When the provider is
+configured, endpoint overrides and its OAuth reference must agree with the
+configured region. When starting the native CLI with an explicit global API
+override, also set `KIMI_CODE_OAUTH_HOST=https://auth.kimi.ai` to select the same
+global grant. A missing regional credential means signed out for that region. Custom or conflicting endpoints, malformed managed OAuth references
+and unreadable or oversized configuration are reported without making a
+provider request. A near-expiry grant for a validated region is refreshed by
+Kimi's own native service using that region. If inspection cannot verify the
+account identity across an opaque grant rotation, a new inspection uses the
+freshly written credential.
+
+`HGS_TEST_KIMI_API_BASE` routes inspection traffic to a private stand-in only
+for an `http` or `https` URL on `127.0.0.1`, `::1` or `localhost`. An empty
+value is unset. Other invalid values are named in the inspection detail.
+Offline fixtures without a managed provider may set the native platform URL
+and the inspection URL to the same loopback origin while using a current
+synthetic credential. Inspection uses the explicit test URL for those calls.
+The test URL is cleared for account sessions and removed from native children
+started by inspection or login. Curl ignores local config files for all Kimi
+inspection calls. Loopback test calls also bypass proxies.
 
 Claude usage refreshes share a cache on the account's owning computer. Account
 views and the selected session footer normally request usage every five minutes;

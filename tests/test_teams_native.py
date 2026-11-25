@@ -831,7 +831,7 @@ class TeamsFixtureIsolation(unittest.TestCase):
                     self.fx.preflight()
                 self.fx.env[key] = saved
 
-    def test_kimi_stand_in_and_executable_image_survive_hgs_path_preparation(self):
+    def test_kimi_executable_image_survives_hgs_path_preparation(self):
         import hashlib
         import stat
         source = self.base / 'sealed-kimi'
@@ -841,8 +841,6 @@ class TeamsFixtureIsolation(unittest.TestCase):
         self.addCleanup(shutil.rmtree, fx.root, True)
         fx.build()
         fx.preflight()
-        home_bin = fx.root / 'home/.local/bin'
-        self.assertEqual(Path(shutil.which('node', path=fx.env['PATH'])), home_bin / 'node')
         self.assertEqual(Path(shutil.which('kimi', path=fx.env['PATH'])).resolve(), fx.native)
         self.assertNotEqual(fx.native, source.resolve())
         self.assertEqual(stat.S_IMODE(fx.native.stat().st_mode), 0o700)
@@ -852,15 +850,6 @@ class TeamsFixtureIsolation(unittest.TestCase):
                 return hashlib.file_digest(stream, 'sha256').hexdigest()
         self.assertEqual(digest(source), fx.native_sha256)
         self.assertEqual(digest(fx.native), fx.native_sha256)
-        run = subprocess.run([str(home_bin / 'node'), '--input-type=module', '-e', 'inspection'],
-                             env=dict(fx.env, KIMI_CODE_HOME=str(fx.root / 'home/.kimi-code')),
-                             capture_output=True, text=True, timeout=30)
-        self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertEqual(json.loads(run.stdout), fixture.kimi_inspection())
-        # The production rule that put the hosted runner's /usr/local/bin/node ahead
-        # of the old stand-in is part of this fixture's placement contract.
-        production = Path(__file__).resolve().parents[1] / 'src/platform/unix.rs'
-        self.assertIn('"{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{path}:', production.read_text())
 
     def test_kimi_fd_stand_in_prevents_managed_download(self):
         source = self.base / 'sealed-kimi-fd'
@@ -1301,24 +1290,32 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
 
 
 class TeamsFixtureProducers(unittest.TestCase):
-    """Values another component writes come from that component (plan, 2026-11-12):
-    the Kimi inspection stand-in carries only what src/accounts/kimi-read.mjs writes."""
-
-    def test_kimi_inspection_stand_in_is_a_value_the_producer_writes(self):
-        producer = (Path(__file__).resolve().parents[1] / 'src/accounts/kimi-read.mjs').read_text()
-        base = re.search(r"const output = (\{.*?\});", producer)[1]
-        self.assertEqual(base, "{identity:{},windows:[],source:'Kimi Code',status:'unavailable'}")
-        self.assertEqual(fixture.KIMI_PRODUCER_BASE, dict(identity={}, windows=[], source='Kimi Code', status='unavailable'))
-        identity = re.search(r"output\.identity=\{(.*?)\};", producer)[1]
-        written = set(re.findall(r"(\w+):", identity))
-        value = fixture.kimi_inspection()
-        self.assertEqual(set(value), set(fixture.KIMI_PRODUCER_BASE), 'no key the producer does not write')
-        self.assertEqual(set(value['identity']), written)
-        self.assertIn("auth_method:'Kimi Code'", identity)
-        self.assertEqual(value['identity']['auth_method'], 'Kimi Code')
-        # The producer sets status ok only when it has windows; with none it stays unavailable.
-        self.assertIn("if(output.windows.length)output.status='ok';", producer)
-        self.assertEqual((value['windows'], value['status']), ([], 'unavailable'))
+    @unittest.skipUnless(fixture.HGS, 'Set HGS_TEST_BIN')
+    def test_kimi_inspection_uses_a_synthetic_grant_on_the_fixture_origin(self):
+        with tempfile.TemporaryDirectory(prefix='teams-kimi-grant-') as folder:
+            native = Path(folder) / 'synthetic-kimi'
+            native.write_text('#!/bin/sh\nexit 97\n')
+            native.chmod(0o700)
+            with mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=folder):
+                fx = fixture.TeamFixture('kimi', native, 'KimiGrantIsolation')
+            try:
+                fx.build()
+                fx.start_model()
+                fx.accounts()
+                data = json.loads((fx.evidence.folder / 'account-inspect.json').read_text())
+                self.assertEqual(data['identity']['name'], 'Fixture')
+                self.assertEqual(data['identity']['auth_method'], 'Kimi Code')
+                self.assertNotIn('fixture-token', json.dumps(data))
+                fx.env.pop('HGS_TEST_KIMI_API_BASE')
+                refused = fx.json('account', 'inspect', fx.account, '--refresh')
+                self.assertEqual(refused['status'], 'unavailable')
+                self.assertEqual(refused['identity'], {})
+                self.assertIn('KIMI_CODE_BASE_URL', refused['detail'])
+            finally:
+                if fx.model is not None:
+                    fx.model.shutdown()
+                    fx.model.server_close()
+                shutil.rmtree(fx.root)
 
 
 @unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
