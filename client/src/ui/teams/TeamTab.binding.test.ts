@@ -31,7 +31,7 @@ vi.mock("../../store/teams", async () => {
   } };
 });
 vi.mock("../sessions/SessionCard", () => ({ AgentTile: () => null }));
-vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
+vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskBlocked: () => undefined, teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
 import { TeamTab } from "./TeamTab";
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.choose(undefined); f.setBinding({ state: "unknown" }); f.setTeam(undefined); f.setFailure(null); f.setUnresolved([]); document.body.replaceChildren(); vi.clearAllMocks(); });

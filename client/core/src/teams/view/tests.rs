@@ -1237,3 +1237,90 @@ fn handwritten_routing_offers_only_pipelines_whose_implementer_is_a_bundle_role(
         .iter()
         .all(|choice| choice.id != "ghostly" && choice.role != "ghost"));
 }
+
+/// zerus-63rru.199 (C10): the product's status carries the team's home, so
+/// Tests and Builds can read it without the team being on the list's page.
+#[test]
+fn the_product_status_puts_the_teams_home_on_the_bar() {
+    let status = current("status");
+    let home = status["team"]["home"].as_str().unwrap().to_owned();
+    assert!(!home.is_empty());
+    let view = team(&status, &current("queue"));
+    assert_eq!(view.bar.home, home);
+}
+
+/// zerus-63rru.199 (C3): the store omits an empty goal (`Team.goal` is
+/// `skip_serializing_if = "String::is_empty"`), so a current status without
+/// one means the team has no goal yet, which the person may set. An older
+/// reply without member roles still offers no goal edit.
+#[test]
+fn a_team_without_a_goal_can_be_given_one() {
+    let status = current("status");
+    assert!(status["team"].get("goal").is_none());
+    assert!(status["member_roles"].is_array());
+    assert_eq!(
+        team(&status, &current("queue")).edit_goal.as_deref(),
+        Some("")
+    );
+    let mut older = status.clone();
+    older.as_object_mut().unwrap().remove("member_roles");
+    assert_eq!(team(&older, &current("queue")).edit_goal, None);
+}
+
+/// A queue row as the command line prints it: the product's own `Node`
+/// serializer plus the row fields the CLI adds (src/teams/cli/board.rs).
+fn product_row(writes: &[&str], deps: Value) -> Value {
+    let mut node: zerus_team_plan::model::Node = serde_json::from_value(json!({
+        "id": 3, "phase": 0, "title": "Trim long labels", "role": "developer", "pipeline": "reviewed",
+        "deps": deps,
+    }))
+    .unwrap();
+    node.writes = writes.iter().map(|path| (*path).to_owned()).collect();
+    let mut row = serde_json::to_value(&node).unwrap();
+    row["state"] = json!("pending");
+    row["rank"] = json!("a01");
+    row
+}
+
+/// zerus-63rru.199 (B3): a card carries its write paths, so Route can show
+/// and keep them; a row whose paths or dependencies cannot all be read says
+/// so, and the window then never sends explicit fields that would drop them.
+#[test]
+fn a_card_carries_its_write_paths_and_whether_its_fields_are_complete() {
+    let deps = json!([{"node": 1}, {"node": 2, "kind": "soft"}]);
+    let view = team(
+        &current("status"),
+        &queue_with(json!([product_row(
+            &["src/labels.rs", "docs/"],
+            deps.clone()
+        )])),
+    );
+    let card = &view.groups.iter().flat_map(|g| &g.cards).next().unwrap();
+    assert_eq!(card.writes, vec!["src/labels.rs", "docs/"]);
+    assert_eq!(card.deps.len(), 2);
+    assert!(!card.fields_incomplete);
+    let plain = team(
+        &current("status"),
+        &queue_with(json!([product_row(&[], json!([]))])),
+    );
+    let card = plain.groups.iter().flat_map(|g| &g.cards).next().unwrap();
+    assert!(card.writes.is_empty());
+    assert!(!card.fields_incomplete);
+}
+
+#[test]
+fn handwritten_unreadable_write_paths_or_dependencies_mark_the_fields_incomplete() {
+    let mut bad_writes = product_row(&["src/labels.rs"], json!([]));
+    bad_writes["writes"] = json!(["src/labels.rs", 7]);
+    let mut bad_deps = product_row(&[], json!([{"node": 1}]));
+    bad_deps["id"] = json!(4);
+    bad_deps["deps"] = json!([{"node": 1}, {"node": "two"}]);
+    let view = team(
+        &current("status"),
+        &queue_with(json!([bad_writes, bad_deps])),
+    );
+    let cards: Vec<_> = view.groups.iter().flat_map(|g| &g.cards).collect();
+    assert_eq!(cards.len(), 2);
+    assert!(cards.iter().all(|card| card.fields_incomplete), "{cards:?}");
+    assert!(cards.iter().all(|card| card.writes.is_empty()));
+}

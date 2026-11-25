@@ -67,7 +67,10 @@ const CatalogPage = lazy(() => import("./ui/teams/CatalogPage").then((m) => ({ d
 const NewTeamDialog = lazy(() => import("./ui/teams/NewTeam").then((m) => ({ default: m.NewTeamDialog })));
 // Waiting for you loads the first time its rail entry opens.
 const WaitingScreen = lazy(() => import("./ui/screens/Waiting").then((m) => ({ default: m.WaitingScreen })));
-const TeamsScreen = lazy(() => import("./ui/screens/Teams").then((m) => ({ default: m.TeamsScreen })));
+// The Teams list with each row's menu (Open, Settings, Pause/Stop, Archive).
+const TeamsScreen = lazy(() => import("./ui/teams/TeamRowMenu").then((m) => ({ default: m.TeamsListPage })));
+// A team opened by its ID, without its lead's session (zerus-63rru.198).
+const TeamPage = lazy(() => import("./ui/teams/TeamPage").then((m) => ({ default: m.TeamPage })));
 
 function LoginItemButton() {
   return (
@@ -170,6 +173,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
           <Match when={page() === "waiting"}><Suspense><WaitingScreen /></Suspense></Match>
           <Match when={page() === "team-catalog"}><Suspense><CatalogPage /></Suspense></Match>
           <Match when={page() === "teams"}><Suspense><TeamsScreen /></Suspense></Match>
+          <Match when={page() === "team"}><Suspense><TeamPage /></Suspense></Match>
           <Match when={page() === "settings"}><Suspense><SettingsScreen /></Suspense></Match>
         </Switch>
       </main>

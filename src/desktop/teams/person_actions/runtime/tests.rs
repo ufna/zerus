@@ -169,6 +169,31 @@ fn native_v2_review_keeps_every_field_of_a_valid_dependency_heavy_draft() {
 }
 
 #[test]
+fn native_confirmation_uses_the_exact_reviewed_plan_and_facts() {
+    let (_h, mut runtime, prepared, _owner) = sample();
+    let plan = wire::Plan::from_call(&prepared.call().unwrap()).unwrap();
+    stage(&mut runtime, &plan);
+    let queue = Arc::new(Queue::default());
+    runtime.query(
+        &json!({"op":"team_person_action_prepare","scope":runtime.scope,"plan":plan.reference(),"with_labels":true}),
+        queue.clone(), 1,
+    ).unwrap();
+    let value = take(&queue)["value"].clone();
+    let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
+    assert_eq!(review.intent.plan, plan.reference().unwrap());
+    assert!(review.details.is_empty());
+    assert_eq!(value["labels"]["facts"], review.intent.facts,
+        "native confirmation must use the bound facts from this review");
+    let labels = serde_json::from_value(value["labels"].clone()).unwrap();
+    let prompt = zerus_client_core::desktop::team_confirmation::action(&plan, &review, &labels).unwrap();
+    assert_eq!(prompt.title.english(), "Rename team");
+    let sentence = prompt.body[0].english();
+    assert!(sentence.contains(&review.team_name));
+    assert!(sentence.contains("Reviewed native worker name"));
+    assert!(!sentence.contains(&review.intent.plan.team));
+}
+
+#[test]
 fn native_v2_worker_prepares_executes_and_only_reads_original_results() {
     let (h, mut runtime, plan, _owner) = sample();
     stage(&mut runtime, &plan);
@@ -299,6 +324,8 @@ fn native_task_original_is_reserved_before_document_and_only_its_receipt_recover
             project: "example-project".into(),
             title: "Native task original".into(),
             backlog: true,
+            role: None,
+            pipeline: None,
         },
     };
     let queue = Arc::new(Queue::default());
@@ -379,4 +406,109 @@ fn native_task_original_is_reserved_before_document_and_only_its_receipt_recover
         )
         .unwrap_err();
     assert_eq!(h.store.queue(TEAM, 200, None).unwrap().rows.len(), 1);
+}
+
+/// zerus-63rru.199 (B4): a new task sent to a team with a role and pipeline
+/// shows both in its native review and reaches the queue with them; one
+/// without them keeps the older review, which names neither.
+#[test]
+fn a_routed_new_task_shows_and_keeps_its_role_and_pipeline() {
+    let (h, mut runtime, _, _owner) = sample();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    crate::swarm::fixture_project(&runtime.config, &home, "example-project");
+    {
+        let tx = h
+            .store
+            .db
+            .as_ref()
+            .unwrap()
+            .unchecked_transaction()
+            .unwrap();
+        store::person_actions::migrate(&tx).unwrap();
+        tx.commit().unwrap();
+    }
+    let draft = |role: Option<&str>, pipeline: Option<&str>| wire::TaskDraft {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        team: TEAM.into(),
+        action: wire::Action::NewTask {
+            project: "example-project".into(),
+            title: "Routed native task".into(),
+            backlog: false,
+            role: role.map(str::to_owned),
+            pipeline: pipeline.map(str::to_owned),
+        },
+    };
+    let prepare = |runtime: &mut Runtime, draft: &wire::TaskDraft, call: u64| {
+        let queue = Arc::new(Queue::default());
+        runtime
+            .query(
+                &json!({"op":"team_person_task_prepare","scope":runtime.scope,"draft":draft,"with_labels":true}),
+                queue.clone(),
+                call,
+            )
+            .unwrap();
+        let value = take(&queue)["value"].clone();
+        assert_eq!(value["ok"], true, "{value}");
+        let plan: wire::Plan = serde_json::from_value(value["plan"].clone()).unwrap();
+        let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
+        let labels: zerus_client_core::desktop::team_confirmation::Labels =
+            serde_json::from_value(value["labels"].clone()).unwrap();
+        (plan, review, labels)
+    };
+    let plain = draft(None, None);
+    let (_, review, labels) = prepare(&mut runtime, &plain, 1);
+    assert!(labels.role.is_none() && labels.pipeline.is_none());
+    assert!(
+        !review
+            .details
+            .iter()
+            .any(|(key, _)| key == "Role" || key == "Pipeline"),
+        "{:?}",
+        review.details
+    );
+    let routed = draft(Some("developer"), Some("reviewed"));
+    let (plan, review, labels) = prepare(&mut runtime, &routed, 2);
+    assert_eq!(labels.role.as_deref(), Some("Developer"));
+    assert_eq!(labels.pipeline.as_deref(), Some("Reviewed: review, lead"));
+    assert!(
+        review
+            .details
+            .contains(&("Role".to_owned(), "\"developer\"".to_owned())),
+        "{:?}",
+        review.details
+    );
+    assert!(
+        review
+            .details
+            .contains(&("Pipeline".to_owned(), "\"reviewed\"".to_owned())),
+        "{:?}",
+        review.details
+    );
+    stage(&mut runtime, &plan);
+    let queue = Arc::new(Queue::default());
+    runtime
+        .action(
+            Validated::fixture(&json!({"op":"team_person_action","intent":review.intent})),
+            queue.clone(),
+            3,
+        )
+        .unwrap();
+    let original = take(&queue)["value"].clone();
+    assert_eq!(original["reply"]["ok"], true, "{original}");
+    assert_eq!(original["reply"]["team"]["queued"], true, "{original}");
+    let (role, pipeline): (String, String) = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(data,'$.role'),json_extract(data,'$.pipeline') FROM nodes WHERE team=?1 AND json_extract(data,'$.task.uuid')=?2",
+            rusqlite::params![TEAM, routed.request_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (role.as_str(), pipeline.as_str()),
+        ("developer", "reviewed")
+    );
 }

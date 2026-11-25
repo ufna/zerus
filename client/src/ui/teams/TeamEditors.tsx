@@ -60,10 +60,16 @@ function MetadataDialog(props: { kind: string; view: TeamView; busy: boolean; lo
     <Show when={rename}><p class="dim">{tr("Existing session, folder and branch names stay as they are.")}</p></Show>
   </TeamEditDialog>;
 }
+/** Why the goal cannot be edited: the core reads no complete goal from an
+ * older or partial status (client/core teams/view/editing.rs goal). */
+const goalWhy = () => tr("This window could not read the team's complete goal. Refresh the team, or update hgs if it is older.");
+
 export function TeamEditButtons(props: { view: TeamView; busy: boolean; open: (kind: string) => void }) {
   return <Show when={activeTeam(props.view.bar.status)}><span class="team-edit-buttons">
     <button type="button" class="btn small" disabled={props.busy} onClick={() => props.open("add_member")}>{tr("Add member")}</button>
     <button type="button" class="btn small" disabled={props.busy} onClick={() => props.open("rename_team")}>{tr("Rename team")}</button>
-    <button type="button" class="btn small" disabled={props.busy || props.view.edit_goal == null} title={props.view.edit_goal == null ? tr("Refresh the team to read its complete goal.") : undefined} onClick={() => props.open("set_goal")}>{tr("Edit goal")}</button>
+    <button type="button" class="btn small" disabled={props.busy || props.view.edit_goal == null} title={props.view.edit_goal == null ? goalWhy() : undefined} onClick={() => props.open("set_goal")}>{tr("Edit goal")}</button>
+    {/* A greyed Edit goal says why beside it, not only in its title (zerus-63rru.199 C3). */}
+    <Show when={props.view.edit_goal == null}><span class="team-action-why dim" data-edit-goal-why>{goalWhy()}</span></Show>
   </span></Show>;
 }

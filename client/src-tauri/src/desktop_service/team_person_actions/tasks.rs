@@ -112,10 +112,18 @@ pub(crate) fn run_task(
     }
     let read = Read::new(service)
         .map_err(|_| TaskError::not_sent("Connect this window to its desktop service."))?;
-    if !read.supports(wire::HELP_MARKER).unwrap_or(false) {
-        return Err(TaskError::not_sent(
-            "Update the selected desktop service to confirm team intake.",
-        ));
+    for marker in wire::action_markers(&draft.action) {
+        if !read.supports(marker).unwrap_or(false) {
+            return Err(TaskError::not_sent(
+                if marker == wire::NEW_TASK_ROUTE_MARKER {
+                    // An older service refuses a new task's role and pipeline;
+                    // say what to update (zerus-63rru.199 B4).
+                    "Update the selected desktop service to choose a role or pipeline for a new team task."
+                } else {
+                    "Update the selected desktop service to confirm team intake."
+                },
+            ));
+        }
     }
     if let Some(original) = original {
         if !matches(draft, &original) {
@@ -143,7 +151,7 @@ pub(crate) fn run_task(
     let bytes = read
         .exchange(
             None,
-            json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft}),
+            json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft,"with_labels":true}),
             false,
             None,
         )
@@ -156,6 +164,9 @@ pub(crate) fn run_task(
         .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
     let review: wire::Review = serde_json::from_value(value["review"].clone())
         .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
+    let labels: zerus_client_core::desktop::team_confirmation::Labels =
+        serde_json::from_value(value["labels"].clone())
+            .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
     let original = wire::TaskOriginal {
         plan,
         intent: review.intent.clone(),
@@ -172,7 +183,7 @@ pub(crate) fn run_task(
             "The complete task plan could not be prepared.",
         ));
     }
-    let confirmed = confirm(app, &original.plan, review).map_err(TaskError::not_sent)?;
+    let confirmed = confirm(app, &original.plan, review, &labels).map_err(TaskError::not_sent)?;
     if confirmed.0 != original.intent || !read.current() {
         return Err(TaskError::not_sent(
             "The selected service changed during confirmation.",
@@ -224,6 +235,8 @@ mod tests {
                 project: "example".into(),
                 title: "Bound task".into(),
                 backlog: false,
+                role: None,
+                pipeline: None,
             },
         };
         review.intent.plan = plan.reference().unwrap();
@@ -270,6 +283,8 @@ mod tests {
                 project: "example".into(),
                 title: "Original title".into(),
                 backlog: false,
+                role: None,
+                pipeline: None,
             },
         };
         let plan = draft.plan(8).unwrap();
@@ -295,6 +310,8 @@ mod tests {
             project: "example".into(),
             title: "Other title".into(),
             backlog: false,
+            role: None,
+            pipeline: None,
         };
         assert!(!matches(&changed, &original));
         let value = json!({"intent":original.intent,"reply":{"ok":true,"request_id":draft.request_id,"actor":{"kind":"person","person":"local","origin":"desktop_ui"},"task_exists":true,"task":{"uuid":draft.request_id,"project":"example"},"team":{"id":draft.team,"queued":true}}});

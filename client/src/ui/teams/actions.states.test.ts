@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barActions, memberActions, taskButtons, type TaskButton } from "./actions";
+import { barActions, memberActions, taskButtons, type TaskButton, WINDOW_ONLY_MEMBER_ACTIONS } from "./actions";
 import { teamView } from "./fixtures";
 import actionKinds from "../../../core/src/teams/fixtures/action-kinds.json";
 import type { MemberView, TaskView, TeamView } from "./types";
@@ -68,6 +68,7 @@ describe("the actions the Team tab offers", () => {
     for (const team of TEAM_STATES) for (const state of MEMBER_STATES) for (const session of [false, true]) for (const lead of [false, true]) {
       const value = member({ state, lead, session: session ? teamView.members[1].session : null });
       const expected = !ACTIVE.has(team) ? [] : [
+        ...(state === "not_created" ? ["launch_again"] : []),
         ...(state === "active" ? ["pause_member"] : []),
         ...(state === "paused" && session ? ["resume_member"] : []),
         ...(state === "active" || state === "paused" ? ["stop_member"] : []),
@@ -79,7 +80,7 @@ describe("the actions the Team tab offers", () => {
   });
 });
 
-it("every action the Team tab offers is a kind the core reads (fixtures/action-kinds.json)", () => {
+it("every action the Team tab sends is a kind the core reads (fixtures/action-kinds.json)", () => {
   const offered = new Set<string>();
   for (const status of TEAM_STATES) {
     for (const action of barActions({ ...teamView, bar: { ...teamView.bar, status } } as TeamView)) offered.add(action.id);
@@ -91,7 +92,10 @@ it("every action the Team tab offers is a kind the core reads (fixtures/action-k
     }
   }
   expect(offered.size).toBeGreaterThan(10);
-  for (const kind of offered) expect(actionKinds, kind).toContain(kind);
+  // A window-only action is handled by the Team tab and is never a core kind,
+  // so it cannot reach the core by mistake (zerus-63rru.197 A3).
+  expect([...WINDOW_ONLY_MEMBER_ACTIONS].every((kind) => offered.has(kind) && !actionKinds.includes(kind))).toBe(true);
+  for (const kind of offered) if (!WINDOW_ONLY_MEMBER_ACTIONS.has(kind)) expect(actionKinds, kind).toContain(kind);
 });
 
 // zerus-63rru.29: the rows now carry what the store's three refusals depend on,

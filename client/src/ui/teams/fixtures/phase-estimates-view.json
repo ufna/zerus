@@ -22,6 +22,7 @@
         }
       },
       "goal": "Review implementation estimates before approval.",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",
@@ -456,6 +457,7 @@
         }
       },
       "goal": "Observe the reviewed fixture phase.",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",
@@ -501,7 +503,10 @@
               "project": "example-project",
               "uuid": "9ecfdd9c-6bc8-8aa7-933c-a4c40451bc07"
             },
-            "title": "Task 1"
+            "title": "Task 1",
+            "writes": [
+              "src/part1.rs"
+            ]
           }
         ],
         "state": "pending"
@@ -1143,6 +1148,7 @@
         }
       },
       "goal": "Observe the reviewed fixture phase.",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",
@@ -1184,7 +1190,10 @@
               "project": "example-project",
               "uuid": "d676769f-478e-812e-b03d-6a0e9e315d42"
             },
-            "title": "Task 2"
+            "title": "Task 2",
+            "writes": [
+              "src/part2.rs"
+            ]
           }
         ],
         "state": "waiting"
@@ -1860,6 +1869,7 @@
         }
       },
       "goal": "Observe the reviewed fixture phase.",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",

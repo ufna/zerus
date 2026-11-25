@@ -39,3 +39,13 @@ it("returns Catalog Back to the New team form on its original page", async () =>
   const catalog = mount(() => createComponent(CatalogPage, {})); click(catalog, "Back");
   expect(page()).toBe("projects"); expect(teams.newTeamOpen()).toBe(true);
 });
+it("returns Catalog Back to the team page that opened it, and the page's Back to where it was opened (zerus-63rru.198)", async () => {
+  const view = fixture.team as unknown as TeamView;
+  const navigation = await import(/* @vite-ignore */ ["./team", "navigation"].join("-")) as typeof import("./team-navigation");
+  setPage("waiting"); navigation.openTeamPage(view.bar.id); expect(page()).toBe("team");
+  const entry = mount(() => createComponent(TeamBar, { view, busy: false, onAction: vi.fn() })); click(entry, "Catalog");
+  expect(page()).toBe("team-catalog");
+  const catalog = mount(() => createComponent(CatalogPage, {})); click(catalog, "Back");
+  expect(page()).toBe("team"); expect(navigation.teamPage()?.team).toBe(view.bar.id);
+  navigation.closeTeamPage(); expect(page()).toBe("waiting");
+});

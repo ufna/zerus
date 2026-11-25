@@ -9,6 +9,37 @@ export function feedClock(atMs: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+/** What closes an open lead inbox item that is neither a question nor a
+ * report (zerus-63rru.197 C6). No person operation dismisses an item; each
+ * line names the store's own closer: an item of a task closes with the task's
+ * next report, reopen or settlement (ops common.rs, the node-wide close); the
+ * lead queue notices close when their queue is empty (lead_queue.rs); a
+ * planning goal with the first submitted draft (drafts.rs); an unstaffed task's
+ * item once it is held or covered again, and a paused member's start notice
+ * once that member is active again; a phase rejection
+ * with a new draft, new corrections or an undo (phase_review.rs); a sent-back
+ * phase's note is never closed (rework.rs). An ended team closes nothing. */
+export function inboxCloses(row: Pick<DrawerRow, "kind" | "node" | "state">, status: string): string | undefined {
+  if (row.state !== "open" || row.kind === "report" || row.kind.startsWith("question:")) return undefined;
+  if (["stopped", "finished", "archived"].includes(status)) return tr("The team has ended, so this item stays open as a record.");
+  switch (row.kind.split(":")[0]) {
+    case "planning_goal": return tr("This item closes when you or the lead submit a phase draft.");
+    case "phase_rejected": return tr("This item closes when the phase's draft or corrections are submitted again, or its rejection is undone.");
+    case "phase_sent_back": return tr("This item records that the phase was sent back; nothing closes it. Make the corrections in Layers.");
+    case "lead_admission": return tr("This item closes by itself when no task waits for admission.");
+    case "lead_routing": return tr("This item closes by itself when no task waits for routing.");
+    // Staffing reconciliation closes it once the task is held or covered again
+    // (ops unstaffed.rs reconcile; review of #2558).
+    case "unstaffed": if (row.node) return tr("This item closes by itself when task #%1 is held or a member can take it again.", row.node); break;
+    // member_started:<node>:<member>:<n> closes when that member is active
+    // again (ops members.rs close_paused_started, actor schedule.rs).
+    case "member_started": { const member = row.kind.split(":")[2]; if (member) return tr("This item closes by itself when member %1 is active again.", member); break; }
+  }
+  return row.node
+    ? tr("This item closes by itself when task #%1 is reported again, reopened or settled.", row.node)
+    : tr("Nothing in this window closes this item; the team's service closes it when its cause is settled.");
+}
+
 export function inboxKind(kind: string): string {
   switch (kind.split(":")[0]) {
     case "report": return tr("Report");
