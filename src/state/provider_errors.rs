@@ -335,7 +335,6 @@ fn codex_logs(record: &Value) -> Result<Vec<Value>> {
 }
 
 fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
     #[cfg(test)]
     TRANSCRIPT_SCANS.with(|count| count.set(count.get() + 1));
     let id = string(record, "conversation_id");
@@ -348,11 +347,23 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
     {
         return Ok((vec![], 0.0));
     }
-    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    codex_transcript_file(file, id, false)
+}
+
+fn codex_transcript_file(
+    mut file: std::fs::File,
+    id: &str,
+    advisory: bool,
+) -> Result<(Vec<Value>, f64)> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
     let mut first = String::new();
     BufReader::new((&mut file).take(256 * 1024))
         .read_line(&mut first)
         .map_err(|e| e.to_string())?;
+    if advisory && !first.ends_with('\n') {
+        return Err("Incomplete Codex transcript header".into());
+    }
     let first: Value = serde_json::from_str(&first).map_err(|e| e.to_string())?;
     if first["type"] != "session_meta" || first["payload"]["id"] != id {
         return Err("Conversation transcript identity mismatch".into());
@@ -370,11 +381,18 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
         .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
     let mut progress: f64 = 0.0;
+    let mut active_turn = None;
     for (index, line) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
-        if (offset > 0 && index == 0) || line.len() > 1024 * 1024 || !line.ends_with(b"\n") {
+        if offset > 0 && index == 0 {
             continue;
         }
-        if !std::str::from_utf8(line).is_ok_and(|text| {
+        if line.len() > 1024 * 1024 || !line.ends_with(b"\n") {
+            if advisory {
+                return Err("Incomplete Codex transcript observation".into());
+            }
+            continue;
+        }
+        if !advisory && !std::str::from_utf8(line).is_ok_and(|text| {
             text.contains("\"error\"")
                 || text.contains("\"task_started\"")
                 || text.contains("\"task_complete\"")
@@ -383,6 +401,9 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
             continue;
         }
         let Ok(row) = serde_json::from_slice::<Value>(line) else {
+            if advisory {
+                return Err("Invalid Codex transcript observation".into());
+            }
             continue;
         };
         if row["type"] != "event_msg" {
@@ -391,20 +412,44 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
         let payload = &row["payload"];
         let at = search::timestamp(&row["timestamp"]);
         if at <= 0.0 {
+            if advisory {
+                return Err("Missing Codex native event time".into());
+            }
             continue;
         }
         // Current Codex records a failed turn as task_complete with an error;
         // older versions also emit a dedicated native error event.
         let failure = match string(payload, "type") {
+            "task_started" | "turn_started" if advisory => {
+                active_turn = input::acceptance::codex_turn(payload).map(|turn| (turn, at));
+                errors.clear();
+                progress = progress.max(at);
+                continue;
+            }
+            "turn_aborted" if advisory => {
+                active_turn = None;
+                errors.clear();
+                progress = progress.max(at);
+                continue;
+            }
             "task_started" => {
                 progress = progress.max(at);
                 continue;
             }
             "task_complete" | "turn_complete" => {
+                if advisory {
+                    errors.clear();
+                    if active_turn.take().is_none_or(|(turn, started)| {
+                        started >= at || input::acceptance::codex_turn(payload).as_ref() != Some(&turn)
+                    }) {
+                        progress = progress.max(at);
+                        continue;
+                    }
+                }
                 if payload["error"].is_null() {
                     // Older Codex completions omit errors even after failure.
                     // Only an actual final reply confirms successful progress.
-                    if !string(payload, "last_agent_message").trim().is_empty() {
+                    if advisory || !string(payload, "last_agent_message").trim().is_empty() {
                         progress = progress.max(at);
                     }
                     continue;
@@ -424,10 +469,16 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
             detail,
             "codex_native_transcript",
         );
-        error["error_kind"] = json!(category(&format!(
-            "{} {}",
-            failure["codex_error_info"], detail
-        )));
+        error["error_kind"] = if advisory {
+            json!(match string(failure, "codex_error_info") {
+                "cyber_policy" | "cyberPolicy" | "bio_policy" | "bioPolicy"
+                | "misalignment_policy_violation" | "misalignmentPolicyViolation"
+                | "policy_violation" | "policyViolation" | "provider_policy" => "provider_policy",
+                _ => "provider",
+            })
+        } else {
+            json!(category(&format!("{} {}", failure["codex_error_info"], detail)))
+        };
         if !string(payload, "turn_id").is_empty() { error["turn_id"] = payload["turn_id"].clone(); }
         error["native_turn_complete"] = json!(matches!(string(payload, "type"), "task_complete" | "turn_complete"));
         errors.push(error);
@@ -436,6 +487,28 @@ fn codex_transcript(record: &Value) -> Result<(Vec<Value>, f64)> {
         errors.drain(..errors.len() - 8);
     }
     Ok((errors, progress))
+}
+
+/// Policy completion in the current Codex run, read from its held native file.
+/// The session advisory omits the native refusal detail and ignores log aliases.
+pub(super) fn codex_policy_notice(record: &Value, file: &std::fs::File) -> Option<Value> {
+    let (mut errors, native_progress) =
+        codex_transcript_file(file.try_clone().ok()?, string(record, "conversation_id"), true).ok()?;
+    let error = errors.pop()?;
+    let progress = record["last_main_progress_at"].as_f64()?;
+    let turn_started = record["turn_started"].as_f64().unwrap_or(0.0);
+    let at = error["at"].as_f64()?;
+    let turn = input::acceptance::codex_turn(&error)?;
+    if error["native_turn_complete"] != true
+        || error["error_kind"] != "provider_policy"
+        || progress <= 0.0
+        || at <= progress.max(native_progress).max(turn_started)
+        || at > now()
+    {
+        return None;
+    }
+    Some(json!({"kind":"provider_policy","source":"codex_native_transcript",
+        "event_id":error["message_id"],"turn_id":turn,"at":at}))
 }
 
 #[cfg(test)]
@@ -563,6 +636,36 @@ pub(super) fn enrich(record: &Value, output: &mut Value, live: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_advisory_needs_an_intact_typed_completion_of_the_latest_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let record = json!({"conversation_id":"example-thread","last_main_progress_at":60});
+        let first = json!({"type":"session_meta","payload":{"id":"example-thread"}});
+        let start = json!({"type":"event_msg","timestamp":"1970-01-01T00:01:10Z",
+            "payload":{"type":"task_started","turn_id":"example-turn"}});
+        let refusal = |turn, kind| json!({"type":"event_msg","timestamp":"1970-01-01T00:01:20Z",
+            "payload":{"type":"task_complete","turn_id":turn,"error":{
+                "codex_error_info":kind,"message":"Diagnostic text mentioning cyber_policy"}}});
+        let read = |rows: &str| {
+            std::fs::write(&path, format!("{first}\n{rows}")).unwrap();
+            codex_policy_notice(&record, &std::fs::File::open(&path).unwrap())
+        };
+        let complete = refusal("example-turn", "misalignment_policy_violation");
+        let valid = format!("{start}\n{complete}\n");
+        assert_eq!(read(&valid).unwrap()["turn_id"], "example-turn");
+        assert!(read(&format!("{complete}\n")).is_none());
+        assert!(read(&format!("{start}\n{}\n", refusal("other-turn", "cyber_policy"))).is_none());
+        assert!(read(&format!("{start}\n{}\n", refusal("example-turn", "server_overloaded"))).is_none());
+        assert!(read(&format!("{valid}{{\"partial")).is_none());
+        let later = json!({"type":"event_msg","timestamp":"1970-01-01T00:01:30Z",
+            "payload":{"type":"task_started","turn_id":"later-turn"}});
+        assert!(read(&format!("{valid}{later}\n")).is_none());
+        let mut later = later;
+        later["timestamp"] = json!("1970-01-01T00:01:11Z");
+        assert!(read(&format!("{valid}{later}\n")).is_none(), "native file order survives clock rollback");
+    }
 
     #[test]
     fn a_failed_turn_needs_native_completion_after_the_latest_progress() {
