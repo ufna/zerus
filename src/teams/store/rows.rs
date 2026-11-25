@@ -258,6 +258,29 @@ pub(crate) fn open_member_started(db: &Connection, team: &str, member: &str) -> 
     .map_err(storage)
 }
 
+// Both the board and writers use the current generation's service evidence.
+pub(crate) fn policy_stop_sql(team: &str, node: &str, generation: &str) -> String {
+    format!("EXISTS(SELECT 1 FROM inbox i WHERE i.team={team} AND i.node={node}
+        AND i.generation={generation}
+        AND (i.kind='report' OR substr(i.kind,1,14)='provider_stop:')
+        AND json_extract(i.actor,'$.kind')='service'
+        AND EXISTS(SELECT 1 FROM json_each(i.notes) n
+            WHERE json_extract(n.value,'$.code')='provider_stop_provider_policy'
+            AND json_extract(n.value,'$.parameters[2]')=CAST(i.node AS TEXT)))")
+}
+
+pub(crate) fn provider_policy_stopped(db: &Connection, team: &str, node: u32) -> Result<bool> {
+    let stop = policy_stop_sql("nodes.team", "nodes.id", "nodes.generation");
+    db.query_row(
+        &format!("SELECT {stop} FROM nodes WHERE team=?1 AND id=?2"),
+        params![team, node],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|result| result.unwrap_or(false))
+    .map_err(storage)
+}
+
 pub(crate) fn hand_back(
     db: &Connection,
     team: &str,

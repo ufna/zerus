@@ -120,6 +120,7 @@ fn card(node: &Value) -> QueueCard {
         holder: holder(node),
         pending_decision: optional_name(node, "pending_decision"),
         pending_replaceable: flag(node, "pending_replaceable"),
+        provider_policy_stopped: flag(node, "provider_policy_stopped"),
         stop_outcome: node.get("stop_outcome").filter(|v| v.is_object()).map(|v| {
             crate::teams::view::StopOutcomeCard {
                 code: name(v, "code"),

@@ -23,6 +23,90 @@ fn each_providers_quota_stop_hands_stage_21_back_once() {
 }
 
 #[test]
+fn policy_stop_returns_one_missing_review_and_leaves_independent_work() {
+    real_rows::isolated(
+        "desktop::teams::actor::tests::provider_stop::policy_review_fixture",
+    );
+}
+
+#[test]
+#[ignore = "run by the private actor fixture"]
+fn policy_review_fixture() {
+    let (mut h, mut ports, record, independent) = stage("codex");
+    let transient = hook(
+        &record,
+        "StopFailure",
+        json!({"error":"provider","error_details":"HTTP 503 service unavailable"}),
+        FAILURE - 1_000,
+    );
+    publish(&ports, &transient);
+    pass(&mut h, &mut ports, FAILURE - 1_000);
+    let before = h.store.effects(TEAM, 200, None).unwrap().rows;
+    assert_eq!(before.iter().find(|effect| effect.node == 21).unwrap().state, "submitted");
+    let policy = hook(
+        &record,
+        "StopFailure",
+        json!({"error_details":"policy_violation (HTTP 503): The provider blocked this request."}),
+        FAILURE,
+    );
+    assert_eq!(policy["provider_error"]["error_kind"], "provider_policy");
+    publish(&ports, &policy);
+    pass(&mut h, &mut ports, FAILURE);
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    let reports: Vec<_> = inbox.iter().filter(|item| {
+        item.node == 20 && item.notes.iter().any(|note| note.code == "provider_stop_provider_policy")
+    }).collect();
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].text.contains("Implemented and checked"));
+    assert!(reports[0].notes.iter().any(|note| note.sentence().contains("review result is missing")));
+    assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
+    let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
+    assert_eq!(effects.iter().find(|effect| effect.node == 21).unwrap().state, "superseded");
+    assert_eq!(effects.iter().find(|effect| effect.request_id == independent).unwrap().state, "submitted");
+    pass(&mut h, &mut ports, FAILURE + 60_000);
+    assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows, inbox);
+    assert_eq!(h.store.effects(TEAM, 200, None).unwrap().rows, effects);
+
+    let lead = h.bind("lead");
+    h.cancel_fact(21);
+    let reassign = Operation::Reassign {
+        node: 21,
+        member: "m3".into(),
+        reason: "Replay the refused stage".into(),
+    };
+    let stopped = h.run(&lead, reassign).unwrap_err();
+    assert!(stopped.message.contains("Keep it stopped"), "{stopped:?}");
+    let stopped = h.run(&lead, Operation::Return {
+        node: 20,
+        reason: "Send the refused work back".into(),
+    }).unwrap_err();
+    assert!(stopped.message.contains("Keep it stopped"), "{stopped:?}");
+
+    let other = producer::saved_record(&format!(
+        "{}/fixture/m2", h.store.member(TEAM, "m2").unwrap().unwrap().agent,
+    )).unwrap();
+    let ordinary = hook(
+        &other,
+        "StopFailure",
+        json!({"error_details":"policy_violation: The provider blocked this request."}),
+        FAILURE + 61_000,
+    );
+    publish(&ports, &ordinary);
+    pass(&mut h, &mut ports, FAILURE + 61_000);
+    for operation in [
+        Operation::Release { node: 19 },
+        Operation::Reassign { node: 19, member: "m2".into(), reason: "Replay".into() },
+        route(19),
+    ] {
+        let stopped = h.run(&lead, operation).unwrap_err();
+        assert!(stopped.message.contains("Keep it stopped"), "{stopped:?}");
+    }
+    let board = h.store.queue_rows(TEAM, 200, None).unwrap();
+    let stopped = board.rows.iter().find(|row| row.node.id == 19).unwrap();
+    assert!(stopped.provider_policy_stopped);
+}
+
+#[test]
 #[ignore = "run by the private actor fixture"]
 fn quota_fixture() {
     for agent in ["kimi", "claude", "codex"] {

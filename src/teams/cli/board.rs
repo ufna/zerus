@@ -22,6 +22,9 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             value["assigned_base"] = json!(row.assigned_base);
             value["pending_decision"] = json!(row.pending);
             value["pending_replaceable"] = json!(row.pending_replaceable);
+            if row.provider_policy_stopped {
+                value["provider_policy_stopped"] = json!(true);
+            }
             value["deps_editable"] = json!(row.deps_editable);
             // The lead's open item when no member can take the ready node:
             // its sentence, or null.

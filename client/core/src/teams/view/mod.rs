@@ -583,6 +583,8 @@ pub struct QueueCard {
     /// operation's own predicate); false when nothing is pending, and when an
     /// older hgs does not say.
     pub pending_replaceable: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub provider_policy_stopped: bool,
     /// What a stopped or archived team's stop did to this node, as a
     /// stable code plus the store's refusal reason as data (zerus-63rru.52
     /// round 2); absent for a live team's rows.

@@ -67,6 +67,7 @@ export function TaskPlacement(props: {
     const task = props.task;
     if (!activeTeam(props.view.bar.status)) return tr("This team cannot change task assignments.");
     if (!liveTask(task.state)) return tr("This task is already finished.");
+    if (task.provider_policy_stopped) return tr("The provider blocked this attempt. Keep it stopped.");
     if (props.unresolved) return tr("Check or dismiss the unresolved task action first.");
     if (task.pending_decision && (kind === "route" || !task.pending_replaceable)) {
       return tr("The task's previous decision has not settled yet.");

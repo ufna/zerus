@@ -37,8 +37,9 @@ fn row_facts(table: &str) -> String {
     // zerus-3u5yu (5): a stage row's target's earlier implementers, whom the
     // stage's Reassign and hand-out refuse; an empty array for other rows.
     let earlier = format!("(SELECT json_group_array(member) FROM (SELECT t.member FROM target_implementers t WHERE t.team={table}.team AND t.target=json_extract({table}.data,'$.stage_of') ORDER BY t.member LIMIT 200))");
+    let policy = rows::policy_stop_sql(&format!("{table}.team"), &format!("{table}.id"), &format!("{table}.generation"));
     format!(
-        "{facts},{},{base},{earlier}",
+        "{facts},{},{base},{earlier},{policy}",
         super::dependency_edit::eligible_sql(table)
     )
 }
@@ -286,6 +287,7 @@ impl Store {
                             deps_editable: r.get(17)?,
                             assigned_base: r.get(18)?,
                             earlier_implementers: sql_json(r, 19)?,
+                            provider_policy_stopped: r.get(20)?,
                             node: rows::node_row(r)?,
                             holder: r.get(7)?,
                             pending_replaceable: pending

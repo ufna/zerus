@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::{fs, time::Duration};
 
+mod provider;
+
 const ACTIVE_LIMIT: i64 = 1024;
 const PREVIEW_LIMIT: i64 = 4;
 
@@ -46,6 +48,8 @@ fn open_at(path: &Path, write: bool) -> anyhow::Result<Connection> {
             CREATE INDEX IF NOT EXISTS waits_owner ON waits(waiter_run,waiter_conversation,state,seq);
             CREATE INDEX IF NOT EXISTS waits_pages ON waits(waiter_run,waiter_conversation,seq);
             CREATE INDEX IF NOT EXISTS waits_retention ON waits(state,updated,seq);
+            CREATE INDEX IF NOT EXISTS waits_missing_result ON waits(waiter_run,waiter_conversation,seq)
+                WHERE state='awaiting_result' AND json_type(payload,'$.producer_refusal')='object';
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,digest TEXT NOT NULL,receipt TEXT NOT NULL,at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS operations_at ON operations(at);")?;
         db.execute_batch(
@@ -239,6 +243,9 @@ fn settle(
         (_, "ack") => "awaiting_result",
         _ => anyhow::bail!("Invalid wait operation"),
     };
+    if action == "ack" && state == "awaiting_ack" {
+        value["acknowledged_at"] = json!(now());
+    }
     let receipt = json!({"schema":1,"request_id":id,"wait_id":wait,"state":next});
     tx.execute(
         "UPDATE waits SET state=?2,updated=max(updated+0.001,?3),payload=?4 WHERE id=?1",
@@ -280,7 +287,7 @@ fn page(db: &Connection, run: &str, conversation: &str, before: i64) -> anyhow::
 pub(crate) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() != 2 || args[1] != "--json" {
         return Err(
-            "usage: hgs [@host] wait begin|ack|finish|cancel|list --json (JSON stdin)".into(),
+            "usage: hgs [@host] wait begin|ack|finish|cancel|list|check-provider --json (JSON stdin)".into(),
         );
     }
     let mut bytes = Vec::new();
@@ -358,6 +365,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<i32> {
                 };
                 begin(&mut open_at(&path(), true)?, &input, &owner)
             }
+            "check-provider" => provider::check(&input, &config, &machine),
             "ack" | "finish" | "cancel" => settle(
                 &mut open_at(&path(), true)?,
                 &args[0],
@@ -426,9 +434,11 @@ fn summary(db: &Connection, session: &Value) -> anyhow::Result<Value> {
         let (v, s) = row?;
         items.push(public(&serde_json::from_str(&v)?, &s));
     }
-    Ok(
-        json!({"schema":1,"status":"ok","revision":revision,"run_id":run,"conversation_id":conversation,"count":count,"items":items,"truncated":count>PREVIEW_LIMIT}),
-    )
+    let mut summary = json!({"schema":1,"status":"ok","revision":revision,"run_id":run,"conversation_id":conversation,"count":count,"items":items,"truncated":count>PREVIEW_LIMIT});
+    if let Some(missing) = provider::missing_preview(db, run, conversation)? {
+        summary["missing_results"] = missing;
+    }
+    Ok(summary)
 }
 pub(super) fn decorate(sessions: &mut [Value]) {
     // One read-only connection per listing, indexed lookups per returned session.
@@ -454,7 +464,7 @@ pub(super) fn decorate(sessions: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> (tempfile::TempDir, Connection, Value, Value) {
+    pub(super) fn fixture() -> (tempfile::TempDir, Connection, Value, Value) {
         let dir = tempfile::tempdir().unwrap();
         let db = open_at(&dir.path().join("waits.sqlite3"), true).unwrap();
         let owner = json!({"name":"codex/example/coordinator","run_id":"run-one","endpoint":{"machine":"11111111-1111-4111-8111-111111111111","provider":"codex","conversation":"conversation-one"}});
@@ -472,7 +482,7 @@ mod tests {
             Ok(json!({"request_id":"55555555-5555-4555-8555-555555555555"}))
         })
     }
-    fn operation(ticket: &Value) -> Value {
+    pub(super) fn operation(ticket: &Value) -> Value {
         let mut value = ticket.clone();
         value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
         value
