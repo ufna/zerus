@@ -108,6 +108,13 @@ pub(crate) fn listing_index(args: &[String]) -> Result<Value> {
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod process_index_writer;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use process_index_writer::original_process_states;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn capture_test_spawn_pin(record: &mut Value, pid: u32) {
+    let identity = crate::platform::process_identity(pid).unwrap();
+    process_index_writer::capture_spawn(record, &identity);
+}
 mod labels;
 /// How every reader decides what the label index proves (zerus-ucck P3a);
 /// the native readers that need it outside this module run on Unix.

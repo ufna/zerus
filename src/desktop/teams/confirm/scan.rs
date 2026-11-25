@@ -121,17 +121,38 @@ fn step_at(
                 .is_ok()
             });
         let updated = if active_binding {
-            if let (Some((binding, _)), Some(observation)) = (&binding, &observation) {
-                apply_observation(
+            match (&binding, &observation, native.retired) {
+                (Some((binding, _)), _, Some(disposition)) => {
+                    native.fresh_facts(binding).and_then(|facts| {
+                        if policy::stored(binding, &facts).is_err() {
+                            return Ok(());
+                        }
+                        let stamp = actor::provider_binding_stamp(
+                            &binding.launch,
+                            &binding.session,
+                            &binding.run,
+                            &binding.conversation,
+                        );
+                        cards
+                            .confirmation_retired(
+                                native.store,
+                                &facts.team,
+                                &facts.member,
+                                (&stamp, disposition.reason()),
+                                now,
+                            )
+                            .map_err(|e| e.message)
+                    })
+                }
+                (Some((binding, _)), Some(observation), None) => apply_observation(
                     cards,
                     native.store,
                     (&team, &member, binding),
                     observation,
                     now,
                     &mut report,
-                )
-            } else {
-                Ok(())
+                ),
+                _ => Ok(()),
             }
         } else if !eligible || bound.is_none() || binding.is_some() {
             cards

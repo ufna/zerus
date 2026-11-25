@@ -69,6 +69,20 @@ impl Store {
         self.active()?;
         self.db.as_ref().map_or(Ok(false),|db|db.query_row("SELECT COALESCE(json_type(result,'$.Refused')='object',0) FROM requests WHERE id=?1 AND team=?2",params![id,team],|r|r.get(0)).optional().map_err(storage).map(|v|v.unwrap_or(false)))
     }
+    /// Read a committed, exact service reply. Missing or refused receipts
+    /// authorize no retry or fresh operation.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn saved_service_reply(
+        &self,
+        actor: &crate::teams::ops::Actor,
+        request: &crate::teams::ops::Request,
+    ) -> Result<Option<crate::teams::ops::Reply>> {
+        self.active()?;
+        let Some(db) = &self.db else {
+            return Ok(None);
+        };
+        Ok(crate::teams::ops::replay(db, actor, request)?.and_then(Result::ok))
+    }
     /// The immutable report and its holder in that exact attempt generation.
     pub fn report(&self, team: &str, node: NodeId, generation: u32) -> Result<Option<Report>> {
         self.active()?;

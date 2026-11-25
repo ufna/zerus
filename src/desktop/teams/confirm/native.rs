@@ -30,6 +30,7 @@ pub(super) struct Native<'a> {
     pub store: &'a mut Store,
     capture: Option<(Snapshot, Value)>,
     pub observation: Option<Result<()>>,
+    pub retired: Option<ObservationDisposition>,
     pins: Vec<ownership::Pin>,
 }
 impl<'a> Native<'a> {
@@ -47,12 +48,14 @@ impl<'a> Native<'a> {
             store,
             capture: None,
             observation: None,
+            retired: None,
             pins: Vec::new(),
         })
     }
     pub fn reset(&mut self) {
         self.capture = None;
         self.observation = None;
+        self.retired = None;
         self.pins.clear();
     }
     fn read(&self, args: Vec<String>, input: Option<&[u8]>) -> Result<Value> {
@@ -104,9 +107,24 @@ impl Ports for Native<'_> {
     fn observe(&mut self, b: &Binding) -> Result<Snapshot> {
         self.snapshot(b)
     }
-    fn observe_member(&mut self, b: &Binding) -> Result<Snapshot> {
-        let result = self.snapshot(b);
+    fn observe_member(&mut self, b: &Binding) -> Result<Option<Snapshot>> {
+        let result = self.observation(b);
         self.observation = Some(result.as_ref().map(|_| ()).map_err(String::clone));
+        if let Some(disposition) = self.retired {
+            self.retire_exit_notice(b, disposition)?;
+        } else if let Ok(Some(snapshot)) = &result {
+            let proved_exit = snapshot.ended
+                && !snapshot.paused
+                && snapshot.questions.is_empty()
+                && self
+                    .capture
+                    .as_ref()
+                    .is_some_and(|(_, record)| observation::proved_exit(snapshot, record));
+            if self.exit_notice_after_live_close(b, snapshot, proved_exit)? {
+                self.retired = Some(ObservationDisposition::ConfirmedExit);
+                return Ok(None);
+            }
+        }
         result
     }
     fn ownership(&mut self, b: &Binding) -> Result<Ownership> {
@@ -127,7 +145,9 @@ impl Ports for Native<'_> {
         if !self.ledger.lead_brief_needed(b)? {
             return Ok(None);
         }
-        let snapshot = self.observe_member(b)?;
+        let Some(snapshot) = self.observe_member(b)? else {
+            return Ok(None);
+        };
         let planning = self.store.planning(&team.id).map_err(|e| e.to_string())?;
         self.ledger
             .pending_lead_brief(b, &snapshot, &team, planning.as_ref())
@@ -192,14 +212,192 @@ impl Ports for Native<'_> {
     }
 }
 impl Native<'_> {
-    fn owner_card(&mut self, row: &Record) -> Result<()> {
+    fn retire_exit_notice(
+        &mut self,
+        b: &Binding,
+        disposition: ObservationDisposition,
+    ) -> Result<()> {
+        use super::{engine, policy};
         use crate::teams::ops::{self, Actor, Operation, Request};
+        let key = engine::resume_key(b);
+        let Some(row) = self.ledger.get(&key)? else {
+            return Ok(());
+        };
+        if row.plan.binding != *b
+            || row.plan.kind != Kind::Notice
+            || row.state != "cancelled"
+            || row.audit.is_some()
+            || row.result.is_some()
+            || !row.card_done
+            || row.detail != policy::NO_SUPERVISOR_EVIDENCE
+        {
+            return Ok(());
+        }
+        let Some(opener) = self.ledger.card_request(&key)? else {
+            return Ok(());
+        };
+        if opener.team != b.team
+            || !matches!(
+                &opener.operation,
+                Operation::OpenCard { kind, node: None, decisions: None, .. } if kind == "standing_confirmation"
+            )
+        {
+            return Ok(());
+        }
+        let facts = self.fresh_facts(b)?;
+        if policy::stored(b, &facts).is_err() {
+            return Ok(());
+        }
+        let actor = Actor::Service {
+            person: b.person.clone(),
+            team: b.team.clone(),
+        };
+        let Some(card) = self
+            .store
+            .saved_service_reply(&actor, &opener)
+            .map_err(|error| error.to_string())?
+            .and_then(|reply| reply.item)
+        else {
+            return Ok(());
+        };
+        if !self
+            .store
+            .card(&b.team, card)
+            .map_err(|error| error.to_string())?
+            .is_some_and(|card| {
+                card.kind == "standing_confirmation"
+                    && card.node.is_none()
+                    && card.state == "open"
+                    && card.actor == json!(actor)
+            })
+        {
+            return Ok(());
+        }
+        let make_request = || Request {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            team: b.team.clone(),
+            expected_revision: facts.team.revision,
+            operation: Operation::CloseCard {
+                card,
+                reason: disposition.reason().into(),
+            },
+        };
+        let live_close = live_close_key(&key);
+        let remember_close = matches!(
+            disposition,
+            ObservationDisposition::OriginalProcessesPresent
+        );
+        let request = if remember_close {
+            if let Some(saved) = self.ledger.card_request(&live_close)? {
+                if saved.team != b.team
+                    || !matches!(
+                        &saved.operation, Operation::CloseCard { card: target, reason }
+                            if *target == card && reason == disposition.reason()
+                    )
+                {
+                    return Err("The saved false-exit close changed identity".into());
+                }
+                saved
+            } else {
+                let request = make_request();
+                self.ledger.save_card(&live_close, Some(&request))?;
+                request
+            }
+        } else {
+            make_request()
+        };
+        match ops::apply(
+            self.store,
+            &actor,
+            &request,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            Ok(_) => Ok(()),
+            Err(error)
+                if remember_close
+                    && error.code == zerus_team_plan::problem::code::STALE_REVISION =>
+            {
+                self.ledger.save_card(&live_close, None)?;
+                Err(error.to_string())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// A closed false-exit notice is independent of the original resume slot.
+    /// Announce a later ended observation once without replaying that slot.
+    fn exit_notice_after_live_close(
+        &mut self,
+        b: &Binding,
+        snapshot: &Snapshot,
+        proved_exit: bool,
+    ) -> Result<bool> {
+        use super::{engine, policy};
+        use crate::teams::ops::{Actor, Operation};
+        if !proved_exit
+            || !snapshot.ended
+            || snapshot.live
+            || snapshot.paused
+            || !snapshot.questions.is_empty()
+        {
+            return Ok(false);
+        }
+        let key = engine::resume_key(b);
+        let Some(close) = self.ledger.card_request(&live_close_key(&key))? else {
+            return Ok(false);
+        };
+        if close.team != b.team
+            || !matches!(
+                &close.operation, Operation::CloseCard { reason, .. }
+                    if reason == ObservationDisposition::OriginalProcessesPresent.reason()
+            )
+        {
+            return Ok(false);
+        }
+        let actor = Actor::Service {
+            person: b.person.clone(),
+            team: b.team.clone(),
+        };
+        if self
+            .store
+            .saved_service_reply(&actor, &close)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        let facts = self.fresh_facts(b)?;
+        if policy::stored(b, &facts).is_err() {
+            return Ok(false);
+        }
+        let Some(mut notice) = self.ledger.get(&key)? else {
+            return Ok(false);
+        };
+        if notice.plan.binding != *b {
+            return Ok(false);
+        }
+        notice.plan.key = engine::key(&json!(["exit_after_live_close", key]));
+        notice.detail = "The session now reports an exit after its original processes were verified present. Check the member's session.".into();
+        self.owner_card_at_revision(&notice, &facts.team)?;
+        Ok(true)
+    }
+
+    fn owner_card(&mut self, row: &Record) -> Result<()> {
         self.store.refresh().map_err(|e| e.to_string())?;
         let team = self
             .store
             .team(&row.plan.binding.team)
             .map_err(|e| e.to_string())?
             .ok_or("Team disappeared")?;
+        self.owner_card_at_revision(row, &team)
+    }
+
+    fn owner_card_at_revision(
+        &mut self,
+        row: &Record,
+        team: &zerus_team_plan::model::Team,
+    ) -> Result<()> {
+        use crate::teams::ops::{self, Actor, Operation, Request};
         let request = if let Some(mut request) = self.ledger.card_request(&row.plan.key)? {
             // The saved request keeps its pre-change shape and stores no
             // parameters (zerus-63rru.34, F1); the member is derived here from
@@ -240,7 +438,7 @@ impl Native<'_> {
         };
         let actor = Actor::Service {
             person: row.plan.binding.person.clone(),
-            team: team.id,
+            team: team.id.clone(),
         };
         match ops::apply(
             self.store,
@@ -261,9 +459,160 @@ impl Native<'_> {
     }
 }
 
+fn live_close_key(resume_key: &str) -> String {
+    super::engine::key(&json!(["close_false_exit", resume_key]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn false_exit_close_keeps_later_same_run_attention_and_never_replays_an_original() {
+        use super::super::{engine, policy};
+        use crate::teams::ops::{self, tests::TEAM, Actor, Operation, Request};
+
+        for state in ["cancelled", "unknown"] {
+            let mut harness = crate::desktop::teams::tests::bound151_fixture();
+            let config = Config {
+                state: harness.temp.path().to_owned(),
+                dir: harness.temp.path().join("config"),
+                home: String::new(),
+                selves: vec![],
+                peers: vec![],
+                base_peers: vec![],
+                peers_from_environment: false,
+                machines: Default::default(),
+                tab: false,
+                tab_colors: String::new(),
+            };
+            let (binding, _) = binding::launch_binding(&config, TEAM, "m1").unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let mut native =
+                Native::new(&config, &binding.machine, &stop, &mut harness.store).unwrap();
+            let (_, _, mut snapshot) = policy::tests::sample();
+            snapshot.run = binding.run.clone();
+            snapshot.live = false;
+            snapshot.ended = true;
+            snapshot.questions.clear();
+            let mut plan = engine::candidate(&binding, &snapshot, Kind::Resume, Value::Null);
+            plan.kind = Kind::Notice;
+            let mut row = native.ledger.claim(&plan, "epoch", 1).unwrap().record;
+            row.detail = policy::resume(&snapshot).unwrap_err();
+            row.state = state.into();
+            native.ledger.save(&row).unwrap();
+            native.owner_card(&row).unwrap();
+            row.card_done = true;
+            native.ledger.save(&row).unwrap();
+
+            let actor = Actor::Service {
+                person: binding.person.clone(),
+                team: TEAM.into(),
+            };
+            let opener = native.ledger.card_request(&plan.key).unwrap().unwrap();
+            let card = native
+                .store
+                .saved_service_reply(&actor, &opener)
+                .unwrap()
+                .unwrap()
+                .item
+                .unwrap();
+            let revision = native.store.team(TEAM).unwrap().unwrap().revision;
+            let other = ops::apply(
+                native.store,
+                &actor,
+                &Request {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    team: TEAM.into(),
+                    expected_revision: revision,
+                    operation: Operation::OpenCard {
+                        node: None,
+                        parameters: None,
+                        decisions: None,
+                        kind: "standing_confirmation".into(),
+                        text: "Another service card.".into(),
+                    },
+                },
+                2,
+            )
+            .unwrap()
+            .item
+            .unwrap();
+
+            let mut unsubmitted = opener.clone();
+            unsubmitted.request_id = uuid::Uuid::new_v4().to_string();
+            native
+                .ledger
+                .save_card(&plan.key, Some(&unsubmitted))
+                .unwrap();
+            native
+                .retire_exit_notice(&binding, ObservationDisposition::OriginalProcessesPresent)
+                .unwrap();
+            assert_eq!(
+                native.store.card(TEAM, card).unwrap().unwrap().state,
+                "open"
+            );
+            assert!(native
+                .store
+                .saved_service_reply(&actor, &unsubmitted)
+                .unwrap()
+                .is_none());
+            native.ledger.save_card(&plan.key, Some(&opener)).unwrap();
+
+            native
+                .retire_exit_notice(&binding, ObservationDisposition::OriginalProcessesPresent)
+                .unwrap();
+            native
+                .retire_exit_notice(&binding, ObservationDisposition::OriginalProcessesPresent)
+                .unwrap();
+            assert_eq!(
+                native.store.card(TEAM, card).unwrap().unwrap().state,
+                if state == "cancelled" {
+                    "closed"
+                } else {
+                    "open"
+                }
+            );
+            assert_eq!(
+                native.store.card(TEAM, other).unwrap().unwrap().state,
+                "open"
+            );
+            assert_eq!(native.ledger.get(&plan.key).unwrap().unwrap(), row);
+            drop(native);
+            let mut restarted =
+                Native::new(&config, &binding.machine, &stop, &mut harness.store).unwrap();
+            assert!(!restarted
+                .exit_notice_after_live_close(&binding, &snapshot, false)
+                .unwrap());
+            assert!(!restarted
+                .store
+                .waiting(200, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .any(|waiting| waiting.card.text.contains("now reports an exit")));
+            for _ in 0..2 {
+                assert_eq!(
+                    restarted
+                        .exit_notice_after_live_close(&binding, &snapshot, true)
+                        .unwrap(),
+                    state == "cancelled",
+                );
+            }
+            let fresh = restarted
+                .store
+                .waiting(200, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .filter(|waiting| waiting.card.text.contains("now reports an exit"))
+                .count();
+            assert_eq!(fresh, usize::from(state == "cancelled"));
+            assert_eq!(restarted.ledger.get(&plan.key).unwrap().unwrap(), row);
+            assert!(!config.state.join("approval-audit").exists());
+        }
+    }
+
     #[test]
     fn a_resume_plans_audit_row_carries_no_scope() {
         // zerus-63rru.66 round 4: the scope is recorded only for a

@@ -50,6 +50,71 @@ impl Runtime {
             a.hold_scoped(store, team, (&key, 0, 0, Some(binding)), (&reason, now), || report(error))
         })
     }
+
+    /// An exact deliberate disposition only retires this binding's own
+    /// observation gate. Reading an interrupted opener must not apply it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::desktop::teams) fn confirmation_retired(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        proof: (&str, &str),
+        now: i64,
+    ) -> Result<()> {
+        let (binding, reason) = proof;
+        let name = format!("gate:{CONFIRMATION}{}", member.id);
+        let Some(row) = self.ledger.get(&team.id, &name)? else {
+            return Ok(());
+        };
+        if !matches!(super::held::held_by(&row), Some((0, 0, Some(stamp))) if stamp == binding) {
+            return Ok(());
+        }
+        let gate: Gate =
+            serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
+        let actor = Actor::Service {
+            person: team.owner.clone(),
+            team: team.id.clone(),
+        };
+        let card = match gate.notice {
+            Some(opener)
+                if opener.team == team.id
+                    && matches!(
+                        &opener.operation, Operation::OpenCard { kind, node: None, .. } if kind == "team_actor_blocked"
+                    ) =>
+            {
+                store
+                    .saved_service_reply(&actor, &opener)?
+                    .and_then(|reply| reply.item)
+            }
+            Some(_) => return Ok(()),
+            None => None,
+        };
+        if gate.card.is_some() && gate.card != card {
+            return Ok(());
+        }
+        if let Some(card) = card {
+            if store.card(&team.id, card)?.is_some_and(|card| {
+                card.kind == "team_actor_blocked"
+                    && card.node.is_none()
+                    && card.state == "open"
+                    && card.actor == serde_json::json!(actor)
+            }) {
+                let request = Request {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    team: team.id.clone(),
+                    expected_revision: team.revision,
+                    operation: Operation::CloseCard {
+                        card,
+                        reason: reason.into(),
+                    },
+                };
+                ops::apply(store, &actor, &request, now)?;
+            }
+        }
+        self.ledger.remove(&row)?;
+        Ok(())
+    }
 }
 
 impl Runtime {
