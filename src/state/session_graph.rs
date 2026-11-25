@@ -22,7 +22,7 @@ pub(crate) use sends::{caller_binding_reads, caller_host_reads};
 // caller proof calls for a DeepSeek claim (zerus-63rru.28); main's send and
 // task attribution reach it through `caller_record`.
 pub(crate) use sends::hosted_caller;
-pub(super) use sends::target_receipt_for_machine;
+pub(crate) use sends::target_receipt_for_machine;
 #[cfg(any(test, debug_assertions))]
 pub(crate) use sends::receipt_pause;
 // Read by the desktop's ancestor environment check, which exists there only.

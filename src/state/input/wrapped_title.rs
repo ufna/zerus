@@ -34,7 +34,11 @@ pub(super) fn matches(
         return false;
     }
     let joined = format!("{title} {continuation}");
-    if joined.contains(" · ") || joined.chars().any(char::is_control) {
+    // With another agent in the thread roster, Codex appends the native
+    // primary-thread label to its status line. The title remains one field
+    // even when the last word of that label is on the continuation row.
+    let title = joined.strip_suffix(" · Main [default]").unwrap_or(&joined);
+    if title.is_empty() || title.contains(" · ") || title.chars().any(char::is_control) {
         return false;
     }
     let Some(word) = continuation.split_whitespace().next() else {
