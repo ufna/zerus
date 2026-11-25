@@ -2,12 +2,14 @@
    Controls and notices use the client's shared classes and skin tokens. */
 @layer components {
   dialog.newteam-page-dialog { width: min(760px, calc(100vw - 48px)); overflow: hidden; }
-  .newteam-page { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+  /* The page scrolls as a whole only as a last resort, when a window is too
+     short for the head, a usable body and the footer (zerus-26ltc). */
+  .newteam-page { display: flex; flex-direction: column; min-height: 0; width: 100%; overflow-y: auto; }
   .nt-page-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 12px; border-bottom: 1px solid var(--z-color-divider); }
   .nt-page-head > svg { color: var(--z-color-accent); flex: none; }
   .nt-page-head h1 { font-size: var(--fs-lg); font-weight: 600; }
   .nt-page-head .icon-btn { margin-left: auto; }
-  .nt-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 0; font-size: var(--fs-sm); }
+  .nt-body { flex: 1; min-height: 48px; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 0; font-size: var(--fs-sm); }
   .nt-body > * { flex-shrink: 0; }
   .nt-section { display: flex; flex-direction: column; gap: 12px; }
   .nt-section + .nt-section { padding-top: 16px; border-top: 1px solid var(--z-color-divider); }
@@ -55,7 +57,18 @@
   .nt-foot-row > .nt-hint { flex: 1 1 100%; }
   .nt-foot-row > .btn { height: auto; min-height: var(--control-h); white-space: normal; }
   .nt-foot-row > .nt-save { margin-right: auto; }
-  .nt-blocker { align-items: center; }
+  /* A long refusal or blocker scrolls inside its own box, so the actions
+     below it stay in view at any length and window size (zerus-26ltc). It
+     flows as one paragraph, its label first; long unbroken words wrap. */
+  .nt-blocker { display: block; max-height: min(8.5em, 22vh); overflow-y: auto; overflow-wrap: anywhere; }
+  /* A short window keeps the actions and some of the form: less margin,
+     and no footer hint (the form's own steps say the same). */
+  @media (max-height: 480px) {
+    dialog.newteam-page-dialog { max-height: calc(100vh - 16px); }
+    .nt-page-head { padding-top: 10px; padding-bottom: 8px; }
+    .nt-foot { gap: 6px; padding-top: 8px; padding-bottom: 10px; }
+    .nt-foot-row > .nt-hint { display: none; }
+  }
   @media (max-width: 600px) {
     .nt-pair { grid-template-columns: minmax(0, 1fr); }
     .nt-caps { grid-template-columns: 110px minmax(0, 1fr); }
