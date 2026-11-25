@@ -14,9 +14,13 @@
 //! exact objects ([`read`]). Every other observation is Unknown and never
 //! authorizes a resend: `in_progress`, a missing, corrupt, oversized, unsafe,
 //! replaced, changing or mismatched receipt, folder or root.
+use super::target::Identity;
 use crate::desktop::original_store::{self, Failure};
 pub(super) use crate::desktop::original_store::{Evidence, Roots};
-use zerus_client_core::desktop::deferred_send::{Outcome, Plan, Refusal, RECEIPT_BYTES, RECEIPT_MISMATCH};
+use serde::Deserialize;
+use zerus_client_core::desktop::deferred_send::{
+    Outcome, Plan, Refusal, RECEIPT_BYTES, RECEIPT_MISMATCH,
+};
 
 /// No receipt of the request exists in the original, unchanged store.
 pub(super) const MISSING: &str = "deferred_send_receipt_missing";
@@ -40,6 +44,8 @@ pub(super) enum Observed {
     Submitted(Outcome),
     /// Exact retained negative evidence; it remains Unknown and cannot replay.
     Refused(Refusal),
+    /// The original's terminal pre-input receipt matches the pinned target.
+    NotOffered(Refusal),
     /// Anything else, for the named reason. Never resent.
     Unknown(&'static str),
 }
@@ -47,7 +53,12 @@ pub(super) enum Observed {
 /// Reads the original's receipt from `roots` after the physical drain.
 /// `between` runs after the bytes are read and before they are checked
 /// again (tests change the store there; it does nothing otherwise).
-pub(super) fn read(roots: &Roots, plan: &Plan, between: &dyn Fn()) -> (Observed, Evidence) {
+pub(super) fn read(
+    roots: &Roots,
+    plan: &Plan,
+    target: Option<&Identity>,
+    between: &dyn Fn(),
+) -> (Observed, Evidence) {
     let Ok(request) = uuid::Uuid::parse_str(&plan.request_id) else {
         return (Observed::Unknown(RECEIPT_MISMATCH), Evidence::default());
     };
@@ -57,14 +68,79 @@ pub(super) fn read(roots: &Roots, plan: &Plan, between: &dyn Fn()) -> (Observed,
         // record, or no outcome.
         Ok(bytes) => match Outcome::from_receipt(plan, &bytes) {
             Ok(outcome) => Observed::Submitted(outcome),
-            Err(code) => match Refusal::from_receipt(plan, &bytes) {
-                Ok(refusal) => Observed::Refused(refusal),
-                Err(_) => Observed::Unknown(code),
-            },
+            Err(code) => {
+                if let Some(refusal) =
+                    target.and_then(|target| terminal_refusal(plan, target, &bytes))
+                {
+                    Observed::NotOffered(refusal)
+                } else if let Ok(refusal) = Refusal::from_receipt(plan, &bytes) {
+                    Observed::Refused(refusal)
+                } else {
+                    Observed::Unknown(code)
+                }
+            }
         },
         Err(Failure::Missing) => Observed::Unknown(MISSING),
         Err(Failure::Unavailable) => Observed::Unknown(UNAVAILABLE),
         Err(Failure::Changed) => Observed::Unknown(CHANGED),
     };
     (observed, evidence)
+}
+
+/// The opted-in CLI's private receipt. The version, transport and every
+/// original binding must match. Diagnostics and partial records prove nothing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalReceipt {
+    refusal_schema: u8,
+    request_id: String,
+    name: String,
+    run_id: String,
+    conversation_id: String,
+    first_message: bool,
+    digest: String,
+    status: String,
+    transport: String,
+    reason: String,
+    delivery_binding: TerminalBinding,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalBinding {
+    schema: u8,
+    machine_id: String,
+    session_id: String,
+    provider: String,
+    namespace: String,
+}
+
+fn terminal_refusal(plan: &Plan, target: &Identity, bytes: &[u8]) -> Option<Refusal> {
+    if bytes.len() > zerus_client_core::desktop::deferred_send::refusal::BYTES {
+        return None;
+    }
+    let record: TerminalReceipt = serde_json::from_slice(bytes).ok()?;
+    let binding = record.delivery_binding;
+    if record.refusal_schema != 2
+        || record.status != "not_offered"
+        || record.transport != "terminal"
+        || record.first_message != record.conversation_id.is_empty()
+        || binding.schema != 1
+        || binding.machine_id != target.machine_id
+        || binding.session_id != target.session_id
+        || binding.provider != target.provider
+        || binding.namespace != target.namespace
+    {
+        return None;
+    }
+    let refusal = Refusal {
+        schema: 1,
+        request_id: record.request_id,
+        session: record.name,
+        run_id: record.run_id,
+        conversation_id: record.conversation_id,
+        input_sha256: record.digest,
+        reason: record.reason,
+    };
+    refusal.matches(plan).then_some(refusal)
 }

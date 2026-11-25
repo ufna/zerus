@@ -32,6 +32,8 @@ pub const SUBMITTED: &str = "submitted";
 /// The closed code of an original child that never started: refused before
 /// any child existed. Nothing ran, so the message counts as never sent.
 pub const NOT_STARTED: &str = "deferred_send_not_started";
+/// A drained send with a verified, terminal pre-input outcome for this original.
+pub const NOT_OFFERED: &str = "deferred_send_not_offered";
 /// The service refused the original before its ledger admission, with
 /// its ledger proving no row for the request, and sealed the request for
 /// its epoch, so no copy of it ever admits (zerus-tlb9q). The one refusal
@@ -653,7 +655,8 @@ pub enum Phase {
     Recorded,
     /// Only at the closed no-spawn boundary ([`NOT_STARTED`]): nothing ran.
     Failed,
-    /// Anything else after a possibly started child: an `in_progress`,
+    /// A possibly started child. A drained `NOT_OFFERED` receipt is definite;
+    /// older readers conservatively treat it as Unknown. Otherwise an `in_progress`,
     /// missing, corrupt, mismatched, inaccessible or replaced receipt, a
     /// timeout or a lost worker. Never resent.
     Unknown,
@@ -746,7 +749,7 @@ pub struct Receipt {
     pub drained: bool,
     pub code: String,
     pub outcome: Option<Outcome>,
-    /// Original child diagnostic, retained across drain and read-only recovery.
+    /// Original child diagnostic, or the verified refusal reason for `NOT_OFFERED`.
     /// Omitted for old receipts so their serialized CAS identity stays unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_exit: Option<CliExit>,
@@ -780,6 +783,14 @@ impl Receipt {
             && self.cli_exit.as_ref().is_none_or(|exit| {
                 exit.valid() && matches!(self.phase, Phase::Recorded | Phase::Unknown)
             })
+            && (self.code != NOT_OFFERED
+                || (self.phase == Phase::Unknown
+                    && self.drained
+                    && self.binding.kind == Kind::DeferredSend
+                    && self
+                        .cli_exit
+                        .as_ref()
+                        .is_some_and(|exit| exit.code == 1 && !exit.stderr.trim().is_empty())))
             && (self.code == refusal::CODE) == self.refusal.is_some()
             && self.refusal.as_ref().is_none_or(|refusal| {
                 self.phase == Phase::Unknown && self.drained && refusal.agrees(&self.binding)
@@ -802,6 +813,12 @@ impl Receipt {
     /// never started. Nothing ran, so the message counts as never sent.
     pub fn not_started(&self, plan: &Plan) -> bool {
         self.valid() && self.drained && self.binding.agrees(plan) && self.phase == Phase::Failed
+    }
+    /// The service verified the original's closed, bound pre-input outcome.
+    pub fn not_offered(&self, plan: &Plan) -> Option<&str> {
+        let exit = self.cli_exit.as_ref()?;
+        (self.code == NOT_OFFERED && self.valid() && self.binding.agrees(plan))
+            .then_some(exit.stderr.as_str())
     }
     /// Only the exact original's drained receipt settles it: Recorded is the
     /// CLI's own submission receipt, Failed the closed no-spawn boundary.

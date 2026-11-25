@@ -214,7 +214,7 @@ fn a_retained_preinput_refusal_shows_its_reason_without_submission_or_replay_aut
         &v.plan.input_sha256,
         reason,
     );
-    let detail = wire::refusal::MESSAGE.replace("%1", reason);
+    let detail = format!("{UNCONFIRMED}\n{reason}");
     assert_eq!(settled(&r, &v.plan), Some(SendAnswer::Unconfirmed(detail)));
     assert_eq!(r.result(&v.plan), None);
     assert!(!r.not_started(&v.plan));

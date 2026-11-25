@@ -204,8 +204,71 @@ fn a_never_started_send_releases_its_identity_and_an_unknown_one_waits_for_allow
 }
 
 #[test]
+fn a_bound_not_offered_receipt_keeps_the_draft_and_allows_one_explicit_new_attempt() {
+    use zerus_client_core::desktop::deferred_send as wire;
+
+    let root = dir("handed-not-offered");
+    let (c, fake) = send_hub_on(&drafts(&root));
+    let service = Arc::new(Service::default());
+    route(&c, &service);
+    let service_ref = Arc::downgrade(&service);
+    answer(&service, move |plan| {
+        // The route invokes this answer while it owns the answer lock and
+        // after it records the exact original; checking it here proves the
+        // outcome came through the same classifier as the native service.
+        let service = service_ref.upgrade().unwrap();
+        let offered = lock(&service.offered);
+        if offered.len() == 2 {
+            return recorded(plan);
+        }
+        let (name, checkpoint, original) = &offered[0];
+        let scope = wire::Scope {
+            configuration: "a".repeat(64),
+            service_epoch: "33333333-3333-4333-8333-333333333333".into(),
+        };
+        let verified = deferred_send::intent(&scope, name, checkpoint, original)
+            .unwrap()
+            .verify()
+            .unwrap();
+        let receipt = wire::Receipt {
+            binding: verified.binding,
+            admission_epoch: scope.service_epoch,
+            revision: 3,
+            phase: wire::Phase::Unknown,
+            drained: true,
+            code: wire::NOT_OFFERED.into(),
+            cli_exit: Some(wire::CliExit::new(1, "the composer has a draft")),
+            refusal: None,
+            outcome: None,
+        };
+        deferred_send::settled(&receipt, plan).unwrap()
+    });
+    let view = open_local(&c);
+    send(&c, &view, "keep this draft");
+    let view = until(&c, |v| !v.sending && v.text == "keep this draft");
+    assert_eq!(view.local[0].status, Status::Error);
+    assert!(view.local[0].error.contains("the composer has a draft"));
+    assert!(!view.local[0].uncertain && !view.uncertain && view.can_send);
+    assert!(held(&c).is_none());
+    assert_eq!(lock(&service.offered).len(), 1);
+
+    assert_eq!(
+        c.retry(view.handle, &view.local[0].id),
+        send::SendReply::Sending
+    );
+    until(&c, |v| !v.sending && v.text.is_empty());
+    let offered = lock(&service.offered);
+    assert_eq!(offered.len(), 2);
+    assert_ne!(offered[0].1.request_id, offered[1].1.request_id);
+    assert!(sent(&fake).is_empty());
+}
+
+#[test]
 fn a_retained_refusal_stays_visible_in_the_failed_row_and_after_a_read_only_reload() {
-    let detail = "Message was not sent. hgs refused before typing: the composer has a draft";
+    let detail = concat!(
+        "Delivery is not confirmed by the desktop service. Check Terminal before retrying.",
+        "\nthe composer has a draft"
+    );
     for pending in [false, true] {
         let root = dir(&format!("handed-retained-refusal-{pending}"));
         let store = drafts(&root);
