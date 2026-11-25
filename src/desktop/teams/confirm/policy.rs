@@ -351,6 +351,7 @@ pub(super) mod tests;
 /// may run; the desktop has no Reassign button. A fresh start is not offered:
 /// it ends the member's binding here.
 pub(super) const SEAT: &str = "If its session cannot come back, remove the member with Remove on its member card; you or the lead can reassign its tasks to another member with hgs team reassign.";
+pub(super) const NO_SUPERVISOR_EVIDENCE: &str = "The exit has no exact supervisor evidence";
 
 pub(super) fn resume(s: &Snapshot) -> Result<(), String> {
     need(
@@ -363,7 +364,7 @@ pub(super) fn resume(s: &Snapshot) -> Result<(), String> {
     )?;
     need(
         s.self_exit && !s.exit_identity.is_empty(),
-        "The exit has no exact supervisor evidence",
+        NO_SUPERVISOR_EVIDENCE,
     )?;
     need(
         !s.conversation.is_empty(),

@@ -111,6 +111,31 @@ class WindowsTarget(unittest.TestCase):
         self.assertEqual(out.returncode,0,out.stderr)
         self.assertEqual(json.loads(out.stdout),{'argv':['send',name,'--json'],'stdin':body})
 
+    def test_parent_project_gates_the_windows_peer_before_sending_consent(self):
+        (self.root/'mode').write_text('cmd')
+        marker = 'session-parent-project-v1'
+        # Similar-looking help text cannot admit the project-bearing command.
+        old_help = f"session-parent-v1\n{marker}-unsupported\n"
+        (self.root/'help').write_text(old_help)
+        args = ('parent', 'codex/example/child', '--json', '--project')
+        body = '{"action":"set","project":{"choice":"keep"}}\n'
+        refused = self.hgs(*args, body=body)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn('required capability is missing', refused.stderr)
+        self.assertEqual(self.operations(), [])
+        self.assertEqual([json.loads(line) for line in (self.root/'words').read_text().splitlines()], [['--help']])
+
+        (self.root/'help').write_text(old_help + f"{marker}\n")
+        accepted = self.hgs(*args, body=body)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(self.operations(), [{'argv':list(args),'stdin':body}])
+
+        (self.root/'help').write_text(old_help)
+        legacy_body = '{"action":"clear"}\n'
+        legacy = self.hgs(*args[:-1], body=legacy_body)
+        self.assertEqual(legacy.returncode, 0, legacy.stderr)
+        self.assertEqual(self.operations()[-1], {'argv':list(args[:-1]),'stdin':legacy_body})
+
     def test_watch_gates_then_passes_control_input_without_consuming_it(self):
         body='{"op":"subscribe","session":"codex/project/tag"}\n'
         out=self.hgs('watch','--json',body=body)

@@ -9,7 +9,7 @@ import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Icon } from "../lib/icons";
 import { tr, trNoop } from "../../i18n";
 import { listRows, membersByGroup, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
-import {
+import { parentBadgeText,
   SessionCard, ChildCard, CompactCard, ContainerCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
   emphasis, childStatus, captionText, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
 } from "./SessionCard";
@@ -957,7 +957,8 @@ export function sessionRowName(row: Row | undefined): string | undefined {
 function cardDescription(row: Row | undefined): string | undefined {
   if (row?.type !== "card") return undefined;
   const parts: string[] = [];
-  if (row.depth && row.parentKey) parts.push(tr("Child of %1, level %2", catalog.rows[row.parentKey]?.title ?? "", row.depth + 1));
+  if (row.fromParent) parts.push(parentBadgeText(row.fromParent, row.session.parent?.state === "live"));
+  else if (row.depth && row.parentKey) parts.push(tr("Child of %1, level %2", catalog.rows[row.parentKey]?.title ?? "", row.depth + 1));
   if (row.team) {
     parts.push(row.team.collapsed ? tr("%1 child sessions, collapsed", row.team.total) : tr("%1 child sessions, expanded", row.team.total));
     parts.push(...teamSummary(row.team));
@@ -1018,7 +1019,8 @@ function ListRow(props: { id: string; list: RowSource }) {
             onContextMenu={(e) => sessionContextMenu(e, v().session)}
             onDblClick={(e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey) setRowCompact(v().session.key, !compactRows[v().session.key]); }}>
             <Show when={!v().compactRow} fallback={<CompactCard onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={selectedKey() === v().session.key || !!multi[v().session.key]} onExpand={() => setRowCompact(v().session.key, false)}
-              team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)} />}>
+              team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)}
+              fromParent={v().fromParent} onOpenParent={(key) => { setSelectedKey(key); setRevealing(key); }} />}>
               <SessionCard onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={(selectedKey() === v().session.key && !subagentOpen()) || !!multi[v().session.key]} expandable={v().expandable}
                 expanded={!!expandedChildren[v().session.key]} onToggleChildren={() => setExpandedChildren(v().session.key, !expandedChildren[v().session.key])}
                 team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)}

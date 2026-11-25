@@ -111,7 +111,7 @@ describe("menuState rename, archive, end, read", () => {
     // The core names DeepSeek's `dsh` sessions `deepseek`.
     expect(menuState(row({ state: "paused", agent: "deepseek" }), true, false).archive.visible).toBe(false);
   });
-  it("needs the machine online for Move to archive in the context menu only", () => {
+  it("needs the machine online for Archive in the context menu only", () => {
     expect(menuState(row({ state: "paused" }), false, false).archive.enabled).toBe(true);
     expect(menuState(row({ state: "paused" }), false, false, undefined, { context: true }).archive.enabled).toBe(false);
     expect(menuState(row({ state: "paused" }), true, false, undefined, { context: true }).archive.enabled).toBe(true);
@@ -122,9 +122,22 @@ describe("menuState rename, archive, end, read", () => {
     expect(m.archive.reason).toBe("detail");
   });
   it("terminates a running session", () => {
-    expect(menuState(row(), true, false).end).toMatchObject({ label: "Terminate session…", enabled: true });
+    expect(menuState(row(), true, false).end).toMatchObject({ label: "Terminate session…", icon: "circle-stop", enabled: true });
     expect(menuState(row(), false, false).end.enabled).toBe(false);
     expect(menuState(row({ allowed_actions: ["pause"], action_reasons: { terminate: "Not now" } }), true, false).end).toMatchObject({ enabled: false, reason: "Not now" });
+  });
+  it.each(["codex", "claude", "kimi"])("uses the termination confirmation contract for a tracked %s", (agent) => {
+    const live = row({ agent, tracked: true, allowed_actions: ["terminate"] });
+    expect(terminateCopy(live)).toMatchObject({ action: "terminate", confirm: "Stop and archive" });
+    expect(menuState(live, true, false).end).toMatchObject({ label: "Stop and archive…", icon: "archive", enabled: true });
+    const refused = details({ allowed_actions: ["archive"], action_reasons: { terminate: "Not now" } });
+    expect(menuState(live, true, false, refused).end).toMatchObject({ label: "Stop and archive…", enabled: false, reason: "Not now" });
+    expect(menuState(live, false, false).end.enabled).toBe(false);
+  });
+  it("keeps Terminate for a tracked live provider whose confirmation cannot archive", () => {
+    const live = row({ agent: "deepseek", tracked: true, allowed_actions: ["terminate"] });
+    expect(terminateCopy(live)).toMatchObject({ action: "kill", confirm: "Terminate session" });
+    expect(menuState(live, true, false).end).toMatchObject({ label: "Terminate session…", icon: "circle-stop", enabled: true });
   });
   it("enables the saved-session forget by allowed(forget) with Qt's reason otherwise", () => {
     expect(menuState(row({ agent: "opencode" }), true, false).end).toMatchObject({ label: "Forget saved session…", enabled: true });
@@ -138,7 +151,7 @@ describe("menuState rename, archive, end, read", () => {
   });
   it("forgets an archived row with allowed(forget) and its archive id (Qt 5378-5380)", () => {
     const archived = row({ state: "archived", archive_id: "a1" });
-    expect(menuState(archived, true, false).end).toEqual({ label: "Forget archived session…", enabled: true, reason: undefined });
+    expect(menuState(archived, true, false).end).toEqual({ label: "Forget archived session…", icon: "trash", enabled: true, reason: undefined });
     expect(menuState(archived, true, false, undefined, { context: true }).end.enabled).toBe(true);
     expect(menuState(row({ state: "archived" }), true, false).end).toMatchObject({ label: "Forget archived session…", enabled: false });
     expect(menuState(archived, false, false).end.enabled).toBe(false);
@@ -299,7 +312,7 @@ describe("menus from hgs rows as the core projects them", () => {
     expect(m.stop).toEqual({ visible: true, enabled: true, reason: undefined });
     expect(menuState(s, true, false).stop.enabled).toBe(false);
     expect(m.change).toMatchObject({ label: "Pause session", enabled: false });
-    expect(m.end).toMatchObject({ label: "Terminate session…", enabled: true });
+    expect(m.end).toMatchObject({ label: "Stop and archive…", icon: "archive", enabled: true });
     expect(m.rename).toBe(true);
     expect(terminateCopy(s).action).toBe("terminate");
   });

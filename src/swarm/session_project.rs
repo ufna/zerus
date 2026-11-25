@@ -438,7 +438,12 @@ fn assign(store: &mut Store, request: &Request, snapshot: &Snapshot) -> Result<(
         snapshot.projects.iter().any(|project| project.id == id),
         "Chosen logical project is no longer live"
     );
-    if let Some(session_id) = &snapshot.session_id {
+    assign_project(store, &snapshot.key, &request.name, snapshot.session_id.as_deref(), id)
+}
+
+/// Stages an exact logical membership and its compatibility projection in memory.
+pub(super) fn assign_project(store: &mut Store, key: &Key, name: &str, session_id: Option<&str>, id: &str) -> Result<()> {
+    if let Some(session_id) = session_id {
         store
             .id_memberships
             .as_mut()
@@ -451,10 +456,8 @@ fn assign(store: &mut Store, request: &Request, snapshot: &Snapshot) -> Result<(
                 json!(id),
             )?;
     }
-    store
-        .catalog
-        .set(&store.node_id, snapshot.key.clone(), json!(id))?;
-    let local = [(store.node_id.clone(), request.name.clone())];
+    store.catalog.set(&store.node_id, key.clone(), json!(id))?;
+    let local = [(store.node_id.clone(), name.to_owned())];
     super::session_ids::write(&store.catalog, &mut store.twins, &store.node_id, &local)?;
     store.catalog.validate()
 }

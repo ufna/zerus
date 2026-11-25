@@ -67,6 +67,25 @@ pub(super) struct Facts {
     pub planning_paused: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ObservationDisposition {
+    ManualArchive,
+    OriginalProcessesPresent,
+    ConfirmedExit,
+}
+
+impl ObservationDisposition {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::ManualArchive => "The exact member run was deliberately archived or terminated.",
+            Self::OriginalProcessesPresent => {
+                "The original member process and supervisor are still present."
+            }
+            Self::ConfirmedExit => "The original member process exit was confirmed.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Ownership {
     pub folder: String,

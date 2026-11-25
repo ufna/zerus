@@ -23,7 +23,7 @@ vi.mock("../../store/endChildren", () => ({ childOfferFor: (_row: ActionRow, a: 
 vi.mock("../../store/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("../../store/sessionForks", () => ({ sessionForks: { available: () => false } }));
 vi.mock("../../store/restores", () => ({ cancelRestoreFollow: vi.fn(), forgetArchived: vi.fn(), refreshArchiveWhenDone: calls.refresh, restoreSession: vi.fn() }));
-vi.mock("../../i18n", () => ({ trNoop: (s: string) => s, tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)|%n/g, (token, n) => String(token === "%n" ? args[0] : args[Number(n) - 1])) }));
+vi.mock("../../i18n", () => ({ trNoop: (s: string) => s, trc: (_context: string, s: string) => s, tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)|%n/g, (token, n) => String(token === "%n" ? args[0] : args[Number(n) - 1])) }));
 vi.mock("../lib/icons", () => ({ Icon: () => null }));
 
 import { ActionDialogs, ArchiveDialog, TerminateDialog, actionEntries } from "./ActionDialogs";

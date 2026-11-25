@@ -111,7 +111,7 @@ enum Drain {
     Unavailable,
     Released {
         observation: Observation,
-        cli: Observed,
+        cli: Box<Observed>,
         evidence: Evidence,
     },
 }
@@ -940,7 +940,7 @@ impl Runtime {
                         };
                         Drain::Released {
                             observation,
-                            cli,
+                            cli: Box::new(cli),
                             evidence,
                         }
                     }

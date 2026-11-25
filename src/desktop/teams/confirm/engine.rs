@@ -70,12 +70,17 @@ fn effects(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()>
         return audit_error.map_or(Ok(()), Err);
     }
     if let Some(brief) = p.pending_brief(b)? {
-        let ready = p.observe_member(&brief.binding)?;
-        if ready.ready && ready.live && !ready.paused && !ready.ended && ready.questions.is_empty() {
+        let Some(ready) = p.observe_member(&brief.binding)? else {
+            return Ok(());
+        };
+        if ready.ready && ready.live && !ready.paused && !ready.ended && ready.questions.is_empty()
+        {
             return execute(p, brief, epoch, now);
         }
     }
-    let snapshot = p.observe_member(b)?;
+    let Some(snapshot) = p.observe_member(b)? else {
+        return Ok(());
+    };
     // A paused or terminating member was stopped by a person: not an exit and
     // not a prompt (zerus-63rru.56). Nothing is planned or claimed.
     if snapshot.paused {
@@ -300,6 +305,14 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn resume_key(b: &Binding) -> String {
+    confirmation_key(b, &b.run, "resume")
+}
+
+fn confirmation_key(b: &Binding, run: &str, tag: &str) -> String {
+    key(&json!([b.team, b.member, b.launch, run, tag]))
+}
+
 pub(super) fn candidate(b: &Binding, s: &Snapshot, kind: Kind, question: Value) -> Plan {
     let tag = if kind == Kind::Trust {
         "trust"
@@ -318,7 +331,7 @@ pub(super) fn candidate(b: &Binding, s: &Snapshot, kind: Kind, question: Value) 
             question["question_hash"]
         ]))
     } else {
-        key(&json!([b.team, b.member, b.launch, s.run, tag]))
+        confirmation_key(b, &s.run, tag)
     };
     let text = format!("You are a member of team {} in role {}. Read `hgs team current` for your current team and work.", b.team, b.role);
     let question = if kind == Kind::Resume {

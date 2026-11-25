@@ -75,6 +75,8 @@ export interface ListInput {
   childDraft?: (parent: Session, child: Subagent) => boolean;
   /** The listed row key of a session's parent session, when the catalog has it. */
   parentKey?: (s: Session) => string | undefined;
+  /** The actual project placement, even when a team is shown together elsewhere. */
+  projectOf?: (key: string) => string | undefined;
   /** A parent whose child sessions are collapsed. */
   teamCollapsed?: (key: string) => boolean;
   /** An explicit own expansion that can open a retained ancestor's branch. */
@@ -182,6 +184,14 @@ export function groupRows(input: ListInput): Row[] {
   const teamParents = agentTeamParents(input.agentTeams ?? new Map());
   const parentKey = teamParents.size ? (s: Session) => teamParents.get(s.key) ?? input.parentKey?.(s) : input.parentKey;
   const out: Row[] = [];
+  const fromParent = (s: Session, nestedUnder?: string) => {
+    if (!s.parent) return {};
+    const key = input.parentKey?.(s);
+    const project = input.projectOf?.(s.key);
+    const parentProject = key ? input.projectOf?.(key) : undefined;
+    return !nestedUnder || (project && parentProject && project !== parentProject)
+      ? { fromParent: { name: s.parent.name, key } } : {};
+  };
   const card = (s: Session, extra: Partial<Extract<Row, { type: "card" }>> = {}, collapsed = !!input.teamCollapsed?.(s.key)) => {
       const current = currentChildren(s, input.online(s));
       const roster = input.children === false ? [] : (input.roster?.(s) ?? s.subagents ?? []);
@@ -223,8 +233,7 @@ export function groupRows(input: ListInput): Row[] {
     if (!parentOf.size) {
       for (const s of list) {
         if (favoritesOnly && !input.favorite?.(s)) continue;
-        const from = s.parent && parentKey ? parentKey(s) : undefined;
-        card(s, s.parent ? { fromParent: { name: s.parent.name, key: from } } : {});
+        card(s, fromParent(s));
       }
       return;
     }
@@ -319,7 +328,7 @@ export function groupRows(input: ListInput): Row[] {
       const collapsed = !!input.teamCollapsed?.(s.key)
         || onlyFavorites && !isFavorite && !input.teamExpanded?.(s.key);
       if (collapsed) hidden.add(s.key);
-      const from = !parent && s.parent ? { fromParent: { name: s.parent.name, key: parentKey?.(s) } } : {};
+      const from = fromParent(s, parent);
       const container = containers?.get(s.key);
       if (container) {
         const row: Extract<Row, { type: "container" }> = { type: "container", id: `container:${s.key}`, project, container, depth, parentKey: parent,

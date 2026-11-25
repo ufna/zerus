@@ -2,20 +2,55 @@ use super::*;
 use crate::desktop::original_store::{self, Roots};
 #[cfg(test)]
 use rusqlite::Connection;
-use std::{io::Read, path::Path};
+use sha2::{Digest, Sha256};
+use std::io::Read;
+#[cfg(test)]
+use std::path::Path;
 
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").into()
 }
+
+enum MemberRead {
+    Observed(Box<(Snapshot, Value)>),
+    Retired(ObservationDisposition),
+}
+
 impl Native<'_> {
-    pub fn snapshot(&mut self, b: &Binding) -> Result<Snapshot> {
-        let (_, name) = self.binding(&b.team, &b.member)?;
+    pub(super) fn observation(&mut self, b: &Binding) -> Result<Option<Snapshot>> {
         self.capture = None;
-        let (snapshot, raw) = observed(&name, self.current(b, &name))?;
-        self.capture = Some((snapshot.clone(), raw));
-        Ok(snapshot)
+        self.retired = None;
+        let (_, name) = self.binding(&b.team, &b.member)?;
+        match self
+            .read_member(b, &name)
+            .map_err(|why| unknown(&name, why))?
+        {
+            MemberRead::Observed(read) => {
+                let (snapshot, raw) = *read;
+                self.capture = Some((snapshot.clone(), raw));
+                Ok(Some(snapshot))
+            }
+            MemberRead::Retired(disposition) => {
+                self.retired = Some(disposition);
+                Ok(None)
+            }
+        }
     }
+
+    pub fn snapshot(&mut self, b: &Binding) -> Result<Snapshot> {
+        self.observation(b)?
+            .ok_or_else(|| "The observation does not admit a standing confirmation".into())
+    }
+
+    #[cfg(test)]
     fn current(&self, b: &Binding, name: &str) -> Result<(Snapshot, Value)> {
+        match self.read_member(b, name)? {
+            MemberRead::Observed(read) => Ok(*read),
+            MemberRead::Retired(disposition) => Err(disposition.reason().into()),
+        }
+    }
+
+    fn read_member(&self, b: &Binding, name: &str) -> Result<MemberRead> {
         let roots =
             Roots::open(&self.config.state, "question_receipts").map_err(|e| e.to_string())?;
         let args = vec![
@@ -33,9 +68,30 @@ impl Native<'_> {
                 &b.run,
                 &text(&view, "conversation_id"),
             ).ok_or("A current native session has different or unreadable identity; no archive was selected")?;
-            return self.read_view(b, &view, raw, None);
+            let (snapshot, raw) = self.read_view(b, &view, raw, None)?;
+            if false_exit(&snapshot, &raw) {
+                return Ok(MemberRead::Retired(
+                    ObservationDisposition::OriginalProcessesPresent,
+                ));
+            }
+            return Ok(MemberRead::Observed(Box::new((snapshot, raw))));
         }
-        let (id, raw) = archive(&self.config.state, &roots, b, name)?;
+        let state = crate::platform::canonical(&self.config.state).map_err(|e| e.to_string())?;
+        let exact = crate::state::archive_catalog::find_run(&state, name, &b.run)?;
+        let Some(id) = exact else {
+            return Err("No exact unique exit archive".into());
+        };
+        let raw = archive_record(&roots, name, &id)?;
+        if raw["run_id"] != b.run {
+            return Err("The exact archive identity changed".into());
+        }
+        if manual_end(b, &raw) {
+            return no_current_record(&roots, b, name)
+                .then_some(MemberRead::Retired(ObservationDisposition::ManualArchive))
+                .ok_or_else(|| {
+                    "The deliberately ended archive still has a current session record".into()
+                });
+        }
         let view = self.read(
             vec![
                 "inspect".into(),
@@ -49,6 +105,7 @@ impl Native<'_> {
             None,
         )?;
         self.read_view(b, &view, raw, Some(id))
+            .map(|read| MemberRead::Observed(Box::new(read)))
     }
     fn read_view(
         &self,
@@ -82,15 +139,76 @@ impl Native<'_> {
         Ok((s, raw))
     }
 }
+
+fn false_exit(snapshot: &Snapshot, record: &Value) -> bool {
+    use crate::platform::ProcessState::{Running, Stopped};
+    snapshot.ended
+        && !snapshot.live
+        && !snapshot.paused
+        && !snapshot.self_exit
+        && snapshot.questions.is_empty()
+        && matches!(
+            crate::state::original_process_states(record),
+            Some((Running | Stopped, Some(Running | Stopped)))
+        )
+}
+
+pub(super) fn proved_exit(snapshot: &Snapshot, record: &Value) -> bool {
+    use crate::platform::ProcessState::Exited;
+    crate::state::original_process_states(record)
+        .map_or(snapshot.self_exit, |(child, _)| child == Exited)
+}
 /// A member's state as read, or unknown. A read that fails or is incomplete
 /// (a session record or archive that cannot be read yet, a question index that
 /// cannot be read) is never an exit (zerus-63rru.56): nothing is planned, so
 /// nothing is resumed or claimed and the run keeps its one resume, and the
 /// scan reports why.
-pub(super) fn observed(name: &str, read: Result<(Snapshot, Value)>) -> Result<(Snapshot, Value)> {
-    read.map_err(|why| {
-        format!("Whether member session {name} ended is unknown ({why}); nothing was resumed")
-    })
+fn unknown(name: &str, why: String) -> String {
+    format!("Whether member session {name} ended is unknown ({why}); nothing was resumed")
+}
+
+#[cfg(test)]
+fn observed(name: &str, read: Result<(Snapshot, Value)>) -> Result<(Snapshot, Value)> {
+    read.map_err(|why| unknown(name, why))
+}
+
+fn no_current_record(roots: &Roots, b: &Binding, name: &str) -> bool {
+    if !crate::state::session_id::canonical(&b.session) {
+        return false;
+    }
+    let id = format!("{}.json", b.session);
+    let label = format!("{:x}.json", Sha256::digest(name.as_bytes()));
+    [
+        &["sessions", id.as_str()][..],
+        &[label.as_str()][..],
+        &["bindings", label.as_str()][..],
+        &["name_routes", label.as_str()][..],
+    ]
+    .iter()
+    .all(|path| roots.absent(path).is_ok_and(|absent| absent))
+}
+
+fn manual_end(b: &Binding, raw: &Value) -> bool {
+    matches!(
+        (
+            raw["completion_source"].as_str(),
+            raw["completion_reason"].as_str()
+        ),
+        (Some("manual_archive"), Some("user_archived"))
+            | (Some("manual_terminate"), Some("user_terminated"))
+    ) && raw["archived_at"]
+        .as_f64()
+        .is_some_and(|at| at.is_finite() && at > 0.0)
+        && raw["session_id"] == b.session
+        && raw["launch_id"] == b.launch
+        && raw["agent"] == b.agent
+        && raw["account_id"] == b.account
+        && raw["cwd"] == b.folder
+        && raw["worktree_owner"]["id"] == b.nonce
+        && raw["conversation_id"].as_str().is_some_and(|conversation| {
+            !conversation.is_empty()
+                && (b.conversation.is_empty() || conversation == b.conversation)
+        })
 }
 pub(super) fn parse_view(
     machine: &str,
@@ -214,10 +332,19 @@ fn resume_wait(s: &Snapshot, view: &Value, raw: &Value) -> Result<Option<ResumeW
 }
 #[cfg(all(test, unix))]
 mod settlement;
+#[cfg(test)]
 fn archive(state: &Path, roots: &Roots, b: &Binding, name: &str) -> Result<(String, Value)> {
     let state = crate::platform::canonical(state).map_err(|e| e.to_string())?;
     let id = crate::state::archive_catalog::find_run(&state, name, &b.run)?
         .ok_or("No exact unique exit archive")?;
+    let raw = archive_record(roots, name, &id)?;
+    if raw["run_id"] != b.run {
+        return Err("The exact archive identity changed".into());
+    }
+    Ok((id, raw))
+}
+
+fn archive_record(roots: &Roots, name: &str, id: &str) -> Result<Value> {
     let file = roots
         .open_file(&["archives", &format!("{id}.json")])
         .map_err(|e| e.to_string())?;
@@ -229,18 +356,59 @@ fn archive(state: &Path, roots: &Roots, b: &Binding, name: &str) -> Result<(Stri
         return Err("Exit archive exceeds one MiB".into());
     }
     let raw: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if raw["archive_id"] != id
+    if raw["version"] != 1
+        || raw["archive_id"] != id
         || raw["name"] != name
-        || raw["run_id"] != b.run
+        || !raw["run_id"].as_str().is_some_and(|run| !run.is_empty())
         || raw["state"] != "archived"
     {
         return Err("The exact archive identity changed".into());
     }
-    Ok((id, raw))
+    Ok(raw)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_projected_exit_needs_both_live_launch_pins_and_no_person_question() {
+        use std::process::{Command, Stdio};
+        let (mut binding, mut view, mut raw) = native_fixture();
+        binding.session = uuid::Uuid::new_v4().to_string();
+        view["session_id"] = json!(binding.session);
+        raw["session_id"] = json!(binding.session);
+        view["runtime_state"] = json!("live");
+        view["process_state"] = json!("exited");
+        view["pending_questions"] = json!([]);
+        let mut child = Command::new("cat").stdin(Stdio::piped()).spawn().unwrap();
+        raw["pid"] = json!(child.id());
+        raw["process_start"] = json!("saved agent start");
+        raw["supervisor"] = json!({"pid":std::process::id(),"start":"saved supervisor start"});
+        let snapshot = parse_view(&binding.machine, &binding, &view, &raw, None).unwrap();
+        assert!(!false_exit(&snapshot, &raw));
+        assert!(!proved_exit(&snapshot, &raw));
+        crate::state::capture_test_spawn_pin(&mut raw, child.id());
+        assert!(false_exit(&snapshot, &raw));
+        assert!(!proved_exit(&snapshot, &raw));
+
+        let mut changed = raw.clone();
+        changed["process_index_pin"]["run"] = json!("other run");
+        assert!(!false_exit(&snapshot, &changed));
+        assert!(!proved_exit(&snapshot, &changed));
+        raw["restore_archive_cleanup"] = json!({});
+        let transitioning = parse_view(&binding.machine, &binding, &view, &raw, None).unwrap();
+        assert!(!false_exit(&transitioning, &raw));
+        raw.as_object_mut()
+            .unwrap()
+            .remove("restore_archive_cleanup");
+        view["pending_questions"] = json!([{"source":"native_question"}]);
+        let with_question = parse_view(&binding.machine, &binding, &view, &raw, None).unwrap();
+        assert!(!false_exit(&with_question, &raw));
+        drop(child.stdin.take());
+        assert!(child.wait().unwrap().success());
+        assert!(!false_exit(&snapshot, &raw));
+        assert!(proved_exit(&snapshot, &raw));
+    }
+
     fn native_fixture() -> (Binding, Value, Value) {
         let (b, _, s) = crate::desktop::teams::confirm::policy::tests::sample();
         let raw = json!({"name":s.name,"run_id":b.run,"conversation_id":"","session_id":b.session,"launch_id":b.launch,"agent":b.agent,"account_id":b.account,"cwd":b.folder,"worktree_owner":{"id":b.nonce}});

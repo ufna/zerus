@@ -113,15 +113,20 @@ fn close_note(store: &Store, card: u64) -> String {
 
 #[test]
 fn a_persistently_unknown_end_gets_one_card_and_one_fault_log() {
-    scan_fixture(false);
+    scan_fixture("unknown");
 }
 
 #[test]
 fn a_readable_observation_closes_the_card_for_an_active_member() {
-    scan_fixture(true);
+    scan_fixture("readable");
 }
 
-fn scan_fixture(recover: bool) {
+#[test]
+fn an_exact_manual_archive_retires_its_alert_and_writes_the_owed_hook_note() {
+    scan_fixture("manual_archive");
+}
+
+fn scan_fixture(mode: &str) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -130,7 +135,7 @@ fn scan_fixture(recover: bool) {
             "--test-threads=1",
             "--nocapture",
         ])
-        .env("TEST_TEAMS_RECOVER", if recover { "yes" } else { "no" })
+        .env("TEST_TEAMS_OBSERVATION", mode)
         .output()
         .unwrap();
     assert!(
@@ -163,14 +168,14 @@ fn unknown_fixture() {
     // This roster uses a fixed machine identity. Give its private CLI
     // config that identity so inspection runs with the original guard.
     crate::swarm::save_test_node_id(&config, &binding.machine).unwrap();
-    test_inspect::save_then_exit(&config, &binding, &name);
+    let mut record = test_inspect::save_then_exit(&config, &binding, &name);
     assert_eq!(
         crate::state::dispatch_test_archive_catalog_worker().unwrap(),
         0
     );
     producer::withhold_saved_record(&name, true).unwrap();
     test_inspect::use_cli_inspection();
-    let machine = binding.machine;
+    let machine = binding.machine.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let mut cards = actor::Runtime::open(&state, &machine).unwrap();
     let mut cursor = Scan::default();
@@ -226,7 +231,8 @@ fn unknown_fixture() {
         !state.join("approval-audit").exists(),
         "unknown did not reserve an original"
     );
-    if std::env::var("TEST_TEAMS_RECOVER").unwrap() == "yes" {
+    let mode = std::env::var("TEST_TEAMS_OBSERVATION").unwrap();
+    if mode == "readable" {
         producer::withhold_saved_record(&name, false).unwrap();
         pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
         pass(&mut h.store, &mut cards, &mut cursor, start + 193_500);
@@ -249,6 +255,72 @@ fn unknown_fixture() {
             .is_none());
         assert!(!state.join("approval-audit").exists());
         assert_eq!(logs.len(), 1, "{logs:?}");
+        return;
+    }
+    if mode == "manual_archive" {
+        let conversation = uuid::Uuid::new_v4().to_string();
+        producer::confirmed(&mut record, &conversation);
+        record["completion_source"] = serde_json::json!("manual_terminate");
+        record["completion_reason"] = serde_json::json!("user_terminated");
+        let mut drifted = record.clone();
+        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        producer::archive(&drifted).unwrap();
+        assert_eq!(
+            crate::state::dispatch_test_archive_catalog_worker().unwrap(),
+            0
+        );
+        pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
+        pass(&mut h.store, &mut cards, &mut cursor, start + 193_500);
+        assert_eq!(existing(&h.store)[0].state, "open");
+
+        producer::archive(&record).unwrap();
+        assert_eq!(
+            crate::state::dispatch_test_archive_catalog_worker().unwrap(),
+            0
+        );
+        // A previously confirmed pre-start grant can still owe its feed line
+        // when the member is archived. Settling that line advances the team
+        // revision in the same scan that retires the exact observation alert.
+        let hook_note = super::super::hook_trust::Start {
+            team: &binding.team,
+            member: &binding.member,
+            person: &binding.person,
+            machine: &binding.machine,
+            launch: &binding.launch,
+            session: &name,
+            run: &binding.run,
+            conversation: &binding.conversation,
+            folder: &binding.folder,
+            base: "",
+            home: &config.dir,
+        };
+        super::super::hook_trust::owe_line(&config, &hook_note, "prior-hook-grant", 12).unwrap();
+        pass(&mut h.store, &mut cards, &mut cursor, start + 198_000);
+        pass(&mut h.store, &mut cards, &mut cursor, start + 202_500);
+        assert_eq!(existing(&h.store)[0].state, "closed");
+        assert_eq!(
+            close_note(&h.store, first[0].seq),
+            "The exact member run was deliberately archived or terminated."
+        );
+        let journal = h.store.journal(TEAM, 200, None).unwrap().rows;
+        let notes: Vec<_> = journal
+            .iter()
+            .filter(|row| row.kind == "note_confirmation")
+            .collect();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].refs.iter().any(|reference| reference == "member:m1"));
+        assert_eq!(
+            notes[0].text,
+            "Zerus trusted 12 of its own and the team's committed Codex hooks for member m1 before its agent started."
+        );
+        let card_ref = format!("card:{}", first[0].seq);
+        let close = journal
+            .iter()
+            .find(|row| row.kind == "close_card" && row.refs.contains(&card_ref))
+            .unwrap();
+        assert!(notes[0].seq < close.seq, "retirement must use the new revision");
+        assert!(!state.join("approval-audit").exists());
+        assert!(!state.join("archive-catalog-v2/teams-attempt.json").exists());
         return;
     }
 

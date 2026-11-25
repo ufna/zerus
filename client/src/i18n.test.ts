@@ -25,6 +25,13 @@ describe("frontend interface language", () => {
     expect(translate("en", "Label color for %1", "workstation")).toBe("Label color for workstation");
   });
 
+  it("uses the archive action wording in Russian and keeps the Archive destination a noun", () => {
+    expect(translate("ru", "Stop and archive…")).toBe("Остановить и архивировать…");
+    expect(translate("ru", "session action\u0004Archive")).toBe("В архив");
+    expect(translate("ru", "Archive")).toBe("Архив");
+    expect(translate("en", "Stop and archive…")).toBe("Stop and archive…");
+  });
+
   it("uses all three Russian plural forms", () => {
     const source = "%n connection(s) unavailable. Changes are saved here and will sync when reachable.";
     expect(translate("ru", source, 1)).toContain("1 подключение ");
