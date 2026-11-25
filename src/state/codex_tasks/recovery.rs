@@ -1,5 +1,6 @@
 //! A real new main prompt may repair the old same-process task-binding bug.
 //! Neither a read, a completion nor a replayed/fabricated hook repairs input.
+use super::history::HistoryRoot;
 use super::*;
 use sha2::Digest;
 use std::fs::File;
@@ -139,9 +140,8 @@ pub(in crate::state) fn original_main_receipt(
         {
             return None;
         }
-        let sessions = crate::platform::canonical(recorded_agent_home(record))
-            .ok()?
-            .join("sessions");
+        let account = HistoryRoot::open(record).ok()?;
+        let resolved = account.resolve_transcript(path).ok()?;
         let payload = &meta["payload"];
         let created = chrono::DateTime::parse_from_rfc3339(string(payload, "timestamp"))
             .ok()?
@@ -149,11 +149,7 @@ pub(in crate::state) fn original_main_receipt(
             / 1000.0;
         let launched = record["created"].as_f64()?;
         let pending = record["input_pending_at"].as_f64()?;
-        if !path.starts_with(&sessions)
-            || !crate::platform::canonical(path)
-                .ok()?
-                .starts_with(&sessions)
-            || meta["type"] != "session_meta"
+        if meta["type"] != "session_meta"
             || payload["id"] != parent
             || payload["source"] != "cli"
             || payload.get("forked_from_id").is_some_and(|v| !v.is_null())
@@ -170,7 +166,7 @@ pub(in crate::state) fn original_main_receipt(
         let pid = u32::try_from(record["pid"].as_u64()?).ok()?;
         let process = crate::platform::process_identity(pid)?;
         let identity = crate::platform::FileIdentity::with_metadata(file).ok()?.0;
-        if !crate::platform::holds_open(pid, path).ok()?
+        if !crate::platform::holds_open(pid, &resolved).ok()?
             || !process_alive(record)
             || !rows.iter().any(|row| {
                 let item = &row["payload"]["item"];
@@ -191,11 +187,13 @@ pub(in crate::state) fn original_main_receipt(
                         == Some(child)
             })
             || crate::platform::process_identity(pid)? != process
+            || account.resolve_transcript(path).ok()? != resolved
             || crate::platform::file_identity(path).map(|id| (id.device, id.inode))
                 != Some((identity.device, identity.inode))
         {
             return None;
         }
+        account.verify().ok()?;
         // The caller additionally rechecks the complete held source stamp
         // after the exact user/turn proof, before writing acceptance only.
         Some(())
@@ -219,7 +217,7 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
     {
         return Ok(false);
     }
-    let prove = || -> Option<(PathBuf, String, String)> {
+    let prove = || -> Option<(PathBuf, PathBuf, String, String)> {
         let parent = string(event, "session_id");
         let child = string(record, "conversation_id");
         if !uuid::Uuid::parse_str(parent).is_ok_and(|id| !id.is_nil() && id.to_string() == parent)
@@ -228,17 +226,9 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         {
             return None;
         }
-        let sessions = crate::platform::canonical(recorded_agent_home(record))
-            .ok()?
-            .join("sessions");
+        let account = HistoryRoot::open(record).ok()?;
         let path = PathBuf::from(string(event, "transcript_path"));
-        if !path.starts_with(&sessions)
-            || !crate::platform::canonical(&path)
-                .ok()?
-                .starts_with(&sessions)
-        {
-            return None;
-        }
+        let resolved = account.resolve_transcript(&path).ok()?;
         let mut file = crate::platform::no_follow(std::fs::OpenOptions::new().read(true))
             .open(&path)
             .ok()?;
@@ -265,7 +255,7 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         }
         let pid = u32::try_from(record["pid"].as_u64()?).ok()?;
         let process = crate::platform::process_identity(pid)?;
-        if !crate::platform::holds_open(pid, &path).ok()? {
+        if !crate::platform::holds_open(pid, &resolved).ok()? {
             return None;
         }
         let (offset, bytes) = creation(&mut file, child, created)?;
@@ -276,6 +266,7 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         file.read_exact(&mut again).ok()?;
         if again != bytes
             || header(&mut file)? != meta
+            || account.resolve_transcript(&path).ok()? != resolved
             || crate::platform::file_identity(&path).map(|id| (id.device, id.inode))
                 != Some((identity.device, identity.inode))
             || crate::platform::process_identity(pid)? != process
@@ -283,9 +274,10 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         {
             return None;
         }
-        Some((path, parent.into(), child.into()))
+        account.verify().ok()?;
+        Some((path, account.path().to_owned(), parent.into(), child.into()))
     };
-    let Some((path, parent, child)) = prove() else {
+    let Some((path, account, parent, child)) = prove() else {
         return Ok(false);
     };
     let old = serde_json::to_vec(record).map_err(|e| e.to_string())?;
@@ -320,7 +312,7 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         Err(error) => return Err(error.to_string()),
     }
     let child_record = json!({"external":true,"provider":"codex","conversation_id":child,
-        "transcript":record["transcript"],"agent_home":recorded_agent_home(record),"name":"Native Codex task",
+        "transcript":record["transcript"],"agent_home":account,"name":"Native Codex task",
         "state":"unknown","started":record["created"],"updated":now()});
     record["conversation_id"] = json!(parent);
     record["transcript"] = json!(path);

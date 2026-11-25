@@ -59,14 +59,17 @@ class FakeNativeTaskQueue(unittest.TestCase):
     send = test_input.InputTransport.send
     assert_refusal = test_input.InputTransport.assert_refusal
 
-    def prepare_queue(self, *, explicit=False, outside=False, missing=False):
+    def prepare_queue(self, *, explicit=False, outside=False, missing=False, linked=False):
         root = self.root.resolve()
-        account = root / ('explicit-home' if explicit else '.codex')
+        configured = root / ('explicit-home' if explicit else '.codex')
+        account = root / 'codex-data' if linked else configured
         history_home = root / 'other-home' if outside or missing else account
         directory = history_home / 'sessions'
         directory.mkdir(parents=True)
         if not missing:
             account.mkdir(exist_ok=True)
+        if linked:
+            configured.symlink_to(account, target_is_directory=True)
         self.queue_log = self.root / 'queue-invocations'
         self.queue_id = str(uuid.uuid4())
         self.env.update(CODEX_HOME=str(self.root / 'inherited-wrong-home'),
@@ -84,12 +87,14 @@ class FakeNativeTaskQueue(unittest.TestCase):
         self.record.pop('expected_id')
         self.record.update(
             account_id='test-explicit' if explicit else 'native-codex',
-            agent_home=str(account) if explicit else None,
+            agent_home=str(configured) if explicit else None,
             cwd=str(self.root), launch_dir=str(self.root), conversation_state='active',
             activity='idle', phase='idle', main_done=True,
             codex_native_tasks=dict(parent=self.conversation_id, run=self.run_id,
                                     threads={str(uuid.uuid4()): True}, pending={}),
         )
+        if linked:
+            self.record['transcript'] = str(configured / 'sessions' / rollout.name)
         self.write_record()
         return account
 
@@ -117,6 +122,15 @@ class FakeNativeTaskQueue(unittest.TestCase):
 
     def test_explicit_account_uses_recorded_home(self):
         self.assert_queued(self.prepare_queue(explicit=True))
+
+    def test_native_account_uses_the_reported_path_through_its_home_symlink(self):
+        self.assert_queued(self.prepare_queue(linked=True))
+
+    def test_explicit_relative_home_resolves_from_the_launch_directory(self):
+        account = self.prepare_queue(explicit=True)
+        self.record['agent_home'] = account.name
+        self.write_record()
+        self.assert_queued(account)
 
     def test_native_account_refuses_a_held_transcript_from_another_home(self):
         self.prepare_queue(outside=True)

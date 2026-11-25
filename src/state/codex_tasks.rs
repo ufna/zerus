@@ -1,6 +1,7 @@
 //! Separate interactive Codex tasks can share the original TUI process.
 //! Native MCP creation is not a main-conversation transition.
 use super::*;
+pub(super) mod history;
 mod recovery;
 pub(super) use recovery::original_main_receipt;
 pub(super) use recovery::recover_main;
