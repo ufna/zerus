@@ -1498,10 +1498,11 @@ class TeamsPersonSteps(unittest.TestCase):
 
     STEPS = Path(__file__).resolve().parent / 'fixtures/teams-contract-person-steps.json'
 
-    def offline(self):
+    def offline(self, split_codex_accounts=False):
         """A fixture object with its identity set and no root, process or agent."""
         fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
         fx.agent, fx.count, fx.pinned = 'codex', 1, None
+        fx.split_codex_accounts = split_codex_accounts
         fx.team, fx.machine, fx.commit = None, 'machine-fixture', 'c' * 40
         fx.delegations = dict(fixture.TeamFixture.DELEGATIONS_OFF)
         fx.evidence = mock.Mock()
@@ -1562,6 +1563,13 @@ class TeamsPersonSteps(unittest.TestCase):
             row = fx.evidence.append.call_args[0]
             self.assertEqual((row[0], row[1]['root'], row[1]['kind'], row[1]['exit']),
                              ('person-steps.jsonl', str(base), 'team', 0))
+
+    def test_the_split_codex_bundle_pins_each_account(self):
+        fx = self.offline(split_codex_accounts=True)
+        fx.account, fx.member_account = 'zt-codex', 'zt-codex-member'
+        bundle = fx.bundle()
+        self.assertEqual(bundle['template']['lead']['account'], dict(mode='named', account='zt-codex'))
+        self.assertEqual(bundle['roles'][0]['account'], dict(mode='named', account='zt-codex-member'))
 
     def test_the_person_create_needs_the_shipped_refusal_first(self):
         for refusal in (dict(ok=True), dict(ok=False, error=dict(code='stale_revision')), dict(ok=False)):
