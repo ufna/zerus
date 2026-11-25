@@ -7,6 +7,9 @@
   .team-member-link { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; color: var(--z-color-accent); }
   .team-member-link:hover, .team-member-link:focus-visible { text-decoration: underline; }
   .team-member-name.team-member-link { font-size: var(--fs-xs); font-weight: 400; color: var(--z-color-accent); }
+  /* A long state word (Russian «Приостановлен») moves with the menu to a second
+     line instead of squeezing the role, the ID and the agent (zerus-uiy9p G9). */
+  .team-member-line { flex-wrap: wrap; row-gap: 2px; }
   .team-member-line > .role-badge { flex: 0 1 auto; min-width: 2.5em; }
   .team-member-line > .team-member-name { flex: none; max-width: 40%; }
   /* A member whose ID equals its role: its role chip is the link. */

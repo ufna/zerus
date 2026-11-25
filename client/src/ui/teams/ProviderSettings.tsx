@@ -8,6 +8,8 @@ import { overrideText, parseOverride, sourceLine } from "./provider-settings";
 // Adapted from WhiteWh's Tests section: source, override, read-only Check.
 // Builds share this metadata; neither checking nor selecting starts work.
 export function ProviderSettings(props: { view: TeamView; home?: string; locked: boolean; onSave: (call: TeamCall) => Promise<TeamOutcome>; port?: ProviderPort }) {
+  // The list page's home, else the team's own status (zerus-63rru.199 C10).
+  const home = () => props.home || props.view.bar.home || undefined;
   const [shown, setShown] = createSignal<ProviderInspection>();
   const [text, setText] = createSignal("");
   const [checked, setChecked] = createSignal<ProviderInspection>();
@@ -19,25 +21,25 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
   onCleanup(() => { closed = true; generation++; });
   const read = async (candidate = false) => {
     if (closed) return;
-    if (!props.home) { setError(tr("The team’s home computer is missing from the loaded team list.")); return; }
+    if (!home()) { setError(tr("The team’s home computer is missing from the loaded team list.")); return; }
     const parsed = parseOverride(text());
     if (candidate && parsed.error) { setError(parsed.error); return; }
-    const team = props.view.bar.id, home = props.home, project = props.view.bar.project, revision = props.view.revision, token = ++generation;
+    const team = props.view.bar.id, computer = home(), project = props.view.bar.project, revision = props.view.revision, token = ++generation;
     setBusy(true); setError(""); setChecked(undefined);
     try {
       const value = await (props.port ?? readProviderConfig)({ team, ...(candidate ? { candidate: { override_config: parsed.value } } : {}) });
-      if (token !== generation || team !== props.view.bar.id || home !== props.home || project !== props.view.bar.project || revision !== props.view.revision) return;
-      if (value.schema !== 1 || value.team !== team || value.home !== home || value.project !== project || value.revision !== revision || value.providers.length > 16) throw new Error(tr("The team changed. Read its provider configuration again."));
+      if (token !== generation || team !== props.view.bar.id || computer !== home() || project !== props.view.bar.project || revision !== props.view.revision) return;
+      if (value.schema !== 1 || value.team !== team || value.home !== computer || value.project !== project || value.revision !== revision || value.providers.length > 16) throw new Error(tr("The team changed. Read its provider configuration again."));
       setShown(value);
       if (!candidate) setText(overrideText(value.override_config));
       else if (value.valid) setChecked(value);
     } catch (e) { if (token === generation) setError(String(e instanceof Error ? e.message : e).slice(0, 2000)); }
     finally { if (token === generation) setBusy(false); }
   };
-  createEffect(() => { props.view.bar.id; props.home; props.view.bar.project; props.view.revision; generation++; setShown(undefined); setChecked(undefined); untrack(() => { void read(); }); });
+  createEffect(() => { props.view.bar.id; home(); props.view.bar.project; props.view.revision; generation++; setShown(undefined); setChecked(undefined); untrack(() => { void read(); }); });
   const save = async () => {
     const value = checked();
-    if (closed || !value || busy() || props.locked || unknown() || value.team !== props.view.bar.id || value.home !== props.home || value.revision !== props.view.revision) return;
+    if (closed || !value || busy() || props.locked || unknown() || value.team !== props.view.bar.id || value.home !== home() || value.revision !== props.view.revision) return;
     setBusy(true); setError("");
     try {
       const outcome = await props.onSave({ team: value.team, team_name: props.view.bar.name, expected_revision: value.revision, request_id: newRequestId(), action: { kind: "validation_config", selection: { source_digest: value.source_digest, digest: value.digest, override_config: value.override_config } } });
@@ -48,6 +50,8 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
     } catch { setUnknown(true); setChecked(undefined); setError(tr("The selection is not confirmed. Check the original action in the Team tab.")); }
     finally { setBusy(false); }
   };
+  let advanced: HTMLDetailsElement | undefined;
+  createEffect(() => { if (shown()?.override_config && advanced) advanced.open = true; });
   return <section data-provider-settings>
     <h3>{tr("Tests and Builds")}</h3>
     <p class="hint">{tr("Tests and builds remain tasks for member agents. Opening or checking this section runs nothing and saves nothing.")}</p>
@@ -59,8 +63,17 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
       <For each={value().diagnostics}>{(d) => <p class="notice danger" data-provider-diagnostic>{d.code}: {d.message}</p>}</For>
       <ul><For each={value().providers}>{(p) => <li>{p.name} ({p.provider}, {p.kind}){p.disabled ? tr(", off") : ""}</li>}</For></ul>
     </>}</Show>
-    <p class="hint">{tr("Override as JSON. Providers replace matching names. Empty uses the project file, or detected metadata when the file is absent.")}</p>
-    <TextArea rows={7} aria-label={tr("Provider override")} data-provider-override value={text()} disabled={busy() || props.locked || unknown()} onInput={(e) => { setText(e.currentTarget.value); setChecked(undefined); }} />
+    {/* The detected providers lead; the JSON override waits in a closed section,
+        opened while an override is in effect (zerus-uiy9p G13). */}
+    <details class="team-provider-advanced" ref={(node) => { advanced = node; }}>
+      {/* A saved override stays named here whatever the draft or a checked
+          candidate shows, also with the section closed (review of #2535). */}
+      <summary>{tr("Advanced: override as JSON")}<Show when={shown()?.saved?.override_config}>
+        <span class="dim team-provider-saved" data-provider-saved-override>{tr("A saved override is in effect.")}</span>
+      </Show></summary>
+      <p class="hint">{tr("Override as JSON. Providers replace matching names. Empty uses the project file, or detected metadata when the file is absent.")}</p>
+      <TextArea rows={7} aria-label={tr("Provider override")} data-provider-override value={text()} disabled={busy() || props.locked || unknown()} onInput={(e) => { setText(e.currentTarget.value); setChecked(undefined); }} />
+    </details>
     <div class="row"><button type="button" class="btn" data-provider-check disabled={busy() || props.locked || unknown()} onClick={() => void read(true)}>{tr("Check")}</button>
       <button type="button" class="btn" data-provider-read disabled={busy() || props.locked || unknown()} onClick={() => void read()}>{tr("Read again")}</button>
       <button type="button" class="btn" data-provider-save disabled={!checked() || busy() || props.locked || unknown()} onClick={() => void save()}>{tr("Save provider selection")}</button></div>

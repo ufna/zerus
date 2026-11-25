@@ -517,7 +517,8 @@ fn generic_desktop_request_cannot_configure_maintenance() {
     let mut f = Fixture::new(no_io());
     let request = json!({"op":"maintenance_configure","request_id":id(),"update":update(true),"recovery":null});
     assert_eq!(
-        crate::desktop::request(&f.location, &mut f.store, Some(&request))["accepted"],
+        crate::desktop::request(&f.location, &mut f.store, &f.runtime.epoch, Some(&request))
+            ["accepted"],
         false
     );
     assert!(state::load(&f.store.db).unwrap().configuration.is_none());

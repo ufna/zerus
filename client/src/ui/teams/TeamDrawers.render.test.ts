@@ -6,13 +6,14 @@ import { render } from "solid-js/web";
 import { TeamDrawers, TeamFeed, TeamInbox, TeamDrawerButtons } from "./TeamDrawers";
 import { TeamReports } from "./TeamReports";
 import { ProposalCards } from "./ProposalCards";
+import { openTeamNode, setOpenTeamNode } from "./openNode";
 import { teamView } from "./fixtures";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
 import type { DrawerPage, DrawerRead } from "../../store/teamDrawers";
 
 vi.mock("./TeamLeadChat", () => ({ TeamLeadChat: () => null }));
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
+afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); setOpenTeamNode(null); });
 const settle = async () => { for (let n = 0; n < 8; n++) await Promise.resolve(); };
 const mount = (child: () => import("solid-js").JSX.Element) => {
   const host = document.createElement("div"); document.body.append(host); dispose = render(child, host); return host;
@@ -39,28 +40,30 @@ it("the feed keeps the engine's exact journal text and actor without inventing d
   expect(host.querySelector(`[data-feed-seq="${asked.seq}"] [data-feed-actor]`)?.textContent).toBe(asked.by);
 });
 
-it("reports accept and return the product-written report node, with a reason", () => {
-  const action = vi.fn();
-  const host = mount(() => createComponent(TeamReports, { rows: inbox.rows, busy: false, onAction: action }));
+// zerus-63rru.197 A4: a report is decided in its task's inspector, beside its
+// evidence and with the board's checks; the drawer opens that task.
+it("reports open the product-written report's task and decide nothing in the drawer", () => {
+  const action = vi.fn(), opened = vi.fn();
+  const host = mount(() => createComponent(TeamReports, { rows: inbox.rows, busy: false, onAction: action, team: teamView.bar.id, onOpenNode: opened }));
   expect(host.querySelectorAll("[data-report]")).toHaveLength(1);
   expect(host.textContent).toContain(inbox.rows[0].text);
-  (host.querySelector("[data-report-accept]") as HTMLButtonElement).click(); expect(action).toHaveBeenCalledWith("accept", { node: inbox.rows[0].node });
-  ([...host.querySelectorAll("button")].find((button) => button.textContent === "Reject…") as HTMLButtonElement).click();
-  const input = host.querySelector("input") as HTMLInputElement;
-  input.value = "Check the empty case"; input.dispatchEvent(new Event("input", { bubbles: true }));
-  (host.querySelector("[data-report-return]") as HTMLButtonElement).click();
-  expect(action).toHaveBeenLastCalledWith("return", { node: inbox.rows[0].node, reason: "Check the empty case" });
+  expect(host.querySelector("[data-report-accept]")).toBeNull();
+  expect(host.querySelector("input")).toBeNull();
+  (host.querySelector("[data-report-open]") as HTMLButtonElement).click();
+  expect(openTeamNode()).toEqual({ team: teamView.bar.id, node: inbox.rows[0].node });
+  expect(opened).toHaveBeenCalledTimes(1);
+  expect(action).not.toHaveBeenCalled();
 });
 
 it("the inbox preserves the product's answered question and does not answer it twice", () => {
-  const host = mount(() => createComponent(TeamInbox, { rows: inbox.rows, busy: false, onAction: vi.fn() }));
+  const host = mount(() => createComponent(TeamInbox, { rows: inbox.rows, busy: false, onAction: vi.fn(), status: "running" }));
   expect(host.textContent).toContain(inbox.rows[1].reply);
   expect(host.querySelector("[data-inbox-answer]")).toBeNull();
 });
 
 it("handwritten open-question control replies only through the existing item operation", () => {
   const action = vi.fn(); const row = { ...inbox.rows[1], state: "open", reply: null };
-  const host = mount(() => createComponent(TeamInbox, { rows: [row], busy: false, onAction: action }));
+  const host = mount(() => createComponent(TeamInbox, { rows: [row], busy: false, onAction: action, status: "running" }));
   const input = host.querySelector("input") as HTMLInputElement;
   input.value = "Keep the old width"; input.dispatchEvent(new Event("input", { bubbles: true }));
   (host.querySelector("[data-inbox-answer]") as HTMLButtonElement).click();
@@ -69,18 +72,19 @@ it("handwritten open-question control replies only through the existing item ope
 
 it("handwritten non-question inbox kinds have no reply authority", () => {
   const row = { ...inbox.rows[1], state: "open", reply: null, kind: "unstaffed:m1" };
-  const host = mount(() => createComponent(TeamInbox, { rows: [row], busy: false, onAction: vi.fn() }));
+  const host = mount(() => createComponent(TeamInbox, { rows: [row], busy: false, onAction: vi.fn(), status: "running" }));
   expect(host.querySelector("[data-inbox-answer]")).toBeNull();
 });
 
-it("a refresh of the same report preserves a reason the person is typing", () => {
+// The reason editor moved to the inspector with the decisions (zerus-63rru.197
+// A4), where its draft keeps its own history; a refreshed page keeps one row.
+it("a refresh of the same report keeps one row and its Open task", () => {
   const [rows, setRows] = createSignal(inbox.rows);
-  const host = mount(() => createComponent(TeamReports, { get rows() { return rows(); }, busy: false, onAction: vi.fn() }));
-  ([...host.querySelectorAll("button")].find((button) => button.textContent === "Reject…") as HTMLButtonElement).click();
-  const input = host.querySelector("input") as HTMLInputElement;
-  input.value = "Keep this reason"; input.dispatchEvent(new Event("input", { bubbles: true }));
+  const host = mount(() => createComponent(TeamReports, { get rows() { return rows(); }, busy: false, onAction: vi.fn(), team: teamView.bar.id }));
+  const before = host.querySelector("[data-report-open]");
   setRows(inbox.rows.map((row) => ({ ...row })));
-  expect((host.querySelector("input") as HTMLInputElement).value).toBe("Keep this reason");
+  expect(host.querySelectorAll("[data-report-open]")).toHaveLength(1);
+  expect(host.querySelector("[data-report-open]")).toBe(before);
 });
 
 it("cards offer only the existing decision words for their exact sequence", () => {
@@ -112,10 +116,10 @@ it("a changed team revision disables the old report until its fresh read settles
     port: () => ++count === 1 ? Promise.resolve(inbox) : new Promise((done) => { resolve = done; }),
   }));
   await settle(); setView({ ...teamView, revision: teamView.revision + 1 }); await settle();
-  const button = host.querySelector("[data-report-accept]") as HTMLButtonElement;
-  expect(button.disabled).toBe(true); button.click(); expect(action).not.toHaveBeenCalled();
+  const button = host.querySelector("[data-report-open]") as HTMLButtonElement;
+  expect(button.disabled).toBe(true); button.click(); expect(openTeamNode()).toBeNull(); expect(action).not.toHaveBeenCalled();
   resolve(inbox); await settle();
-  expect((host.querySelector("[data-report-accept]") as HTMLButtonElement).disabled).toBe(false);
+  expect((host.querySelector("[data-report-open]") as HTMLButtonElement).disabled).toBe(false);
 });
 
 it("a read refusal is visible, leaves actions disabled and is never retried automatically", async () => {

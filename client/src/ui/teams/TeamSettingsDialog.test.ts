@@ -73,16 +73,31 @@ it("keeps zero timers as zero and never turns an empty timer into zero", async (
   expect(wholeNumber("1e3", 0, 0xffffffff)).toBeUndefined();
 });
 
-it.each([false, true])("shows stored landing %s read-only, without promising enforcement or asking a confirmation", async (allowed) => {
+it.each([false, true])("edits landing %s in the complete revisioned settings payload", async (allowed) => {
   const stored = view(); stored.settings!.land_allowed = allowed;
   const f = setup(undefined, stored);
   expect(f.input("land_allowed").checked).toBe(allowed);
-  expect(f.input("land_allowed").disabled).toBe(true);
-  f.input("land_allowed").click(); f.change("routing", "lead"); await f.submit();
-  expect((f.calls[0].action.settings as ReturnType<typeof written>).land_allowed).toBe(allowed);
+  expect(f.input("land_allowed").disabled).toBe(false);
+  f.input("land_allowed").click(); await f.submit();
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0]).toMatchObject({
+    expected_revision: stored.revision,
+    action: { kind: "settings", settings: { ...stored.settings!, land_allowed: !allowed } },
+  });
   expect(f.host.querySelector("[role=alertdialog]")).toBeNull();
-  expect(f.host.querySelector("[data-landing-note]")?.textContent).toBe("Saved with the team; landing is not gated by this setting yet");
-  expect(f.host.textContent).not.toContain("catalog's command");
+  expect(f.host.querySelector("[data-landing-note]")?.textContent).toBe(
+    "Off by default. Applies to new Land stages. Stages already created can finish.",
+  );
+});
+
+it("shows a landing settings refusal without closing or replaying the edit", async () => {
+  const f = setup({ outcome: "failed", code: "not_allowed", detail: "Settings change refused.", request_id: "refused" });
+  f.input("land_allowed").click(); await f.submit(); await tick();
+  expect(f.calls).toHaveLength(1);
+  expect(f.calls[0].action.settings).toEqual({ ...written(), land_allowed: true });
+  expect(f.host.querySelector("[data-settings-error]")?.textContent).toBe("Settings change refused.");
+  expect(f.input("land_allowed").checked).toBe(true);
+  expect(f.close).not.toHaveBeenCalled();
 });
 
 it("keeps the revision and unedited values that were shown when a refreshed view arrives", async () => {
@@ -102,8 +117,10 @@ it("rereads a stale dialog from the refreshed workspace without replaying or mer
   host.querySelector<HTMLButtonElement>("[data-team-settings-open]")!.click();
   const change = (value: string) => { const select = host.querySelector<HTMLSelectElement>("[data-setting=routing]")!; select.value = value; select.dispatchEvent(new Event("change", { bubbles: true })); };
   const submit = async () => { host.querySelector<HTMLButtonElement>("[data-settings-save]")!.click(); await tick(); };
+  host.querySelector<HTMLInputElement>("[data-setting=land_allowed]")!.click();
   change("lead"); await submit(); await submit();
   expect(calls).toHaveLength(1);
+  expect(calls[0].action.settings).toEqual({ ...written(), routing: "lead", land_allowed: true });
   expect(host.querySelector("[data-settings-error]")?.textContent).toBe("The team changed. Read the team before sending it again.");
   expect(host.querySelector<HTMLFieldSetElement>("fieldset")!.disabled).toBe(true);
   const newer = view(); newer.revision = 99; newer.settings!.caps.max_open_tasks = 99;
@@ -111,6 +128,7 @@ it("rereads a stale dialog from the refreshed workspace without replaying or mer
   expect(calls).toHaveLength(1);
   expect(host.querySelector<HTMLInputElement>("[data-setting=max_open_tasks]")!.value).toBe("99");
   expect(host.querySelector<HTMLSelectElement>("[data-setting=routing]")!.value).toBe(written().routing);
+  expect(host.querySelector<HTMLInputElement>("[data-setting=land_allowed]")!.checked).toBe(written().land_allowed);
   expect(host.querySelector("[data-settings-error]")).toBeNull();
   expect(host.querySelector("[data-settings-reloaded]")?.textContent).toContain("The team changed; the settings were reloaded");
   expect(host.querySelector("[data-settings-reloaded]")?.textContent).toContain("Your unsaved edits were replaced.");

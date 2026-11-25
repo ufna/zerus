@@ -14,6 +14,8 @@ use zerus_team_plan::{
 const MACHINE: &str = "00000000-0000-4000-8000-0000000000aa";
 const EPOCH: &str = "00000000-0000-4000-8000-000000000001";
 mod planning;
+#[cfg(unix)]
+mod deepseek_cards;
 
 struct FakeEffects {
     events: Vec<String>,
@@ -36,6 +38,8 @@ struct FakeEffects {
     verify_uncertain: bool,
     launch_verification_unavailable: bool,
     hosted_refusal: Option<bool>,
+    #[cfg(unix)]
+    older_deepseek_host: bool,
     placement_override: Option<Placement>,
 }
 impl Default for FakeEffects {
@@ -60,6 +64,8 @@ impl Default for FakeEffects {
             verify_uncertain: false,
             launch_verification_unavailable: false,
             hosted_refusal: None,
+            #[cfg(unix)]
+            older_deepseek_host: false,
             placement_override: None,
         }
     }
@@ -76,7 +82,12 @@ fn account(id: &str) -> AccountUsage {
     }
 }
 impl Effects for FakeEffects {
-    fn hosted_ready(&mut self, _: &Plan, bound: bool) -> Result<()> {
+    fn hosted_ready(&mut self, plan: &Plan, bound: bool) -> Result<()> {
+        #[cfg(unix)]
+        if self.older_deepseek_host && plan.agent == "dsh" {
+            return Err(crate::teams::hosted::older("/work/example/.dsh"));
+        }
+        let _ = plan;
         if self.hosted_refusal == Some(bound) {
             return Err(invalid("The resident host cannot serve a team member"));
         }
@@ -3211,4 +3222,51 @@ fn launch_card_writers_establish_list_stuck_for_blocked_and_uncertain_launches()
     }
     assert_eq!(open(&h), ["launch_blocked"]);
     assert!(stuck(&h));
+}
+
+/// Adopted from the independent review of #2558 (member-retry-fixture.rs):
+/// the Retry that Launch again leads to (zerus-63rru.197 A3) starts the exact
+/// unstarted seat once, refuses a second decision of the closed card and
+/// never launches again across a worker restart.
+#[test]
+fn reviewer_retry_launches_the_exact_unstarted_seat_once() {
+    let mut h = Harness::new();
+    let mut effects = FakeEffects {
+        exists: true,
+        account_error: true,
+        ..Default::default()
+    };
+    let mut active = runtime(&h);
+    advance(&mut active, &mut h, &mut effects, 20);
+    let before = h.store.member(ops::tests::TEAM, "lead").unwrap().unwrap();
+    assert!(before.session.is_none());
+    assert!(effects.events.iter().all(|event| event != "launch:lead"));
+    let card = &cards(&h)[0];
+    assert_eq!(card.kind, "launch_blocked");
+    assert_eq!(card.decisions, ["retry", "acknowledged"]);
+    let retry = || ops::Operation::DecideCard {
+        card: card.seq,
+        decision: "retry".into(),
+    };
+    h.run(&ops::tests::person(), retry()).unwrap();
+    let duplicate = h.run(&ops::tests::person(), retry());
+    assert!(duplicate.is_err(), "a new request must not decide the closed card again");
+    effects.account_error = false;
+    active.begin_pass();
+    advance(&mut active, &mut h, &mut effects, 60);
+    let lead = h.store.member(ops::tests::TEAM, "lead").unwrap().unwrap();
+    assert!(lead.session.is_some());
+    let launches = |effects: &FakeEffects| {
+        effects.events.iter().filter(|event| event.as_str() == "launch:lead").count()
+    };
+    assert_eq!(launches(&effects), 1);
+    drop(active);
+    let mut restarted = runtime(&h);
+    advance(&mut restarted, &mut h, &mut effects, 30);
+    assert_eq!(launches(&effects), 1);
+    assert_eq!(
+        h.store.member(ops::tests::TEAM, "lead").unwrap().unwrap().session,
+        lead.session
+    );
+    println!("The real card decision and launch worker bound the previously unstarted lead once. The duplicate decision refused and restart kept the original session.");
 }

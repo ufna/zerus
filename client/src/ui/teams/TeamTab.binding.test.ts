@@ -31,7 +31,7 @@ vi.mock("../../store/teams", async () => {
   } };
 });
 vi.mock("../sessions/SessionCard", () => ({ AgentTile: () => null }));
-vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
+vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskBlocked: () => undefined, teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
 import { TeamTab } from "./TeamTab";
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.choose(undefined); f.setBinding({ state: "unknown" }); f.setTeam(undefined); f.setFailure(null); f.setUnresolved([]); document.body.replaceChildren(); vi.clearAllMocks(); });
@@ -72,7 +72,10 @@ it("renders the asking view's failed outcome verbatim and fences late reasons fr
   host.querySelector<HTMLButtonElement>('[data-strip-action="pause"]')!.click();
   const source = f.run.mock.calls.at(-1)![1] as string;
   f.setFailure({ key: "action", code: "refused", message: "This member cannot be paused now.", source });
-  expect(host.querySelector("[data-team-action-failure]")?.textContent).toBe("This member cannot be paused now.");
+  expect(host.querySelector("[data-team-action-failure-message]")?.textContent).toBe("This member cannot be paused now.");
+  // zerus-uiy9p G10: Dismiss clears the asking view's own reason.
+  host.querySelector<HTMLButtonElement>("[data-team-action-failure-dismiss]")!.click();
+  expect(f.clear).toHaveBeenLastCalledWith(source);
   select("b"); expect(host.textContent).not.toContain("This member cannot be paused now.");
   f.setFailure({ key: "action", code: "refused", message: "Late refusal from a", source });
   expect(host.textContent).not.toContain("Late refusal from a");

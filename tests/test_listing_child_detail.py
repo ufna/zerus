@@ -35,7 +35,7 @@ class ChildDetail(Fixture):
         return record, path
 
     def worker_pid(self):
-        st = (self.state / 'listing-metadata/worker.lock').stat()
+        st = (self.state / 'listing-coverage-v1/certified-worker.lock').stat()
         identity = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
         with open('/proc/locks') as handle:
             for line in handle:
@@ -70,7 +70,7 @@ class ChildDetail(Fixture):
         self.proof(record, path)
         self.assertEqual(path.read_bytes(), before)
         import sqlite3
-        with sqlite3.connect(self.state / 'listing-metadata/index.sqlite3') as db:
+        with sqlite3.connect(self.state / 'listing-metadata/certified/index.sqlite3') as db:
             self.assertEqual(db.execute('SELECT count(*) FROM sources WHERE issue IS NOT NULL').fetchone()[0], 0)
             seed = json.loads(db.execute('SELECT seed FROM sources WHERE source=?', (path.name,)).fetchone()[0])
             self.assertTrue(seed['record']['_listing']['requires_canonical'])

@@ -18,7 +18,7 @@ HGS = Path(os.environ.get('HGS_TEST_BIN', Path(__file__).resolve().parents[1] / 
 
 
 def worker_leased(state):
-    with (state/'listing-metadata/worker.lock').open('rb') as handle:
+    with (state/'listing-coverage-v1/certified-worker.lock').open('rb') as handle:
         try:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return True
     return False
@@ -27,7 +27,7 @@ def worker_leased(state):
 def seed_aggregate(state,generation):
     import sqlite3
     from contextlib import closing
-    with closing(sqlite3.connect(f'file:{state}/listing-metadata/index.sqlite3?mode=ro',uri=True)) as db:
+    with closing(sqlite3.connect(f'file:{state}/listing-metadata/certified/index.sqlite3?mode=ro',uri=True)) as db:
         return db.execute('SELECT count(*),sum(length(CAST(seed AS BLOB))),max(length(CAST(seed AS BLOB))) FROM snapshots WHERE generation=?',(generation,)).fetchone()
 
 
@@ -70,7 +70,7 @@ class ListingIndex(unittest.TestCase):
             deadline = time.monotonic()+5
             while time.monotonic() < deadline:
                 try:
-                    with (directory/'worker.lock').open('rb') as handle:
+                    with (directory.parent/'listing-coverage-v1/certified-worker.lock').open('rb') as handle:
                         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except FileNotFoundError:
@@ -191,14 +191,14 @@ class ListingIndex(unittest.TestCase):
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
             try:
-                with (directory/'worker.lock').open('rb') as probe:fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                with (directory.parent/'listing-coverage-v1/certified-worker.lock').open('rb') as probe:fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
                 break
             except BlockingIOError:time.sleep(.02)
         else:self.fail('private old-format fixture worker did not stop')
         before={str(path):path.read_bytes() for _,path in sources}
         # Faithful v3 PROJECTION fixture, not corruption or a production writer.
         # No canonical file/native stamp changes. v3 did not have live_public.
-        with sqlite3.connect(directory/'index.sqlite3') as db:
+        with sqlite3.connect(directory/'certified/index.sqlite3') as db:
             for table in ['sources','snapshots']:
                 for key,encoded in db.execute(f'SELECT source,seed FROM {table}').fetchall():
                     value=json.loads(encoded);value['version']=3;value['record']['_listing'].pop('live_public',None)
@@ -212,7 +212,7 @@ class ListingIndex(unittest.TestCase):
             self.assertNotEqual(result.returncode,0);self.assertEqual(result.stdout,'')
             self.assertIn('Display seed identity changed',result.stderr)
         body=self.complete();self.assertEqual(len(body['sessions']),300)
-        with sqlite3.connect(directory/'index.sqlite3') as db:
+        with sqlite3.connect(directory/'certified/index.sqlite3') as db:
             self.assertEqual(db.execute("SELECT count(*) FROM sources WHERE json_extract(seed,'$.version')!=4").fetchone()[0],0)
             generation=db.execute('SELECT generation FROM meta').fetchone()[0]
             self.assertEqual(db.execute("SELECT count(*) FROM snapshots WHERE generation=? AND json_extract(seed,'$.version')!=4",(generation,)).fetchone()[0],0)
@@ -225,8 +225,32 @@ class ListingIndex(unittest.TestCase):
         result=self.call('listing-index','disable','--json');self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue((self.state/'listing-metadata/disabled').is_file(),'explicit disable was forgotten before automatic bootstrap')
         body=self.complete();self.assertEqual(len(body['sessions']),1)
-        self.assertFalse((self.state/'listing-metadata/index.sqlite3').exists())
+        self.assertFalse((self.state/'listing-metadata/certified/index.sqlite3').exists())
         self.assertFalse(json.loads(self.call('listing-index','status','--json').stdout)['enabled'])
+
+    def test_one_ordinary_listing_waits_for_the_cold_publisher(self):
+        directory = self.state / "listing-metadata"
+        directory.mkdir(mode=0o700)
+        lock = directory / "writer.lock"
+        lock.touch(mode=0o600)
+        with lock.open("rb") as gate:
+            fcntl.flock(gate, fcntl.LOCK_EX)
+            with subprocess.Popen([str(HGS), "ls", "--json", "--local", "--no-archives"],
+                                  env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True) as command:
+                try:
+                    deadline = time.monotonic() + 3
+                    while not (directory.parent / "listing-coverage-v1/certified-attempt.json").exists() and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertTrue((directory.parent / "listing-coverage-v1/certified-attempt.json").is_file())
+                    time.sleep(.15)
+                    fcntl.flock(gate, fcntl.LOCK_UN)
+                    stdout, stderr = command.communicate(timeout=5)
+                finally:
+                    if command.poll() is None:
+                        command.kill()
+        self.assertEqual(command.returncode, 0, stderr)
+        self.assertEqual(json.loads(stdout)["sessions"], [])
 
     def test_resident_worker_keeps_large_incremental_seed_copy_bounded_and_live(self):
         sources=[]
@@ -435,7 +459,7 @@ class ListingIndex(unittest.TestCase):
         directory=self.state/'listing-metadata';directory.mkdir(exist_ok=True);(directory/'disabled').write_text('1\n');(directory/'disabled').chmod(0o600)
         self.saved(1);self.saved(2);expected=self.canonical()
         self.assert_rows(expected,self.complete()['sessions'])
-        self.assertFalse((self.state/'listing-metadata/index.sqlite3').exists())
+        self.assertFalse((self.state/'listing-metadata/certified/index.sqlite3').exists())
 
     def test_default_off_large_inventory_refuses_before_full_record_loading(self):
         directory=self.state/'listing-metadata';directory.mkdir(exist_ok=True);(directory/'disabled').write_text('1\n');(directory/'disabled').chmod(0o600)
@@ -445,7 +469,7 @@ class ListingIndex(unittest.TestCase):
         self.assertNotEqual(reply.returncode,0,'large default-off ls silently loaded the whole inventory')
         self.assertEqual(reply.stdout,'','a refused complete listing leaked a partial body')
         self.assertIn('listing',reply.stderr.lower())
-        self.assertFalse((self.state/'listing-metadata/index.sqlite3').exists(),'disabled listing created an index')
+        self.assertFalse((self.state/'listing-metadata/certified/index.sqlite3').exists(),'disabled listing created an index')
 
     def test_enabled_corrupt_index_never_falls_back_to_whole_records(self):
         record,path=self.saved(1)
@@ -453,8 +477,13 @@ class ListingIndex(unittest.TestCase):
         directory=self.state/'listing-metadata';directory.mkdir(mode=0o700)
         (directory/'enabled').write_text('1\n')
         (directory/'enabled').chmod(0o600)
-        (directory/'index.sqlite3').write_bytes(b'corrupt private display index')
-        with (directory/'worker.lock').open('wb') as lease:
+        (directory/'certified').mkdir(mode=0o700)
+        (directory/'certified/index.sqlite3').write_bytes(b'corrupt private display index')
+        coverage = self.state/'listing-coverage-v1'
+        coverage.mkdir(mode=0o700)
+        lock = coverage/'certified-worker.lock'
+        lock.touch(mode=0o600)
+        with lock.open('rb') as lease:
             fcntl.flock(lease,fcntl.LOCK_EX|fcntl.LOCK_NB)
             reply=self.call('ls','--json','--local','--no-archives')
         self.assertNotEqual(reply.returncode,0,'enabled corrupt index used a whole-record rescue')
@@ -486,7 +515,7 @@ class ListingIndex(unittest.TestCase):
         import sqlite3
         import contextlib
         _,path=self.saved(1);original=path.read_bytes();self.ready()
-        database=self.state/'listing-metadata/index.sqlite3'
+        database=self.state/'listing-metadata/certified/index.sqlite3'
         with contextlib.closing(sqlite3.connect(database,timeout=1)) as connection:
             source,raw=connection.execute('SELECT source,seed FROM sources WHERE tombstone=0').fetchone()
             envelope=json.loads(raw);hint=envelope['record']
@@ -555,7 +584,7 @@ class ListingIndex(unittest.TestCase):
             deadline=time.monotonic()+8
             while time.monotonic()<deadline:
                 active=[worker for worker in workers if worker.poll() is None]
-                status=directory/'worker-status.json'
+                status=directory/'certified/worker-status.json'
                 if len(active)==1 and status.exists() and json.loads(status.read_text()).get('state')=='ready':break
                 time.sleep(.05)
             else:self.fail('worker lease did not coalesce eight contenders to one ready worker')
@@ -587,7 +616,7 @@ class ListingIndex(unittest.TestCase):
         worker=subprocess.Popen([str(copied),'__state','listing-metadata-worker'],env=self.env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
             deadline=time.monotonic()+8
-            while not (directory/'worker-status.json').exists() and time.monotonic()<deadline:time.sleep(.05)
+            while not (directory/'certified/worker-status.json').exists() and time.monotonic()<deadline:time.sleep(.05)
             self.assertIsNone(worker.poll())
             replacement=self.root/'replacement-hgs';shutil.copy2(HGS,replacement);os.replace(replacement,copied)
             worker.wait(timeout=4)
@@ -610,7 +639,7 @@ class LiveListingIndex(test_pause.Harness):
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:
                 try:
-                    with (directory/'worker.lock').open('rb') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    with (directory.parent/'listing-coverage-v1/certified-worker.lock').open('rb') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
                     break
                 except FileNotFoundError:break
                 except BlockingIOError:time.sleep(.02)
@@ -618,6 +647,105 @@ class LiveListingIndex(test_pause.Harness):
         super().tearDown()
 
     def assert_rows(self,expected,actual):ListingIndex.assert_rows(self,expected,actual)
+
+    @unittest.skipUnless(os.environ.get("HGS_TEST_LISTING_LEGACY_BIN"), "requires a pre-certificate Linux hgs")
+    def test_distinct_cli_paths_publish_with_the_old_worker_resident(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        older = Path(os.environ["HGS_TEST_LISTING_LEGACY_BIN"]).resolve()
+        self.assertTrue(older.is_file())
+        self.assertFalse(older.samefile(HGS))
+        state = self.root / "state"
+        directory = state / "listing-metadata"
+        coverage = state / "listing-coverage-v1/certified-cut.json"
+        args = ("ls", "--json", "--local", "--no-archives")
+
+        def call(binary, *arguments):
+            return subprocess.run([str(binary), *arguments], env=self.env, text=True,
+                                  capture_output=True, timeout=8)
+
+        def saved_by(binary, tag):
+            name = f"claude/p/{tag}"
+            result = call(binary, "claude", "p", "-n", tag, "-d")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.wait(lambda: self.binding(name).get("conversation_id"))
+            result = call(binary, "pause", name)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.binding(name).get("paused"))
+            return name
+
+        first = saved_by(older, "before-upgrade")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        enabled = directory / "enabled"
+        enabled.write_text("1\n")
+        enabled.chmod(0o600)
+        started = subprocess.Popen([str(older), "__state", "listing-metadata-worker"],
+                                   env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            def retained():
+                self.assertIsNone(started.poll(), "the original worker exited")
+                with (directory / "worker.lock").open("rb") as lease:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def assert_pair(names):
+                # Let both independently bounded publishers reach a complete cut.
+                for binary in (older, HGS):
+                    def ready():
+                        result = call(binary, *args)
+                        if result.returncode:
+                            self.assertEqual(result.stdout, "", result.stderr)
+                            return False
+                        return {row["name"] for row in json.loads(result.stdout)["sessions"]} == names
+                    self.wait(ready)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    outputs = list(pool.map(lambda binary: call(binary, *args), (older, HGS)))
+                for result in outputs:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual({row["name"] for row in json.loads(result.stdout)["sessions"]}, names)
+                retained()
+                print(f"both CLIs returned {len(names)} complete rows with old PID {started.pid} still leased",
+                      flush=True)
+
+            def older_ready():
+                reply = call(older, "listing-index", "status", "--json")
+                return reply.returncode == 0 and json.loads(reply.stdout)["state"] == "ready"
+
+            self.wait(older_ready)
+            retained()
+            self.assertFalse(coverage.exists())
+            with (directory / "writer.lock").open("rb") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                incomplete = call(HGS, *args, "--paged")
+                self.assertEqual((incomplete.returncode, incomplete.stdout), (1, ""))
+                self.assertIn("still being built", incomplete.stderr)
+                self.assertFalse(coverage.exists())
+
+            assert_pair({first})
+            self.assertTrue(coverage.is_file())
+            with (directory / "writer.lock").open("rb") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                second = saved_by(older, "after-upgrade")
+                for extra in ((), ("--paged",)):
+                    stale = call(HGS, *args, *extra)
+                    self.assertEqual((stale.returncode, stale.stdout), (1, ""))
+                    self.assertIn("stale or unavailable", stale.stderr)
+                    print(f"new CLI refused stale {extra or 'ordinary'} body after old CLI write",
+                          flush=True)
+                retained()
+
+            assert_pair({first, second})
+            paged = call(HGS, *args, "--paged")
+            self.assertEqual(paged.returncode, 0, paged.stderr)
+            self.assertTrue(json.loads(paged.stdout)["listing_page"]["complete"])
+        finally:
+            (directory / "disabled").write_text("1\n")
+            try:
+                started.wait(timeout=5)
+            finally:
+                if started.poll() is None:
+                    started.terminate()
+                    started.wait(timeout=4)
 
     def measured_full(self):
         import threading
@@ -1061,7 +1189,7 @@ class BackgroundListingIndex(unittest.TestCase):
             deadline=time.monotonic()+5
             while time.monotonic()<deadline:
                 try:
-                    with (directory/'worker.lock').open('rb') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    with (directory.parent/'listing-coverage-v1/certified-worker.lock').open('rb') as handle:fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
                     break
                 except FileNotFoundError:break
                 except BlockingIOError:time.sleep(.02)

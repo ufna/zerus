@@ -347,6 +347,20 @@ fn base_shape(reply: Value, team: &str) -> Result<Value, String> {
     Ok(reply)
 }
 
+/// The evidence beside one task's decision (zerus-5gcbh): the task's latest
+/// report and its stages' latest verdicts, one bounded read of `hgs team
+/// evidence --team ID --node N`, validated and projected by the core. The team
+/// and task are checked before any child runs.
+#[tauri::command]
+pub async fn teams_task_evidence(team: String, node: u64) -> Result<Value, String> {
+    use zerus_client_core::teams::evidence;
+    let args = evidence::args(&team, node).map_err(|error| error.to_string())?;
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let reply = read_team_json(&words, None).await?;
+    let projected = evidence::project(&reply, &team, node).map_err(|error| error.to_string())?;
+    serde_json::to_value(projected).map_err(|error| error.to_string())
+}
+
 /// A project folder's existing checkout facts through the bounded CLI read.
 #[tauri::command]
 pub async fn teams_project(path: String) -> Result<Value, String> {
@@ -601,6 +615,18 @@ mod tests {
         assert!(preview_shape(&json!({"ok": true, "preview": "off"}), true).is_err());
         assert!(preview_shape(&json!({"ok": true}), false).is_err());
         assert!(preview_shape(&json!({}), true).is_err());
+    }
+
+    #[test]
+    fn a_task_evidence_read_names_one_task_before_a_child_runs() {
+        let refused = |team: &str, node: u64| {
+            tauri::async_runtime::block_on(teams_task_evidence(team.into(), node)).unwrap_err()
+        };
+        assert_eq!(refused("--other", 1), "Not a team id.");
+        assert_eq!(
+            refused("00000000-0000-4000-8000-00000000beef", 0),
+            "Not a task number."
+        );
     }
 
     #[test]

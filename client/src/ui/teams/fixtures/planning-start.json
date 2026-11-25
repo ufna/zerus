@@ -314,6 +314,7 @@
         }
       },
       "goal": "Prepare a release with reviewable acceptance criteria.",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/planned-release",
       "lead": "lead",

@@ -11,7 +11,13 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zerus_client_core::{desktop::team_person_actions as wire, teams::action::TeamAction};
+use zerus_client_core::{
+    desktop::{
+        team_confirmation::{KeptAssignment, KeptRoute},
+        team_person_actions as wire,
+    },
+    teams::action::TeamAction,
+};
 use zerus_team_plan::{model::Team, problem::code, Problem};
 
 type Result<T> = std::result::Result<T, Problem>;
@@ -20,6 +26,10 @@ mod phases;
 pub(super) struct Prepared {
     pub plan: Arc<wire::Plan>,
     pub request: ops::Request,
+    /// What a window Route keeps from the stored task, for the native review
+    /// (zerus-3u5yu): the dependencies and write paths it binds, and the
+    /// assignee it keeps (`m1`) or clears (`m1 → none`). Empty otherwise.
+    pub kept: Option<KeptRoute>,
 }
 
 pub(super) fn actor() -> ops::Actor {
@@ -39,9 +49,17 @@ impl Prepared {
         }
         let wire::Action::Team { change } = &plan.action else {
             let (project, uuid, role, pipeline) = match &plan.action {
-                wire::Action::NewTask { project, .. } => {
-                    (project, plan.request_id.clone(), None, None)
-                }
+                wire::Action::NewTask {
+                    project,
+                    role,
+                    pipeline,
+                    ..
+                } => (
+                    project,
+                    plan.request_id.clone(),
+                    role.clone(),
+                    pipeline.clone(),
+                ),
                 wire::Action::Intake {
                     project,
                     task,
@@ -66,7 +84,11 @@ impl Prepared {
                     pipeline,
                 },
             };
-            return Ok(Self { plan, request });
+            return Ok(Self {
+                plan,
+                request,
+                kept: None,
+            });
         };
         let call = plan.call().ok_or_else(required)?;
         let (invocation, _) =
@@ -83,6 +105,7 @@ impl Prepared {
             _ => change.op().replace('-', "_"),
         };
         fields.insert("op".into(), json!(variant));
+        let mut kept = None;
         if let TeamAction::Route {
             node,
             role,
@@ -100,9 +123,33 @@ impl Prepared {
             fields.remove("keep_task_fields");
             fields.insert("deps".into(), json!(task.deps));
             fields.insert("writes".into(), json!(task.writes));
-            if task.role == *role {
-                fields.insert("assignee".into(), json!(task.assignee));
+            // The stored assignee is kept only for the same role and only
+            // while that member can take it: not the lead and not removed,
+            // as the Route writer requires (zerus-3u5yu). Otherwise the
+            // Route clears it, and the review says so.
+            let lead = store.team(&plan.team)?.map(|team| team.lead);
+            let bound = match &task.assignee {
+                Some(id) if task.role == *role => store
+                    .member(&plan.team, id)?
+                    .filter(|member| {
+                        member.role == *role
+                            && Some(&member.id) != lead.as_ref()
+                            && member.state != zerus_team_plan::model::MemberState::Removed
+                    })
+                    .map(|member| member.id),
+                _ => None,
+            };
+            if let Some(id) = &bound {
+                fields.insert("assignee".into(), json!(id));
             }
+            kept = Some(KeptRoute {
+                deps: task.deps,
+                writes: task.writes,
+                assignment: task.assignee.map(|member| KeptAssignment {
+                    member,
+                    cleared: bound.is_none(),
+                }),
+            });
         }
         if let TeamAction::Create {
             template,
@@ -133,7 +180,11 @@ impl Prepared {
         if store::encode(&request)?.len() > wire::PLAN_BYTES {
             return Err(required());
         }
-        Ok(Self { plan, request })
+        Ok(Self {
+            plan,
+            request,
+            kept,
+        })
     }
 
     pub fn matches(&self, who: &ops::Actor, request: &ops::Request, intent: &wire::Intent) -> bool {

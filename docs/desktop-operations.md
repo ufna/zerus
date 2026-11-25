@@ -576,7 +576,10 @@ same path while the original runs on), or a failed or late answer is never
 read as an absent terminal. Each observation has a 2-second deadline; tmux's
 runs in the C locale. On Windows that deadline is absolute over the pipe, the
 hello and the request: the connection is shut down at it, however the host
-spreads its answer. A resume that is not recorded ends the send.
+spreads its answer, and a hello answer or reply whose decoding ends at or after
+it is the connection's loss, whatever it says, even when its bytes were already
+read (zerus-xngdd). A resume that is not recorded
+ends the send.
 
 After a recorded resume the same live operation waits, and only it. The wait
 has one budget of 180 seconds from the resume's drain, as long as the direct

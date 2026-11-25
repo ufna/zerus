@@ -140,6 +140,7 @@ export interface Session {
   terminateReason?: string;
   forgetReason?: string;
   restoreReason?: string;
+  restorePending?: boolean;
   /** The raw working directory (`cwd` is the folder name). */
   cwdPath: string;
   /** The canonical working directory, "" when the row has none (New session's prefill). */

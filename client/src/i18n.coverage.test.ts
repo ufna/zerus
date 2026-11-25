@@ -48,6 +48,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/teams/team-model.ts": "the core's team and member states",
   "./ui/teams/TeamTab.tsx": "the core's node states, roles and deciders, and its own label table",
   "./ui/teams/NewTeam.tsx": "the catalog's role, pipeline, stage and setting names",
+  "./ui/teams/TeamConfirmDialog.tsx": "the core confirmation's title and button, marked with source! in client/core teams/action/input.rs",
   "./ui/sessions/Activity.tsx": "the transcript voice state table, inbox-actions Remove texts and send-error native refusal",
   "./ui/sessions/shortcutHelp.ts": "the shortcut registry's command titles and its own group table",
   "./ui/screens/settings/Keyboard.tsx": "the shortcut registry's command titles and groups",
@@ -118,9 +119,12 @@ const disambiguated = new Map<string, string>();
 for (const [file, text] of Object.entries(SOURCES)) {
   for (const match of text.matchAll(DISAMBIGUATED)) disambiguated.set(`${literal(match[1])}\u0004${literal(match[2])}`, file);
 }
-// Prose the Rust core and app mark with text!/source! (their own tests check
-// the catalog has them); a supplement entry may serve only those.
-const RUST = import.meta.glob(["../core/src/**/*.rs", "../src-tauri/src/**/*.rs"], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+// Include the ordinary CLI listing's marked diagnostics alongside the Rust desktop sources.
+const RUST = import.meta.glob([
+  "../core/src/**/*.rs",
+  "../src-tauri/src/**/*.rs",
+  "../../src/state/listing_metadata/{listing,pages}.rs",
+], { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 const MARKED = /\b(?:text|source)!\(\s*("(?:[^"\\\n]|\\.)*")/g;
 const marked = new Set(Object.values(RUST).flatMap((text) => [...text.matchAll(MARKED)].map((match) => JSON.parse(match[1]) as string)));
 const translated = catalog as Record<string, unknown>;

@@ -1,9 +1,14 @@
+mod guards;
+
 use super::real_rows::{self, Production};
 use crate::state::listing_fixture as producer;
 use crate::teams::ops::{tests::*, HandoutOutcome, Operation, StageTaskOutcome, TaskStage};
 use serde_json::{json, Value};
 use std::os::unix::fs::{symlink, PermissionsExt};
-use zerus_team_plan::model::{Member, NodeKind, NodeState};
+use zerus_team_plan::{
+    catalog::StageKind,
+    model::{Member, NodeKind, NodeState},
+};
 
 const CHILD: &str = "desktop::teams::actor::tests::provider_stop::quota_fixture";
 const HANDOUT: i64 = 1_800_000_000_000;
@@ -461,6 +466,9 @@ fn confirmation_with_another_binding() {
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].state, "open");
+    let (gate, proof) = actor.provider_confirmation(&team, &reviewer).unwrap().unwrap();
+    assert_eq!(proof.binding, old);
+    assert_eq!(proof.card, Some(cards[0].seq));
     publish(
         &ports,
         &hook(
@@ -475,6 +483,19 @@ fn confirmation_with_another_binding() {
         .unwrap();
     assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
     assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows, cards);
+    assert_eq!(
+        actor.provider_confirmation(&team, &reviewer).unwrap().map(|(row, _)| row),
+        Some(gate),
+        "release discarded another binding's confirmation ledger row"
+    );
+    actor
+        .confirmation_observation(&mut h.store, &team, &reviewer, None, FAILURE + 4_500, |_| {})
+        .unwrap();
+    let recovered = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].seq, cards[0].seq);
+    assert_eq!(recovered[0].state, "closed");
+    assert!(actor.provider_confirmation(&team, &reviewer).unwrap().is_none());
 }
 
 fn provider_projection(key: &str, item: &crate::teams::store::InboxItem) {
@@ -884,6 +905,48 @@ fn lead_staffing_fixture() {
     }
 }
 
+#[test]
+fn landing_disabled_refuses_a_new_replacement_for_a_retired_land_stage() {
+    real_rows::isolated("desktop::teams::actor::tests::provider_stop::retired_land_fixture");
+}
+
+#[test]
+#[ignore = "run by the private actor fixture"]
+fn retired_land_fixture() {
+    let (mut h, mut ports, record, _) = stage_with_kind("kimi", StageKind::Land, None);
+    let lead = h.bind("lead");
+    let stopped = hook(
+        &record,
+        "StopFailure",
+        json!({"error_type":"APIProviderRateLimitError","error_message":"Your weekly quota has been exhausted."}),
+        FAILURE,
+    );
+    assert_eq!(stopped["provider_error"]["error_kind"], "quota");
+    publish(&ports, &stopped);
+    pass(&mut h, &mut ports, FAILURE);
+    h.cancel_fact(21);
+    assert!(!h.store.node_live(TEAM, 21).unwrap());
+
+    h.settings(|settings| settings.land_allowed = false);
+    let stages = h.store.stage_tasks(TEAM, 200, None).unwrap().rows;
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert!(inbox.iter().any(|item| item.node == 20 && item.state == "open"));
+    let reassign = Operation::Reassign {
+        node: 21,
+        member: "m3".into(),
+        reason: "Retry the retired stage.".into(),
+    };
+    let refusal = h.run(&lead, reassign.clone()).unwrap_err();
+    assert_eq!(refusal.code, "invalid_state");
+    assert!(refusal.message.contains("Landing is disabled in Team settings"));
+    assert_eq!(h.store.stage_tasks(TEAM, 200, None).unwrap().rows, stages);
+    assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows, inbox);
+
+    h.settings(|settings| settings.land_allowed = true);
+    let replacement = h.run(&lead, reassign).unwrap().node.unwrap();
+    assert!(h.node(replacement).title.starts_with("Land: "));
+}
+
 fn pass(h: &mut Harness, ports: &mut Production, now: i64) {
     // Opening the adapter on every call includes the first pass after a
     // service restart. The actual roster/effect scan and store writer run.
@@ -897,11 +960,28 @@ fn stage(agent: &str) -> (Harness, Production, Value, String) {
 }
 
 fn stage_bound(agent: &str, run: Option<&str>) -> (Harness, Production, Value, String) {
+    stage_with_kind(agent, StageKind::Review, run)
+}
+
+fn stage_with_kind(
+    agent: &str,
+    kind: StageKind,
+    run: Option<&str>,
+) -> (Harness, Production, Value, String) {
     let mut h = Harness::empty();
     // The pinned native reader expects the product's private state root.
     std::fs::set_permissions(h.temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut create = create();
     if let Operation::Create { bundle, .. } = &mut create {
+        if kind == StageKind::Land {
+            bundle.template.settings.land_allowed = true;
+            let pipeline = bundle
+                .pipelines
+                .iter_mut()
+                .find(|pipeline| pipeline.id == bundle.template.default_pipeline)
+                .unwrap();
+            pipeline.stages[0].kind = kind;
+        }
         bundle
             .roles
             .iter_mut()

@@ -87,7 +87,7 @@ export function TeamSettingsDialog(props: TeamSettingsDialogProps): JSX.Element 
       if (number === undefined) return undefined;
       timers[key] = number;
     }
-    return { ...draft, land_allowed: initial()!.land_allowed, caps, timers };
+    return { ...draft, caps, timers };
   };
   const changed = () => !!initial() && JSON.stringify(value()) !== JSON.stringify(initial());
   createEffect(() => {
@@ -138,7 +138,7 @@ export function TeamSettingsDialog(props: TeamSettingsDialogProps): JSX.Element 
           </label>}</For></div></section>
           <section><h3>{tr("Timers")}</h3><div class="team-settings-grid"><For each={TIMERS}>{(key) => <label>
             <span id={`${title}-${key}-label`}>{numberLabel(key)}</span><TextInput aria-labelledby={`${title}-${key}-label`} type="number" min={0} max={0xffffffff} step={1} disabled={key === "resume_limit_per_hour"} aria-invalid={!!fieldError("timers", key)} aria-describedby={fieldError("timers", key) ? `${title}-${key}-error` : undefined} data-setting={key} value={numbers()[key]} onInput={(event) => editNumber("timers", key, event.currentTarget.value)} />
-            <small class="hint">{key === "resume_limit_per_hour" ? tr("Fixed at 3 per hour") : tr("From %1 to %2", 0, 0xffffffff)}</small>
+            <small class="hint">{key === "resume_limit_per_hour" ? tr("Fixed at 3 per hour") : tr("0 or more")}</small>
             <Show when={fieldError("timers", key)}>{(message) => <small class="danger" role="alert" id={`${title}-${key}-error`}>{message()}</small>}</Show>
           </label>}</For></div></section>
           <section><h3>{tr("Workflow")}</h3>
@@ -155,8 +155,8 @@ export function TeamSettingsDialog(props: TeamSettingsDialogProps): JSX.Element 
             <label><span>{tr("Accepted work")}</span><select data-setting="integration" value={settings()!.integration} onChange={(event) => set("integration", event.currentTarget.value as TeamSettings["integration"])}>
               <option value="branch" disabled={!current().bar.integration_branch}>{tr("Merge into the integration branch")}</option><option value="none">{tr("Keep each task's branch")}</option></select></label>
             <Show when={current().bar.integration_branch}><p class="hint mono">{current().bar.integration_branch}</p></Show>
-            <label class="check"><input type="checkbox" data-setting="land_allowed" checked={settings()!.land_allowed} disabled />{tr("Allow land stages")}</label>
-            <p class="hint" data-landing-note>{tr("Saved with the team; landing is not gated by this setting yet")}</p>
+            <label class="check"><input type="checkbox" data-setting="land_allowed" checked={settings()!.land_allowed} aria-describedby={`${title}-landing-note`} onChange={(event) => set("land_allowed", event.currentTarget.checked)} />{tr("Allow land stages")}</label>
+            <p class="hint" id={`${title}-landing-note`} data-landing-note>{tr("Off by default. Applies to new Land stages. Stages already created can finish.")}</p>
           </section>
         </fieldset>
       </Show>

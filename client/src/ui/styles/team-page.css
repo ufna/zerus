@@ -1,0 +1,15 @@
+/* The team page (zerus-63rru.198): the lead tab's workspace, opened from
+   Teams without the lead's session. The workspace keeps its own layout. */
+@layer components {
+  .team-page { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--z-color-pane); }
+  .team-page-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--z-color-divider); }
+  .team-page-head > svg { color: var(--z-color-accent); flex: none; }
+  .team-page-head h1 { font-size: var(--fs-lg); font-weight: 600; min-width: 0; }
+  .team-page > .team-notice { margin: 12px 16px 0; }
+  .team-page > .team-tab { flex: 1; min-height: 0; }
+  .team-page > .team-loading { padding: 16px; }
+}
+/* A Teams row's own action refusal, under the row (TeamRowMenu). */
+@layer components {
+  .teams-row-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 4px 0; }
+}

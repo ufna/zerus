@@ -1,0 +1,7 @@
+@layer components {
+  /* The refused action's banner (zerus-uiy9p G10): its name, the reason, Dismiss at the end. */
+  .team-action-failure { align-items: center; }
+  .team-action-failure-text { flex: 1 1 auto; min-width: 0; }
+  .team-action-failure-text > b { margin-right: 6px; }
+  .team-action-failure > [data-team-action-failure-dismiss] { flex: none; margin-left: auto; }
+}

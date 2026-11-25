@@ -88,6 +88,8 @@ mod process_index;
 // Advisory display data only; no production reader uses it in this slice.
 mod listing_metadata;
 pub(crate) use listing_metadata::control::MARKER as LISTING_METADATA_MARKER;
+pub(crate) use listing_metadata::listing::retry as retry_ordinary_listing;
+pub(crate) use listing_metadata::public_index_error as listing_public_error;
 pub(crate) use listing_metadata::listing::Query as ListingQuery;
 pub(crate) fn display_name(row: &Value) -> &str {
     string(row, "name")
@@ -97,8 +99,9 @@ pub(crate) fn merge_ordinary_listing(
     ids: &BTreeMap<String, String>,
     archives: bool,
     query: &ListingQuery,
-) -> Result<Value> {
-    listing_metadata::listing::merge(value, ids, archives, query)
+    until: std::time::Instant,
+) -> anyhow::Result<Value> {
+    listing_metadata::listing::merge(value, ids, archives, query, until)
 }
 pub(crate) fn listing_index(args: &[String]) -> Result<Value> {
     listing_metadata::control::dispatch(args)
@@ -567,7 +570,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .ok_or("invalid session")?
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
-    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks)?) } else { None };
+    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks, None)?) } else { None };
     let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
     // Archive preparation does not consume the live question-indexing budget.
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
@@ -879,8 +882,7 @@ pub fn fork_session(
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
     if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
-    if dsh::exists(name) {
-        if !archive.is_empty() { return Err("DeepSeek archives are unavailable".into()); }
+    if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
     let archive = if archive.is_empty() { None } else { Some(archive) };
@@ -905,7 +907,9 @@ fn matches_reference(reference: &crate::session_reference::Reference, record: &V
 pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference) -> Result<String> {
     local_sessions()?;
     let _guard = lock(None)?;
-    let mut candidates = if reference.archive.is_empty() { records()? } else { archive::records()? };
+    let mut candidates = if reference.archive.is_empty() { records()? }
+        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
     let first = matching.next().ok_or("The referenced conversation is no longer bound to a saved session; it may have been cleared or forgotten")?;
@@ -1750,7 +1754,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if args.first().is_some_and(|name| opencode::exists(name)) {
         return opencode::dispatch(command, args);
     }
-    if args.first().is_some_and(|name| dsh::exists(name)) {
+    let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
+        && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }
     if command == "settings" {

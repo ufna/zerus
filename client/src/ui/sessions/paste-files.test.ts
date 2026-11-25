@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { localFilePaths, pasteNative, pasteRoute, type PasteDeps } from "./paste-files";
+import { localFilePaths, pasteClipboardImage, pasteNative, pasteRoute, type PasteDeps } from "./paste-files";
 
 /** A paste event's clipboard data: typed strings and files. */
 function data(strings: Record<string, string>, files: File[] = []): DataTransfer {
@@ -64,6 +64,35 @@ describe("copied files in a paste (Qt MessageComposer.cpp:186-196)", () => {
     if (route.kind === "native") await pasteNative(route, { native, current: () => true, attach: () => { calls.push("attach"); }, image: () => { calls.push("image"); }, text: () => { calls.push("text"); } });
     expect(calls, "Qt attaches none of the files when one URL is not local").toEqual(["image"]);
     expect(native).not.toHaveBeenCalled();
+  });
+});
+
+// WebKitGTK 2.52 gives a clipboard image no type at all: its paste event is
+// empty, where Qt's insertFromMimeData read QClipboard::image.
+describe("an image paste on Linux", () => {
+  it("reads the native clipboard's image when the event carries nothing", () => {
+    expect(pasteRoute(data({}), false, true)).toEqual({ kind: "image" });
+  });
+
+  it("leaves text, links and files to their own routes, and other platforms unchanged", () => {
+    expect(pasteRoute(data({ "text/plain": "hello" }), false, true)).toEqual({ kind: "text" });
+    expect(pasteRoute(data({ "text/html": "<b>hello</b>" }), false, true)).toEqual({ kind: "text" });
+    expect(pasteRoute(data({ "text/uri-list": "file:///home/example/plan.png" }), false, true)).toEqual({ kind: "paths", paths: ["/home/example/plan.png"] });
+    const image = new File([new Uint8Array([1])], "image.png", { type: "image/png" });
+    expect(pasteRoute(data({}, [image]), false, true)).toEqual({ kind: "native", ask: true, image, text: "" });
+    expect(pasteRoute(data({}), false, false)).toEqual({ kind: "text" });
+    expect(pasteRoute(data({}), true)).toEqual({ kind: "text" });
+  });
+
+  it("pastes the image read, but nothing once the draft changed or without an image", async () => {
+    const image = new File([new Uint8Array([1])], "pasted-image.png", { type: "image/png" });
+    const calls: string[] = [];
+    const paste = (file: File) => calls.push(file.name);
+    await pasteClipboardImage({ read: async () => image, current: () => true, image: paste });
+    await pasteClipboardImage({ read: async () => image, current: () => false, image: paste });
+    await pasteClipboardImage({ read: async () => null, current: () => true, image: paste });
+    await pasteClipboardImage({ read: () => Promise.reject(new Error("no clipboard")), current: () => true, image: paste });
+    expect(calls).toEqual(["pasted-image.png"]);
   });
 });
 

@@ -1630,6 +1630,20 @@ finally:
         self.assertEqual(result['code'], 'invalid_request_id')
         self.assertFalse((self.desktop / 'approval-log').exists())
 
+    def test_team_review_labels_pong_requires_an_explicit_capability_request(self):
+        self.serve()
+        epoch = self.cli('desktop', 'status', '--json')['epoch']
+        request_id = str(uuid.uuid4())
+        ordinary = dict(request_id=request_id, accepted=True, durable=False, op='pong')
+        for capability, expected in [
+            ('another_capability', ordinary),
+            ('team_person_review_labels', dict(
+                ordinary, team_person_review_labels=dict(version=1, epoch=epoch))),
+        ]:
+            with self.subTest(capability=capability):
+                self.assertEqual(self.cli('desktop', 'request', '--json', data=dict(
+                    op='ping', request_id=request_id, capability=capability)), expected)
+
     def import_evidence(self, phase='complete', evidence='drained'):
         configuration = self.cli('desktop', 'status', '--json')['configuration']
         import_id = '11111111-1111-4111-8111-111111111111'

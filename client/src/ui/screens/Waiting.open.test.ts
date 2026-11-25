@@ -1,10 +1,9 @@
 // @vitest-environment happy-dom
-// Waiting for you against the real store (findings 10, 11 and 13 of the second
-// review): Open team and Open task find the lead's row by the machine and
-// launch binding the Team tab uses, read the team's list page when the team is
-// not on the pages read so far, and never by the row's native session id; a
-// quiet supervised question is not a person's request; a later page has the
-// way back and never says that nothing waits. Only the Tauri invoke is a fake.
+// Waiting for you against the real store (findings 11 and 13 of the second
+// review, and zerus-63rru.198): Open team, Open task and Open phase open the
+// team's page by its ID; a quiet supervised question is not a person's
+// request; a later page has the way back and never says that nothing waits.
+// Only the Tauri invoke is a fake.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
@@ -59,35 +58,42 @@ function show() {
 }
 const button = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent === label) as HTMLButtonElement;
 
-it("Open task selects the lead by machine and launch, not by its native session id (finding 10)", async () => {
-  store.apply([entry("list", "list", { teams: [summary(TEAM, leadBinding)], truncated: false, next: null }), entry("waiting", "waiting", { items: [card], next: null })]);
-  f.rows = [leadRow];
+// zerus-63rru.198: Open team, Open task and Open phase open the team's page by
+// its ID alone; neither the lead's session nor a list page is needed.
+const load = <T,>(path: string) => import(/* @vite-ignore */ path) as Promise<T>;
+const navigation = () => load<typeof import("../teams/team-navigation")>("../teams/team-navigation");
+
+it("Open task opens the page of a team without a lead session, with its node to select", async () => {
+  store.apply([entry("list", "list", { teams: [summary(TEAM)], truncated: false, next: null }), entry("waiting", "waiting", { items: [card], next: null })]);
   const host = show();
   button(host, "Open task").click();
-  await vi.waitFor(() => expect(f.select).toHaveBeenCalledWith("lead"));
+  await vi.waitFor(() => expect(f.page).toHaveBeenCalledWith("team"));
   expect(f.open).toHaveBeenCalledWith({ team: TEAM, node: 5 });
-  expect(f.detail).toHaveBeenCalledWith("team");
+  expect((await navigation()).teamPage()?.team).toBe(TEAM);
+  expect(f.select).not.toHaveBeenCalled(); expect(f.detail).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')).toBeNull();
 });
 
-it("a row of another machine with the same launch id is not the lead", async () => {
-  store.apply([entry("list", "list", { teams: [summary(TEAM, { ...leadBinding, machine: "00000000-0000-4000-8000-0000000000bb" })], truncated: false, next: null }), entry("waiting", "waiting", { items: [card], next: null })]);
-  f.rows = [leadRow];
-  const host = show();
-  host.querySelector<HTMLButtonElement>(".waiting-team")!.click();
-  await vi.waitFor(() => expect(host.textContent).toContain("The team's lead session is not on the session list."));
-  expect(f.select).not.toHaveBeenCalled();
-});
-
-it("reads the next list page for a team not on the first, then opens it (finding 10)", async () => {
+it("Open team opens the page of a team beyond the pages read, without reading the list", async () => {
   store.apply([entry("list", "list", { teams: [summary("00000000-0000-4000-8000-000000000001")], truncated: false, next: "c1" }), entry("waiting", "waiting", { items: [card], next: null })]);
   f.rows = [leadRow];
-  const host = show();
+  const host = show(); f.pages = [];
   host.querySelector<HTMLButtonElement>(".waiting-team")!.click();
-  await vi.waitFor(() => expect(f.pages).toContainEqual(["list", "c1"]));
-  expect(host.textContent).toContain("Reading the team list…");
-  store.apply([entry("list", "list", { teams: [summary(TEAM, leadBinding)], truncated: false, next: null, after: "c1" })]);
-  await vi.waitFor(() => expect(f.select).toHaveBeenCalledWith("lead"));
-  expect(f.pages.at(-1), "the reader goes back to the first page").toEqual(["list", null]);
+  await vi.waitFor(() => expect(f.page).toHaveBeenCalledWith("team"));
+  expect((await navigation()).teamPage()?.team).toBe(TEAM);
+  expect(f.pages).toEqual([]); expect(f.open).not.toHaveBeenCalled(); expect(f.select).not.toHaveBeenCalled();
+  expect(host.textContent).not.toContain("Reading the team list…");
+});
+
+it("Open phase focuses the phase, then opens the team's page", async () => {
+  const phased = { ...card, node: null, phase_reference: { phase: 2, generation: 1, purpose: "review" } };
+  store.apply([entry("list", "list", { teams: [summary(TEAM)], truncated: false, next: null }), entry("waiting", "waiting", { items: [phased], next: null })]);
+  const host = show();
+  host.querySelector<HTMLButtonElement>("[data-open-phase]")!.click();
+  await vi.waitFor(() => expect(f.page).toHaveBeenCalledWith("team"));
+  const { phaseFocus } = await import("../../store/team-phases");
+  expect(phaseFocus()).toMatchObject({ team: TEAM, phase: 2 });
+  expect((await navigation()).teamPage()?.team).toBe(TEAM);
 });
 
 it("a quiet supervised member question is not a person's request (finding 11)", () => {

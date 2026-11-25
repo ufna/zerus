@@ -155,6 +155,34 @@ fn creation_exact_negative_retries_only_explicit_same_capture_and_receipt() {
         first["import_record"]
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn creation_report_resumes_a_reference_from_an_earlier_device_number() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    let f = Fixture::new("success");
+    source(&f);
+    let Prepared::Snapshot(snapshot) = f.report.inputs.creations.retained().unwrap() else {
+        panic!("missing");
+    };
+    let current = snapshot.reference().unwrap();
+    let mut old = serde_json::to_value(&current).unwrap();
+    let device = &mut old["receipt_identity"]["object"][0];
+    *device = json!(device.as_u64().unwrap() ^ 1);
+    let old: migration::preload::Reference = serde_json::from_value(old).unwrap();
+    assert_ne!(old, current);
+    let record = CreationRecord::new_v2("a".repeat(64), old, 1).unwrap();
+    journal(&f).save(record.clone(), None).unwrap();
+
+    assert_eq!(run(&f, false), Ok(()));
+    let published = journal(&f).load().unwrap().unwrap().record;
+    assert_eq!(published.phase, Phase::Published);
+    assert_eq!(published.source, record.source);
+    let bytes = journal_bytes(&f);
+    assert_eq!(run(&f, false), Ok(()));
+    assert_eq!(journal_bytes(&f), bytes);
+    assert_eq!(f.attempts(), 1);
+}
 #[test]
 fn missing_creation_source_is_not_applicable_without_an_empty_report() {
     let _process = crate::PROCESS_TREE.read().unwrap();

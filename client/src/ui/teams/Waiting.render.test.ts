@@ -9,6 +9,8 @@ import { WaitingList } from "./Waiting";
 import { translateWithCatalog } from "../../i18n";
 import russian from "../../i18n.ru.json";
 import reportNotesCard from "../../../core/src/teams/fixtures/report-notes-card.json";
+import oldDeepSeekCards from "./fixtures/deepseek-host-cards-legacy.json";
+import deepSeekCards from "./fixtures/deepseek-host-cards.json";
 import type { WaitingItem, WaitingView } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -70,6 +72,46 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
   expect(cards[1].textContent).toContain("Integration");
   expect(cards[1].textContent).toContain("Docs");
   expect(cards[1].textContent).toContain("2 h");
+});
+
+it.each([
+  [deepSeekCards.member, "remove this member and add a replacement"],
+  [deepSeekCards.lead, "stop this team and create a new one"],
+  [oldDeepSeekCards.member, "remove this member and add a replacement"],
+  [oldDeepSeekCards.lead, "stop this team and create a new one"],
+] as const)("explains the recovery from a DeepSeek host refusal for $id", (row, action) => {
+  const { host } = setup({ view: { items: [row as WaitingItem], next: null } });
+  const card = host.querySelector("[data-waiting]")!;
+  expect(card.querySelector("[data-kind-sentence]")?.textContent).toBe(
+    `Member ${row.parameters[0][1]} needs a DeepSeek host with Agent Teams support.`,
+  );
+  expect(card.querySelector(".waiting-text")?.textContent).toBe(
+    `Stop idle DeepSeek sessions or restart the host yourself, then ${action} once the host is back, since Zerus will not retry this start.`,
+  );
+  expect(card.textContent).not.toContain("invalid_state");
+  expect(card.textContent).not.toContain("/work/example/.dsh");
+  expect([...card.querySelectorAll("[data-decision]")].map((button) => button.getAttribute("data-decision"))).toEqual(["acknowledged"]);
+});
+
+it.each([
+  [oldDeepSeekCards.member, "m4", "remove this member and add a replacement"],
+  [oldDeepSeekCards.lead, "lead", "stop this team and create a new one"],
+] as const)("recovers the member and action from a saved card without parameters ($id)", (saved, member, action) => {
+  // Before bounded card parameters, the real writer only stored the diagnostic.
+  const { parameters: _parameters, ...row } = saved;
+  const { host } = setup({ view: { items: [row as WaitingItem], next: null } });
+  expect(host.querySelector("[data-kind-sentence]")?.textContent).toBe(
+    `Member ${member} needs a DeepSeek host with Agent Teams support.`,
+  );
+  expect(host.querySelector(".waiting-text")?.textContent).toContain(action);
+  expect(host.textContent).not.toMatch(/invalid_state|\/work\/example\/\.dsh/);
+});
+
+it("keeps a legacy refusal as written when its member parameter conflicts", () => {
+  const row = oldDeepSeekCards.member;
+  const mismatched = { ...row, parameters: [["member", "m999"], row.parameters[1]] } as WaitingItem;
+  const { host } = setup({ view: { items: [mismatched], next: null } });
+  expect(host.querySelector(".waiting-text")?.textContent).toBe(row.text);
 });
 
 it("shows the service's notes under their own heading, apart from the member's text", () => {
@@ -153,7 +195,8 @@ it("describes a rejected result that is still merged, with the store's facts as 
   const { host } = setup({ view: { items: [rejected], next: null } });
   const card = host.querySelector(`[data-waiting="${TEAM_A}:6"]`);
   expect(card?.textContent).toContain("Rejected result is merged");
-  expect(card?.textContent).toContain("The rejection did not undo the merge; only a revert on the integration branch removes it.");
+  // zerus-63rru.197: the card says who reverts it, since Zerus cannot.
+  expect(card?.textContent).toContain("The rejection did not undo the merge, and Zerus cannot revert it: ask the lead, which has the same item in its inbox, or revert the merge on the integration branch yourself, then acknowledge this card.");
   expect(card?.textContent).toContain(body);
   expect(card?.textContent).not.toContain("Card: rejected_merge");
   expect(card?.querySelector('[data-decision="acknowledged"]')?.textContent).toBe("Acknowledge");

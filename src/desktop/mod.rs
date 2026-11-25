@@ -1717,10 +1717,10 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                             } else if matches!(request_value["op"].as_str(), Some("read_intent")) {
                                 runtime.delivery_request(&mut store, request_value)
                             } else {
-                                request(&location, &mut store, hello.request.as_ref())
+                                request(&location, &mut store, &epoch, hello.request.as_ref())
                             }
                         } else {
-                            request(&location, &mut store, hello.request.as_ref())
+                            request(&location, &mut store, &epoch, hello.request.as_ref())
                         };
                         let held = background.as_ref().and_then(background::Runtime::handoff);
                         migration = handoff::inspect_held(&location, held.as_deref());
@@ -2040,7 +2040,7 @@ fn frontend_refused(request: Option<&Value>, code: &str) -> Value {
         "accepted":false,"durable":false,"code":code})
 }
 
-fn request(location: &Location, store: &mut Store, value: Option<&Value>) -> Value {
+fn request(location: &Location, store: &mut Store, epoch: &str, value: Option<&Value>) -> Value {
     let id = value
         .and_then(|v| v["request_id"].as_str())
         .filter(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id));
@@ -2050,7 +2050,17 @@ fn request(location: &Location, store: &mut Store, value: Option<&Value>) -> Val
     let op = value.and_then(|v| v["op"].as_str()).unwrap_or("");
     // Revocation only reduces authority. Every positive effect remains fenced.
     if op == "ping" {
-        json!({"request_id":id,"accepted":true,"durable":false,"op":"pong"})
+        use zerus_client_core::desktop::team_person_actions as teams;
+        let mut pong = json!({"request_id":id,"accepted":true,"durable":false,"op":"pong"});
+        if value.and_then(|input| input["capability"].as_str())
+            == Some(teams::REVIEW_LABELS_CAPABILITY)
+        {
+            pong[teams::REVIEW_LABELS_CAPABILITY] = json!({
+                "version": teams::REVIEW_LABELS_VERSION,
+                "epoch": epoch,
+            });
+        }
+        pong
     } else if matches!(op, "revoke" | "revoke_status") {
         revoke::request(location, store, value.expect("validated request"))
     } else {

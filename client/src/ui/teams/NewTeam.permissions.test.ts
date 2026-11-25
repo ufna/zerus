@@ -129,7 +129,7 @@ it("a catalog read's or a template save's refusal is shown without its code", as
   expect(host.querySelector(".nt-error")?.textContent).toBe("The team store is busy. Nothing was written; try again.");
   button(host, "Save as template").click();
   await vi.waitFor(() => expect(failing).toHaveLength(1));
-  await vi.waitFor(() => expect(host.querySelector("[data-new-team-error]")?.textContent).toBe("The built-in template is read-only."));
+  await vi.waitFor(() => expect(host.querySelector("[data-create-error] span")?.textContent).toBe("The built-in template is read-only."));
   expect(host.querySelector("[data-create-error]")?.textContent).not.toContain("invalid_state");
 });
 

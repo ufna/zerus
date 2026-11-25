@@ -22,6 +22,7 @@
         }
       },
       "goal": "",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",
@@ -30,6 +31,7 @@
       "revision": 17,
       "status": "running"
     },
+    "edit_goal": "",
     "groups": [
       {
         "cards": [],
@@ -65,7 +67,10 @@
               "project": "example-project",
               "uuid": "00000000-0000-4000-8000-000000000002"
             },
-            "title": "Task 2"
+            "title": "Task 2",
+            "writes": [
+              "src/example.rs"
+            ]
           }
         ],
         "state": "pending"
@@ -281,6 +286,7 @@
         }
       },
       "goal": "",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000beef",
       "integration_branch": "zerus/team/fixes",
       "lead": "lead",
@@ -289,6 +295,7 @@
       "revision": 16,
       "status": "running"
     },
+    "edit_goal": "",
     "groups": [
       {
         "cards": [],
@@ -324,7 +331,10 @@
               "project": "example-project",
               "uuid": "00000000-0000-4000-8000-000000000002"
             },
-            "title": "Task 2"
+            "title": "Task 2",
+            "writes": [
+              "src/example.rs"
+            ]
           }
         ],
         "state": "pending"

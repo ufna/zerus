@@ -163,6 +163,13 @@ fn create_stage(
     role: &str,
     member: Option<&str>,
 ) -> Result<u32> {
+    // Normal progression skips disabled steps. A replacement is a separate
+    // creation entry point and must respect the same setting.
+    if kind == StageKind::Land && !ctx.team.settings.land_allowed {
+        return Err(invalid(
+            "Landing is disabled in Team settings. Enable Land stages to create a replacement.",
+        ));
+    }
     let id: u32 = ctx
         .db
         .query_row(

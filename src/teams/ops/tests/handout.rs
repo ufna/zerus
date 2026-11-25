@@ -447,7 +447,7 @@ fn the_unstaffed_reading_names_every_earlier_implementer() {
         lead: &team.lead,
         integration: team.settings.integration,
     };
-    let unstaffed = zerus_team_plan::ready::unstaffed(&view);
+    let unstaffed = zerus_team_plan::ready::unstaffed(&view, &Default::default());
     let stage_entry = unstaffed.iter().find(|u| u.node == stage).unwrap_or_else(|| {
         panic!("the stage is unstaffed: {unstaffed:?}")
     });
@@ -709,6 +709,7 @@ fn readiness_view_contains_only_live_nodes_and_their_archived_direct_leaves() {
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };

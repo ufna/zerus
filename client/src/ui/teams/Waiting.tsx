@@ -4,7 +4,7 @@ import { Icon } from "../lib/icons";
 import { openPhase } from "../../store/team-phases";
 import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
-import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote } from "./decisions";
+import { PHASE_CARD_HIDE, waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 
 // Waiting for you (the fork's Waiting.tsx, adapted to M1): the open owner
 // cards of every team, oldest first, each with its team, its kind and the
@@ -21,6 +21,7 @@ export function WaitingCard(props: {
   onOpenTeam: (item: WaitingItem) => void;
   onOpenTask?: (item: WaitingItem) => void;
 }) {
+  const acceptance = () => props.item.kind === "pipeline_acceptance" && props.item.node !== null && !!props.onOpenTask;
   return (
     <article class="waiting-card" data-waiting={props.item.id} data-kind={props.item.kind}>
       <div class="waiting-card-head">
@@ -31,7 +32,7 @@ export function WaitingCard(props: {
         <span class="waiting-age dim">{waitingAge(props.item.created_ms, props.now)}</span>
       </div>
       <p class="waiting-kind-sentence dim" data-kind-sentence>{waitingKindSentence(props.item)}</p>
-      <p class="waiting-text">{props.item.text}</p>
+      <p class="waiting-text">{waitingText(props.item)}</p>
       <Show when={(props.item.notes ?? []).length > 0}>
         <div class="waiting-notes" data-notes>
           <p class="waiting-notes-heading dim">{tr("Service notes")}</p>
@@ -40,16 +41,25 @@ export function WaitingCard(props: {
           </For>
         </div>
       </Show>
+      <Show when={acceptance()}><p class="waiting-kind-sentence dim" data-acceptance-evidence>{tr("Read the report and verdicts in the task before you approve.")}</p></Show>
+      <Show when={props.item.phase_reference}><p class="dim" data-phase-card-hide>{PHASE_CARD_HIDE()}</p></Show>
       <div class="waiting-decisions">
+        {/* A phase card is decided on its phase: Open phase comes first (zerus-63rru.197 C5). */}
+        <Show when={props.item.phase_reference}>{(reference) => <button type="button" class="btn small primary" disabled={props.busy} data-open-phase onClick={() => { openPhase(props.item.team,reference().phase); props.onOpenTeam(props.item); }}>{tr("Open phase")}</button>}</Show>
+        {/* Work acceptance is decided beside its report and verdicts: Open task
+            comes first (zerus-63rru.199 A5). */}
+        <Show when={acceptance()}>
+          <button type="button" class="btn small primary" disabled={props.busy} data-open-task
+            onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>
+        </Show>
         <For each={waitingDecisions(props.item)}>
           {(choice, index) => (
-            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger }}
+            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger && !acceptance() && !props.item.phase_reference }}
               disabled={props.busy} data-decision={choice.decision}
               onClick={() => props.onDecide(props.item, choice.decision)}>{choice.text}</button>
           )}
         </For>
-        <Show when={props.item.phase_reference}>{(reference) => <button type="button" class="btn small" disabled={props.busy} data-open-phase onClick={() => { openPhase(props.item.team,reference().phase); props.onOpenTeam(props.item); }}>{tr("Open phase")}</button>}</Show>
-        <Show when={props.item.node !== null}>
+        <Show when={props.item.node !== null && !acceptance()}>
           <button type="button" class="btn small" disabled={props.busy} data-open-task
             onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>
         </Show>

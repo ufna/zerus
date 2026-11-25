@@ -160,6 +160,215 @@ mod tests {
     }
 
     #[test]
+    fn every_native_team_prompt_source_has_russian_words_and_the_same_arguments() {
+        let source = include_str!("../../core/src/desktop/team_confirmation.rs");
+        let mut sources = zerus_client_core::text::marked_sources(source);
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "../../core/src/teams/action/input.rs"
+        )));
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "desktop_service/team_person.rs"
+        )));
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "desktop_service/team_person_actions.rs"
+        )));
+        sources.sort_unstable();
+        sources.dedup();
+        assert!(sources.len() >= 150);
+        let args = (1..=9).map(|n| format!("[value{n}]")).collect::<Vec<_>>();
+        for source in sources {
+            let translated = translation(&source, None)
+                .unwrap_or_else(|| panic!("missing native Teams translation for {source:?}"));
+            let en = fill(&source, &args);
+            let ru = fill(&translated, &args);
+            for arg in &args {
+                assert_eq!(en.matches(arg).count(), ru.matches(arg).count(), "{source}");
+            }
+            assert!(!en.contains('{') && !ru.contains('{'), "{source}");
+        }
+    }
+
+    /// Review of #2558 (P2): the native formatter's own Stop, Archive and
+    /// Remove sentences in English and Russian, beside the window's
+    /// confirmation for the same call. The window's fallback dialog test
+    /// (`TeamConfirmDialog.native.render.test.ts`) shows that confirmation and
+    /// compares it with these renderings. The last row is the window's own
+    /// unnamed-team message, rendered here by the same renderer.
+    /// `ZERUS_UPDATE_NATIVE_CONFIRMATION_FIXTURE=1` rewrites the fixture.
+    #[test]
+    fn native_confirmations_are_the_window_fixture() {
+        use zerus_client_core::{
+            desktop::{
+                creation_clone::Scope,
+                team_confirmation::{self, Labels},
+                team_person_actions as wire,
+            },
+            teams::action::{TeamAction, TeamCall},
+        };
+        const TEAM: &str = "11111111-1111-4111-8111-111111111111";
+        let facts = "f".repeat(64);
+        let labels = Labels {
+            facts: facts.clone(),
+            ..Default::default()
+        };
+        let mut rows = Vec::new();
+        for action in [
+            TeamAction::Stop {},
+            TeamAction::Archive {},
+            TeamAction::ArchiveMember {
+                member: "m2".into(),
+            },
+        ] {
+            let call = TeamCall {
+                team: TEAM.into(),
+                team_name: "Orchard".into(),
+                action,
+                expected_revision: Some(3),
+                confirmed: false,
+                request_id: "22222222-2222-4222-8222-222222222222".into(),
+            };
+            let plan = wire::Plan::from_call(&call).unwrap();
+            let review = wire::Review {
+                intent: wire::Intent {
+                    scope: Scope {
+                        configuration: "a".repeat(64),
+                        service_epoch: "33333333-3333-4333-8333-333333333333".into(),
+                    },
+                    machine: "44444444-4444-4444-8444-444444444444".into(),
+                    facts: facts.clone(),
+                    request: "c".repeat(64),
+                    store: wire::StoreBinding::Existing {
+                        fingerprint: "d".repeat(64),
+                    },
+                    plan: plan.reference().unwrap(),
+                },
+                team_name: call.team_name.clone(),
+                title: "Legacy title".into(),
+                subject: "legacy".into(),
+                details: Vec::new(),
+            };
+            let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+            rows.push(serde_json::json!({
+                "from": "native prompt",
+                "call": { "team_name": call.team_name, "action": call.action },
+                "confirmation": call.action.confirmation(&call.team_name).unwrap(),
+                "rendered": {
+                    "en": render_in(&prompt.body[0], false),
+                    "ru": render_in(&prompt.body[0], true),
+                },
+            }));
+        }
+        let unnamed = TeamAction::Stop {}.confirmation("").unwrap();
+        rows.push(serde_json::json!({
+            "from": "window message",
+            "call": { "team_name": "", "action": TeamAction::Stop {} },
+            "rendered": {
+                "en": render_in(&unnamed.message, false),
+                "ru": render_in(&unnamed.message, true),
+            },
+            "confirmation": unnamed,
+        }));
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/ui/teams/fixtures/native-confirmations.json"
+        );
+        let text = serde_json::to_string_pretty(&rows).unwrap() + "\n";
+        if std::env::var_os("ZERUS_UPDATE_NATIVE_CONFIRMATION_FIXTURE").is_some() {
+            std::fs::write(path, &text).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap_or_default(),
+            text,
+            "regenerate with ZERUS_UPDATE_NATIVE_CONFIRMATION_FIXTURE=1"
+        );
+    }
+
+    #[test]
+    fn both_native_languages_render_member_removal_and_keep_reasons_quoted() {
+        use zerus_client_core::{
+            desktop::{
+                creation_clone::Scope,
+                team_confirmation::{self, Labels},
+                team_person_actions as wire,
+            },
+            teams::action::{TeamAction, TeamCall},
+        };
+        const TEAM: &str = "11111111-1111-4111-8111-111111111111";
+        let call = TeamCall {
+            team: TEAM.into(),
+            team_name: "Renderer caption".into(),
+            action: TeamAction::ArchiveMember {
+                member: "m2".into(),
+            },
+            expected_revision: Some(3),
+            confirmed: false,
+            request_id: "22222222-2222-4222-8222-222222222222".into(),
+        };
+        let plan = wire::Plan::from_call(&call).unwrap();
+        let facts = "f".repeat(64);
+        let review = wire::Review {
+            intent: wire::Intent {
+                scope: Scope {
+                    configuration: "a".repeat(64),
+                    service_epoch: "33333333-3333-4333-8333-333333333333".into(),
+                },
+                machine: "44444444-4444-4444-8444-444444444444".into(),
+                facts: facts.clone(),
+                request: "c".repeat(64),
+                store: wire::StoreBinding::Existing {
+                    fingerprint: "d".repeat(64),
+                },
+                plan: plan.reference().unwrap(),
+            },
+            team_name: "Orchard".into(),
+            title: "Legacy title".into(),
+            subject: "archive member".into(),
+            details: vec![("legacy".into(), format!("{{\"team\":\"{TEAM}\"}}"))],
+        };
+        let labels = Labels {
+            facts,
+            member: Some("Reviewer".into()),
+            ..Default::default()
+        };
+        let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+        assert_eq!(render_in(&prompt.title, false), "Remove");
+        assert_eq!(render_in(&prompt.title, true), "Удалить");
+        let en = render_in(&prompt.body[0], false);
+        let ru = render_in(&prompt.body[0], true);
+        assert!(en.starts_with("Remove Reviewer (m2) from Orchard?"), "{en}");
+        assert!(en.contains("cannot be undone"), "{en}");
+        assert!(
+            ru.starts_with("Удалить Reviewer (m2) из команды Orchard?"),
+            "{ru}"
+        );
+        assert!(ru.contains("нельзя отменить"), "{ru}");
+        assert_eq!(
+            render_in(&prompt.body[1], true),
+            "Незавершённая работа вернётся лиду."
+        );
+
+        let plan = wire::Plan::from_call(&TeamCall {
+            action: TeamAction::Cancel {
+                node: 7,
+                reason: "Duplicate.\nSee «context»\u{2028}in the report.".into(),
+            },
+            ..call
+        })
+        .unwrap();
+        let mut review = review;
+        review.intent.plan = plan.reference().unwrap();
+        let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+        assert_eq!(
+            render_in(&prompt.body[1], false),
+            "Reason — “Duplicate. See \\«context\\» in the report.”"
+        );
+        assert_eq!(
+            render_in(&prompt.body[1], true),
+            "Причина — «Duplicate. See \\«context\\» in the report.»"
+        );
+    }
+
+    #[test]
     fn filling_matches_the_webview_tokens() {
         let args = ["a".to_owned(), "b".to_owned()];
         assert_eq!(fill("%2-%1 %L1 %n %3 50%", &args), "b-a a a %3 50%");

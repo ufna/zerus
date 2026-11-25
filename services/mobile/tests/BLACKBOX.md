@@ -245,12 +245,12 @@ suite runs.
 
 ## Heartbeat key review
 
-`test_bb_heartbeat.LISTING_KEYS` classifies every top-level key of
-`hgs ls --json --local` as forwarded, withheld or carried beside the snapshot.
-`test_reviewed_listing_keys_match_the_hgs_source` reads `local_json` in
-`src/cli.rs`, so a key that hgs gains fails until someone classifies it; the
-heartbeat test then fails on any snapshot key outside the reviewed set. The
-table records what the Python connector forwards today.
+`test_bb_heartbeat.LISTING_KEYS` classifies the native listing's top-level
+keys as forwarded, withheld, carried beside the snapshot or exclusive to
+explicit pages. The source check reads `local_json_archives_attempt` and its
+canonical and indexed merge functions. A new key requires review. The
+heartbeat test checks the forwarded fields against the reviewed set, including
+the legacy archive preview metadata. Connectors never request `ls --paged`.
 
 ## Coverage of the in-process connector tests
 

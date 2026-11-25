@@ -368,7 +368,7 @@ impl Report {
         let mut current = match existing {
             Some(stored) => {
                 let mut current = stored;
-                if current.record.source != reference {
+                if !current.record.source.matches_persisted(&reference) {
                     // Also fences a recoverable attempt's pending callback.
                     self.advance(group, &journal, &mut current, |r| {
                         r.phase = Phase::Quarantined;
