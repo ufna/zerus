@@ -266,3 +266,59 @@ fn transfer_uses_existing_hgs_copy_with_both_computer_catalog_and_auth_guards() 
         );
     }
 }
+
+/// #2533 review (P3): Teams' member choices list one provider's accounts
+/// (`account ls --provider P`) and nothing else; other providers and a
+/// malformed computer identity are refused before any call.
+#[test]
+fn a_provider_listing_reads_only_that_providers_accounts() {
+    use zerus_client_core::account_actions::{provider_catalog, CHANGED};
+    const MACHINE: &str = "11111111-1111-4111-8111-111111111111";
+    let (scratch, _) = setup();
+    let path = scratch.0.join("catalog.json");
+    let mut catalog: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    catalog["profiles"].as_array_mut().unwrap().push(
+        json!({"id":"kimi-work","provider":"kimi","home":"/accounts/kimi","label":"Kimi","auth_revision":"a1"}),
+    );
+    fs::write(&path, catalog.to_string()).unwrap();
+    let hgs = scratch.0.join("hgs");
+    let listed = provider_catalog(&hgs, MACHINE, "kimi").unwrap();
+    assert_eq!(listed["revision"], "r1");
+    let ids: Vec<_> = listed["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["kimi-work"]);
+    let calls = || -> Vec<Value> {
+        fs::read_to_string(scratch.0.join("calls.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    };
+    assert_eq!(
+        calls(),
+        [json!([
+            "--expect-machine",
+            MACHINE,
+            "account",
+            "ls",
+            "--provider",
+            "kimi"
+        ])]
+    );
+    for (machine, provider) in [
+        (MACHINE, "opencode"),
+        (MACHINE, "dsh"),
+        ("not-a-machine", "kimi"),
+    ] {
+        assert_eq!(
+            provider_catalog(&hgs, machine, provider),
+            Err(CHANGED.to_string()),
+            "{provider}"
+        );
+    }
+    assert_eq!(calls().len(), 1);
+}

@@ -7075,6 +7075,12 @@ hgs @mac codex /path/to/project --new --account work
 hgs account copy native-codex --from @local --to mac --as codex-work --label Work
 ```
 
+`account ls --provider P` (P is `codex`, `claude`, `kimi`, `dsh` or `opencode`)
+lists only that provider's current and removed accounts, with the whole
+catalog's `revision`. It runs and asks no other provider: Teams' member model
+choices use it so that OpenCode's service is never contacted for them. An older
+`hgs` ignores the option and lists every account.
+
 `account ls` advertises `setup_revision: true` when terminal setup accepts an
 optional `--revision REV` on `account login`, `account install` and `account start`.
 That check runs when the terminal command executes, before provider work. Calls
