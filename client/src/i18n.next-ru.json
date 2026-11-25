@@ -2714,6 +2714,7 @@
   "Wait at least %1 seconds between lead inbox alerts.": "Минимальный интервал уведомлений о входящих лида — %1 сек.",
   "Wait for background work to finish, then retry.": "Дождитесь завершения фоновой работы, затем повторите попытку.",
   "Wait for the current action to finish.": "Дождитесь окончания текущего действия.",
+  "Wait for the pending restore before changing the lead seat.": "Дождитесь завершения восстановления, прежде чем менять место лида.",
   "Wait for the session update to finish before checking Restore session.": "Дождитесь обновления сессии и проверьте действие «Восстановить сессию».",
   "Wait for the session update to finish before reviewing the lead seat.": "Дождитесь обновления сессии, прежде чем проверять место лида.",
   "Wait for the team to be created.": "Дождитесь создания команды.",

@@ -67,7 +67,9 @@ export function TeamLeadAvailability(props: {
       text: launchOnly() ? tr("Browse Archive and verify the lead's run. A launch can have more than one archived run.")
         : tr("Browse Archive to see if the lead's session can be restored."),
     };
-    if (saved && (row.restorePending || isRestorePending(row))) return { text: tr("Check the pending restore in the archived session.") };
+    if (row.restorePending || isRestorePending(row)) return { text: saved
+      ? tr("Check the pending restore in the archived session.")
+      : tr("Wait for the pending restore before changing the lead seat.") };
     if (computerOffline(row.computer)) return { text: tr("Machine is offline") };
     if (updating(row.computer, row.name) || batchRunning()) return { text: saved
       ? tr("Wait for the session update to finish before checking Restore session.")

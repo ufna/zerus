@@ -280,6 +280,15 @@ it("explains the unsettled-work restriction without suggesting a replacement", a
   expect(f.actions).toEqual([]);
 });
 
+it("waits for a pending restore when a stopped launch-bound row is listed", async () => {
+  f.rows = [savedLead()];
+  f.restorePending = true;
+  const host = await openPage(listed(), emptyRoster(0, lead.session_id));
+  expect(a(host).textContent).toContain("Wait for the pending restore before changing the lead seat.");
+  expect(leadAction(host)).toBeNull();
+  expect(f.actions).toEqual([]);
+});
+
 it("withholds Stop and Swap for a run-bound archive with no Restore capability", async () => {
   f.archives = [archivedLead("forget")];
   const host = await openPage(listed(), emptyRoster());

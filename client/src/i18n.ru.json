@@ -4905,6 +4905,7 @@
   "Wait for the current action to finish.": "Дождитесь окончания текущего действия.",
   "Wait for the current file transfer to finish.": "Дождитесь завершения текущей передачи файла.",
   "Wait for the model settings change to finish.": "Дождитесь завершения изменения настроек модели.",
+  "Wait for the pending restore before changing the lead seat.": "Дождитесь завершения восстановления, прежде чем менять место лида.",
   "Wait for the session identity to load, then drop the files again.": "Подождите, пока загрузится идентификатор сессии, а затем снова перетащите файлы.",
   "Wait for the session update to finish before checking Restore session.": "Дождитесь обновления сессии и проверьте действие «Восстановить сессию».",
   "Wait for the session update to finish before reviewing the lead seat.": "Дождитесь обновления сессии, прежде чем проверять место лида.",
