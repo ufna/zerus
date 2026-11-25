@@ -757,7 +757,8 @@ fn native_prestart_writes_the_exact_hook_audit_and_never_repeats_it() {
 
     crate::state::install_codex_hooks(&home, "codex").unwrap();
     let prepared = prepare(&home, &folder, None, "").unwrap();
-    assert_eq!(prepared.grant.len(), 4);
+    // The fresh account receives the 11 common events plus Codex Interrupt.
+    assert_eq!(prepared.grant.len(), 12);
     assert!(prepared.uncovered.is_empty());
     let grant = prepared.grant.clone();
     drop(prepared);
@@ -767,6 +768,7 @@ fn native_prestart_writes_the_exact_hook_audit_and_never_repeats_it() {
     );
 
     let stored = super::config(&home).unwrap();
+    assert_eq!(stored["hooks"]["state"].as_object().unwrap().len(), 12);
     for (key, hash) in &grant {
         assert_eq!(stored["hooks"]["state"][key]["trusted_hash"], hash.as_str());
     }
