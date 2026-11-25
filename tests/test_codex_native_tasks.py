@@ -28,26 +28,27 @@ class NativeTaskBinding(unittest.TestCase):
     write_header = recovery.CodexClearRecovery.write_header
     emit = recovery.CodexClearRecovery.emit
 
-    def poisoned(self, outside=False):
+    def poisoned(self, outside=False, *, native_account=False):
         if not getattr(self, 'deferred_main_fixture', False):
-            return recovery.CodexClearRecovery.poisoned(self, outside=outside)
+            return recovery.CodexClearRecovery.poisoned(self, outside=outside, native_account=native_account)
         self.new_main = str(uuid.uuid4())
-        self.new_path = self.root/'account/sessions'/('rollout-'+self.new_main+'.jsonl')
+        account = self.root.resolve() / ('.codex' if native_account else 'account')
+        self.new_path = account/'sessions'/('rollout-'+self.new_main+'.jsonl')
         original = recovery.clear.RESUMED_CODEX
         marker = 'int main(int argc, char **argv) {'
         assert original.count(marker) == 1
         recovery.clear.RESUMED_CODEX = original.replace(marker, marker+
             '\n    if (open('+json.dumps(str(self.new_path))+', O_CREAT | O_RDONLY, 0600) < 0) return 124;', 1)
         try:
-            recovery.CodexClearRecovery.poisoned(self, outside=outside)
+            recovery.CodexClearRecovery.poisoned(self, outside=outside, native_account=native_account)
         finally:
             recovery.clear.RESUMED_CODEX = original
         self.new_path.write_text(json.dumps(dict(type='session_meta',payload=dict(
             id=self.new_main,source='cli',cli_version='0.169.0',cwd=str(self.root),
             timestamp=datetime.now(timezone.utc).isoformat())))+'\n')
 
-    def prepare_task(self):
-        self.poisoned()
+    def prepare_task(self, *, native_account=False):
+        self.poisoned(native_account=native_account)
         for key in ('expected_id', 'error', 'session_end', 'clear_context_request'):
             self.record.pop(key, None)
         self.record.update(conversation_state='active', activity='idle', phase='idle',
@@ -121,8 +122,8 @@ class NativeTaskBinding(unittest.TestCase):
         self.assertEqual(self.record['pid'], original_pid)
         self.assertEqual(self.record['subagents']['external:codex:'+self.successor]['conversation_id'], self.successor)
 
-    def legacy_binding(self):
-        self.prepare_task()
+    def legacy_binding(self, *, native_account=False):
+        self.prepare_task(native_account=native_account)
         old = self.rollout
         parent = self.account / 'sessions' / ('rollout-' + self.conversation_id + '.jsonl')
         old.rename(parent)  # The original C process still holds the same inode.
@@ -140,15 +141,14 @@ class NativeTaskBinding(unittest.TestCase):
             session_id=self.conversation_id,transcript_path=str(parent),cwd=str(self.root)))
         # Explicit legacy-corrupt record fixture. The installed-base RED above
         # separately proves that the old real hook produces this transition.
-        self.record.update(conversation_id=self.successor,transcript=str(self.transcript),
-                           agent_home=str(self.account))
+        self.record.update(conversation_id=self.successor,transcript=str(self.transcript))
         self.write_record()
         self.parent_path = parent
         self.parent_event = dict(hook_event_name='UserPromptSubmit',session_id=self.conversation_id,
             transcript_path=str(parent),cwd=str(self.root),prompt='Fresh original native prompt')
 
     def test_fresh_original_prompt_repairs_legacy_binding_without_rewriting_receipts(self):
-        self.legacy_binding()
+        self.legacy_binding(native_account=True)
         request = str(uuid.uuid4())
         receipt = dict(request_id=request,name=self.name,run_id=self.run_id,
             conversation_id=self.successor,submitted_at=time.time()-1,status='submitted',
@@ -169,6 +169,9 @@ class NativeTaskBinding(unittest.TestCase):
                          'a different fresh prompt cannot credit an unseen old request')
         self.assertEqual(current['codex_binding_recovery']['source'],'original_native_prompt')
         self.assertFalse(current['codex_binding_recovery']['replayed'])
+        self.assertIsNone(current['agent_home'])
+        self.assertEqual(current['subagents']['external:codex:'+self.successor]['agent_home'],
+                         str(self.account))
         self.assertEqual(len(list((self.state/'codex-binding-repairs').glob('*.json'))),1)
 
     def test_completion_alone_never_repairs_legacy_binding_or_input(self):

@@ -31,8 +31,8 @@ class RestoredMainReceipt(unittest.TestCase):
     prepare_task = binding.NativeTaskBinding.prepare_task
     legacy_binding = binding.NativeTaskBinding.legacy_binding
 
-    def retained(self):
-        self.legacy_binding()
+    def retained(self, *, native_account=False):
+        self.legacy_binding(native_account=native_account)
         self.pending = time.time()
         self.request = str(uuid.uuid4())
         self.receipt = dict(request_id=self.request, name=self.name, run_id=self.run_id,
@@ -85,7 +85,7 @@ class RestoredMainReceipt(unittest.TestCase):
         return current
 
     def test_already_restored_main_accepts_exact_input_without_rewriting_receipt(self):
-        self.retained()
+        self.retained(native_account=True)
         self.accepted()
         current = self.observe()
         self.assertGreater(current['input_seen_at'], self.pending)

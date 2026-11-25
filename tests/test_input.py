@@ -277,14 +277,14 @@ class InputTransport(unittest.TestCase):
         self.record.pop('last_event_at',None)
         self.write_record()
 
-    def resumed_unconfirmed(self, fork_parent=None, native=None):
+    def resumed_unconfirmed(self, fork_parent=None, native=None, *, rollout=None):
         # A native executable name, exact parent PID and an open rollout are
         # all checked by the bridge. No real provider or model call is involved.
         # `native` replaces the C source of that executable; it takes the same
         # arguments and writes agent-pid and received the same way.
         self.tmux('kill-session', '-t', self.name)
         (self.root / 'agent-pid').unlink()
-        self.rollout = self.root / 'saved.jsonl'
+        self.rollout = rollout if rollout is not None else self.root / 'saved.jsonl'
         meta = dict(type='session_meta', payload=dict(id=self.conversation_id))
         if fork_parent:
             self.rollout = self.root / '.codex/sessions/rollout-fork.jsonl'

@@ -30,9 +30,9 @@ class CodexClearRecovery(unittest.TestCase):
     hook = clear.ClearContext.hook
     inspect = clear.ClearContext.inspect
 
-    def poisoned(self, outside=False):
+    def poisoned(self, outside=False, *, native_account=False):
         self.successor = str(uuid.uuid4())
-        self.account = self.root / 'account'
+        self.account = self.root.resolve() / ('.codex' if native_account else 'account')
         sessions = self.account / 'sessions'
         sessions.mkdir(parents=True)
         directory = self.root / 'other-account' / 'sessions' if outside else sessions
@@ -94,6 +94,8 @@ int main(int argc, char **argv) {
                            session_end=dict(run_id=self.run_id, conversation_id=self.conversation_id, at=time.time() - .5),
                            clear_context_request=dict(request_id=str(uuid.uuid4()),
                                                       conversation_id=self.conversation_id, at=time.time() - 1))
+        if native_account:
+            self.record.update(account_id='native-codex', agent_home=None)
         self.write_record()
         self.header = dict(type='session_meta', payload=dict(id=self.successor, source='cli',
                            timestamp=datetime.now(timezone.utc).isoformat(), cwd=str(self.root)))
