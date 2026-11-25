@@ -3,7 +3,7 @@ use super::{actor, fail, machines, option, project_arg, Result};
 use crate::config::Config;
 use serde_json::{json, Value};
 use std::time::Duration;
-use zerus_replica::{Actor, ProjectStore};
+use zerus_replica::ProjectStore;
 
 pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let mut index = 0;
@@ -26,11 +26,15 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let uuid =
         option(args, "--uuid")?.ok_or_else(|| fail("review-copy requires the exact task UUID"))?;
     let confirmation = option(args, "--confirm")?;
-    if confirmation.is_some() && !matches!(who, Actor::Person) {
-        return Err(fail(
-            "only a person confirms moving a damaged local task copy aside",
-        ));
-    }
+    // The person, or an agent carrying out the person's own request
+    // (zerus-46l1q), whose identity the reply records.
+    let person = match confirmation {
+        Some(_) => super::person_request_for(
+            &who,
+            "only a person, or an agent at the person's own request, confirms moving a damaged local task copy aside",
+        )?,
+        None => None,
+    };
     let mut store =
         ProjectStore::open_copy_review(&config.state.join("replica"), &id, Duration::from_secs(2))
             .map_err(fail)?
@@ -52,7 +56,29 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             {
                 return Err(fail("review-copy requires its exact review fingerprint"));
             }
-            match store.move_reviewed_copy(uuid, expected) {
+            if let Some(person) = &person {
+                reply["person_request"] = person.identity();
+            }
+            // Who confirmed it, and at whose request, is written durably
+            // with the move (review S2-3). The request is checked again
+            // after the review and its hashing, right before that record
+            // and the move, and held through them (review D3).
+            let reference = person.as_ref().map(|person| person.reference());
+            let refused = std::cell::RefCell::new(None);
+            let moved =
+                store.move_reviewed_copy_admitted(uuid, expected, &who, reference.as_ref(), || {
+                    super::recheck_held(person.as_ref(), uuid, super::person_deadline()).map_err(
+                        |error| {
+                            let message = error.message.clone();
+                            *refused.borrow_mut() = Some(error);
+                            message
+                        },
+                    )
+                });
+            if let Some(error) = refused.into_inner() {
+                return Err(error);
+            }
+            match moved {
                 Ok(outcome) => {
                     reply["state"] = json!(outcome.state);
                     reply["backup"] = json!(outcome.backup);

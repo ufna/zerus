@@ -304,6 +304,10 @@ impl LockedStore {
     pub fn load(config: &Config) -> Result<Self> {
         Self::load_with(config, false, Wait::Blocking, true).map(Self::taken)
     }
+    /// The ordinary loader without a wait, for optional first-use receipt attribution.
+    pub(super) fn try_load(config: &Config) -> Result<Self> {
+        Self::load_with(config, false, Wait::Now, true).map(Self::taken)
+    }
     /// `load`, waiting for the catalog lock no later than `deadline`: none
     /// when another command still holds it then, or the deadline has passed.
     /// A membership change takes this lock, so the fence's final admission

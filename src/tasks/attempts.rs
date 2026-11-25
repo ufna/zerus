@@ -328,6 +328,27 @@ pub(super) fn pause(id: &str) {
     pause_at(id, "admission");
 }
 
+/// The person's request `person`, checked again under the person-authority
+/// serialization point that the returned guard holds (zerus-46l1q, review
+/// D3); nothing without a request.
+fn held_authority(
+    person: Option<&crate::caller::PersonRequest>,
+    id: &str,
+    deadline: Instant,
+) -> std::result::Result<Option<crate::state::PersonAuthority>, String> {
+    let Some(person) = person else {
+        return Ok(None);
+    };
+    // A debug test may hold the admission here, inside the attempt fence.
+    pause_at(id, "person_wait");
+    // The attempt's own deadline bounds the wait: the fence's catalog and
+    // project locks are never held past it for this (review R3-2).
+    let authority = crate::state::person_authority_until(deadline)?;
+    person.recheck()?;
+    pause_at(id, "person_commit");
+    Ok(Some(authority))
+}
+
 #[cfg(any(test, debug_assertions))]
 pub(super) fn pause_at(id: &str, phase: &str) {
     if std::env::var("HGS_TEST_ATTEMPT_PAUSE_AT").unwrap_or_else(|_| "admission".into()) != phase {
@@ -340,7 +361,8 @@ pub(super) fn pause_at(id: &str, phase: &str) {
     if std::fs::write(folder.join("ready"), id).is_err() {
         return;
     }
-    let until = Instant::now() + Duration::from_secs(8);
+    // Bounded, and long enough for a test's other agent to start its command.
+    let until = Instant::now() + Duration::from_secs(30);
     while !folder.join("release").exists() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -448,6 +470,7 @@ pub(super) fn send(
     machines: &super::Machines,
     args: &[String],
     deadline: Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Option<Value>> {
     pause(&frozen.id);
     let detail = std::cell::RefCell::new(String::new());
@@ -462,16 +485,20 @@ pub(super) fn send(
             Ok(Err(Closed { node: None, reason }))
         };
         let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
-        if let Err(error) = super::teams::guard(
+        // Under the final admission, only the same person's request the
+        // command was admitted with (zerus-46l1q, review S2-1).
+        let person = match super::teams::guard(
             config,
             machines,
             task,
             if handoff { "handoff" } else { "send" },
             args,
             &mut meeting,
+            held,
         ) {
-            return refuse("not_sendable", error.message);
-        }
+            Ok(person) => person,
+            Err(error) => return refuse("not_sendable", error.message),
+        };
         let check = if handoff {
             super::handoff_check(task, who)
         } else {
@@ -531,7 +558,15 @@ pub(super) fn send(
         if let Err(error) = task.reserve_attempt(&frozen.id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
         }
+        // That exact request still holds, checked again at the one
+        // serialization point and held through this reservation's save: the
+        // reserved delivery then settles under it (review D3).
+        let authority = match held_authority(person.as_ref(), &frozen.id, deadline) {
+            Ok(authority) => authority,
+            Err(why) => return refuse("not_sendable", why),
+        };
         admitted.save(task)?;
+        drop(authority);
         Ok(Ok(()))
     })?;
     match admission {
@@ -721,6 +756,7 @@ pub(super) fn reopen(
     who: &Actor,
     args: &[String],
     deadline: Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Option<Value>> {
     pause(id);
     let detail = std::cell::RefCell::new(String::new());
@@ -730,9 +766,11 @@ pub(super) fn reopen(
             Ok(Err(Closed { node: None, reason }))
         };
         let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
-        if let Err(error) = super::teams::guard(config, machines, task, "reopen", args, &mut meeting) {
-            return refuse("not_sendable", error.message);
-        }
+        let person =
+            match super::teams::guard(config, machines, task, "reopen", args, &mut meeting, held) {
+                Ok(person) => person,
+                Err(error) => return refuse("not_sendable", error.message),
+            };
         let view = task.view()?;
         // The target and stage time it was frozen with (zerus-frehz).
         let normalized = |target: &Target| super::dispatch::normalized(target, machines);
@@ -794,8 +832,16 @@ pub(super) fn reopen(
         if let Err(error) = task.reserve_attempt(id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
         }
+        // That exact request still holds, checked again at the one
+        // serialization point and held through this reservation's save
+        // (review D3).
+        let authority = match held_authority(person.as_ref(), id, deadline) {
+            Ok(authority) => authority,
+            Err(why) => return refuse("not_sendable", why),
+        };
         // ONE save for both: never the note alone.
         admitted.save(task)?;
+        drop(authority);
         Ok(Ok(()))
     })?;
     let (state, error) = match admission {

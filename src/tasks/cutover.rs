@@ -8,7 +8,6 @@ use crate::swarm::{self, TaskMember};
 use serde_json::{json, Value};
 use std::time::UNIX_EPOCH;
 use std::time::Duration;
-use zerus_replica::Actor;
 
 /// One fence check's whole budget, counted once from its start (C3).
 const FENCE_BUDGET: Duration = Duration::from_secs(15);
@@ -28,26 +27,42 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
     }
     let who = actor(&machines(config)?.here, args, false)?;
     let (id, name) = project_arg(config, args, &who)?;
+    // Every refusal of a hold change comes before the writable store opens
+    // (review S2-5): its value, the person's request and its confirmation.
+    let change = match option(args, "--hold")? {
+        None => None,
+        Some(hold) => {
+            let on = match hold {
+                "on" => true,
+                "off" => false,
+                _ => return Err(fail("--hold takes on or off")),
+            };
+            // The person, or an agent carrying out the person's own request
+            // (zerus-46l1q), recorded with the hold.
+            let request = super::person_request_for(
+                &who,
+                "only a person, or an agent at the person's own request, sets or clears the cutover hold",
+            )?;
+            // Clearing it lets the project's cutover begin: an explicit choice.
+            if !on && !flag(args, "--confirm") {
+                return Err(fail(
+                    "clearing the cutover hold lets this project's tasks cut over to execution \
+                     attempts; pass --confirm to clear it",
+                ));
+            }
+            Some((on, request))
+        }
+    };
     let store = store(config, &id)?;
-    if let Some(hold) = option(args, "--hold")? {
-        let on = match hold {
-            "on" => true,
-            "off" => false,
-            _ => return Err(fail("--hold takes on or off")),
-        };
-        if !matches!(who, Actor::Person) {
-            return Err(fail("only a person sets or clears the cutover hold"));
-        }
-        // Clearing it lets the project's cutover begin: an explicit choice.
-        if !on && !flag(args, "--confirm") {
-            return Err(fail(
-                "clearing the cutover hold lets this project's tasks cut over to execution \
-                 attempts; pass --confirm to clear it",
-            ));
-        }
+    if let Some((on, request)) = change {
         let mut doc = store.project().map_err(fail)?;
-        doc.set_cutover_hold(on, &who, now()).map_err(fail)?;
+        // Checked again and held through the save that commits it (review D3).
+        let authority = super::recheck_held(request.as_ref(), &id, super::person_deadline())?;
+        let reference = request.as_ref().map(|request| request.reference());
+        doc.set_cutover_hold_for(on, &who, reference.as_ref(), now())
+            .map_err(fail)?;
         store.save_project(&doc).map_err(fail)?;
+        drop(authority);
     }
     let hold = store.project().map_err(fail)?.cutover_hold();
     // A bounded count: past its budget the phase is unknown, never a guess,
@@ -79,7 +94,8 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
         "project": {"id": id, "name": name},
         "phase": phase,
         "hold": match hold {
-            Some(hold) => json!({"on": hold.on, "by": hold.by, "at": hold.at}),
+            Some(hold) => json!({"on": hold.on, "by": hold.by, "at": hold.at,
+                "person_request": hold.person_request}),
             None => json!({"on": false, "by": null, "at": null}),
         },
         "cut_over_tasks": cut_over,

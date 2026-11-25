@@ -117,15 +117,44 @@ pub(crate) fn caller_binding_reads() -> usize {
     caller_binding::reads()
 }
 
+/// This machine's ID for a receipt's attribution. Receipts are written under
+/// the state lock. Read the existing catalog without its lock. At first use,
+/// acquire the catalog only if immediately available, so optional attribution
+/// cannot wait on a writer that is itself waiting for the state lock.
 fn machine() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
-    crate::swarm::local_node_id(&config).ok()
+    if let Some(machine) = crate::swarm::existing_local_node_id(&config) {
+        return Some(machine);
+    }
+    if config.dir.join("swarm/catalog.json").exists() {
+        return None;
+    }
+    crate::swarm::try_local_node_id(&config).ok()
 }
 
 /// A verified native target is useful even when an older caller has no source
 /// attribution. Do not add it to an old receipt on replay.
 pub(crate) fn target_receipt(record: &Value) -> Option<Value> {
     target_receipt_for_machine(record, &machine()?)
+}
+
+/// Test/debug builds only: a test may hold the input writer here, under the
+/// state lock, right before its receipt's attribution reads this machine's
+/// ID (`HGS_TEST_RECEIPT_PAUSE`, a folder for its `ready` and `release`
+/// files).
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn receipt_pause() {
+    let Some(folder) = std::env::var_os("HGS_TEST_RECEIPT_PAUSE") else {
+        return;
+    };
+    let folder = std::path::PathBuf::from(folder);
+    if std::fs::write(folder.join("ready"), b"held").is_err() {
+        return;
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !folder.join("release").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 /// The same target from an already verified, existing machine identity.
@@ -508,6 +537,25 @@ mod receipt_tests {
         let endpoint=Endpoint::from_record(&machine,&record).unwrap();
         assert_eq!(value,json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,"name":record["name"],"run_id":record["run_id"]}));
         assert!(!catalog.exists() && !root().join("graph").exists(),"read-only factory created state");
+        // The optional first receipt must not wait behind a writer that
+        // holds the catalog lock before it publishes its initial catalog.
+        let held = crate::swarm::lock_catalog_for_tests(&config);
+        assert!(!catalog.exists());
+        let (send, receive) = std::sync::mpsc::channel();
+        let candidate = record.clone();
+        let contender = std::thread::spawn(move || {
+            send.send(target_receipt(&candidate)).unwrap();
+        });
+        assert_eq!(
+            receive
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .expect("receipt attribution waited for a busy catalog"),
+            None
+        );
+        contender.join().unwrap();
+        assert!(!catalog.exists());
+        drop(held);
+
         let old=target_receipt(&record).unwrap();
         assert!(catalog.exists(),"ordinary wrapper stopped initializing machine identity");
         let bytes=fs::read(&catalog).unwrap();

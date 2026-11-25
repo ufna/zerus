@@ -48,8 +48,8 @@ pub use render::{
     cancel_message, command_reference, command_word, task_dispatch_content, task_prompt, Tools,
 };
 pub use schema::{
-    Actor, LogEntry, SessionKey, Stage, Target, TaskDelivery, TaskView, TaskWorker, MAX_DOCUMENT,
-    MAX_TEXT, SCHEMA,
+    Actor, LogEntry, PersonRequestRef, SessionKey, Stage, Target, TaskDelivery, TaskView,
+    TaskWorker, MAX_DOCUMENT, MAX_TEXT, SCHEMA,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use store::load_count_for_test;
