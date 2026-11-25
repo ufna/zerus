@@ -518,6 +518,22 @@ pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The one feed line of a standing confirmation the service delivered
+/// (zerus-f67qp): the journal row is the line; nothing else changes. The
+/// member must be the team's and the text one line of bounded length.
+pub(super) fn note_confirmation(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::NoteConfirmation { member, text } = ctx.op else {
+        unreachable!()
+    };
+    ctx.member(member)?;
+    if text.trim().is_empty() || text.chars().count() > 512 || text.chars().any(char::is_control) {
+        return Err(invalid(
+            "A confirmation note is one line of at most 512 characters.",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn close_paused_started(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::ClosePausedStarted { member } = ctx.op else {
         unreachable!()

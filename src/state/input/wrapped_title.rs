@@ -16,8 +16,14 @@ pub(super) fn matches(
     let Some((_, body)) = first.split_once(" · ") else {
         return false;
     };
-    let Some(title) =
-        shown_path::strip_prefix(body, folder, windows).and_then(|rest| rest.strip_prefix(" · "))
+    let Some(rest) = shown_path::strip_prefix(body, folder, windows) else {
+        return false;
+    };
+    // Codex may wrap the first word of the title. The native capture then
+    // ends the model/folder row at the separator, without its trailing space.
+    let Some(title) = rest
+        .strip_prefix(" · ")
+        .or_else(|| (rest == " ·").then_some(""))
     else {
         return false;
     };
@@ -26,7 +32,6 @@ pub(super) fn matches(
     };
     if title.trim() != title
         || continuation.trim() != continuation
-        || title.width() == 0
         || continuation.width() == 0
         || first.width() > columns
         || next.width() > columns
@@ -45,6 +50,7 @@ pub(super) fn matches(
         return false;
     };
     // It must be a needed native word wrap, not an arbitrary extra paragraph.
-    first.width() + 1 + word.width() > columns
-        && (first.width() - 2 + 1 + continuation.width()).div_ceil(columns - 2) == 2
+    let first_width = first.trim_end_matches(' ').width();
+    first_width + 1 + word.width() > columns
+        && (first_width - 2 + 1 + continuation.width()).div_ceil(columns - 2) == 2
 }

@@ -553,7 +553,7 @@ class TeamFixture:
                        'merge_accepted': False, 'resume_exited': False}
 
     def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None, count=1, pinned=None,
-                 pretrust=()):
+                 pretrust=(), split_codex_accounts=False):
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
         # Card sources the person answers only once the service has refused them with a
         # card naming the member and containing the given text.
@@ -567,6 +567,7 @@ class TeamFixture:
         self.count, self.pinned = count, pinned
         # Accounts on which the person trusts the main checkout before the team starts.
         self.pretrust = tuple(pretrust)
+        self.split_codex_accounts = split_codex_accounts
         self.cards_seen = {}
         self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
@@ -791,19 +792,16 @@ class TeamFixture:
             self.claude_home(own / '.claude')
             (own / '.claude.json').write_text((own / '.claude/.claude.json').read_text())
         elif self.agent == 'codex':
-            (home / 'config.toml').write_text(
-                'model="gpt-6.1-sol"\nmodel_provider="fixture"\n' + self.codex_common().replace('[features]', '[features]', 1) +
-                '[model_providers.fixture]\nname="Fixture"\n'
-                f'base_url="{self.base}/v1"\nwire_api="responses"\nrequires_openai_auth=true\n'
-                'request_max_retries=0\nstream_max_retries=0\n')
+            self.codex_account(home)
             native_home = own / '.codex'
             native_home.mkdir(parents=True, exist_ok=True)
             (native_home / 'config.toml').write_text(self.codex_common())
-            # A key login the way a person makes one: Codex's own command.
-            login = subprocess.run([str(self.native), 'login', '--with-api-key'], input=FIXTURE_KEY + '\n',
-                                   env=dict(self.env, CODEX_HOME=str(home)), capture_output=True, text=True, timeout=60)
-            if login.returncode != 0:
-                raise AssertionError('codex login --with-api-key failed: ' + login.stderr[-500:])
+            if self.split_codex_accounts:
+                self.member_account = self.account + '-member'
+                self.hgs('account', 'add', self.member_account, '--provider', 'codex', '--label', 'Teams member fixture')
+                member_home = Path(self.env['HGS_CONFIG_DIR']) / 'accounts' / self.member_account
+                member_home.mkdir(parents=True, exist_ok=True)
+                self.codex_account(member_home)
         else:
             for kimi_home in (home, own / '.kimi-code'):
                 kimi_home.mkdir(parents=True, exist_ok=True)
@@ -819,7 +817,20 @@ class TeamFixture:
         self.account_home = home
         # Accounts a launch may choose: those whose home holds the fixture's key.
         self.fixture_accounts = {self.account} | ({'native-claude'} if self.agent == 'claude' else set())
+        if self.split_codex_accounts:
+            self.fixture_accounts.add(self.member_account)
         self.evidence.write('account-inspect.json', self.json('account', 'inspect', self.account, timeout=90))
+
+    def codex_account(self, home):
+        (home / 'config.toml').write_text(
+            'model="gpt-6.1-sol"\nmodel_provider="fixture"\n' + self.codex_common() +
+            '[model_providers.fixture]\nname="Fixture"\n'
+            f'base_url="{self.base}/v1"\nwire_api="responses"\nrequires_openai_auth=true\n'
+            'request_max_retries=0\nstream_max_retries=0\n')
+        login = subprocess.run([str(self.native), 'login', '--with-api-key'], input=FIXTURE_KEY + '\n',
+                               env=dict(self.env, CODEX_HOME=str(home)), capture_output=True, text=True, timeout=60)
+        if login.returncode != 0:
+            raise AssertionError('codex login --with-api-key failed: ' + login.stderr[-500:])
 
     def bundle(self):
         role = dict(id='zt-dev', name='Fixture member', agent=self.agent, prompt='Fixture member; run the fixture steps.')
@@ -827,10 +838,14 @@ class TeamFixture:
             role.update(model='claude-sonnet-4-6', effort='high')
         elif self.agent == 'codex':
             role.update(model='gpt-6.1-sol', effort='high')
-        if self.pinned:
+        lead = dict(agent=self.agent)
+        if self.split_codex_accounts:
+            lead['account'] = {'mode': 'named', 'account': self.account}
+            role['account'] = {'mode': 'named', 'account': self.member_account}
+        elif self.pinned:
             role['account'] = {'mode': 'named', 'account': self.pinned}
         return {'template': {'id': 'zt-' + self.agent, 'name': 'Teams fixture ' + self.agent, 'description': 'One member.',
-                             'lead': {'agent': self.agent}, 'roster': [{'role': 'zt-dev', 'count': self.count}],
+                             'lead': lead, 'roster': [{'role': 'zt-dev', 'count': self.count}],
                              'default_pipeline': 'zt-direct', 'settings': {}},
                 'roles': [role], 'pipelines': [{'id': 'zt-direct', 'name': 'Direct', 'implementer': 'zt-dev'}]}
 
@@ -986,6 +1001,12 @@ class TeamFixture:
         return [ref[len('member:'):] for row in rows if row.get('kind') == 'handout_intent' and f'node:{node}' in (row.get('refs') or [])
                 for ref in row.get('refs') or [] if ref.startswith('member:')]
 
+    def feed_lines(self, member_id):
+        """The team feed's standing-confirmation lines naming one member (zerus-f67qp)."""
+        rows = self.listed(self.json('team', 'journal', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team journal')
+        return [row.get('text') for row in rows if row.get('kind') == 'note_confirmation'
+                and f'member:{member_id}' in (row.get('refs') or [])]
+
     def tmux_server(self):
         out = subprocess.run(['tmux', 'display-message', '-p', '#{pid}'], env=self.env, capture_output=True, text=True)
         return int(out.stdout.strip()) if out.stdout.strip().isdigit() else os.getpid()
@@ -1103,7 +1124,8 @@ class TeamFixture:
             rows.append(dict(id=entry['id'], at=entry.get('at'), session=entry['session'], provider=entry.get('provider'),
                              prompt=entry.get('prompt'), status=entry['status'], detail=detail.get('detail'),
                              source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
-                             categories=categories, saved_question=question, scope=detail.get('scope')))
+                             categories=categories, saved_question=question, answers=detail['answers'],
+                             scope=detail.get('scope')))
         return rows
 
     def audit_rows(self, session_name):

@@ -34,6 +34,7 @@ person command below a live agent, team reads included.
 The Kimi class runs only in the hosted Kimi workflow.
 """
 from contextlib import closing, contextmanager, nullcontext
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,7 @@ import stat
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 from unittest import mock
 import uuid
@@ -89,13 +91,14 @@ class ClassFixture:
     count = 1
     pinned = None
     pretrust = ()
+    split_codex_accounts = False
 
     @classmethod
     def setUpClass(cls):
         cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
                                      delegations=cls.delegations, service_answers=cls.service_answers,
                                      after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned,
-                                     pretrust=cls.pretrust)
+                                     pretrust=cls.pretrust, split_codex_accounts=cls.split_codex_accounts)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -126,11 +129,15 @@ class ClassFixture:
         return outcome
 
 
+LEAD_LAUNCH_BRIEF = ('lead', 'team_resume', ('team_launch_brief',), 'approved')
+
+
 def journal_is(case, expected, label):
     """The whole audit journal settles to exactly `expected` (journal_summary) within a
     turn's bound; the last summary read is kept in the evidence either way."""
     fx = case.fx
     last = []
+    expected = sorted(expected)
 
     def settled():
         last[:] = [fx.journal_summary()]
@@ -140,6 +147,15 @@ def journal_is(case, expected, label):
     finally:
         fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
                           dict(expected=expected, last=last[0] if last else None))
+
+
+def assert_lead_launch_audit(case):
+    lead = case.fx.sessions['lead']
+    [brief] = [row for row in case.fx.audit_rows(lead['name'])
+               if row['categories'] == ['team_launch_brief']]
+    case.assertEqual((brief['question_id'], brief['run']), ('brief:' + lead['run'], lead['run']))
+    case.assertIsNone(brief['scope'])
+    case.assertIs(brief['saved_question']['can_answer'], False)
 
 
 # Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
@@ -476,13 +492,15 @@ class TrustContract(ClassFixture):
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
         fx.evidence.write('cards-after-trust.json', refusals)
         self.assertFalse(refusals, 'no member card was left for the person')
-        journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
+        journal_is(self, self.startup_journal(), 'the journal holds startup grants and the lead launch brief')
 
     def member_ids(self):
         return ('lead',) + tuple(f'm{number}' for number in range(1, self.count + 1))
 
-    def startup_grants(self):
-        return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
+    def startup_journal(self):
+        return [LEAD_LAUNCH_BRIEF,
+                *((member, self.trust_source, ('team_folder_trust',), 'approved')
+                  for member in self.member_ids())]
 
     def test_2_an_ordinary_question_stays_the_persons(self):
         """After the startup grants, every member asks an ordinary question (zerus-63rru.73)."""
@@ -562,6 +580,33 @@ def codex_trust_problems(records, accounts, main):
     return problems
 
 
+def assert_startup_hook_grant(case, row, launch, trusted):
+    case.assertEqual((row['source'], row['provider'], row['status'], row['categories'], row['scope'], row['answers']),
+                     ('team_hook_trust', 'codex', 'approved', ['team_hook_trust'], None, []))
+    case.assertEqual(row['detail'], 'Codex saved trust for exactly these hooks')
+    question = row['saved_question']
+    case.assertEqual((question['run_id'], question['conversation_id']), (launch, ''))
+    case.assertIs(question['can_answer'], False)
+    hooks = question['hooks']
+    case.assertTrue(hooks)
+    pairs = {}
+    for hook in hooks:
+        case.assertEqual(set(hook), {'key', 'hash'})
+        case.assertNotIn(hook['key'], pairs)
+        case.assertTrue(hook['key'])
+        case.assertRegex(hook['hash'], r'^sha256:[0-9a-f]{64}$')
+        pairs[hook['key']] = hook['hash']
+    case.assertEqual(pairs, trusted)
+    encoded = json.dumps([launch, launch, hooks], sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    case.assertEqual(question['question_hash'], digest)
+    case.assertEqual(question['question_id'], f'hooks:{launch}:{digest[:16]}')
+    case.assertEqual(question['questions'], [dict(id='hooks_trust', header='Hook trust',
+                                                question="Trust Zerus's own and the team's committed Codex hooks",
+                                                body=f'Hooks to trust: {len(hooks)}', options=[])])
+    return len(hooks)
+
+
 class CodexTrustContract(ClassFixture):
     """Standing trust records the team repository's main checkout and subfolders,
     as owner decision D9 permits. The product's saved native question proves
@@ -569,11 +614,16 @@ class CodexTrustContract(ClassFixture):
     The ordinary Codex startup case retains the physical 80x24 panel variants."""
     delegations = {'confirm_trust': True}
     service_answers = ('codex_folder_trust',)
+    # Each launch sees an untrusted hook inventory in its own private account.
+    split_codex_accounts = True
 
     def test_1_the_service_answers_the_repository_scope_and_records_the_grant(self):
         fx = self.fx
         answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
         main = str((fx.root / 'work/proj').resolve())
+        members = fx.members()
+        self.assertEqual({members[member]['account'] for member in ('lead', 'm1')},
+                         {fx.account, fx.member_account})
         for member_id in ('lead', 'm1'):
             with self.subTest(member=member_id):
                 rows = fx.audit_rows(fx.sessions[member_id]['name'])
@@ -590,7 +640,7 @@ class CodexTrustContract(ClassFixture):
                 item = card['questions'][0]
                 self.assertEqual(item['question'], 'Trust this Git repository?')
                 self.assertEqual(item['body'].split('\n\n', 1)[0].replace('\n', ''),
-                                 fx.members()[member_id]['worktree'])
+                                 members[member_id]['worktree'])
                 self.assertIn(main, item['options'][0]['description'])
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_folder_trust'],
                                  'the person did not answer the delegated trust card')
@@ -599,10 +649,30 @@ class CodexTrustContract(ClassFixture):
                 self.assertLessEqual(len(seen), 1)
                 if seen:
                     self.assertEqual(seen[0]['question_id'], card['question_id'])
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id, prompt='hooks'):
+                session = fx.sessions[member_id]
+                rows = fx.audit_rows(session['name'])
+                [grant] = [row for row in rows if row['source'] == 'team_hook_trust']
+                config = tomllib.loads(codex_config(fx, member_id).read_text())
+                trusted = {key: entry['trusted_hash'] for key, entry in config['hooks']['state'].items()
+                           if 'trusted_hash' in entry}
+                count = assert_startup_hook_grant(self, grant, session['launch'], trusted)
+                self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_hooks_trust'])
+                self.assertFalse([q for q in fx.pending(member_id) if q.get('source') == 'codex_hooks_trust'])
+                self.assertFalse([card for (member, _), card in fx.cards_seen.items()
+                                  if member == member_id and card['source'] == 'codex_hooks_trust'])
+                note = (f"Zerus trusted {count} of its own and the team's committed Codex hooks "
+                        f"for member {member_id} before its agent started.")
+                fx.wait(f'{member_id} exact hook trust confirmation note',
+                        lambda: fx.feed_lines(member_id) == [note] or None, fixture.BOUND['turn'], 2)
         fx.evidence.write('codex-trust-cards.json', fx.cards())
         self.assertFalse([c for c in fx.cards() if 'needs your attention' in c.get('text', '')])
-        journal_is(self, [(m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')],
-                   'the journal holds exactly the two startup grants')
+        journal_is(self, [LEAD_LAUNCH_BRIEF,
+                          *((m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')),
+                          *((m, 'team_hook_trust', ('team_hook_trust',), 'approved') for m in ('lead', 'm1'))],
+                   'the journal holds folder grants, pre-start hook grants and the lead launch brief')
+        assert_lead_launch_audit(self)
         records = fx.codex_trust_records()
         fx.evidence.write('codex-trust-records-asserted.json', records)
         accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
@@ -659,13 +729,18 @@ class ResumeContract(ClassFixture):
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
         fx.evidence.write('resume-audit.json', rows)
         # One reservation for the resume of the exited run and one for the brief in the new run.
-        self.assertEqual(sorted((r['question_id'].split(':', 1)[0], r['run']) for r in rows),
-                         [('brief', resumed['run_id']), ('resume', before['run_id'])], 'the resume and its brief are audited')
-        journal_is(self, self.resume_journal(), 'the journal holds exactly the resume and its brief')
+        self.assertEqual(sorted((r['question_id'], r['run'], tuple(r['categories'])) for r in rows), [
+            ('brief:' + resumed['run_id'], resumed['run_id'], ('team_resume_brief',)),
+            ('resume:' + before['run_id'], before['run_id'], ('team_resume',)),
+        ], 'the original resume and the new run brief have distinct audit categories')
+        journal_is(self, self.resume_journal(), 'the journal holds launch and resume records only')
+        assert_lead_launch_audit(self)
         type(self).resumed_run = resumed['run_id']
 
     def resume_journal(self):
-        return [('m1', 'team_resume', ('team_resume',), 'approved')] * 2
+        return [LEAD_LAUNCH_BRIEF,
+                ('m1', 'team_resume', ('team_resume',), 'approved'),
+                ('m1', 'team_resume', ('team_resume_brief',), 'approved')]
 
     def diagnose_refused_resume(self):
         """A refused resume: what the service reads at that moment, then the person's own
@@ -699,7 +774,7 @@ class ResumeContract(ClassFixture):
                 if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
         # The positive control: the same reader still finds the first resume and its brief.
-        journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
+        journal_is(self, self.resume_journal(), 'the journal still holds only the launch and original resume records')
         live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
         self.assertFalse(live, 'no session of the member launch runs again')
 
@@ -760,7 +835,7 @@ class QuestionAfterTrustContract(ClassFixture):
         self.assertEqual(plain, ['plain-native-claude', 'plain-zt-claude'], 'the capture saw the plain sessions\' trust cards')
         startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
         self.assertEqual(startup, [], 'no member showed a startup card')
-        journal_is(self, [], 'the journal holds no grant: there was no startup card')
+        journal_is(self, [LEAD_LAUNCH_BRIEF], 'the journal holds only the launch brief')
         ordinary_question_stays_the_persons(self, ['m1'])
 
 

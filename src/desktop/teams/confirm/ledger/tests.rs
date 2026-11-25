@@ -221,3 +221,65 @@ fn a_waiting_claim_may_be_cancelled_but_never_settled_or_started_directly() {
     db.save(&row).unwrap();
     assert!(!db.claim(&plan, "epoch-2", 200).unwrap().fresh);
 }
+
+/// A feed line is owed apart from the effect rows (zerus-f67qp review): once
+/// per key, to its own member launch, in a bounded page, until written; an
+/// approved effect owes none.
+#[test]
+fn a_feed_line_is_owed_once_to_its_member_launch_until_written() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let (b, _, s) = sample();
+    let mut row = db
+        .claim(
+            &engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone()),
+            "epoch-1",
+            100,
+        )
+        .unwrap()
+        .record;
+    row.audit = Some(Audit {
+        id: 1,
+        request: uuid::Uuid::new_v4().to_string(),
+        answers: serde_json::json!([]),
+        fresh: true,
+    });
+    db.save(&row).unwrap();
+    row.audit_done = true;
+    row.state = "approved".into();
+    db.save(&row).unwrap();
+    assert!(
+        db.notes_owed(&b).unwrap().is_empty(),
+        "an approval owes none"
+    );
+    let owe = |db: &Ledger, key: &str, launch: &str, text: &str| {
+        db.owe_note(key, &b.team, &b.member, launch, &b.person, text)
+            .unwrap()
+    };
+    owe(&db, "hooks:request-1", &b.launch, "first");
+    owe(&db, "hooks:request-1", &b.launch, "again");
+    owe(&db, "hooks:request-2", "another-launch", "other");
+    let owed = db.notes_owed(&b).unwrap();
+    assert_eq!(
+        owed,
+        [Note {
+            key: "hooks:request-1".into(),
+            team: b.team.clone(),
+            member: b.member.clone(),
+            person: b.person.clone(),
+            text: "first".into(),
+        }]
+    );
+    for n in 0..12 {
+        owe(&db, &format!("hooks:page-{n:02}"), &b.launch, "page");
+    }
+    assert_eq!(db.notes_owed(&b).unwrap().len(), 8, "a bounded page");
+    db.note_done("hooks:request-1").unwrap();
+    drop(db);
+    let db = Ledger::open(temp.path()).unwrap();
+    let owed = db.notes_owed(&b).unwrap();
+    assert!(
+        owed.iter().all(|note| note.key.starts_with("hooks:page-")),
+        "written stays written"
+    );
+}

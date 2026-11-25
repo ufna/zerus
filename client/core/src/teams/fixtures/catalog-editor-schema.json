@@ -273,7 +273,7 @@
             },
             {
               "default": true,
-              "label": "Confirm folder trust",
+              "label": "Confirm folder and Zerus hook trust",
               "name": "confirm_trust",
               "type": "bool"
             },

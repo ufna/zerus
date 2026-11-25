@@ -9,13 +9,46 @@ export interface Entry { id: number; at: number; host: string; session: string; 
 
 /** The trust sentence a row's scope yields (zerus-63rru.66 round 4): only a
  * folder-trust record shows one, and only a confirmed grant claims the
- * trust; anything else says trust was requested. */
+ * trust; anything else says trust was requested. A team's Codex hook-trust
+ * record says what it covered, by the same rule (zerus-f67qp). */
 export function trustSentence(entry: Entry): string | null {
+  if (entry.standing === "team_hook_trust") {
+    return entry.result === "Approved once"
+      ? tr("Codex hook trust recorded before start for Zerus's own and the team's committed hooks")
+      : tr("Codex hook trust was requested; it was not confirmed");
+  }
   const scope = entry.scope?.trim();
   if (!scope || entry.standing !== "team_folder_trust") return null;
   return entry.result === "Approved once"
     ? tr("Trusted for %1 and its subfolders on this account", scope)
     : tr("Trust was requested for %1 and its subfolders; it was not confirmed", scope);
+}
+/** The core's own sentences in a selected entry's detail, which it writes in
+ * English (zerus-f67qp review): each translated where shown. The agent's
+ * question and choices, and any other recorded text, stay as recorded. */
+const DETAIL_SENTENCES: readonly string[] = [
+  trNoop("Approved once"), trNoop("Failed"), trNoop("Cancelled"), trNoop("Unconfirmed"),
+  trNoop("Codex hook trust recorded before start for Zerus's own and the team's committed hooks"),
+  trNoop("Codex hook trust was requested; it was not confirmed"),
+  trNoop("Trust Zerus's own and the team's committed Codex hooks"),
+  trNoop("Codex saved trust for exactly these hooks"),
+  trNoop("Codex's saved trust is not exactly these hooks"),
+];
+const DETAIL_PATTERNS: readonly (readonly [RegExp, string])[] = [
+  [/^Trusted for (.+) and its subfolders on this account$/s, trNoop("Trusted for %1 and its subfolders on this account")],
+  [/^Trust was requested for (.+) and its subfolders; it was not confirmed$/s, trNoop("Trust was requested for %1 and its subfolders; it was not confirmed")],
+  [/^Hooks to trust: (\d+)$/, trNoop("Hooks to trust: %1")],
+  [/^Selected answer: (.*)$/s, trNoop("Selected answer: %1")],
+];
+export function localizedDetail(text: string): string {
+  return text.split("\n\n").map((part) => {
+    if (DETAIL_SENTENCES.includes(part)) return tr(part);
+    for (const [pattern, source] of DETAIL_PATTERNS) {
+      const match = pattern.exec(part);
+      if (match) return tr(source, match[1]);
+    }
+    return part;
+  }).join("\n\n");
 }
 /** Read identity only; native code rechecks it against the selected service. */
 export interface JournalScope { configuration: string; epoch: string; generation: number; journal: string; through: number; host: string; session: string }
@@ -83,7 +116,7 @@ export function createJournal(io: JournalIo, filters: () => { host: string; sess
       const request = ++detailRequest;
       update({ selected: key, detail: undefined, detailHint: tr("Loading question…") });
       io.detail(Number(key), state.page.scope).then(
-        (text) => { if (request === detailRequest) update({ detail: text }); },
+        (text) => { if (request === detailRequest) update({ detail: localizedDetail(text) }); },
         (error) => { if (request === detailRequest) update({ detail: tr(String(error)) }); },
       );
     },

@@ -212,6 +212,32 @@ impl Ports for WriterPorts {
         )?
         .card(r)
     }
+    fn before_start(&mut self, plan: &Plan) {
+        if let Ok(mut native) = Native::new(
+            &self.config,
+            &plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        ) {
+            native.before_start(plan);
+        }
+    }
+    fn hook_listing(&mut self, plan: &Plan) -> Result<String> {
+        Native::new(
+            &self.config,
+            &plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        )?
+        .hook_listing(plan)
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Note>> {
+        Native::new(&self.config, &b.machine, &self.stop, &mut self.store)?.notes_owed(b)
+    }
+    fn note(&mut self, note: &Note) -> Result<()> {
+        let machine = self.binding.machine.clone();
+        Native::new(&self.config, &machine, &self.stop, &mut self.store)?.note(note)
+    }
     fn original(&mut self, _r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(e) = check(self) {
             return Outcome::NotStarted(e);

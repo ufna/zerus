@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[1m›[0m [2mAsk Codex to do anything[0m
+
+  [38;2;246;226;183mGPT-6.1-Sol high[39m · [38;2;171;223;167m/fixture/pppppppppppppppppppppppppppppppppppppppppppp[39m ·
+  [38;2;116;199;236mFixture first message.[39m
+  [1m←[0m for agents · [1m?[0m for shortcuts                      ⚠ [38;2;196;167;103m3 warnings[39m · [1mf2[0m to view
