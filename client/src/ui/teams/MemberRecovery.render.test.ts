@@ -42,13 +42,14 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
   },
 }));
-vi.mock("../../store/ui", async () => {
+vi.mock("../../store/ui", async (original) => {
   const { createSignal } = await import("solid-js");
   const [row, set] = createSignal<any>();
   const [menu, setMenu] = createSignal<any>();
   f.selected = row;
   f.choose = set;
   return {
+    ...(await original<object>()),
     selected: row,
     page: () => "sessions",
     detailTab: () => "team",

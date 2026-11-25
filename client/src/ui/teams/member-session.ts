@@ -13,6 +13,10 @@ import type { MemberView } from "./types";
 
 export type MemberSession = { row: Session; reason?: undefined } | { row?: undefined; reason: string };
 
+export function isRunningMemberSession(row: Session | undefined): boolean {
+  return !!row && row.state === "running" && row.processState === "running" && row.status !== "offline" && !row.archiveId;
+}
+
 /** Each member's session row, or why it cannot be opened, by member ID. */
 export function memberSessions(members: readonly Pick<MemberView, "id" | "session">[]): Map<string, MemberSession> {
   const wanted = new Set(members.map((member) => sessionKey(member.session)).filter(Boolean));

@@ -249,6 +249,7 @@ export function createRestores(deps: RestoreDeps) {
     cancelFollow,
     /** The archived row of a pending restore, kept as the selected row while the archive reloads (Qt's selected()). */
     sourceOf: (key: string): Session | undefined => pending().find((p) => p.sourceKey === key)?.source,
+    isPending: (row: Pick<Session, "computer" | "name">) => pending().some((p) => p.id === nameKey(row)),
     pendingCount: () => pending().length,
   };
 }
@@ -269,7 +270,7 @@ const app = createRoot(() => createRestores({
 bindArchiveCalls(app.calls);
 bindRetainedRows(app.sourceOf);
 
-export const { restore: restoreSession, forgetArchived, cancelFollow: cancelRestoreFollow } = app;
+export const { restore: restoreSession, forgetArchived, cancelFollow: cancelRestoreFollow, isPending: isRestorePending } = app;
 
 /** Qt's writeDone refresh (1917) after a successful single Rename or Move to archive. */
 export function refreshArchiveWhenDone(out: Outcome): Outcome {
