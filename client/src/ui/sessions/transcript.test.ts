@@ -307,6 +307,114 @@ describe("main message window outside the tool-event tail", () => {
   });
 });
 
+describe("delayed Claude replies in desktop Activity", () => {
+  const base = 1_793_000_035;
+  const prompt: ActivityEvent = { seq: 101, run_id: "run", type: "UserPromptSubmit", at: base, detail: "Check the result" };
+  const reply = (id: string, at: number, detail: string): ActivityEvent =>
+    ({ type: "AgentMessage", source: "claude_transcript", agent_id: "", message_id: id, at: base + at, detail });
+  const stop = (detail: string, at = 7): ActivityEvent =>
+    ({ seq: 104, run_id: "run", type: "Stop", at: base + at, detail });
+  const rows = (items: ReturnType<typeof buildTranscript>) => items
+    .flatMap(item => item.kind === "agent" && "body" in item ? [{ id: item.id, body: item.body, at: item.at }] : []);
+  const render = (message_events: ActivityEvent[], provider_messages: ActivityEvent[]) =>
+    createActivityProjections()(false, "claude", [], { message_events, provider_messages });
+
+  it("joins a reply to its Stop six seconds later and keeps the journal row identity and time", () => {
+    const body = "The result is ready.";
+    const progress = reply("progress", 0.5, "I found the result.");
+    const complete = stop(body);
+    const journalRows = rows(render([prompt, complete], []));
+    const final = reply("reply", 1, body);
+    expect(rows(render([prompt], [final]))[0].at).not.toBe(journalRows[0].at);
+    const items = render([prompt, complete], [progress, final]);
+    expect(rows(items)).toEqual([...rows(render([prompt], [progress])), ...journalRows]);
+    expect(items.map(item => item.id)).toEqual(["s101", "pclaude_transcript:AgentMessage:progress", "s104"]);
+  });
+
+  it.each([
+    ["another run", { run_id: "another-run" }],
+    ["commentary", { message_phase: "commentary" }],
+  ])("keeps both rows when delayed provider metadata says %s", (_, metadata) => {
+    const body = "The result is ready.";
+    const final = { ...reply("reply", 1, body), ...metadata };
+    expect(rows(render([prompt, stop(body)], [final])).map(item => item.id))
+      .toEqual(["pclaude_transcript:AgentMessage:reply", "s104"]);
+    expect(rows(render([prompt, stop(body, 2)], [final])).map(item => item.id)).toEqual(["s104"]);
+  });
+
+  it("joins the delayed reply with explicit same-run final metadata", () => {
+    const body = "The result is ready.";
+    const final = { ...reply("reply", 1, body), run_id: "run", message_phase: "final" };
+    expect(rows(render([prompt, stop(body)], [final])).map(item => item.id)).toEqual(["s104"]);
+  });
+
+  it.each(["shared ID", "same body and time"])("counts a later reply even when display deduplicates it by %s", (identity) => {
+    const body = "The result is ready.";
+    const earlier = reply("reply", 1, body);
+    const later = reply(identity === "shared ID" ? "later" : "", 3, body + " A second check is pending.");
+    // The journal observed this row after Stop even though its occurrence time is earlier.
+    const journalCopy = { ...later, seq: 105 };
+    const items = render([prompt, stop(body), journalCopy], [earlier, later]);
+    expect(rows(items).map(item => item.id)).toEqual(["pclaude_transcript:AgentMessage:reply", "s105", "s104"]);
+  });
+
+  it("keeps both real replies in order when a nearby Stop shares their clipped prefix", () => {
+    const first = "The result is from the first check.";
+    const second = "The result is from the second check.";
+    const complete = stop("The result is from the …", 7);
+    const earlier = reply("first", 1, first), later = reply("second", 6, second);
+    const joined = { ...complete, detail: second };
+    expect(rows(render([prompt, complete], [earlier, later]))).toEqual([
+      ...rows(render([prompt], [earlier])), ...rows(render([prompt, joined], [])),
+    ]);
+  });
+
+  it("leaves identical replies ambiguous even when both occur in the visible turn", () => {
+    const body = "The result is ready.";
+    const items = render([prompt, stop(body)], [reply("first", 0.5, body), reply("second", 1, body)]);
+    expect(rows(items).map(item => item.id)).toEqual([
+      "pclaude_transcript:AgentMessage:first", "pclaude_transcript:AgentMessage:second", "s104",
+    ]);
+  });
+
+  it("keeps the Stop when only a delayed prefix matches or a later reply could own it", () => {
+    const body = "The result is ready.";
+    const earlier = reply("reply", 1, body);
+    expect(rows(render([prompt, stop("The result…")], [earlier])).map(item => item.id))
+      .toEqual(["pclaude_transcript:AgentMessage:reply", "s104"]);
+    const later = reply("later", 2, body + " A second check is pending.");
+    expect(rows(render([prompt, stop(body)], [earlier, later])).map(item => item.id))
+      .toEqual(["pclaude_transcript:AgentMessage:reply", "pclaude_transcript:AgentMessage:later", "s104"]);
+  });
+
+  it("leaves ambiguous time ranges intact when two visible Stops could claim one reply", () => {
+    const body = "The result is ready.";
+    const earlier = reply("reply", 1, body);
+    const first = { ...stop(body), seq: 102 };
+    const secondPrompt = { ...prompt, seq: 103, at: base + 0.5 };
+    expect(rows(render([prompt, first, secondPrompt, stop(body, 8)], [earlier])).map(item => item.id))
+      .toEqual(["pclaude_transcript:AgentMessage:reply", "s102", "s104"]);
+  });
+
+  it("keeps a late Stop across a new turn or when the turn start is outside the available history", () => {
+    const body = "The result is ready.";
+    const earlier = reply("reply", 1, body);
+    const nextPrompt = { ...prompt, seq: 103, at: base + 3, detail: "Check something else" };
+    const nextTurn = { ...nextPrompt, type: "TurnStarted", detail: "" };
+    for (const [events, complete] of [
+      [[prompt, nextPrompt], stop(body)],
+      [[prompt, nextTurn], stop(body)],
+      [[], stop(body)],
+      [[prompt], { ...stop(body), run_id: "another-run" }],
+      [[prompt], { ...stop(body), message_text_truncated: true }],
+      [[prompt], stop(body, 12)],
+    ] as const) {
+      expect(rows(render([...events, complete], [earlier])).map(item => item.id))
+        .toEqual(["pclaude_transcript:AgentMessage:reply", "s104"]);
+    }
+  });
+});
+
 describe("bounded message-window input", () => {
   it("renders main UserMessage rows and excludes nested child messages and operational rows", () => {
     const items = buildTranscript([], { message_events: [

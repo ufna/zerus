@@ -424,6 +424,71 @@ const isExcerpt = (excerpt: string, full: string) => {
   return !!prefix && full.startsWith(prefix);
 };
 
+const eventAt = (e: ActivityEvent) => {
+  const value = e.at;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+};
+
+const NEARBY_STOP_SECONDS = 2;
+const DELAYED_CLAUDE_STOP_SECONDS = 10;
+type ClaudeReply = { event: ActivityEvent; insertedAt?: number };
+const CLAUDE_TURN_BOUNDARIES = new Set([
+  "SessionStart", "SessionEnd", "SessionCleared", "UserPromptQueued", "UserMessage", "TurnStarted",
+  "QuestionAnswered", "AgentMessage", "StopFailure", "Interrupt",
+]);
+const ordinaryTurn = (e: ActivityEvent) =>
+  !e.inherited_from && !e.origin && (!e.turn_origin || e.turn_origin === "user");
+const completeBody = (e: ActivityEvent) =>
+  !!e.detail?.trim() && !e.detail.endsWith("…") && e.message_text_truncated !== true;
+
+// A Claude Stop is timed on journal arrival. Allow a brief delay only with a
+// visible same-run prompt and a unique, complete final reply in that turn.
+function delayedClaudeCopies(
+  events: readonly ActivityEvent[], journalLength: number, replies: readonly ClaudeReply[], matchedStops: ReadonlySet<number>,
+): Set<number> {
+  const copies = new Set<number>();
+  const pendingBodies = new Set(replies.filter(row => row.insertedAt !== undefined && completeBody(row.event)).map(row => row.event.detail));
+  if (!pendingBodies.size || replies.some(row => eventAt(row.event) <= 0)) return copies;
+  const conflicts = new Set<number>();
+  let prompt: ActivityEvent | undefined;
+  for (let i = 0; i < journalLength; i++) {
+    const event = events[i];
+    if (childEvent(event)) continue;
+    if (event.type === "UserPromptSubmit") {
+      prompt = ordinaryTurn(event) ? event : undefined;
+    } else if (CLAUDE_TURN_BOUNDARIES.has(event.type ?? "")) {
+      prompt = undefined;
+    } else if (event.type === "Stop") {
+      const start = prompt;
+      prompt = undefined;
+      if (!start || typeof start.run_id !== "string" || !start.run_id || start.run_id !== event.run_id || matchedStops.has(i)
+        || !ordinaryTurn(event) || !pendingBodies.has(event.detail) || !completeBody(event)) continue;
+      const from = eventAt(start), until = eventAt(event);
+      if (from <= 0 || until <= from) continue;
+      const inTurn = replies.filter(row => {
+        const at = eventAt(row.event);
+        return at > from && at <= until;
+      });
+      const [reply, other] = inTurn.filter(row => row.event.detail === event.detail);
+      if (reply?.insertedAt === undefined || other) continue;
+      const { run_id, message_phase } = reply.event;
+      // Today's Claude transcript producer omits both fields. If supplied,
+      // they must agree with the journal turn and its final reply.
+      if (run_id !== undefined && run_id !== start.run_id) continue;
+      if (message_phase !== undefined && message_phase !== "final" && message_phase !== "final_answer") continue;
+      const when = eventAt(reply.event);
+      const delay = until - when;
+      if (delay <= NEARBY_STOP_SECONDS || delay > DELAYED_CLAUDE_STOP_SECONDS
+        || !ordinaryTurn(reply.event) || !completeBody(reply.event)) continue;
+      if (inTurn.some(row => row !== reply && eventAt(row.event) >= when)) continue;
+      if (copies.has(reply.insertedAt)) conflicts.add(reply.insertedAt);
+      else copies.add(reply.insertedAt);
+    }
+  }
+  for (const index of conflicts) copies.delete(index);
+  return copies;
+}
+
 /**
  * Qt's provider_messages merge: watch event frames also arrive here, folded
  * into the summary by the core. Keep journal cursors intact and project the
@@ -432,66 +497,71 @@ const isExcerpt = (excerpt: string, full: string) => {
 export function mergeProvider(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
   const restored = restoreOwnMessages(given, summary);
   if (!Array.isArray(summary?.provider_messages) || !summary.provider_messages.length) return restored;
-  const events = [...restored];
+  let events = [...restored];
   const matchedStops = new Set<number>();
   const identities = new Set<string>();
   const seconds = new Map<number, number[]>();
   const nativeKey = (e: ActivityEvent) => e.message_id ? `${e.source}:${e.type}:${e.message_id}` : "";
-  const at = (e: ActivityEvent) => {
-    const value = e.at;
-    return typeof value === "number" && Number.isFinite(value) ? value : 0;
-  };
+  const claudeReplies: ClaudeReply[] = [];
   // Index only matching candidates once, rather than scanning every loaded
   // journal page for each provider row on every streaming rebuild.
   const index = (e: ActivityEvent, i: number) => {
     if (childEvent(e) || (e.type !== "Stop" && !PROVIDER_SOURCES.has(e.source ?? ""))) return;
     const key = nativeKey(e);
     if (key) identities.add(key);
-    const second = Math.floor(at(e));
+    const second = Math.floor(eventAt(e));
     const bucket = seconds.get(second);
     if (bucket) bucket.push(i); else seconds.set(second, [i]);
   };
   events.forEach(index);
-  let inserted = false;
   for (const value of summary.provider_messages.slice(-100)) {
     if (!value || typeof value !== "object") continue;
     const message = value as ActivityEvent;
     if (!PROVIDER_SOURCES.has(message.source ?? "") || childEvent(message)
       || (message.type !== "AgentMessage" && !(message.type === "AgentThinking" && message.source === "claude_transcript"))) continue;
+    // Even a provider copy already visible in the journal can be evidence
+    // of a later reply. Record it before the display deduplication checks.
+    const claudeReply: ClaudeReply | undefined = message.type === "AgentMessage" && message.source === "claude_transcript"
+      ? { event: message } : undefined;
+    if (claudeReply) claudeReplies.push(claudeReply);
     const key = nativeKey(message);
     if (key && identities.has(key)) continue;
-    const when = at(message);
+    const when = eventAt(message);
     const nearby: number[] = [];
     for (let offset = -3; offset <= 3; offset++) {
-      for (const i of seconds.get(Math.floor(when) + offset) ?? []) if (Math.abs(at(events[i]) - when) <= 3) nearby.push(i);
+      for (const i of seconds.get(Math.floor(when) + offset) ?? []) if (Math.abs(eventAt(events[i]) - when) <= 3) nearby.push(i);
     }
     nearby.sort((a, b) => a - b);
     const same = nearby.some((i) => {
       const e = events[i];
       return e.type === message.type && e.source === message.source
         && !(message.message_id && e.message_id && message.message_id !== e.message_id)
-        && e.detail === message.detail && Math.abs(at(e) - when) < 3;
+        && e.detail === message.detail && Math.abs(eventAt(e) - when) < 3;
     });
     if (same) continue;
     // The hook's final excerpt and the provider's full response are one row.
     // An empty Stop never absorbs commentary immediately before completion.
     const stop = message.type === "AgentMessage" ? nearby.find((i) => !matchedStops.has(i) && events[i].type === "Stop"
-      && Math.abs(at(events[i]) - when) <= 2
+      && Math.abs(eventAt(events[i]) - when) <= NEARBY_STOP_SECONDS
       && (events[i].detail ? isExcerpt(events[i].detail!, message.detail ?? "") : message.message_phase !== "commentary")) : undefined;
     if (stop !== undefined) {
       matchedStops.add(stop);
       events[stop] = { ...events[stop], detail: message.detail, source: message.source, message_id: message.message_id };
       if (key) identities.add(key);
     } else {
+      if (claudeReply) claudeReply.insertedAt = events.length;
       index(message, events.length);
       events.push(message);
-      inserted = true;
     }
   }
+  // Resolve all ordinary matches before considering any delayed Stop. For an
+  // exact delayed match, keep the original journal row and drop its copy.
+  const copies = delayedClaudeCopies(events, restored.length, claudeReplies, matchedStops);
+  if (copies.size) events = events.filter((_, i) => !copies.has(i));
   // Preserve journal order when no row was inserted, or occurrence times are
   // incomplete. Fully timed rows use occurrence time with sequence tie breaks.
-  if (inserted && events.every((e) => at(e) > 0)) {
-    events.sort((a, b) => at(a) - at(b) || ((a.seq ?? 0) > 0 && (b.seq ?? 0) > 0 ? a.seq! - b.seq! : 0));
+  if (events.length > restored.length && events.every((e) => eventAt(e) > 0)) {
+    events.sort((a, b) => eventAt(a) - eventAt(b) || ((a.seq ?? 0) > 0 && (b.seq ?? 0) > 0 ? a.seq! - b.seq! : 0));
   }
   return events;
 }
