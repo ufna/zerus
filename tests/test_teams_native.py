@@ -607,6 +607,17 @@ def assert_startup_hook_grant(case, row, launch, trusted):
     return len(hooks)
 
 
+def check_startup_hook_grant(case, fx, member_id):
+    [grant] = [row for row in fx.journal() if row['source'] == 'team_hook_trust'
+               and row['saved_question'].get('conversation_id') == ''
+               and fx.journal_member(row) == member_id]
+    fx.evidence.write(f'prestart-hook-grant-{member_id}.json', grant)
+    config = tomllib.loads(codex_config(fx, member_id).read_text())
+    trusted = {key: entry['trusted_hash'] for key, entry in config['hooks']['state'].items()
+               if 'trusted_hash' in entry}
+    return assert_startup_hook_grant(case, grant, fx.sessions[member_id]['launch'], trusted)
+
+
 class CodexTrustContract(ClassFixture):
     """Standing trust records the team repository's main checkout and subfolders,
     as owner decision D9 permits. The product's saved native question proves
@@ -622,8 +633,8 @@ class CodexTrustContract(ClassFixture):
         answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
         main = str((fx.root / 'work/proj').resolve())
         members = fx.members()
-        self.assertEqual({members[member]['account'] for member in ('lead', 'm1')},
-                         {fx.account, fx.member_account})
+        self.assertEqual((members['lead']['account'], members['m1']['account']),
+                         (fx.account, fx.member_account))
         for member_id in ('lead', 'm1'):
             with self.subTest(member=member_id):
                 rows = fx.audit_rows(fx.sessions[member_id]['name'])
@@ -651,13 +662,7 @@ class CodexTrustContract(ClassFixture):
                     self.assertEqual(seen[0]['question_id'], card['question_id'])
         for member_id in ('lead', 'm1'):
             with self.subTest(member=member_id, prompt='hooks'):
-                session = fx.sessions[member_id]
-                rows = fx.audit_rows(session['name'])
-                [grant] = [row for row in rows if row['source'] == 'team_hook_trust']
-                config = tomllib.loads(codex_config(fx, member_id).read_text())
-                trusted = {key: entry['trusted_hash'] for key, entry in config['hooks']['state'].items()
-                           if 'trusted_hash' in entry}
-                count = assert_startup_hook_grant(self, grant, session['launch'], trusted)
+                count = check_startup_hook_grant(self, fx, member_id)
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_hooks_trust'])
                 self.assertFalse([q for q in fx.pending(member_id) if q.get('source') == 'codex_hooks_trust'])
                 self.assertFalse([card for (member, _), card in fx.cards_seen.items()

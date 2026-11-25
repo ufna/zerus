@@ -1148,11 +1148,21 @@ class TeamFixture:
         """The journal's attempts of one session (see journal)."""
         return [row for row in self.journal() if row['session'] == session_name]
 
+    def journal_member(self, row):
+        if row['source'] == 'team_hook_trust' and row['saved_question'].get('conversation_id') == '':
+            # A pre-start record names the plan, before the live session has
+            # its qualified name. Its run identity is the planned launch.
+            launch = row['run']
+            matches = [member for member, session in self.sessions.items()
+                       if launch and session.get('launch') == launch]
+            return matches[0] if len(matches) == 1 else f'launch_id:{launch}'
+        return next((member for member, session in self.sessions.items() if session['name'] == row['session']),
+                    row['session'])
+
     def journal_summary(self):
         """The whole journal as (member, source, categories, status), sorted, for evidence
         and for assertions about everything it holds."""
-        members = {session['name']: member_id for member_id, session in self.sessions.items()}
-        return sorted((members.get(row['session'], row['session']), row['source'], tuple(row['categories']), row['status'])
+        return sorted((self.journal_member(row), row['source'], tuple(row['categories']), row['status'])
                       for row in self.journal())
 
     def claude_trust_records(self):

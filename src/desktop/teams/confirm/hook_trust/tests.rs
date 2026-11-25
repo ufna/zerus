@@ -723,12 +723,6 @@ fn native_prestart_writes_the_exact_hook_audit_and_never_repeats_it() {
     );
     let temp = tempfile::tempdir().unwrap();
     let root = crate::platform::canonical(temp.path()).unwrap();
-    let home = root.join("account");
-    let folder = root.join("folder");
-    std::fs::create_dir(&home).unwrap();
-    std::fs::create_dir(&folder).unwrap();
-    std::fs::write(home.join("config.toml"), "[features]\nplugins = false\n").unwrap();
-
     let config = crate::config::Config {
         home: root.to_str().unwrap().to_owned(),
         dir: root.join("config"),
@@ -741,69 +735,83 @@ fn native_prestart_writes_the_exact_hook_audit_and_never_repeats_it() {
         tab: false,
         tab_colors: String::new(),
     };
-    let start = Start {
-        team: "fixture-team",
-        member: "m1",
-        person: "fixture-person",
-        machine: "fixture-machine",
-        launch: "fixture-launch",
-        session: "codex/fixture/member",
-        run: "fixture-launch",
-        conversation: "",
-        folder: folder.to_str().unwrap(),
-        base: "",
-        home: &home,
-    };
+    for (member, account, session) in [
+        ("lead", "zt-codex", "teams-fixture-lead"),
+        ("m1", "zt-codex-member", "teams-fixture-m1-zt-dev"),
+    ] {
+        let launch = uuid::Uuid::new_v4().to_string();
+        let home = root.join(account);
+        let folder = root.join(member);
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let settings = home.join("config.toml");
+        std::fs::write(&settings, "[features]\nplugins = false\n").unwrap();
+        let start = Start {
+            team: "fixture-team",
+            member,
+            person: "fixture-person",
+            machine: "fixture-machine",
+            launch: &launch,
+            session,
+            run: &launch,
+            conversation: "",
+            folder: folder.to_str().unwrap(),
+            base: "",
+            home: &home,
+        };
 
-    crate::state::install_codex_hooks(&home, "codex").unwrap();
-    let prepared = prepare(&home, &folder, None, "").unwrap();
-    // The fresh account receives the 11 common events plus Codex Interrupt.
-    assert_eq!(prepared.grant.len(), 12);
-    assert!(prepared.uncovered.is_empty());
-    let grant = prepared.grant.clone();
-    drop(prepared);
-    assert_eq!(
-        before_start(&config, &start),
-        Pretrust::Trusted(grant.len())
-    );
+        crate::state::install_codex_hooks(&home, "codex").unwrap();
+        let prepared = prepare(&home, &folder, None, "").unwrap();
+        // The fresh account receives the 11 common events plus Codex Interrupt.
+        assert_eq!(prepared.grant.len(), 12);
+        assert!(prepared.uncovered.is_empty());
+        let grant = prepared.grant.clone();
+        drop(prepared);
+        assert_eq!(
+            before_start(&config, &start),
+            Pretrust::Trusted(grant.len())
+        );
 
-    let stored = super::config(&home).unwrap();
-    assert_eq!(stored["hooks"]["state"].as_object().unwrap().len(), 12);
-    for (key, hash) in &grant {
-        assert_eq!(stored["hooks"]["state"][key]["trusted_hash"], hash.as_str());
+        let stored = super::config(&home).unwrap();
+        assert_eq!(stored["hooks"]["state"].as_object().unwrap().len(), 12);
+        for (key, hash) in &grant {
+            assert_eq!(stored["hooks"]["state"][key]["trusted_hash"], hash.as_str());
+        }
+        assert_eq!(before_start(&config, &start), Pretrust::Nothing);
+
+        let audit = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
+        let (provider, session, status, detail, raw): (String, String, String, String, String) = audit
+            .query_row(
+                "SELECT provider,session,status,detail,question FROM attempts WHERE session=?1",
+                [session],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                provider.as_str(),
+                session.as_str(),
+                status.as_str(),
+                detail.as_str()
+            ),
+            ("codex", start.session, "approved", SAVED),
+        );
+        let row: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(row["question"], journal_question(&start, &grant));
+        assert_eq!(row["categories"], json!(["team_hook_trust"]));
+        assert_eq!(row["answers"], json!([]));
+        assert!(row.get("scope").is_none());
+        println!(
+            "ZERUS_HOOK_TRUST_NATIVE={}",
+            json!({"provider": provider, "status": status, "detail": detail, "saved_question": row["question"],
+                   "source": row["question"]["source"], "categories": row["categories"], "answers": row["answers"],
+                   "scope": null, "trusted_hashes": stored["hooks"]["state"], "member": member, "account": account,
+                   "session": session, "launch": launch, "saved_toml": std::fs::read_to_string(settings).unwrap()})
+        );
     }
-    assert_eq!(before_start(&config, &start), Pretrust::Nothing);
-
     let audit = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
     let count: usize = audit
-        .query_row("SELECT count(*) FROM attempts", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM attempts", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 1);
-    let (provider, session, status, detail, raw): (String, String, String, String, String) = audit
-        .query_row(
-            "SELECT provider,session,status,detail,question FROM attempts",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        (
-            provider.as_str(),
-            session.as_str(),
-            status.as_str(),
-            detail.as_str()
-        ),
-        ("codex", start.session, "approved", SAVED),
-    );
-    let row: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(row["question"], journal_question(&start, &grant));
-    assert_eq!(row["categories"], json!(["team_hook_trust"]));
-    assert_eq!(row["answers"], json!([]));
-    assert!(row.get("scope").is_none());
-    println!(
-        "ZERUS_HOOK_TRUST_NATIVE={}",
-        json!({"provider": provider, "status": status, "detail": detail, "saved_question": row["question"],
-               "source": row["question"]["source"], "categories": row["categories"], "answers": row["answers"],
-               "scope": null, "trusted_hashes": stored["hooks"]["state"]})
-    );
+    assert_eq!(count, 2);
 }
