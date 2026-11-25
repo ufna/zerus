@@ -207,6 +207,52 @@ fn a_busy_or_unknown_lead_gets_no_doorbell() {
 }
 
 #[test]
+fn person_contacts_wait_for_the_archived_leads_exact_live_session() {
+    use crate::teams::store::timers::Gate;
+
+    let body = "Keep this for the lead.";
+    for operation in [
+        Operation::AskLead { text: body.into() },
+        Operation::OpenCard {
+            kind: crate::teams::store::person_contact::NOTE.into(),
+            text: body.into(),
+            node: None,
+            decisions: Some(Vec::new()),
+            parameters: None,
+        },
+    ] {
+        let mut w = World::new();
+        w.h.bind("lead");
+        w.h.bind("m1");
+        w.sessions.idle("m1", "other-run");
+        w.h.run(&person(), operation).unwrap();
+        w.pass(T0);
+        assert!(w.effects.rang.is_empty());
+        assert!(states(&w).is_empty());
+        assert_eq!(w.h.store.inbox_view(TEAM).unwrap().unwrap().open, 1);
+
+        w.sessions.idle("lead", "restored-lead-run");
+        w.pass(T0 + 1);
+        w.restart("after-restore");
+        w.pass(T0 + 2);
+        assert_eq!(w.effects.rang.len(), 1);
+        let ring = &w.effects.rang[0];
+        let Gate::Lead(bell) = &ring.gate else {
+            panic!("the contact must ring the lead");
+        };
+        assert_eq!((bell.team.as_str(), bell.member.as_str()), (TEAM, "lead"));
+        let lead = w.h.store.member(TEAM, "lead").unwrap().unwrap();
+        assert_eq!(Some(&bell.session), lead.session.as_ref());
+        assert_eq!(
+            (ring.run.as_str(), ring.conversation.as_str()),
+            ("restored-lead-run", "conversation-lead"),
+        );
+        assert!(ring.only_when_idle);
+        assert!(!ring.text.contains(body));
+    }
+}
+
+#[test]
 fn the_doorbell_text_names_a_bounded_count_and_the_command() {
     use super::super::doorbell::text;
     assert_eq!(

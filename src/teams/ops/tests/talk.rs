@@ -320,6 +320,28 @@ fn person_question_is_persisted_for_the_lead_without_a_task() {
     }))
     .expect("the bound lead needs a scoped reply operation");
     refused(h.run(&member, answer.clone()), code::NOT_ALLOWED);
+    let Actor::Session { session, .. } = &member else {
+        unreachable!()
+    };
+    let wrong_session = Actor::Session {
+        person: "local".into(),
+        team: TEAM.into(),
+        member: "lead".into(),
+        session: session.clone(),
+    };
+    refused(h.run(&wrong_session, answer.clone()), code::NOT_ALLOWED);
+    let mut other = create();
+    if let Operation::Create {
+        integration_branch, ..
+    } = &mut other
+    {
+        integration_branch.push_str("-other");
+    }
+    h.run_for(TEAM_B, &person(), other).unwrap();
+    refused(
+        h.run_for(TEAM_B, &lead, answer.clone()),
+        code::NOT_ALLOWED,
+    );
     let reply = h.run(&lead, answer).unwrap();
     let inbox = h.store.inbox(TEAM, 30, None).unwrap();
     let row = inbox.rows.iter().find(|row| row.seq == item).unwrap();

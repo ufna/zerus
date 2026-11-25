@@ -50,7 +50,7 @@ it("shows the contact badge and the persisted reply under the question", () => {
   const onOpen = vi.fn();
   const host = mount(() => [
     createComponent(TeamDrawerButtons, { value: null, leadNotices: 1, onOpen }),
-    createComponent(TeamInbox, { rows: [fixture.inbox], busy: false, onAction: vi.fn() }),
+    createComponent(TeamInbox, { rows: [fixture.inbox], busy: false, status: "running", onAction: vi.fn() }),
   ]);
   expect(host.querySelector("[data-team-lead-notices]")?.textContent?.trim()).toBe("1");
   expect(host.textContent).toContain(fixture.reply.text);

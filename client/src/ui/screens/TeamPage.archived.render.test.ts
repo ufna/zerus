@@ -80,6 +80,10 @@ it("the page shows the archived team read-only, and Lead chat says why the lead 
   expect(element.querySelector("[data-team-tab]")).not.toBeNull();
   expect(element.querySelector("[data-team-page-archived]")?.textContent).toBe("This team is archived. It is shown read-only.");
   expect(element.querySelector<HTMLButtonElement>("[data-team-add-task]")!.disabled).toBe(true);
+  const contact = element.querySelector<HTMLButtonElement>("[data-team-contact]")!;
+  expect(contact.disabled).toBe(true);
+  contact.click();
+  expect(element.querySelector("textarea")).toBeNull();
   const memberActions = [...element.querySelectorAll<HTMLButtonElement>('button[aria-label="Member actions"]')];
   expect(memberActions.length).toBe(data.team.members.length);
   expect(memberActions.every((action) => action.disabled)).toBe(true);
