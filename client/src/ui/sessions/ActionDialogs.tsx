@@ -18,7 +18,7 @@ import { targetOf } from "../../store/actions";
 import { setSetting } from "../../store/settings";
 import { sessionForks } from "../../store/sessionForks";
 import { FORK_CHECKING, FORK_HINT } from "./fork-ui";
-import { tr } from "../../i18n";
+import { tr, trc } from "../../i18n";
 import { readCleanupOffer, waitForCleanupOffer, type CleanupProgram } from "./termination-offer";
 import { TerminationPrograms } from "./TerminationPrograms";
 import { CleanupOfferNotice } from "./CleanupOfferNotice";
@@ -87,7 +87,7 @@ export function actionEntries(s: Session, details?: Details, options: { context?
     rename: { label: tr("Rename…"), icon: "pencil", disabled: !m.rename, action: () => send({ type: "open", kind: "rename", row }) },
     fork: forkEntry(s, details),
     archive: m.archive.visible
-      ? { label: tr("Move to archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => {
+      ? { label: trc("session action", "Archive"), icon: "archive", disabled: !m.archive.enabled, hint: hint(m.archive.enabled, m.archive.reason), action: () => {
         // A parent with live child sessions confirms first and may end them too.
         const children = childOfferFor(row, "archive");
         if (children.ending.length || children.staying.length) { send({ type: "open", kind: "archive", row }); return; }
@@ -95,7 +95,7 @@ export function actionEntries(s: Session, details?: Details, options: { context?
       } }
       : undefined,
     end: {
-      label: tr(m.end.label), icon: m.end.label === "Terminate session…" ? "circle-stop" : "trash", danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
+      label: tr(m.end.label), icon: m.end.icon, danger: true, disabled: !m.end.enabled, hint: hint(m.end.enabled, m.end.reason),
       action: () => {
         // Qt's click-time GONE pre-check first; a forget names the run and conversation in view.
         if (terminates(row, details)) { send({ type: "open", kind: "terminate", row }); return; }

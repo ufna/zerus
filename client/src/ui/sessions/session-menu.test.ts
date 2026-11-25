@@ -75,6 +75,7 @@ describe("the owner's compact session row menu", () => {
     ];
     expect(labels(sessionMenu(archivedSession("", "Local", archived("codex"))))).toEqual(expected);
     expect(labels(sessionMenu(archivedSession("", "Local", archived("dsh"))))).toEqual(expected);
+    expect(menuItem("Forget archived session…", sessionMenu(archivedSession("", "Local", archived("codex"))))).toMatchObject({ icon: "trash", danger: true });
   });
 
   it("a live row starts with Mark then Mute and keeps its terminal entry", () => {
@@ -84,6 +85,18 @@ describe("the owner's compact session row menu", () => {
       "Open terminal", "Copy connect command", "Copy session ID", "---",
       "Clear session…", "Rename…", "Move to project…", "---", "Terminate session…",
     ]);
+    expect(menuItem("Terminate session…", sessionMenu(live))).toMatchObject({ icon: "circle-stop", danger: true });
+  });
+
+  it("offers Stop and archive for a tracked running session", () => {
+    const live = toSession("", "run:tracked-live", {
+      name: "codex/example/tracked-live", agent: "codex", state: "running", tracked: true,
+      run_id: "tracked-live", allowed_actions: ["terminate"],
+    });
+    const entries = sessionMenu(live);
+    expect(menuItem("Stop and archive…", entries)).toMatchObject({ disabled: false, icon: "archive", danger: true });
+    expect(labels(entries)).not.toContain("Terminate session…");
+    expect(labels(entries)).not.toContain("Archive");
   });
 
   it.each(["stopped", "paused"])("offers Archive separately from Forget for a %s session", (state) => {
@@ -92,8 +105,10 @@ describe("the owner's compact session row menu", () => {
       run_id: "saved-menu", conversation_id: "saved-conversation", allowed_actions: ["resume", "archive", "forget"],
     });
     const entries = sessionMenu(saved);
-    expect(menuItem("Move to archive", entries)).toMatchObject({ disabled: false, icon: "archive" });
-    expect(menuItem("Forget saved session…", entries)).toMatchObject({ danger: true });
+    const archive = menuItem("Archive", entries);
+    expect(archive).toMatchObject({ disabled: false, icon: "archive" });
+    expect(archive.danger).toBeFalsy();
+    expect(menuItem("Forget saved session…", entries)).toMatchObject({ icon: "trash", danger: true });
   });
 
   it("Clear session checks an unselected row and opens the same dialog for it", async () => {

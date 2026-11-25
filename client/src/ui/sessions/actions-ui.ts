@@ -92,13 +92,18 @@ export interface MenuState {
   change: { label: "Pause session" | "Resume session" | "Restore session" | "Updating…"; enabled: boolean; reason?: string };
   rename: boolean;
   archive: { visible: boolean; enabled: boolean; reason?: string };
-  end: { label: "Terminate session…" | "Forget saved session…" | "Forget archived session…"; enabled: boolean; reason?: string };
+  end: {
+    label: "Stop and archive…" | "Terminate session…" | "Forget saved session…" | "Forget archived session…";
+    icon: "archive" | "circle-stop" | "trash";
+    enabled: boolean;
+    reason?: string;
+  };
   /** Qt's composer Stop: shown while the turn works, enabled when the host can interrupt it. */
   stop: { visible: boolean; enabled: boolean; reason?: string };
 }
 
 export interface MenuOptions {
-  /** The row's context menu: Move to archive needs the machine online there (not in the header). */
+  /** Archive requires an online machine in the row's context menu. */
   context?: boolean;
   /** The write in flight is this session's interrupt. */
   interrupting?: boolean;
@@ -134,6 +139,10 @@ export const forgetsBindingOnly = (s: Pick<ActionRow, "allowed" | "cmd">, detail
 export const terminates = (s: Pick<ActionRow, "state" | "allowed" | "cmd">, details?: Details) =>
   s.state === "running" && !forgetsBindingOnly(s, details);
 
+/** The same session types stop into Archive from the termination confirmation. */
+const archivesOnTerminate = (s: Pick<ActionRow, "tracked" | "cmd">) =>
+  s.tracked && ["codex", "claude", "kimi"].includes(s.cmd);
+
 export function menuState(s: ActionRow, online: boolean, updating: boolean, details?: Details, options: MenuOptions = {}): MenuState {
   const available = online && !updating && !options.batchRunning;
   const archived = s.state === "archived";
@@ -156,11 +165,17 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
     : available && ((canPause && allowedOp(s, "pause", details)) || (!running && s.resumable && allowedOp(s, "resume", details)));
   const [agent, project] = s.name.split("/", 2);
 
+  const archives = archivesOnTerminate(s);
   const end: MenuState["end"] = terminates(s, details)
-    ? { label: trNoop("Terminate session…"), enabled: available && allowedOp(s, "terminate", details), reason: allowedOp(s, "terminate", details) ? undefined : reasonFor(s, "terminate", details) }
+    ? {
+      label: archives ? trNoop("Stop and archive…") : trNoop("Terminate session…"),
+      icon: archives ? "archive" : "circle-stop",
+      enabled: available && allowedOp(s, "terminate", details),
+      reason: allowedOp(s, "terminate", details) ? undefined : reasonFor(s, "terminate", details),
+    }
     : archived
-      ? { label: trNoop("Forget archived session…"), enabled: available && allowedOp(s, "forget", details) && !!s.archiveId, reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) }
-      : { label: trNoop("Forget saved session…"), enabled: available && allowedOp(s, "forget", details), reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) };
+      ? { label: trNoop("Forget archived session…"), icon: "trash", enabled: available && allowedOp(s, "forget", details) && !!s.archiveId, reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) }
+      : { label: trNoop("Forget saved session…"), icon: "trash", enabled: available && allowedOp(s, "forget", details), reason: allowedOp(s, "forget", details) ? undefined : reasonFor(s, "forget", details) };
 
   // Stop follows the inspected turn (Qt's m_details); without details it stays off.
   const phase = details?.phase || s.phase || "";
@@ -196,7 +211,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
  * other live session is killed (`kill`).
  */
 export function terminateCopy(s: Pick<ActionRow, "tracked" | "cmd" | "name" | "machine">): { title: string; text: string; detail: string; confirm: string; action: "terminate" | "kill" } {
-  const archives = s.tracked && ["codex", "claude", "kimi"].includes(s.cmd);
+  const archives = archivesOnTerminate(s);
   return {
     title: tr("Terminate session?"),
     text: archives

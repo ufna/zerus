@@ -165,8 +165,12 @@ it.each(["terminate dialog", "cleanup panel", "pending replies"])("clears the de
   const key = await open(fixtureRow());
   if (stage === "terminate dialog") {
     host.querySelector<HTMLButtonElement>('.detail-head button[data-tip="Session actions"]')!.click(); await flush();
-    [...host.querySelectorAll<HTMLButtonElement>(".menu-item")].find((button) => button.textContent === "Terminate session…")!.click(); await flush();
-    expect(host.querySelector("#action-dlg-title")!.textContent).toContain("Terminate");
+    const archive = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")].find((button) => button.textContent === "Stop and archive…")!;
+    expect(archive.classList.contains("danger")).toBe(true);
+    expect(menu()!.items).toContainEqual(expect.objectContaining({ label: "Stop and archive…", icon: "archive" }));
+    archive.click(); await flush();
+    expect(host.querySelector("#action-dlg-title")!.textContent).toBe("Terminate session?");
+    expect(host.querySelector('dialog[aria-labelledby="action-dlg-title"] button.solid-danger')?.textContent).toBe("Stop and archive");
   } else if (stage === "cleanup panel") {
     openCleanup(); await vi.dynamicImportSettled(); await flush();
     expect(host.querySelector(".worktree-cleanup[open]")).not.toBeNull();
@@ -224,6 +228,19 @@ it("keeps the moved row actions in the real session header menu", async () => {
   for (const label of ["Expand all collapsed", "Open folder", "Open shell in session folder", "Pause session", "Fork session…", "Set parent…", "Copy session name", "Copy session reference", "Copy folder path"]) {
     expect(labels, label).toContain(label);
   }
+});
+
+it("shows a neutral Archive beside destructive Forget in a stopped session's header", async () => {
+  const row = { ...fixtureRow(), status: "paused", state: "stopped", allowed_actions: ["archive", "forget"] };
+  await open(row);
+  host.querySelector<HTMLButtonElement>('.detail-head button[data-tip="Session actions"]')!.click(); await flush();
+  const entries = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
+  const archive = entries.find((button) => button.textContent === "Archive");
+  const forget = entries.find((button) => button.textContent === "Forget saved session…");
+  expect(archive?.classList.contains("danger")).toBe(false);
+  expect(forget?.classList.contains("danger")).toBe(true);
+  expect(menu()!.items).toContainEqual(expect.objectContaining({ label: "Archive", icon: "archive" }));
+  expect(menu()!.items).toContainEqual(expect.objectContaining({ label: "Forget saved session…", icon: "trash" }));
 });
 
 describe("an archive search keeps the archive status and paging (zerus-5wmh.13.17 (4))", () => {
