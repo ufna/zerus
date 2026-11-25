@@ -170,8 +170,14 @@ fn ordinary_append_during_a_read_preserves_both_typed_and_queue_proof() {
     fs::write(&path, row()).unwrap();
     let mut transcript = Transcript::at(path, 0);
     AFTER_TRANSCRIPT_READ.with(|slot| slot.set(Some(append_queue)));
-    assert_eq!(transcript.proof(TEXT, 0.0), Some(Proof::Transcript));
-    assert_eq!(transcript.proof("queued next", 0.0), Some(Proof::Queued));
+    assert_eq!(
+        transcript.proof(TEXT, 0.0).map(|(proof, _)| proof),
+        Some(Proof::Transcript)
+    );
+    assert_eq!(
+        transcript.proof("queued next", 0.0).map(|(proof, _)| proof),
+        Some(Proof::Queued)
+    );
 }
 
 #[test]
@@ -181,7 +187,10 @@ fn a_genuinely_absent_new_transcript_can_appear_without_adopting_replacements() 
     let mut transcript = Transcript::of(&json!({"transcript":path})).unwrap();
     assert_eq!(transcript.proof(TEXT, 0.0), None);
     fs::write(&path, row()).unwrap();
-    assert_eq!(transcript.proof(TEXT, 0.0), Some(Proof::Transcript));
+    assert_eq!(
+        transcript.proof(TEXT, 0.0).map(|(proof, _)| proof),
+        Some(Proof::Transcript)
+    );
 
     let mut invalid = Transcript::at(dir.path().to_owned(), 0);
     assert_eq!(invalid.proof(TEXT, 0.0), None);

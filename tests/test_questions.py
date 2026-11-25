@@ -313,6 +313,37 @@ class Questions(unittest.TestCase):
         self.answer(self.payload(question_id=card['question_id'],expected_question_hash=card['question_hash']),success=False)
         self.assertEqual(self.received(),b'')
 
+    def person_turn(self):
+        # The session holds a person turn (zerus-46l1q): the answer writer
+        # under test, not this fixture, decides whether it survives.
+        data=json.loads(self.record_path.read_text())
+        request=str(uuid.uuid4())
+        data['person_turn']=dict(request_id=request,origin='desktop',run_id=data['run_id'],
+            conversation_id=data['conversation_id'],admitted_at=1,bound_at=2,native_turn=None)
+        self.record_path.write_text(json.dumps(data))
+        return request
+
+    def assert_turn_ended(self,request):
+        data=json.loads(self.record_path.read_text())
+        self.assertNotIn('person_turn',data)
+        self.assertEqual(data.get('person_turn_spent'),request)
+
+    def test_an_answer_ends_the_person_turn_whoever_appears_to_call(self):
+        # S1-2: the receiving side ends the turn at every answer it prepares
+        # for delivery, without any caller test.
+        request=self.person_turn()
+        self.assertEqual(self.answer()['status'],'answered')
+        self.assert_turn_ended(request)
+
+    def test_a_forwarded_answer_ends_the_person_turn_on_the_receiving_side(self):
+        self.script('ssh',"""#!/usr/bin/env python3
+import os,sys
+os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
+""")
+        request=self.person_turn()
+        self.assertEqual(self.answer(remote=True)['status'],'answered')
+        self.assert_turn_ended(request)
+
     def test_remote_answer_payload_remains_stdin(self):
         self.script('ssh',"""#!/usr/bin/env python3
 import json,os,pathlib,sys

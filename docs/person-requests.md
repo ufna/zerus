@@ -129,6 +129,43 @@ Forwarding to a peer (F1) stays refused until S6.
 directly; the same level as today's ancestry checks. It removes accidental use
 and leaves evidence. The window gesture stays for decisions made in the window.
 
+## S1 as built (desktop mark and person turn)
+
+- **Mark.** The deferred-send frontend admission writes `desktop_person_marks`
+  (desktop store schema 43) in the same transaction as its original row: request,
+  session, run, conversation, origin `desktop`, the SHA-256 of the exact
+  `hgs send` stdin and the time. At most 4096 rows, immutable, removed 13 hours
+  after admission. Nothing else writes it.
+- **Turn.** The prompt hook of Claude or Codex (`UserPromptSubmit`) or Kimi (its
+  user `TurnStarted`) records `person_turn` only for the pending request with a
+  mark for exactly that session, run and conversation, whose receipt carries the
+  admitted stdin and whose text the prompt is, reported after the send and
+  outside any running tool call, within 12 hours of admission, once per message.
+  Any other main prompt, any input receipt, any answer delivered into the
+  session, a run or conversation change, or 12 hours from the hook end it.
+- **Delivery.** A recorded turn grants nothing until the send itself witnessed
+  that the native agent accepted exactly that input. The hook records the
+  native identity of the input it reports (Claude's `prompt_id`, Codex's
+  `turn_id`, Kimi's user `turn_id`); without one nothing binds. Claude's send
+  writer records the exact typed user row that proved its submission in its
+  receipt (`native_input`: the row's `promptId` and `uuid`), and use requires
+  the hook's `prompt_id` to be exactly that `promptId`; no fresh text-and-time
+  match is made. A queue entry, which no recorded consumer joins to a turn,
+  witnesses nothing, and neither do Codex and Kimi sends, whose senders record
+  no native input identity: those sends still work, but grant nothing. A send
+  left uncertain never grants anything.
+- **Use.** `caller::person_request()` proves all of it again for each command
+  from the caller's live record, the mark (read only from the store of its own
+  configuration) and the receipt; `hgs self --json` shows `person_request`.
+
+Platforms:
+
+| Platform | Status |
+|---|---|
+| Linux | Marks at the deferred-send admission, in desktop-service mode. |
+| macOS | No mark yet: the deferred-send runtime refuses every original before any row until its child seam is qualified, and the window's direct route writes none. The person turn never starts; agents keep today's refusals. A window-admitted mark for the direct route is the follow-up. |
+| Windows | No mark: the deferred-send runtime is not built for Windows. The person turn never starts; agents keep today's refusals. |
+
 ## After each slice
 
 | # | After |
@@ -152,16 +189,19 @@ Sizes: S < 300, M 300-1000, L > 1000 changed lines.
 
 1. S0, text (S): AGENTS.md, CLAUDE.md, `hgs guide` index, tasks, launch and
    stop, and `docs/reference.md`; this file.
-2. S1, desktop mark and person turn (M): Linux and macOS, local sessions;
-   tests through the real deferred-send and hook writers.
-3. S2, tasks (S): T3-T5, T7-T9 with history fields; I2 and I7 text.
-4. S3, Teams (M): writers, front door (the person's terminal and
+2. S1, desktop mark and person turn (M): Linux, local sessions; tests through
+   the real deferred-send and hook writers. macOS and Windows write no mark
+   (see Platforms), so the person's own message lets no agent act there; a
+   refusal says so on those platforms.
+3. S1c, macOS mark for the window's direct send (M), `zerus-uav2j`.
+4. S2, tasks (S): T3-T5, T7-T9 with history fields; I2 and I7 text.
+5. S3, Teams (M): writers, front door (the person's terminal and
    `PersonRequest`), preview, catalog, template; I6 text; closes
    `zerus-63rru.31`.
-5. S1b, phone mark (S-M).
-6. S4, answers (S).
-7. S5, window-only settings, automatic approvals included (M).
-8. S6, remote (L).
+6. S1b, phone mark (S-M).
+7. S4, answers (S).
+8. S5, window-only settings, automatic approvals included (M).
+9. S6, remote (L).
 
 ## Owner decisions (2026-11-18)
 

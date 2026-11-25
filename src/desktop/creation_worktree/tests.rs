@@ -97,7 +97,7 @@ fn exact_previous_store_upgrade_adds_only_the_independent_worktree_leaf() {
         // message, task message input, deferred send, deferred answer and
         // compact-to-send leaves, and the question route leaves'
         // (zerus-sa9qn.8, .32, .50, .36 and .52).
-        before + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1
+        before + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1 + 1
     );
     // The clone leaf's original table is byte-compatible and separate.
     assert_eq!(

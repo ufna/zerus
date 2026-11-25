@@ -48,6 +48,8 @@ class NativeCodexInput(unittest.TestCase):
         self.addCleanup(self.server.release.set)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.provider_url = f'http://127.0.0.1:{self.server.server_port}/v1'
+        if self._testMethodName == 'test_native_hook_turn_is_the_rollout_turn_of_the_input':
+            self.native_features = 'mentions_v2=false\nhooks=true\n'
         native.NativeCodexClear.setUp(self)
         (self.root / 'literalreviewer.log').write_text('Synthetic file-completion target.\n')
 
@@ -55,6 +57,13 @@ class NativeCodexInput(unittest.TestCase):
         return self.tmux('capture-pane', '-p', '-t', self.pane)
 
     def prepare_native_hooks(self):
+        if self._testMethodName == 'test_native_hook_turn_is_the_rollout_turn_of_the_input':
+            import test_claude_input_native as claude
+            self.hook_log, command = claude.identity_recorder(self.root)
+            (self.native_home / 'hooks.json').write_text(json.dumps({'hooks': {
+                'UserPromptSubmit': [{'hooks': [
+                    {'type': 'command', 'command': command, 'timeout': 5}]}]}}))
+            return
         if self._testMethodName != 'test_native_five_second_hook_timeout_keeps_acceptance_under_contention':
             return
         import shlex
@@ -348,6 +357,36 @@ class NativeCodexInput(unittest.TestCase):
         messages = [row['payload']['message'] for row in rows if row.get('type') == 'event_msg'
                     and row.get('payload', {}).get('type') == 'user_message']
         self.assertEqual(messages, ['Previous fixture request', text, control])
+
+
+    def test_native_hook_turn_is_the_rollout_turn_of_the_input(self):
+        # zerus-46l1q review R3-1 (the reviewer's probe): Codex's natural
+        # UserPromptSubmit names the rollout turn around the exact input. Its
+        # sender records no such identity, so a Codex send grants no person
+        # authority; this pins the identity a future witness would join.
+        if type(self) is not NativeCodexInput:
+            self.skipTest('the identity does not depend on the composer variant')
+        import test_claude_input_native as claude
+        text = 'Review fixture: check a normal Codex input identity.'
+        receipt = self.send(self.payload(text=text))
+        self.assertEqual(receipt['status'], 'submitted')
+        self.wait_for(lambda: 'Fixture turn complete.' in self.screen())
+        hooks = [event for event in claude.identity_rows(self.hook_log) if event.get('prompt') == text]
+        self.assertEqual(len(hooks), 1)
+        self.assertTrue(claude.canonical_uuid(hooks[0].get('turn_id')))
+        turn, matching = None, []
+        for row in claude.identity_rows(Path(self.record['transcript'])):
+            payload = row.get('payload', {})
+            if row.get('type') == 'event_msg':
+                if payload.get('type') in {'task_started', 'turn_started'}:
+                    turn = payload.get('turn_id')
+                elif payload.get('type') in {'task_complete', 'turn_complete', 'turn_aborted'}:
+                    turn = None
+            if (row.get('type') == 'response_item' and payload.get('role') == 'user'
+                    and payload.get('content') == [{'type': 'input_text', 'text': text}]):
+                matching.append(turn)
+        self.assertEqual(matching, [hooks[0]['turn_id']])
+        self.assertNotIn('native_input', receipt)
 
 
 class NativeCodexMentionsV2Input(NativeCodexInput):
