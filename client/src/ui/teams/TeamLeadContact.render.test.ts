@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { TeamLeadContact } from "./TeamLeadContact";
+import { teamActionFailureText } from "./TeamActionFailure";
 import { TeamDrawerButtons, TeamFeed, TeamInbox } from "./TeamDrawers";
 import { ProposalCards } from "./ProposalCards";
 import { WaitingCard } from "./Waiting";
@@ -90,6 +91,8 @@ it("renders the form and reply in Russian through the shared catalog", async () 
     expect(host.querySelector('option[value="note"]')?.textContent).toBe("Оставить заметку");
     expect(host.querySelector("[data-open-lead-reply]")?.textContent).toBe("Открыть ответ");
     expect(host.querySelector("[data-feed-sentence]")?.textContent).toBe("Лид отметил вашу заметку прочитанной");
+    expect(teamActionFailureText("Wait 30 seconds between messages to the lead."))
+      .toBe("Между сообщениями лиду должно пройти 30 секунд.");
   } finally {
     await preferences.setSetting("workspace/language", "en", { persist: false });
   }

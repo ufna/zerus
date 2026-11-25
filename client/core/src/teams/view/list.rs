@@ -43,7 +43,9 @@ pub(in crate::teams) fn card_item(row: &Value) -> Option<WaitingItem> {
     let team = name(row, "team");
     let card = row.get("seq").and_then(Value::as_u64)?;
     Some(WaitingItem {
-        decision: row.get("decision").and_then(Value::as_str)
+        decision: row
+            .get("decision")
+            .and_then(Value::as_str)
             .filter(|value| *value == "acknowledged" && row["kind"] == "person_note_to_lead")
             .map(str::to_owned),
         id: format!("{team}:{card}"),
@@ -132,7 +134,12 @@ pub fn waiting(reply: &Value) -> WaitingView {
         items: rows
             .iter()
             .take(PAGE)
-            .filter(|row| !matches!(row["kind"].as_str(), Some("person_note_to_lead" | "lead_note_ack")))
+            .filter(|row| {
+                !matches!(
+                    row["kind"].as_str(),
+                    Some("person_note_to_lead" | "lead_note_ack")
+                )
+            })
             .filter_map(card_item)
             .collect(),
         next: next_cursor(reply),

@@ -29,6 +29,20 @@ const NAMES: Readonly<Record<string, () => string>> = {
 };
 export const actionName = (kind: string): string | undefined => Object.hasOwn(NAMES, kind) ? NAMES[kind]() : undefined;
 
+export function teamActionFailureText(message: string): string {
+  switch (message) {
+    case "Enter a message for the lead.": return tr("Enter a message for the lead.");
+    case "The lead's notice is unavailable or already read.": return tr("The lead's notice is unavailable or already read.");
+    case "The message contains unsupported control characters.": return tr("The message contains unsupported control characters.");
+    case "The person's note is unavailable or already closed.": return tr("The person's note is unavailable or already closed.");
+    case "The person's question is unavailable or already closed.": return tr("The person's question is unavailable or already closed.");
+    case "Too many open messages of this kind for the lead.": return tr("Too many open messages of this kind for the lead.");
+    case "Update the selected desktop service to use messages for the lead.": return tr("Update the selected desktop service to use messages for the lead.");
+    case "Wait 30 seconds between messages to the lead.": return tr("Wait 30 seconds between messages to the lead.");
+    default: return message;
+  }
+}
+
 export function ActionFailureNotice(props: { failure: TeamFailure; onDismiss: () => void }) {
   const name = () => props.failure.action ? actionName(props.failure.action) : undefined;
   return (
@@ -36,7 +50,7 @@ export function ActionFailureNotice(props: { failure: TeamFailure; onDismiss: ()
       <Icon name="triangle-alert" size={16} />
       <span class="team-action-failure-text">
         <Show when={name()}>{(shown) => <b data-team-action-failure-action>{shown()}</b>}</Show>
-        <span data-team-action-failure-message>{tr(props.failure.message)}</span>
+        <span data-team-action-failure-message>{teamActionFailureText(props.failure.message)}</span>
       </span>
       <button type="button" class="btn small" data-team-action-failure-dismiss onClick={() => props.onDismiss()}>{tr("Dismiss")}</button>
     </div>

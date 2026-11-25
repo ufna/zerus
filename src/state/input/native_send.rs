@@ -793,6 +793,32 @@ mod tests {
             assert_eq!(original.matches(teams).count(), 1, "Teams gate projection changed");
             original = original.replacen(teams, main, 1);
         }
+        // Teams inbox reminders skip compaction and recheck idleness before
+        // paste and Enter. Require each exact opt-in change before checking
+        // the original ordinary-send body against its retained seal.
+        for (reminder, ordinary) in [
+            (
+                "    let decision = (!request.only_when_idle && matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())\n",
+                "    let decision = (matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())\n",
+            ),
+            (
+                r#"        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be pasted.".into());
+        }
+"#,
+                "",
+            ),
+            (
+                r#"        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be submitted.".into());
+        }
+"#,
+                "",
+            ),
+        ] {
+            assert_eq!(original.matches(reminder).count(), 1, "{reminder}");
+            original = original.replacen(reminder, ordinary, 1);
+        }
         // wvzyk adds original receipt/text fences and a request-bound native
         // ordering snapshot. Project only those metadata additions away;
         // the original body seal, admission and native keys stay unchanged.

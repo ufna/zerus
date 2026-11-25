@@ -1637,8 +1637,12 @@ fn action_kinds() -> Vec<String> {
             generation: 1,
             text: "t".into(),
         },
-        TeamAction::AskLead { text: "Question".into() },
-        TeamAction::LeaveLeadNote { text: "Note".into() },
+        TeamAction::AskLead {
+            text: "Question".into(),
+        },
+        TeamAction::LeaveLeadNote {
+            text: "Note".into(),
+        },
         TeamAction::ReadLeadNotice { card: 1 },
     ];
     let mut kinds: Vec<String> = samples

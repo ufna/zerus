@@ -21,8 +21,7 @@ pub const NEW_TASK_ROUTE_MARKER: &str =
     "Desktop Teams Person new task route fields: desktop-team-person-new-task-route-v1";
 
 /// A service that admits the window's lead contact and notice plans.
-pub const LEAD_CONTACT_MARKER: &str =
-    "Desktop Teams lead contact: desktop-team-lead-contact-v1";
+pub const LEAD_CONTACT_MARKER: &str = "Desktop Teams lead contact: desktop-team-lead-contact-v1";
 
 /// The help markers the selected service must advertise for this plan.
 pub fn required_markers(plan: &Plan) -> Vec<&'static str> {
@@ -738,12 +737,18 @@ mod tests {
     #[test]
     fn lead_contact_plans_require_the_additional_service_marker() {
         for change in [
-            TeamAction::AskLead { text: "Question".into() },
-            TeamAction::LeaveLeadNote { text: "Note".into() },
+            TeamAction::AskLead {
+                text: "Question".into(),
+            },
+            TeamAction::LeaveLeadNote {
+                text: "Note".into(),
+            },
             TeamAction::ReadLeadNotice { card: 1 },
         ] {
             let mut plan = plan();
-            plan.action = Action::Team { change: Box::new(change) };
+            plan.action = Action::Team {
+                change: Box::new(change),
+            };
             assert!(plan.valid());
             assert_eq!(required_markers(&plan), [HELP_MARKER, LEAD_CONTACT_MARKER]);
         }

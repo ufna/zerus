@@ -1,6 +1,7 @@
 import { Show, createEffect, createSignal, on } from "solid-js";
 import { tr } from "../../i18n";
 import type { TeamOutcome } from "../../store/teams";
+import { TextArea } from "../lib/TextField";
 import type { EditAction } from "./TeamEditors";
 
 export function TeamLeadContact(props: {
@@ -66,7 +67,7 @@ export function TeamLeadContact(props: {
           </select>
         </label>
         <label>{note() ? tr("Note") : tr("Question")}
-          <textarea ref={text} class="field" rows={4} maxlength={2000} value={body()} disabled={busy()}
+          <TextArea ref={text} historyKey={props.team} class="field" rows={4} maxlength={2000} value={body()} disabled={busy()}
             onInput={(event) => setBody(event.currentTarget.value)} />
         </label>
         <p class="dim">{tr("Use up to 1,000 characters and 4,000 bytes.")}</p>

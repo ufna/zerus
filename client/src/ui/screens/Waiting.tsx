@@ -7,6 +7,7 @@ import { now, setDetailTab, setPage, setSelectedKey } from "../../store/ui";
 import { teams, type WaitingItem } from "../../store/teams";
 import { WaitingList } from "../teams/Waiting";
 import { TeamConfirmDialog } from "../teams/TeamConfirmDialog";
+import { teamActionFailureText } from "../teams/TeamActionFailure";
 import { TeamUncertain } from "../teams/TeamTab";
 import { setOpenTeamNode } from "../teams/openNode";
 import { TeamsOffNotice } from "../teams/TeamsOff";
@@ -119,7 +120,7 @@ export function WaitingScreen() {
           {(asking) => <TeamUncertain detail={asking.detail} busy={busy() || teams.busy()} onCheck={() => void teams.check(undefined, "waiting")} onDismiss={() => void teams.dismiss(undefined, "waiting")} />}
         </Show>
         <Show when={teams.failureFor("waiting")}>
-          {(failure) => <div class="notice danger team-notice" role="alert" data-waiting-action-failure><Icon name="triangle-alert" size={16} /><span>{tr(failure().message)}</span></div>}
+          {(failure) => <div class="notice danger team-notice" role="alert" data-waiting-action-failure><Icon name="triangle-alert" size={16} /><span>{teamActionFailureText(failure().message)}</span></div>}
         </Show>
       </Show>
       <TeamConfirmDialog source="waiting" />

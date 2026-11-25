@@ -397,7 +397,8 @@ fn confirm(
     let window = crate::main_window(app).ok_or("The main window is unavailable.")?;
     // Opening a notification is also its read receipt. The same native
     // original binds that exact card, and the store limits it to lead notices.
-    if matches!(&plan.action, wire::Action::Team { change } if matches!(change.as_ref(), TeamAction::ReadLeadNotice { .. })) {
+    if matches!(&plan.action, wire::Action::Team { change } if matches!(change.as_ref(), TeamAction::ReadLeadNotice { .. }))
+    {
         if plan.reference().as_ref() == Some(&review.intent.plan)
             && labels.is_some_and(|labels| review.intent.facts == labels.facts)
             && review.valid()
