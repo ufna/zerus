@@ -75,14 +75,15 @@ pub(super) fn status_at(root: &Path) -> Value {
         return value;
     }
     let read = || -> anyhow::Result<Value> {
-        let store = Store::read(root)?;
+        let index = store::Index::Certified;
+        let store = Store::read_index(root, index)?;
         let (ready, generation): (bool, i64) =
             store
                 .db
                 .query_row("SELECT ready,generation FROM meta WHERE id=1", [], |r| {
                     Ok((r.get(0)?, r.get(1)?))
                 })?;
-        if ready && generation > 0 {
+        if ready && generation > 0 && store.active_cut()?.is_some_and(|cut| store.covers(&cut)) {
             let (dirs, gap): (String, String) = store.db.query_row(
                 "SELECT dirs,gap FROM generations WHERE generation=?1 AND complete=1",
                 [generation],
@@ -92,7 +93,7 @@ pub(super) fn status_at(root: &Path) -> Value {
                 return Ok(json!({"state":"ready","generation":generation}));
             }
         }
-        let dir = directory(root)?;
+        let dir = index.directory(directory(root)?)?;
         if let Some(file) = checked(dir.read_private_optional("worker-status.json"))? {
             let mut bytes = Vec::new();
             file.take(4097).read_to_end(&mut bytes)?;

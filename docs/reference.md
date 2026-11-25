@@ -8810,9 +8810,11 @@ Ordinary listing automatically initializes its internal display cache on qualifi
 Linux computers with no existing policy. No cache switch is needed for normal
 use. `hgs listing-index disable --json` remains an explicit kill switch;
 `enable --json` and `status --json` remain available for diagnostics. Existing
-disabled, malformed or unreadable policy is preserved. Initialization/enable
-reports or temporarily refuses as `building`; a coalesced background worker establishes coverage
-independently of automatic recovery policy. Status distinguishes disabled,
+disabled, malformed or unreadable policy is preserved. A coalesced background
+worker establishes coverage independently of automatic recovery policy. Ordinary
+unpaged listing retries publication races for up to two seconds, including first
+use. Each attempt observes the terminal and index again. Opening the index allows
+up to 100 ms for SQLite contention. Status distinguishes disabled,
 building, ready and unavailable. macOS/Windows activation and desktop watch
 consumption are separate follow-ups; their existing paths remain in use.
 
@@ -8820,9 +8822,11 @@ When explicitly disabled or policy is unavailable, ordinary Linux `ls` accepts o
 small inventory: at most 256 directory entries and 16 MiB of canonical record
 bodies, with 250-ms preflight/verification checks. Larger, changing or unsupported
 input refuses with a nonzero exit and no partial JSON. With the cache active, an
-unready, stale or corrupt index also refuses; it never rescues a request by
-scanning full canonical records. Stable pages use the exact generation's native
-row versions and a separate read-only SQLite transaction. The legacy JSON body
+unready or stale index at the end of the wait refuses a body, as does a corrupt
+index. Stable pages use the exact generation's native row versions, a separate
+read-only SQLite transaction and a small coverage witness outside the replaceable
+cache. A mismatched witness sends the background worker through a new census.
+The legacy JSON body
 is complete or refused (64 MiB/10-second cooperative response bound).
 
 `hgs ls --json --local --paged --page-size 64` returns at most 128 rows and a

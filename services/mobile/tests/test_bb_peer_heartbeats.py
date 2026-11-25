@@ -37,7 +37,9 @@ class PeerHeartbeatTests(GatewayCase):
         busy = session_row(run_id=PEER_RUN, conversation_id=PEER_CONVERSATION,
                            process_work={"count": 1, "started_at": 100.0, "command": "build --wait", "sampled_at": 200.0})
         failed_launch = {"launch_id": str(uuid.uuid4()), "name": "claude/example/failed", "code": 1, "output": SCREEN_TEXT}
+        archive_page = {"version": 1, "total": 0}
         self.use(Fleet(Peer(snapshot=peer_listing(archive_revision="0" * 64, archive_paging=True,
+                                                  archive_page=archive_page,
                                                   sessions=[busy], peers=[THIRD_PEER], ended_launches=[failed_launch],
                                                   desktop_presence=PEER_PRESENCE, local_sessions=True,
                                                   local_host={"state": "running"}))))
@@ -52,6 +54,7 @@ class PeerHeartbeatTests(GatewayCase):
             self.assertEqual(set(body["snapshot"]), FORWARDED)
             self.assertEqual(body["snapshot"]["archive_revision"], "0" * 64)
             self.assertIs(body["snapshot"]["archive_paging"], True)
+            self.assertEqual(body["snapshot"]["archive_page"], archive_page)
             self.assertEqual(body["snapshot"]["sessions"][0]["process_work"],
                              {"count": 1, "started_at": 100.0, "command": "build --wait"})
             self.assertNotIn("gateway_one_hop", body["snapshot"]["mobile_capabilities"]["features"])

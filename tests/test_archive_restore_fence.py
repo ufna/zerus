@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import unittest
 import uuid
 
@@ -100,7 +101,7 @@ class ArchiveRestoreSource(pause.Harness):
         directory = self.root / "state/listing-metadata"
         enabled = directory / "enabled"
         held = directory / "fixture-held-enabled"
-        with (directory / "worker.lock").open("rb") as lease:
+        with (self.root / "state/listing-coverage-v1/certified-worker.lock").open("rb") as lease:
             def acquire():
                 try:
                     fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -114,7 +115,7 @@ class ArchiveRestoreSource(pause.Harness):
             finally:
                 held.rename(enabled)
             try:
-                yield directory / "index.sqlite3"
+                yield directory / "certified/index.sqlite3"
             finally:
                 self.hgs("listing-index", "disable", "--json")
 
@@ -198,6 +199,92 @@ class ArchiveRestoreSource(pause.Harness):
                     assert_failure("The session listing index cannot be read. Rebuild it and try again.")
             finally:
                 backup.replace(path)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_ordinary_listing_retries_past_the_sqlite_admission_wait(self):
+        self.save_archive()
+        with self.indexed_database() as path, closing(sqlite3.connect(path, isolation_level=None)) as db:
+            db.execute("PRAGMA journal_mode=DELETE")
+            db.execute("BEGIN EXCLUSIVE")
+            command = [str(pause.HGS), "ls", "--local", "--json", "--no-archives"]
+            with subprocess.Popen(command, env=self.env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as listing:
+                try:
+                    time.sleep(.35)
+                    db.execute("ROLLBACK")
+                    stdout, stderr = listing.communicate(timeout=5)
+                finally:
+                    if listing.poll() is None:
+                        listing.kill()
+            self.assertEqual(listing.returncode, 0, stdout + stderr)
+            self.assertEqual(json.loads(stdout)["sessions"], [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_display_rollback_refuses_bodies_and_recovers_the_saved_occupant(self):
+        import fcntl
+
+        name, _, archive = self.save_archive(tag="rollback")
+        self.hgs("listing-index", "enable", "--json")
+
+        def ls(*extra):
+            return subprocess.run([str(pause.HGS), "ls", "--local", "--json", *extra],
+                                  env=self.env, capture_output=True, text=True, timeout=6)
+
+        def listing_with(occupied):
+            result = ls()
+            if result.returncode:
+                self.assertEqual(result.stdout, "")
+                return None
+            page = json.loads(result.stdout)
+            archived = next((row for row in page["sessions"]
+                             if row.get("archive_id") == archive["archive_id"]), None)
+            occupant = any(row["name"] == name and row["state"] != "archived"
+                           for row in page["sessions"])
+            return page if archived and occupant == occupied and (
+                ("restore" in archived["allowed_actions"]) != occupied) else None
+
+        self.wait(lambda: listing_with(False))
+        state = self.root / "state"
+        cache = state / "listing-metadata"
+        database = cache / "certified/index.sqlite3"
+        saved = self.root / "older.sqlite3"
+        active = ("SELECT generation,dirs,gap FROM generations WHERE generation = "
+                  "(SELECT generation FROM meta WHERE id=1) AND complete=1")
+        with closing(sqlite3.connect(database)) as current, closing(sqlite3.connect(saved)) as older:
+            current.backup(older)
+            generation, _, _ = older.execute(active).fetchone()
+
+        self.assertEqual(self.start(tag="rollback"), name)
+        self.hgs("pause", name)
+        self.assertTrue(self.binding(name))
+        self.wait(lambda: listing_with(True))
+
+        with (cache / "writer.lock").open("rb") as writer:
+            fcntl.flock(writer, fcntl.LOCK_EX)
+            with closing(sqlite3.connect(saved)) as older, closing(sqlite3.connect(database)) as current:
+                latest_generation, current_dirs, current_gap = current.execute(active).fetchone()
+                self.assertGreater(latest_generation, generation)
+                older.backup(current)
+                # Keep the current directory and gap witnesses while rolling
+                # back the body. That combination must still fail certification.
+                with current:
+                    current.execute("UPDATE generations SET dirs=?,gap=? WHERE generation=?",
+                                    (current_dirs, current_gap, generation))
+                self.assertEqual(current.execute(active).fetchone(),
+                                 (generation, current_dirs, current_gap))
+
+            self.assertNotEqual(json.loads(self.hgs("listing-index", "status", "--json"))["state"],
+                                "ready", "status certified the rolled-back cut")
+            for extra in ((), ("--no-archives",), ("--no-archives", "--paged")):
+                with self.subTest(args=extra):
+                    result = ls(*extra)
+                    print(f"rollback generation {generation}, {extra}: "
+                          f"exit={result.returncode}, stdout={len(result.stdout)}, {result.stderr.strip()}",
+                          flush=True)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("stale or unavailable", result.stderr)
+        self.wait(lambda: listing_with(True))
 
     def test_changed_archive_with_same_run_and_conversation_refuses_before_start(self):
         name, _, selected = self.save_archive()
