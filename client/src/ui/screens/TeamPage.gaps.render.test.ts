@@ -20,7 +20,7 @@ const data = fixture as unknown as { running: TeamList; team: TeamView };
 const HERE = "00000000-0000-4000-8000-0000000000aa", STUDIO = "00000000-0000-4000-8000-0000000000bb";
 const f = vi.hoisted(() => ({
   rows: [] as Session[], archives: [] as Session[], groups: {} as Record<string, string>,
-  actions: [] as unknown[], stop: "" as "" | "confirm" | "pending",
+  actions: [] as unknown[], stop: "" as "" | "confirm" | "pending", swap: false,
   restorePending: false, batchBusy: false,
 }));
 vi.mock("../../bridge", async (original) => ({ ...(await original<object>()), inTauri: () => true }));
@@ -32,6 +32,9 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args?: 
       name: "Stop member", title: "Stop member", text: "Stop the lead seat", action: "Stop",
     } };
     if (call.action.kind === "stop_member" && f.stop === "pending") return { outcome: "pending", request_id: call.request_id };
+    if (call.action.kind === "swap_member" && f.swap) return { outcome: "confirm", confirmation: {
+      name: "Swap member", title: "Swap member", text: "Swap the lead seat", action: "Swap",
+    } };
     return { outcome: "done", request_id: call.request_id, receipt: {} };
   }
   return undefined;
@@ -90,7 +93,7 @@ async function openChat(element: HTMLElement) {
 }
 beforeEach(async () => {
   vi.resetModules(); f.rows = []; f.archives = []; f.groups = {}; f.actions = []; f.stop = "";
-  f.restorePending = false; f.batchBusy = false;
+  f.restorePending = false; f.batchBusy = false; f.swap = false;
   ({ teams } = await import("../../store/teams")); ui = await import("../../store/ui");
   ({ toSession } = await import("../../store/catalog")); ({ desktopService: service } = await import("../../store/desktopService"));
   ({ archivedSession } = await import("../../store/archive"));
@@ -120,17 +123,20 @@ function archivedLead(allowed = "restore") {
     state: "archived", archive_id: "lead-archive", resumable: true, allowed_actions: [allowed],
   });
 }
+const savedLead = (allowed = "forget"): Session => ({ ...leadRow(), state: "stopped", processState: "exited", resumable: true, allowed });
 
 const languages = [
   { lang: "en", roster: "Active roster seats (5)", liveCount: "Live sessions shown (3)",
     empty: "The queue is empty.", archived: "The lead's session is archived.", live: "The lead's session is live.",
     missing: "The lead's session is missing from the current list.", browse: "Browse Archive",
-    open: "Open archived lead session", restore: "choose Restore session", unavailable: "Restore is unavailable for this archive.",
+    open: "Open archived lead session", restore: "choose Restore session to recover its conversation", unavailable: "Resume is unavailable for the saved lead session.",
+    originalRun: "Restoring the conversation starts a new run", resume: "choose Resume session",
     stop: "Review Stop member", swap: "Review Swap", dialog: "Swap lead", receipts: "checks the saved receipts" },
   { lang: "ru", roster: "Активные места в составе (5)", liveCount: "Сессии, работающие по данным списка (3)",
     empty: "Очередь пуста.", archived: "Сессия лида в архиве.", live: "Сессия лида работает.",
     missing: "Сессии лида нет в текущем списке.", browse: "Открыть архив",
-    open: "Открыть архивную сессию лида", restore: "выберите «Восстановить сессию»", unavailable: "Эту архивную сессию нельзя восстановить.",
+    open: "Открыть архивную сессию лида", restore: "выберите «Восстановить сессию»", unavailable: "Сохранённую сессию лида нельзя возобновить.",
+    originalRun: "Восстановление диалога создаёт новый запуск", resume: "выберите «Возобновить сессию»",
     stop: "Открыть остановку участника", swap: "Открыть замену", dialog: "Заменить lead", receipts: "проверит сохранённые результаты" },
 ];
 async function useLanguage(lang: string) {
@@ -153,6 +159,7 @@ it.each(languages)("shows the archived lead and separate roster/live counts in $
   expect(a(host).dataset.teamLeadAvailability).toBe("archived");
   expect(a(host).textContent).toContain(copy.archived);
   expect(a(host).textContent).toContain(copy.restore);
+  expect(a(host).textContent).toContain(copy.originalRun);
   expect(leadOpen(host).textContent).toBe(copy.open);
   expect(leadAction(host)).toBeNull();
   leadOpen(host).click();
@@ -183,10 +190,10 @@ it.each(languages)("keeps a missing lead unknown until the exact live row is lis
 
 it.each(languages)("uses the existing Stop confirmation then offers Swap on a stopped seat in $lang", async (copy) => {
   await useLanguage(copy.lang);
-  f.rows = liveMembers();
-  f.archives = [archivedLead("forget")];
+  f.rows = [...liveMembers(), savedLead()];
   f.stop = "confirm";
-  const current = emptyRoster();
+  f.swap = true;
+  const current = emptyRoster(0, lead.session_id);
   const host = await openPage(listed(), current);
   expect(a(host).textContent).toContain(copy.unavailable);
   expect(a(host).textContent).toContain(copy.receipts);
@@ -204,12 +211,25 @@ it.each(languages)("uses the existing Stop confirmation then offers Swap on a st
   leadAction(host)!.click();
   await vi.waitFor(() => expect(host.querySelector("dialog[open] h2")?.textContent).toBe(copy.dialog));
   expect(f.actions).toHaveLength(1);
+  host.querySelector<HTMLButtonElement>("dialog[open] button[type=submit]")!.click();
+  await vi.waitFor(() => expect(teams.confirmation()?.call.action).toMatchObject({ kind: "swap_member", member: "lead" }));
+  expect(teams.confirmation()?.call.confirmed).toBe(false);
+  expect(f.actions).toHaveLength(2);
+});
+
+it.each(languages)("offers Resume before replacement for a resumable saved lead in $lang", async (copy) => {
+  await useLanguage(copy.lang);
+  f.rows = [savedLead("resume")];
+  const host = await openPage(listed(), emptyRoster(0, lead.session_id));
+  expect(a(host).textContent).toContain(copy.resume);
+  expect(leadAction(host)).toBeNull();
+  expect(f.actions).toEqual([]);
 });
 
 it("points a pending lead action to Check and withholds the replacement path", async () => {
-  f.archives = [archivedLead("forget")];
+  f.rows = [savedLead()];
   f.stop = "pending";
-  const host = await openPage(listed(), emptyRoster());
+  const host = await openPage(listed(), emptyRoster(0, lead.session_id));
   leadAction(host)!.click();
   await vi.waitFor(() => expect(a(host).textContent).toContain("Use Check on the pending lead action"));
   expect(leadAction(host)).toBeNull();
@@ -253,9 +273,19 @@ it.each([
 });
 
 it("explains the unsettled-work restriction without suggesting a replacement", async () => {
-  f.archives = [archivedLead("forget")];
-  const host = await openPage(listed(), emptyRoster(1));
+  f.rows = [savedLead()];
+  const host = await openPage(listed(), emptyRoster(1, lead.session_id));
   expect(a(host).textContent).toContain("The lead has open or unsettled work (1). Swap requires that work to settle.");
+  expect(leadAction(host)).toBeNull();
+  expect(f.actions).toEqual([]);
+});
+
+it("withholds Stop and Swap for a run-bound archive with no Restore capability", async () => {
+  f.archives = [archivedLead("forget")];
+  const host = await openPage(listed(), emptyRoster());
+  expect(a(host).dataset.teamLeadAvailability).toBe("archived");
+  expect(a(host).textContent).toContain("Restore is unavailable for this archive.");
+  expect(a(host).textContent).toContain("Swap requires a launch-bound seat.");
   expect(leadAction(host)).toBeNull();
   expect(f.actions).toEqual([]);
 });

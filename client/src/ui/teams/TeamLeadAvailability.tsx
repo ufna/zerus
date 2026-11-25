@@ -3,7 +3,7 @@ import { tr } from "../../i18n";
 import { updating } from "../../store/actions";
 import { archive } from "../../store/archive";
 import { running as batchRunning } from "../../store/batch";
-import { catalog, computerOffline } from "../../store/catalog";
+import { catalog, computerOffline, orderedRows } from "../../store/catalog";
 import { isRestorePending } from "../../store/restores";
 import {
   setAccountFilter, setFolderFilter, setMachineFilter, setPage, setProjectFilter,
@@ -61,33 +61,48 @@ export function TeamLeadAvailability(props: {
     const lead = props.lead;
     if (state() === "live" || !lead?.session) return undefined;
     if (props.pending) return { text: tr("Use Check on the pending lead action before changing the seat.") };
-    const row = archived();
-    if (!row) return { text: current() ? tr("Open the lead's session to check its available actions.")
-      : launchOnly() ? tr("Browse Archive and verify the lead's run. A launch can have more than one archived run.")
-      : tr("Browse Archive to see if the lead's session can be restored.") };
-    if (row.restorePending || isRestorePending(row)) return { text: tr("Check the pending restore in the archived session.") };
+    const saved = archived();
+    const row = saved ?? current();
+    if (!row) return {
+      text: launchOnly() ? tr("Browse Archive and verify the lead's run. A launch can have more than one archived run.")
+        : tr("Browse Archive to see if the lead's session can be restored."),
+    };
+    if (saved && (row.restorePending || isRestorePending(row))) return { text: tr("Check the pending restore in the archived session.") };
     if (computerOffline(row.computer)) return { text: tr("Machine is offline") };
-    if (updating(row.computer, row.name) || batchRunning()) return { text: tr("Wait for the session update to finish before checking Restore session.") };
-    if (row.allowed === undefined || archiveNameOccupied(row, catalog.rows)) {
-      return { text: tr("Check the available recovery actions in the archived session.") };
+    if (updating(row.computer, row.name) || batchRunning()) return { text: saved
+      ? tr("Wait for the session update to finish before checking Restore session.")
+      : tr("Wait for the session update to finish before reviewing the lead seat.") };
+    const actions = menuState(row, true, false);
+    if (saved) {
+      const eligibility = tr("The team is bound to the original run. Restoring the conversation starts a new run, and Swap requires a launch-bound seat.");
+      if (row.allowed === undefined || archiveNameOccupied(row, catalog.rows)) {
+        return { detail: tr("Check the available recovery actions in the archived session."), text: eligibility };
+      }
+      const detail = actions.change.enabled ? tr("Open the archived session and choose Restore session to recover its conversation.")
+        : row.restoreReason ? tr("Restore is unavailable: %1", tr(row.restoreReason)) : tr("Restore is unavailable for this archive.");
+      return { detail, text: eligibility };
     }
-    if (menuState(row, true, false).change.enabled) {
-      return { text: tr("Open the archived session and choose Restore session to try to bring back the lead.") };
+    if (row.allowed === undefined || row.processState !== "exited" || (row.state !== "stopped" && row.state !== "paused")) {
+      return { text: tr("Open the lead's session to check its available actions.") };
     }
+    if (!launchOnly()) return { text: tr("Swap requires a launch-bound seat. This lead seat identifies one run.") };
+    if (orderedRows().some((candidate) => candidate.key !== row.key && rowIsSession(candidate, lead.session))) {
+      return { text: tr("More than one listed session matches the lead's launch. Check the session list before changing the seat.") };
+    }
+    if (actions.change.enabled) return { text: tr("Open the lead's session and choose Resume session.") };
 
-    const why = row.restoreReason;
-    const detail = why ? tr("Restore is unavailable: %1", tr(why)) : tr("Restore is unavailable for this archive.");
+    const detail = tr("Resume is unavailable for the saved lead session.");
     if (props.readOnly) return { detail, text: props.readOnly };
     if (lead.open_work === undefined || lead.open_work === null) {
       return { detail, text: tr("Refresh the team to check the lead's open work before replacing the seat.") };
     }
     if (lead.open_work > 0) return { detail, text: tr("The lead has open or unsettled work (%1). Swap requires that work to settle.", lead.open_work) };
-    const actions = memberActions(lead, "running");
-    if (actions.some((action) => action.id === "swap_member" && !action.disabled)) {
+    const seatActions = memberActions(lead, "running");
+    if (seatActions.some((action) => action.id === "swap_member" && !action.disabled)) {
       return { detail, text: tr("Review Swap for this lead seat. Zerus checks the saved launch and delivery receipts."),
         kind: "swap_member" as const, label: tr("Review Swap") };
     }
-    if (actions.some((action) => action.id === "stop_member" && !action.disabled)) {
+    if (seatActions.some((action) => action.id === "stop_member" && !action.disabled)) {
       return { detail, text: tr("Stop the lead seat before reviewing Swap. Zerus checks the saved receipts before any replacement."),
         kind: "stop_member" as const, label: tr("Review Stop member") };
     }
