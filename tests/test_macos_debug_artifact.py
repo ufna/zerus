@@ -399,7 +399,7 @@ class WorkflowContracts(unittest.TestCase):
         body=security.job(self.checks,'gate');code=compile(security.inline_python(body),'suite-results','exec')
         mac=('cli-macos-debug','cli-macos-core','cli-macos-native','cli-macos','connector-macos','clippy-macos')
         windows=('windows-tests','windows-desktop','windows-host','client-native-windows')
-        always=('source','quick','client-frontend','relay','connector','android')
+        always=('source','quick','client-core','client-frontend','relay','connector','android')
         for linux,macos,win in itertools.product((False,True),repeat=3):
             results={name:{'result':'success'} for name in always}
             results.update({name:{'result':'success' if macos else 'skipped'} for name in mac})
@@ -411,6 +411,11 @@ class WorkflowContracts(unittest.TestCase):
             results['client-native-macos-tauri']={'result':'success' if macos else 'skipped'}
             env=dict(RESULTS=json.dumps(results),RUN_LINUX=json.dumps(linux),RUN_MACOS=json.dumps(macos),RUN_ARCH='false',RUN_WINDOWS=json.dumps(win),RUN_IOS='false')
             with patch.dict(os.environ,env):exec(code,{})
+            for result in ('failure','cancelled','skipped'):
+                changed=copy.deepcopy(results);changed['client-core']={'result':result}
+                with self.subTest(linux=linux,macos=macos,windows=win,core=result),patch.dict(os.environ,{**env,'RESULTS':json.dumps(changed)}),self.assertRaises(SystemExit):exec(code,{})
+            changed=copy.deepcopy(results);del changed['client-core']
+            with self.subTest(linux=linux,macos=macos,windows=win,core='missing'),patch.dict(os.environ,{**env,'RESULTS':json.dumps(changed)}),self.assertRaises(KeyError):exec(code,{})
             for name in mac[:4]:
                 for result in ('failure','cancelled','skipped' if macos else 'success'):
                     changed=copy.deepcopy(results);changed[name]={'result':result}
