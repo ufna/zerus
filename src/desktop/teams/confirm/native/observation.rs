@@ -3,7 +3,9 @@ use crate::desktop::original_store::{self, Roots};
 #[cfg(test)]
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
-use std::{io::Read, path::Path};
+use std::io::Read;
+#[cfg(test)]
+use std::path::Path;
 
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").into()
