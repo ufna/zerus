@@ -5,8 +5,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const HELP_MARKER: &str = "Desktop Teams Person actions ABI: desktop-team-person-actions-v2";
-/// A live service advertises this field in its desktop request pong once the
-/// three Team prepare queries accept `with_labels`.
+/// Opt in to this live-service capability in a desktop request ping. Its
+/// presence in the pong means the three prepare queries accept `with_labels`.
 pub const REVIEW_LABELS_CAPABILITY: &str = "team_person_review_labels";
 pub const REVIEW_LABELS_VERSION: u64 = 1;
 /// A service that resolves a window Route's kept task fields

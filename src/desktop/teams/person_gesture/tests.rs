@@ -364,14 +364,21 @@ fn review(
 }
 
 #[test]
-fn live_service_pong_advertises_review_labels_to_the_same_epoch() {
+fn live_service_pong_advertises_review_labels_only_on_explicit_request() {
     use zerus_client_core::desktop::team_person_actions as teams;
 
     let (h, _) = sample();
     let (config, mut desktop, scope) = service(&h);
     let location = crate::desktop::store::Location::new(&config).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
-    let input = json!({"op":"ping","request_id":id});
+    let mut input = json!({"op":"ping","request_id":id});
+    let ordinary = json!({"request_id":id,"op":"pong","accepted":true,"durable":false});
+    let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
+    assert_eq!(pong, ordinary);
+    input["capability"] = json!("unknown_capability");
+    let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
+    assert_eq!(pong, ordinary);
+    input["capability"] = json!(teams::REVIEW_LABELS_CAPABILITY);
     let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
     assert_eq!(pong["request_id"], id);
     assert_eq!(pong["op"], "pong");

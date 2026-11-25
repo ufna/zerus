@@ -307,7 +307,12 @@ pub(super) fn team_review(read: &Arc<Read>, query: Value) -> Option<(Value, Opti
     // the service before sending any prepare fields the older parser rejects.
     let id = uuid::Uuid::new_v4().to_string();
     let pong = read
-        .exchange(None, json!({"op":"ping","request_id":id}), false, None)
+        .exchange(
+            None,
+            json!({"op":"ping","request_id":id,"capability":wire::REVIEW_LABELS_CAPABILITY}),
+            false,
+            None,
+        )
         .ok()?;
     let labeled = review_labels(&pong, &id, &read.scope.service_epoch)?;
     let bytes = read

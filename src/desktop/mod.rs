@@ -2049,16 +2049,16 @@ fn request(location: &Location, store: &mut Store, epoch: &str, value: Option<&V
     // Revocation only reduces authority. Every positive effect remains fenced.
     if op == "ping" {
         use zerus_client_core::desktop::team_person_actions as teams;
-        json!({
-            "request_id": id,
-            "accepted": true,
-            "durable": false,
-            "op": "pong",
-            (teams::REVIEW_LABELS_CAPABILITY): {
+        let mut pong = json!({"request_id":id,"accepted":true,"durable":false,"op":"pong"});
+        if value.and_then(|input| input["capability"].as_str())
+            == Some(teams::REVIEW_LABELS_CAPABILITY)
+        {
+            pong[teams::REVIEW_LABELS_CAPABILITY] = json!({
                 "version": teams::REVIEW_LABELS_VERSION,
                 "epoch": epoch,
-            },
-        })
+            });
+        }
+        pong
     } else if matches!(op, "revoke" | "revoke_status") {
         revoke::request(location, store, value.expect("validated request"))
     } else {
