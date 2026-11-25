@@ -20,9 +20,16 @@ pub const PLACEMENT_MARKER: &str =
 pub const NEW_TASK_ROUTE_MARKER: &str =
     "Desktop Teams Person new task route fields: desktop-team-person-new-task-route-v1";
 
+/// A service that admits the window's lead contact and notice plans.
+pub const LEAD_CONTACT_MARKER: &str = "Desktop Teams lead contact: desktop-team-lead-contact-v1";
+
 /// The help markers the selected service must advertise for this plan.
 pub fn required_markers(plan: &Plan) -> Vec<&'static str> {
-    action_markers(&plan.action)
+    let mut markers = action_markers(&plan.action);
+    if plan.lead_contact() {
+        markers.push(LEAD_CONTACT_MARKER);
+    }
+    markers
 }
 
 /// The help markers an action needs, for a plan or a task draft.
@@ -45,6 +52,7 @@ pub fn action_markers(action: &Action) -> Vec<&'static str> {
         _ => vec![HELP_MARKER],
     }
 }
+
 pub const BYTES: usize = 768 << 10;
 pub const PLAN_BYTES: usize = 262_144;
 pub const PIECE_BYTES: usize = 32 << 10;
@@ -90,6 +98,12 @@ fn text(value: &str, limit: usize) -> bool {
 }
 
 impl Plan {
+    fn lead_contact(&self) -> bool {
+        matches!(&self.action, Action::Team { change } if matches!(
+            change.as_ref(),
+            TeamAction::AskLead { .. } | TeamAction::LeaveLeadNote { .. } | TeamAction::ReadLeadNotice { .. }
+        ))
+    }
     pub fn reference(&self) -> Option<Reference> {
         let bytes = serde_json::to_vec(self).ok()?;
         (self.valid() && bytes.len() <= PLAN_BYTES).then(|| Reference {
@@ -717,6 +731,26 @@ mod tests {
         for bad in ["", " ", "a\u{7}b", long.as_str()] {
             assert!(!new_task(Some(bad), None).valid(), "{bad:?}");
             assert!(!new_task(None, Some(bad)).valid(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn lead_contact_plans_require_the_additional_service_marker() {
+        for change in [
+            TeamAction::AskLead {
+                text: "Question".into(),
+            },
+            TeamAction::LeaveLeadNote {
+                text: "Note".into(),
+            },
+            TeamAction::ReadLeadNotice { card: 1 },
+        ] {
+            let mut plan = plan();
+            plan.action = Action::Team {
+                change: Box::new(change),
+            };
+            assert!(plan.valid());
+            assert_eq!(required_markers(&plan), [HELP_MARKER, LEAD_CONTACT_MARKER]);
         }
     }
 }

@@ -97,6 +97,17 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
         ));
     }
     let mut refs = references(request)?;
+    if let Some(item) = ctx.reply.item {
+        let table = match ctx.op {
+            Operation::AskLead { .. } => Some("inbox"),
+            Operation::OpenCard { kind, .. } if kind == store::person_contact::NOTE => Some("card"),
+            Operation::ReplyToPerson { .. } | Operation::AcknowledgeLeadNote { .. } => Some("card"),
+            _ => None,
+        };
+        if let Some(table) = table {
+            refs.push(format!("{table}:{item}"));
+        }
+    }
     if let Some(card) = ctx.closed_confirmation_card {
         body.push_str(". ");
         body.push_str(CONFIRMATION_CLOSED);

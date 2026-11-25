@@ -227,12 +227,18 @@ createRoot(() => {
  * lookup the tab uses: it pages the list and shows the tab while the scanned
  * list cannot answer, never on a session a complete list says leads no team.
  * A row whose computer's machine UUID is not known yet waits for it. */
-const teamTabShown = () => {
+const teamTab = () => {
   const row = selected();
-  if (!row || teams.available() !== true) return false;
-  if (navigationTeamFor(row)) return true;
+  const tab = { id: "team" as const, label: tr("Team"), show: false, leadNotices: 0 };
+  if (!row || teams.available() !== true) return tab;
+  const pinned = navigationTeamFor(row);
   const identity = rowIdentity(row);
-  return !!identity.machine && teams.teamOfSession(identity).state !== "none";
+  const found = pinned ? { state: "lead", team: pinned } : teams.teamOfSession(identity);
+  const summary = found.team ? teams.listed().find((team) => team.id === found.team) : undefined;
+  const board = teams.team();
+  const count = board && board.bar.id === found.team && board.revision >= (summary?.revision ?? 0)
+    ? board.bar.counts.lead_notices : summary?.lead_notices;
+  return { ...tab, show: !!pinned || (!!identity.machine && found.state !== "none"), leadNotices: count ?? 0 };
 };
 
 const tabs = () => {
@@ -243,7 +249,7 @@ const tabs = () => {
     { id: "native" as const, label: tr("Native UI"), show: selected()?.agent === "deepseek" && !subagentOpen() },
     processesTab(flag("processes/enabled"), count),
     { id: "taskview" as const, label: tr("Task View"), show: detailTab() === "taskview" && !!selectedTask() },
-    { id: "team" as const, label: tr("Team"), show: teamTabShown() },
+    teamTab(),
   ];
   const s = selected();
   return s ? detailTabs(s.key, all) : all;
@@ -310,7 +316,11 @@ export function SessionDetail() {
             <div class="work-main">
               <div class="detail-tabs tabs" role="tablist">
                 <For each={tabs().filter((t) => t.show)}>{(t) => (
-                  <button class="tab" role="tab" data-tab={t.id} classList={{ on: detailTab() === t.id }} aria-selected={detailTab() === t.id} onClick={() => { if (t.id === "terminal") terminal.opened(); setDetailTab(t.id); }}>{t.label}</button>
+                  <button class="tab" role="tab" data-tab={t.id} classList={{ on: detailTab() === t.id }} aria-selected={detailTab() === t.id} onClick={() => { if (t.id === "terminal") terminal.opened(); setDetailTab(t.id); }}>{t.label}
+                    <Show when={t.id === "team" && "leadNotices" in t && (t.leadNotices ?? 0) > 0 ? t.leadNotices : 0}>{(count) =>
+                      <span class="tk-tabbadge" data-team-tab-notices title={tr("Unread updates from the lead")}>{Math.min(count(), 200)}{count() > 200 ? "+" : ""}</span>
+                    }</Show>
+                  </button>
                 )}</For>
                 <span class="grow" />
                 <Show when={!inspectorOpen()}><button class="icon-btn small" data-cmd="show-side-panel" aria-label={tr("Show side panel")} data-tip={inspectorHint(tr("Show tasks, plan, agents, details and worktrees"))} data-tip-pos="left" onClick={() => setInspectorOpen(true)}><Icon name="panel-right" size={15} /></button></Show>

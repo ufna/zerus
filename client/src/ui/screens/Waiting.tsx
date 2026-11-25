@@ -7,6 +7,7 @@ import { now, setDetailTab, setPage, setSelectedKey } from "../../store/ui";
 import { teams, type WaitingItem } from "../../store/teams";
 import { WaitingList } from "../teams/Waiting";
 import { TeamConfirmDialog } from "../teams/TeamConfirmDialog";
+import { teamActionFailureText } from "../teams/TeamActionFailure";
 import { TeamUncertain } from "../teams/TeamTab";
 import { setOpenTeamNode } from "../teams/openNode";
 import { TeamsOffNotice } from "../teams/TeamsOff";
@@ -38,6 +39,7 @@ function* requestRows(): Generator<RequestRow> {
 export function WaitingScreen() {
   const [busy, setBusy] = createSignal(false);
   const [notice, setNotice] = createSignal("");
+  const [openedReply, setOpenedReply] = createSignal<WaitingItem>();
   onMount(() => { void teams.openWaiting().catch(() => {}); });
   // Leaving the page goes back to the first page, which the rail counts.
   onCleanup(() => { void teams.firstWaitingPage().catch(() => {}); teams.clearFailure("waiting"); });
@@ -64,6 +66,14 @@ export function WaitingScreen() {
     if (task) setOpenTeamNode({ team: item.team, node: item.node! });
     openTeamPage(item.team);
   };
+  const openReply = async (item: WaitingItem) => {
+    if (busy() || item.kind !== "lead_reply_to_person") return;
+    setOpenedReply(item);
+    setBusy(true); setNotice(""); teams.clearFailure("waiting");
+    try {
+      if (!await teams.readLeadNotice(item)) setNotice(tr("The team could not be read. Nothing was sent."));
+    } finally { setBusy(false); }
+  };
   const openRequest = (request: TeamRequest) => {
     setPage("sessions"); setSelectedKey(request.key); setDetailTab("activity");
   };
@@ -72,18 +82,23 @@ export function WaitingScreen() {
     <div class="waiting-page" data-waiting-page>
       <header class="waiting-head">
         <h1>{tr("Waiting for you")}</h1>
-        <span class="dim">{tr("Cards only you can answer, oldest first.")}</span>
+        <span class="dim">{tr("Your cards and lead replies, oldest first.")}</span>
       </header>
       <Show when={teams.available() !== false} fallback={<div class="notice team-notice" role="status" data-waiting-off><Icon name="info" size={16} /><TeamsOffNotice /></div>}>
         <Show when={notice()}><div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{notice()}</span></div></Show>
         <Show when={readFailure()}>
           {(failure) => <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{tr("Waiting could not be read: %1", failure().message)}</span></div>}
         </Show>
+        <Show when={openedReply()}>{(item) => <article class="waiting-card" aria-label={tr("Lead’s reply")} data-opened-lead-reply>
+          <header class="waiting-card-head"><b>{tr("Lead’s reply")}</b><span class="grow" />
+            <button type="button" class="btn small" onClick={() => setOpenedReply(undefined)}>{tr("Close")}</button></header>
+          <p class="waiting-text">{item().text}</p>
+        </article>}</Show>
         <Show when={view()} fallback={<div class="team-empty dim">{tr("Reading what waits for you…")}</div>}>
           {(shown) => (
             <WaitingList view={shown()} teamNames={names()} now={now() * 1000} busy={busy()}
               onDecide={(item, decision) => void decide(item, decision)} onOpenTeam={(item) => open(item, false)} onOpenTask={(item) => open(item, true)}
-              onPage={(cursor) => void teams.pageWaiting(cursor)} onFirst={() => void teams.firstWaitingPage()} />
+              onOpenNotice={(item) => void openReply(item)} onPage={(cursor) => void teams.pageWaiting(cursor)} onFirst={() => void teams.firstWaitingPage()} />
           )}
         </Show>
         <section class="waiting-requests" aria-label={tr("Requests of team sessions")} data-team-requests>
@@ -105,7 +120,7 @@ export function WaitingScreen() {
           {(asking) => <TeamUncertain detail={asking.detail} busy={busy() || teams.busy()} onCheck={() => void teams.check(undefined, "waiting")} onDismiss={() => void teams.dismiss(undefined, "waiting")} />}
         </Show>
         <Show when={teams.failureFor("waiting")}>
-          {(failure) => <div class="notice danger team-notice" role="alert" data-waiting-action-failure><Icon name="triangle-alert" size={16} /><span>{failure().message}</span></div>}
+          {(failure) => <div class="notice danger team-notice" role="alert" data-waiting-action-failure><Icon name="triangle-alert" size={16} /><span>{teamActionFailureText(failure().message)}</span></div>}
         </Show>
       </Show>
       <TeamConfirmDialog source="waiting" />

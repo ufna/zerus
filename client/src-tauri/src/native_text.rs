@@ -369,6 +369,67 @@ mod tests {
     }
 
     #[test]
+    fn lead_contact_native_prompt_localizes_the_mode_and_preserves_the_body() {
+        use zerus_client_core::{
+            desktop::{
+                creation_clone::Scope,
+                team_confirmation::{self, Labels},
+                team_person_actions as wire,
+            },
+            teams::action::{TeamAction, TeamCall},
+        };
+
+        let text = "Can we start?\n100% ready: %1";
+        for (change, captions, sentences) in [
+            (
+                TeamAction::AskLead { text: text.into() },
+                ["Ask the lead…", "Спросить лида…"],
+                ["Save this question in the inbox for the lead of team “Orchard”.",
+                 "Сохранить вопрос во входящих лида команды «Orchard»."],
+            ),
+            (
+                TeamAction::LeaveLeadNote { text: text.into() },
+                ["Leave a note", "Оставить заметку"],
+                ["Save this note for the lead of team “Orchard” to acknowledge.",
+                 "Сохранить заметку для лида команды «Orchard», чтобы он отметил её прочитанной."],
+            ),
+        ] {
+            let plan = wire::Plan::from_call(&TeamCall {
+                team: "11111111-1111-4111-8111-111111111111".into(),
+                team_name: "Renderer caption".into(),
+                action: change,
+                expected_revision: Some(3),
+                confirmed: false,
+                request_id: "22222222-2222-4222-8222-222222222222".into(),
+            }).unwrap();
+            let labels = Labels { facts: "f".repeat(64), ..Default::default() };
+            let review = wire::Review {
+                intent: wire::Intent {
+                    scope: Scope {
+                        configuration: "a".repeat(64),
+                        service_epoch: "33333333-3333-4333-8333-333333333333".into(),
+                    },
+                    machine: "44444444-4444-4444-8444-444444444444".into(),
+                    facts: labels.facts.clone(),
+                    request: "c".repeat(64),
+                    store: wire::StoreBinding::Existing { fingerprint: "d".repeat(64) },
+                    plan: plan.reference().unwrap(),
+                },
+                team_name: "Orchard".into(),
+                title: "Legacy title".into(),
+                subject: "Legacy operation".into(),
+                details: vec![],
+            };
+            let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+            for (index, russian) in [false, true].into_iter().enumerate() {
+                assert_eq!(render_in(&prompt.title, russian), captions[index]);
+                assert_eq!(render_in(&prompt.body[0], russian), sentences[index]);
+                assert_eq!(render_in(&prompt.body[1], russian), text);
+            }
+        }
+    }
+
+    #[test]
     fn filling_matches_the_webview_tokens() {
         let args = ["a".to_owned(), "b".to_owned()];
         assert_eq!(fill("%2-%1 %L1 %n %3 50%", &args), "b-a a a %3 50%");

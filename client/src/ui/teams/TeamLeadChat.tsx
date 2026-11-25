@@ -8,6 +8,7 @@ import { Composer } from "../sessions/Composer";
 import { leadChatProblem, type LeadChatProblem } from "./lead-chat";
 import { openTeamLead } from "./lead-navigation";
 import { rowIsSession } from "./session-binding";
+import type { Session } from "../sessions/types";
 import type { TeamView } from "./types";
 
 /** Each refusal's cause and the way out (audit C4). */
@@ -48,11 +49,22 @@ export function TeamLeadChat(props: { view: TeamView }) {
 /** The team page's Lead chat: the lead's own session, when it is listed. */
 function PageLeadChat(props: { view: TeamView }) {
   const lead = () => props.view.members.find((member) => member.id === props.view.bar.lead && member.lead)?.session ?? undefined;
-  const row = () => { const session = lead(); return session ? orderedRows().find((candidate) => rowIsSession(candidate, session)) : undefined; };
+  const row = () => {
+    const session = lead();
+    if (!session) return undefined;
+    let archived: Session | undefined;
+    for (const candidate of orderedRows()) {
+      if (!rowIsSession(candidate, session)) continue;
+      if (candidate.state !== "archived") return candidate;
+      archived ??= candidate;
+    }
+    return archived;
+  };
   return <>
     <p class="dim">{tr("Lead chat lives in the lead's session. Open it to talk to the lead.")}</p>
     <Show when={row()} fallback={<p class="dim" data-lead-chat-reason>{lead() ? tr("The team's lead session is not on the session list.") : tr("The team's lead has no session yet.")}</p>}>
-      {(found) => <div><button type="button" class="btn small" data-open-lead-session
+      {(found) => <div><Show when={found().state === "archived"}><p class="dim" data-lead-chat-reason>{leadChatCause("archived")}</p></Show>
+        <button type="button" class="btn small" data-open-lead-session
         onClick={() => { const session = lead(); if (session) openTeamLead({ id: props.view.bar.id, lead_session: { machine: session.machine, session_id: session.session_id } }, found()); }}>{tr("Open lead session")}</button></div>}
     </Show>
   </>;

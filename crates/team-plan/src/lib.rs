@@ -50,3 +50,20 @@ pub use validate::{
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
+
+/// The same short plain text is shown in the native prompt and stored verbatim.
+pub fn lead_message(value: &str) -> Result<(), Problem> {
+    if value.trim().is_empty() {
+        return Err(Problem::new(problem::code::INVALID_STATE, "Enter a message for the lead."));
+    }
+    if value.len() > 4_000 || value.chars().count() > 1_000 {
+        return Err(Problem::new(problem::code::OVER_CAP, "Use up to 1,000 characters and 4,000 bytes."));
+    }
+    if value.split('\n').any(|line| {
+        forbidden_char(line).is_some()
+            || line.chars().any(|c| matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}'))
+    }) {
+        return Err(Problem::new(problem::code::INVALID_STATE, "The message contains unsupported control characters."));
+    }
+    Ok(())
+}

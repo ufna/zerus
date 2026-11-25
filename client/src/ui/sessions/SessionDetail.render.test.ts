@@ -3,9 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 
+const transport = vi.hoisted(() => ({ enablesTeams: false }));
+vi.mock("@tauri-apps/api/core", async (original) => {
+  const core = await original<typeof import("@tauri-apps/api/core")>();
+  return { ...core, invoke: (command: string, args?: Record<string, unknown>) =>
+    transport.enablesTeams && (command === "teams_hidden" || command === "teams_follow")
+      ? Promise.resolve(undefined) : core.invoke(command, args) };
+});
+
 vi.mock("../../bridge", async (original) => ({
   ...await original<typeof import("../../bridge")>(),
-  inTauri: () => false,
+  inTauri: () => transport.enablesTeams,
   activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
   terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
   inspectSession: vi.fn(async () => null), composerOpen: vi.fn(async () => null),
@@ -38,6 +46,7 @@ import { archive } from "../../store/archive";
 import { clearSearchPreview, setSearchPreview } from "../../store/searchSelection";
 import type { SearchHit } from "../../store/content-search-model";
 import { emptyBatch, type ViewRow } from "../../types";
+import contact from "../../../core/src/teams/fixtures/person-lead-contact.json";
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 const machine = "11111111-1111-4111-8111-111111111111";
@@ -355,4 +364,20 @@ describe("the header's keep-warm mark (zerus-yacns)", () => {
     expect(inspectorTab()).toBe("details");
     await vi.waitFor(() => expect(document.activeElement).toBe(host.querySelector(".kw-row button[role=switch]")));
   });
+});
+
+
+it("shows the bound Team tab's unread count from the producer's list while Activity is selected", async () => {
+  const { teams } = await import("../../store/teams");
+  transport.enablesTeams = true;
+  try { await teams.recheck(); } finally { transport.enablesTeams = false; }
+  const lead = contact.list.teams[0].lead_session;
+  receive({ ...emptyBatch(),
+    machines: [{ computer: "", machine: machineMeta("fixture", {}, { machine_id: lead.machine }) }],
+    teams: [{ computer: "", key: "list", kind: "list", payload: contact.list }],
+  });
+  await open({ ...fixtureRow(), launch_id: lead.session_id.slice("launch_id:".length) });
+  const badge = host.querySelector('[data-tab="team"] [data-team-tab-notices]');
+  expect(badge?.textContent).toBe("1");
+  expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
 });

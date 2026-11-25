@@ -92,6 +92,48 @@ it("Lead chat on the page names why the lead's session cannot be opened", async 
   expect(button(chat, "Open lead session")).toBeUndefined();
 });
 
+it.each([["question", "ask_lead"], ["note", "leave_lead_note"]])(
+  "a running team with an archived lead saves the %s for that team",
+  async (mode, kind) => {
+    const unrelated = row("unrelated-lead", "00000000-0000-4000-8000-0000000000d1");
+    f.rows = [unrelated, { ...leadRow(), state: "archived" }];
+    ui.setSelectedKey(unrelated.key);
+    const element = await openPage();
+    const chat = await openChat(element);
+    expect(chat.textContent).toContain("The lead's session is archived. Restore it to talk to the lead.");
+    expect(chat.querySelector(".cmp-col")).toBeNull();
+
+    const contact = element.querySelector<HTMLButtonElement>("[data-team-contact]")!;
+    expect(contact.disabled).toBe(false);
+    contact.click();
+    const form = element.querySelector(".team-lead-contact form")!;
+    const select = form.querySelector("select")!;
+    select.value = mode;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const text = form.querySelector("textarea")!;
+    const body = "For our lead\nKeep this with the team.";
+    text.value = body;
+    text.dispatchEvent(new Event("input", { bubbles: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(f.actions).toHaveLength(1));
+    expect(f.actions[0]).toMatchObject({
+      team: view.bar.id, expected_revision: view.revision,
+      action: { kind, text: body },
+    });
+    expect(ui.page()).toBe("team");
+  },
+);
+
+it("Lead chat opens the restored lead when its archived row also matches the launch", async () => {
+  const archived = { ...leadRow(), state: "archived" } as const;
+  const restored = row("restored-lead", lead.session_id.slice("launch_id:".length));
+  f.rows = [archived, restored];
+  const chat = await openChat(await openPage());
+  expect(chat.querySelector("[data-lead-chat-reason]")).toBeNull();
+  button(chat, "Open lead session")!.click();
+  expect(ui.selectedKey()).toBe(restored.key);
+});
+
 it("Lead chat in the lead's tab names the cause and its fix instead of one sentence for all (audit C4)", async () => {
   f.rows = [leadRow()]; ui.setPage("sessions"); ui.setSelectedKey(f.rows[0].key); ui.setSubagentOpen("child-agent");
   const { TeamLeadChat } = await load<typeof import("../teams/TeamLeadChat")>("../teams/TeamLeadChat");

@@ -132,7 +132,7 @@ fn selection(action: &TeamAction) -> Option<Selection<'_>> {
         | Release { .. }
         | Cancel { .. }
         | Reply { .. }
-        | Ask { .. } => return None,
+        | Ask { .. } | AskLead { .. } | LeaveLeadNote { .. } | ReadLeadNotice { .. } => return None,
     })
 }
 
