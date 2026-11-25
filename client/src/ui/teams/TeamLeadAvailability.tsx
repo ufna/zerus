@@ -1,7 +1,10 @@
 import { Show, batch, createMemo } from "solid-js";
 import { tr } from "../../i18n";
+import { updating } from "../../store/actions";
 import { archive } from "../../store/archive";
+import { running as batchRunning } from "../../store/batch";
 import { catalog, computerOffline } from "../../store/catalog";
+import { isRestorePending } from "../../store/restores";
 import {
   setAccountFilter, setFolderFilter, setMachineFilter, setPage, setProjectFilter,
   setSearch, setSelectedKey, setStateFilter, setSubagentOpen,
@@ -36,23 +39,18 @@ export function TeamLeadAvailability(props: {
   onAction: (kind: "stop_member" | "swap_member", member: string) => void;
 }) {
   const current = () => props.row?.state === "archived" ? undefined : props.row;
+  const launchOnly = () => props.lead?.session?.session_id.startsWith("launch_id:");
   const archived = createMemo(() => {
     const binding = props.lead?.session;
-    if (!binding || current()) return undefined;
-    // The Archive browser only retains the pages it has read. A missing
-    // match here is unresolved; it does not establish that an archive is gone.
+    if (!binding?.session_id.startsWith("run_id:") || current()) return undefined;
+    // A loaded page can hide other runs of the same launch. Only a run-bound
+    // seat can identify an archived row and its recovery capabilities here.
     const candidates = archive.rows().filter((row) => !!row.archiveId && row.state === "archived" && rowIsSession(row, binding));
     const shown = props.row;
     if (shown?.archiveId && shown.state === "archived" && rowIsSession(shown, binding)
       && !candidates.some((row) => row.key === shown.key)) return candidates.length ? undefined : shown;
     return candidates.length === 1 ? candidates[0] : undefined;
   });
-  const restore = () => {
-    const row = archived();
-    if (!row || row.allowed === undefined || computerOffline(row.computer) || row.restorePending) return undefined;
-    if (archiveNameOccupied(row, catalog.rows)) return undefined;
-    return menuState(row, true, false).change.enabled;
-  };
   const state = () => isRunningMemberSession(current()) ? "live" : archived() ? "archived" : "unavailable";
   const status = () => state() === "live" ? tr("The lead's session is live.")
     : state() === "archived" ? tr("The lead's session is archived.")
@@ -63,15 +61,21 @@ export function TeamLeadAvailability(props: {
     const lead = props.lead;
     if (state() === "live" || !lead?.session) return undefined;
     if (props.pending) return { text: tr("Use Check on the pending lead action before changing the seat.") };
-    if (archived()?.restorePending) return { text: tr("Check the pending restore in the archived session.") };
-    const canRestore = restore();
-    if (canRestore === true) return { text: tr("Open the archived session and choose Restore session to try to bring back the lead.") };
-    if (canRestore !== false) return { text: archived()
-      ? tr("Check the available recovery actions in the archived session.")
-      : current() ? tr("Open the lead's session to check its available actions.")
+    const row = archived();
+    if (!row) return { text: current() ? tr("Open the lead's session to check its available actions.")
+      : launchOnly() ? tr("Browse Archive and verify the lead's run. A launch can have more than one archived run.")
       : tr("Browse Archive to see if the lead's session can be restored.") };
+    if (row.restorePending || isRestorePending(row)) return { text: tr("Check the pending restore in the archived session.") };
+    if (computerOffline(row.computer)) return { text: tr("Machine is offline") };
+    if (updating(row.computer, row.name) || batchRunning()) return { text: tr("Wait for the session update to finish before checking Restore session.") };
+    if (row.allowed === undefined || archiveNameOccupied(row, catalog.rows)) {
+      return { text: tr("Check the available recovery actions in the archived session.") };
+    }
+    if (menuState(row, true, false).change.enabled) {
+      return { text: tr("Open the archived session and choose Restore session to try to bring back the lead.") };
+    }
 
-    const why = archived()?.restoreReason;
+    const why = row.restoreReason;
     const detail = why ? tr("Restore is unavailable: %1", tr(why)) : tr("Restore is unavailable for this archive.");
     if (props.readOnly) return { detail, text: props.readOnly };
     if (lead.open_work === undefined || lead.open_work === null) {

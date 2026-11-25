@@ -21,6 +21,7 @@ const HERE = "00000000-0000-4000-8000-0000000000aa", STUDIO = "00000000-0000-400
 const f = vi.hoisted(() => ({
   rows: [] as Session[], archives: [] as Session[], groups: {} as Record<string, string>,
   actions: [] as unknown[], stop: "" as "" | "confirm" | "pending",
+  restorePending: false, batchBusy: false,
 }));
 vi.mock("../../bridge", async (original) => ({ ...(await original<object>()), inTauri: () => true }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args?: Record<string, unknown>) => {
@@ -42,6 +43,8 @@ vi.mock("../../store/archive", async (original) => {
   const fixture = await original<typeof import("../../store/archive")>();
   return { ...fixture, archive: { ...fixture.archive, rows: () => f.archives } };
 });
+vi.mock("../../store/restores", async (original) => ({ ...(await original<object>()), isRestorePending: () => f.restorePending }));
+vi.mock("../../store/batch", async (original) => ({ ...(await original<object>()), running: () => f.batchBusy }));
 vi.mock("../../store/organization", async (original) => ({ ...(await original<object>()), groupOf: (key: string) => f.groups[key] ?? "inbox" }));
 vi.mock("../../store/ui", async (original) => {
   const ui = await original<typeof import("../../store/ui")>();
@@ -56,6 +59,7 @@ const load = <T,>(path: string) => import(/* @vite-ignore */ path) as Promise<T>
 let teams: typeof import("../../store/teams").teams;
 let ui: typeof import("../../store/ui");
 let toSession: typeof import("../../store/catalog").toSession;
+let archivedSession: typeof import("../../store/archive").archivedSession;
 let service: typeof import("../../store/desktopService").desktopService;
 const disposers: (() => void)[] = [];
 const entry = (key: string, kind: string, payload: unknown): TeamsOut => ({ computer: "", key, kind, payload });
@@ -86,8 +90,10 @@ async function openChat(element: HTMLElement) {
 }
 beforeEach(async () => {
   vi.resetModules(); f.rows = []; f.archives = []; f.groups = {}; f.actions = []; f.stop = "";
+  f.restorePending = false; f.batchBusy = false;
   ({ teams } = await import("../../store/teams")); ui = await import("../../store/ui");
   ({ toSession } = await import("../../store/catalog")); ({ desktopService: service } = await import("../../store/desktopService"));
+  ({ archivedSession } = await import("../../store/archive"));
   ui.setPage("teams"); ui.setSelectedKey(undefined); ui.setDetailTab("activity"); ui.setSubagentOpen(undefined);
   ui.setStateFilter("all");
 });
@@ -98,9 +104,9 @@ const leadAction = (host: HTMLElement) => a(host).querySelector<HTMLButtonElemen
 const leadOpen = (host: HTMLElement) => a(host).querySelector<HTMLButtonElement>("[data-team-lead-open]")!;
 const rosterLaunch = (i: number) => `00000000-0000-4000-8000-00000000d00${i}`;
 const liveMembers = () => [1, 2, 3].map((i) => row(`m${i}`, rosterLaunch(i)));
-function emptyRoster(openWork: number | null = 0) {
+function emptyRoster(openWork: number | null = 0, leadBinding = "run_id:run-lead-row") {
   const members = [
-    { ...view.members[0], open_work: openWork },
+    { ...view.members[0], open_work: openWork, session: { machine: HERE, session_id: leadBinding } },
     ...[1, 2, 3, 4].map((i) => ({ ...view.members[1], id: `m${i}`, state: "active",
       session: { machine: HERE, session_id: `launch_id:${rosterLaunch(i)}` } })),
   ];
@@ -108,8 +114,11 @@ function emptyRoster(openWork: number | null = 0) {
     members: { active: 5, total: 5, not_created: 0, paused: 0, removed: 0 } } }, members };
 }
 function archivedLead(allowed = "restore") {
-  return { ...leadRow(), key: "\narchive:lead", state: "archived", archiveId: "lead-archive",
-    resumable: true, allowed };
+  return archivedSession("", "workstation.example", {
+    ...presentation.ready as unknown as ViewRow,
+    name: "codex/example/lead-row", launch_id: leadRow().launchId, run_id: leadRow().runId,
+    state: "archived", archive_id: "lead-archive", resumable: true, allowed_actions: [allowed],
+  });
 }
 
 const languages = [
@@ -207,15 +216,39 @@ it("points a pending lead action to Check and withholds the replacement path", a
   expect(f.actions).toHaveLength(1);
 });
 
-it("browses Archive without selecting an ambiguous match for the same launch", async () => {
-  f.archives = [archivedLead(), { ...archivedLead(), key: "\narchive:earlier", archiveId: "earlier", runId: "earlier-run" }];
-  const host = await openPage(listed(), emptyRoster());
+it.each(["restore", "forget"])("ignores a single archived run's %s capability for a launch-only lead", async (allowed) => {
+  // The Archive may show only the earlier run on a filtered page. Its
+  // capability cannot identify or determine recovery for the lead's run.
+  f.archives = [{ ...archivedLead(allowed), key: "\narchive:earlier", archiveId: "earlier", runId: "earlier-run" }];
+  const host = await openPage(listed(), emptyRoster(0, lead.session_id));
   expect(a(host).dataset.teamLeadAvailability).toBe("unavailable");
+  expect(a(host).textContent).toContain("Browse Archive and verify the lead's run.");
   expect(leadAction(host)).toBeNull();
   leadOpen(host).click();
   expect(ui.page()).toBe("sessions");
   expect(ui.stateFilter()).toBe("archived");
   expect(ui.selected()).toBeUndefined();
+  expect(f.actions).toEqual([]);
+});
+
+it("does not use another archived run of the same launch for an exact run binding", async () => {
+  f.archives = [{ ...archivedLead(), key: "\narchive:earlier", archiveId: "earlier", runId: "earlier-run" }];
+  const host = await openPage(listed(), emptyRoster());
+  expect(a(host).dataset.teamLeadAvailability).toBe("unavailable");
+  expect(leadOpen(host).textContent).toBe("Browse Archive");
+  expect(leadAction(host)).toBeNull();
+});
+
+it.each([
+  ["restorePending", "Check the pending restore in the archived session."],
+  ["batchBusy", "Wait for the session update to finish before checking Restore session."],
+] as const)("withholds Restore guidance while %s is set", async (flag, reason) => {
+  f.archives = [archivedLead()];
+  f[flag] = true;
+  const host = await openPage(listed(), emptyRoster());
+  expect(a(host).textContent).toContain(reason);
+  expect(a(host).textContent).not.toContain("choose Restore session");
+  expect(leadAction(host)).toBeNull();
   expect(f.actions).toEqual([]);
 });
 
