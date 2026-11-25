@@ -289,7 +289,13 @@ export async function setKeepWarm(target: Target, choice: KeepWarmChoice, expect
 }
 
 /** A session's parent link change (zerus-sa9qn.9), checked by its host; resolves with the host's reply. */
-export type ParentChange = { kind: "clear" } | { kind: "set"; session_id: string; name: string; conversation_id: string; run_id: string; replace: boolean };
+export interface ParentProjectConsent {
+  child_id: string; machine_id: string; child_project: string; parent_project: string; default_project: string;
+  previous: { machine: string; session_id: string; conversation_id: string; run_id: string } | null;
+  choice: "keep" | "move";
+}
+export type ParentChange = { kind: "clear" } | { kind: "set"; session_id: string; name: string; conversation_id: string; run_id: string;
+  replace: boolean; project?: ParentProjectConsent };
 export async function setParent(target: Target, change: ParentChange): Promise<Record<string, unknown>> {
   if (!inTauri()) throw new Error("Actions need the desktop app.");
   return actionInvoke<Record<string, unknown>>("set_parent", { target, change });

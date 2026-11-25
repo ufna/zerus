@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 
-const transport = vi.hoisted(() => ({ enablesTeams: false }));
+const transport = vi.hoisted(() => ({ enablesTeams: false, parent: vi.fn(async (..._args: unknown[]) => ({} as Record<string, unknown>)) }));
 vi.mock("@tauri-apps/api/core", async (original) => {
   const core = await original<typeof import("@tauri-apps/api/core")>();
   return { ...core, invoke: (command: string, args?: Record<string, unknown>) =>
@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/api/core", async (original) => {
 
 vi.mock("../../bridge", async (original) => ({
   ...await original<typeof import("../../bridge")>(),
-  inTauri: () => transport.enablesTeams,
+  inTauri: () => transport.enablesTeams, setParent: transport.parent,
   activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
   terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
   inspectSession: vi.fn(async () => null), composerOpen: vi.fn(async () => null),
@@ -228,6 +228,124 @@ it("keeps the moved row actions in the real session header menu", async () => {
   for (const label of ["Expand all collapsed", "Open folder", "Open shell in session folder", "Pause session", "Fork session…", "Set parent…", "Copy session name", "Copy session reference", "Copy folder path"]) {
     expect(labels, label).toContain(label);
   }
+});
+
+describe("Set parent across projects", () => {
+  const computer = "00000000-0000-4000-8000-000000000099";
+
+  async function openChoices() {
+    const child = fixtureRow("Child"), parent = fixtureRow("Actual supervisor");
+    const childKey = await open(child), parentKey = put(parent);
+    const header = (id: string, name: string) => ({ id, name, color: null, accessible: true, collapsed: false, is_default: id === "alpha", palette: 0 });
+    receive({ ...emptyBatch(), machines: [{ computer: "", machine: { machine_id: computer } as never }],
+      grouping: { loaded: true, default_project: "alpha", ready: true, reason: null, busy: false, status: "", status_error: false, conflicts: 0,
+        headers: [header("alpha", "Child project"), header("beta", "Parent project")] },
+      groups: [{ computer: "", key: childKey.slice(1), group: "alpha", rank: 0 }, { computer: "", key: parentKey.slice(1), group: "beta", rank: 0 }] });
+    host.querySelector<HTMLButtonElement>('button[data-tip="Session actions"]')!.click(); await flush();
+    [...host.querySelectorAll<HTMLButtonElement>(".menu-item")].find((button) => button.textContent === "Set parent…")!.click();
+    await vi.dynamicImportSettled(); await flush();
+    const dialog = host.querySelector<HTMLDialogElement>('dialog[aria-labelledby="parent-dlg-title"]')!;
+    [...dialog.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((button) => button.textContent!.includes(parent.title!))!.click();
+    return { child, parent, childKey, dialog };
+  }
+
+  const projectOption = (dialog: HTMLElement, text: string) => [...dialog.querySelectorAll("label")].find((label) => label.textContent!.includes(text))?.querySelector<HTMLInputElement>("input");
+
+  beforeEach(() => {
+    transport.parent.mockReset();
+    transport.parent.mockImplementation(async (...args) => ({
+      project_status: (args[1] as { project?: { choice?: string } }).project?.choice === "move" ? "moved" : "kept",
+    }));
+  });
+
+  it.each(["Keep current project", "Move to parent’s project"])("writes the explicit %s choice once", async (choice) => {
+    const { child, parent, dialog } = await openChoices();
+    const submit = dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+    expect(submit.disabled).toBe(true);
+    projectOption(dialog, choice)!.click();
+    expect(dialog.textContent).toContain("Child project");
+    expect(dialog.textContent).toContain("Parent project");
+    expect(submit.disabled).toBe(false);
+    const form = dialog.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(transport.parent).toHaveBeenCalledExactlyOnceWith(
+      { computer: "", name: child.name, run_id: child.run_id, conversation_id: child.conversation_id },
+      expect.objectContaining({ kind: "set", name: parent.name, session_id: parent.session_id,
+        project: expect.objectContaining({ choice: choice.startsWith("Move") ? "move" : "keep",
+          child_project: "alpha", parent_project: "beta", child_id: child.session_id, machine_id: computer }) }),
+    );
+    expect(dialog.open).toBe(false);
+  });
+
+  it("cancels with zero writes even with Move selected", async () => {
+    const { dialog } = await openChoices();
+    projectOption(dialog, "Move to parent’s project")!.click();
+    [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Cancel")!.click();
+    await flush();
+    expect(dialog.open).toBe(false);
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it("never drops a confirmed move choice when the displayed projects change", async () => {
+    const { childKey, dialog } = await openChoices();
+    projectOption(dialog, "Move to parent’s project")!.click();
+    receive({ ...emptyBatch(), groups: [{ computer: "", key: childKey.slice(1), group: "beta", rank: 0 }] });
+    expect(dialog.textContent).toContain("The sessions or projects changed.");
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it.each(["project write unconfirmed", "parent reply lost"])("closes without replay when the %s", async (failure) => {
+    const partial = failure === "project write unconfirmed";
+    if (partial) transport.parent.mockResolvedValueOnce({ project_status: "uncertain" });
+    else transport.parent.mockRejectedValueOnce("The parent session change was not confirmed.");
+    const { dialog } = await openChoices();
+    projectOption(dialog, "Move to parent’s project")!.click();
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(transport.parent).toHaveBeenCalledTimes(1);
+    expect(dialog.open).toBe(false);
+    expect(host.textContent).toContain(partial ? "The parent was set. Check the session’s project"
+      : "The parent session change was not confirmed.");
+  });
+
+
+  it("waits for memberships before classifying an uninitialized project view", async () => {
+    const { dialog } = await openChoices();
+    receive({ ...emptyBatch(), grouping: { loaded: false, ready: false, reason: "Project sync is starting.",
+      default_project: "ungrouped", headers: [], busy: false, status: "", status_error: false, conflicts: 0 } });
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it("does not submit apparently equal memberships from an unready project view", async () => {
+    const { childKey, dialog } = await openChoices();
+    receive({ ...emptyBatch(), groups: [{ computer: "", key: childKey.slice(1), group: "beta", rank: 0 }] });
+    const { grouping } = await import("../../store/organization");
+    receive({ ...emptyBatch(), grouping: { ...grouping(), ready: false, reason: "Project sync unavailable" } });
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it("binds a verified same-project confirmation without showing a move choice", async () => {
+    const { childKey, dialog } = await openChoices();
+    receive({ ...emptyBatch(), groups: [{ computer: "", key: childKey.slice(1), group: "beta", rank: 0 }] });
+    expect(projectOption(dialog, "Move to parent’s project")).toBeUndefined();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(transport.parent).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      project: expect.objectContaining({ choice: "keep", child_project: "beta", parent_project: "beta" }),
+    }));
+  });
+
 });
 
 it("shows a neutral Archive beside destructive Forget in a stopped session's header", async () => {

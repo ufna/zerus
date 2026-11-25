@@ -135,7 +135,7 @@ function listScope() {
     selected: { key: selectedKey(), subagent: subagentOpen(), conversation: selected()?.conversationId },
     roster: (s: Session) => rosterFor(s, s.key === selectedKey() ? followedFor(s.key).value : undefined),
     childDraft: (s: Session, child: { id: string }) => hasDraftKey(`${s.computer}\n${s.name}\n${s.conversationId ?? ""}\n${child.id}`),
-    parentKey: parentKeyOf(), teamCollapsed, teamExpanded, favorite,
+    parentKey: parentKeyOf(), projectOf: (key: string) => groups[key]?.group, teamCollapsed, teamExpanded, favorite,
     containers: true, machineOf: (s: Session) => machineCards[s.computer]?.machine_id,
   };
 }

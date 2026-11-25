@@ -5,7 +5,7 @@ import { steadyTitle } from "../lib/steady-title";
 import { FavoriteMark } from "./FavoriteMark";
 import { tr, trNoop } from "../../i18n";
 import { AGENT_LABEL, Icon } from "../lib/icons";
-import { computerFresh, computerOffline } from "../../store/catalog";
+import { catalog, computerFresh, computerOffline } from "../../store/catalog";
 import { quietAttention, visibleUnreadReply } from "../../store/attention";
 import { optionalQuestionCount, optionalQuestionCountText } from "./optional-questions";
 import { now } from "../../store/ui";
@@ -229,13 +229,26 @@ export function TeamToggle(props: { team: Team; onToggle?: () => void }) {
   );
 }
 
-/** A child shown away from its parent: the parent's name, opening it when listed. */
-export function FromParent(props: { parent: { name: string; key?: string }; onOpen?: (key: string) => void }) {
-  const short = () => props.parent.name.split("/").pop() || props.parent.name;
+type ParentBadge = { name: string; key?: string };
+
+function parentBadgeName(parent: ParentBadge) {
+  const listed = parent.key ? catalog.rows[parent.key] : undefined;
+  return listed?.title || parent.name.split("/").pop() || parent.name;
+}
+
+export function parentBadgeText(parent: ParentBadge, live: boolean) {
+  return tr(live ? "Supervised by %1" : "from %1", parentBadgeName(parent));
+}
+
+/** Name the identified parent, with its recorded label when it is no longer listed. */
+function FromParent(props: { parent: ParentBadge; live: boolean; compact?: boolean; onOpen?: (key: string) => void }) {
+  const label = () => parentBadgeText(props.parent, props.live);
+  // Reserve the compact badge's visible space for the name.
+  const content = () => props.compact ? parentBadgeName(props.parent) : label();
   return (
-    <Show when={props.parent.key} fallback={<span class="sc-from" title={tr("Started by %1\nThat session is not listed.", props.parent.name)}>{tr("from %1", short())}</span>}>
-      {(key) => <button class="sc-from link" title={tr("Started by %1\nClick to open it.", props.parent.name)}
-        onClick={(e) => { e.stopPropagation(); props.onOpen?.(key()); }} onDblClick={(e) => e.stopPropagation()}>{tr("from %1", short())}</button>}
+    <Show when={props.parent.key} fallback={<span class="sc-from" title={label()}>{content()}</span>}>
+      {(key) => <button type="button" class="sc-from link" title={label()} aria-label={label()}
+        onClick={(e) => { e.stopPropagation(); props.onOpen?.(key()); }} onDblClick={(e) => e.stopPropagation()}>{content()}</button>}
     </Show>
   );
 }
@@ -407,7 +420,7 @@ export function SessionCard(props: {
   team?: Team;
   onToggleTeam?: () => void;
   onOpenTeam?: () => void;
-  fromParent?: { name: string; key?: string };
+  fromParent?: ParentBadge;
   onOpenParent?: (key: string) => void;
 }) {
   const s = () => props.session;
@@ -418,7 +431,7 @@ export function SessionCard(props: {
       <div class="sc-l1">
         {/* Supervision and Mute are independent: the arrow before the name,
             the crossed bell right after it (owner, 2026-11-08). */}
-        <Show when={s().parent?.state === "live"}><SupervisedMark session={s()} /></Show>
+        <Show when={s().parent?.state === "live" && !props.fromParent}><SupervisedMark session={s()} /></Show>
         <span class="sc-title ell" style={titleReserve(s().title, 72)} title={s().name}>{s().title}</span>
         <FavoriteMark session={s()} />
         <Show when={s().muted}><Icon name="mute" size={14} class="sc-mute" /></Show>
@@ -439,7 +452,7 @@ export function SessionCard(props: {
       <div class="sc-l3">
         <Show when={props.agentTeamName}>{(name) => <span class="sc-team-role">{tr("Team: %1", name())}</span>}</Show>
         <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
-        <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} onOpen={props.onOpenParent} />}</Show>
+        <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} live={s().parent?.state === "live"} onOpen={props.onOpenParent} />}</Show>
         <Show when={s().reviewLater}><Icon name="attention" size={14} class="sc-review" /></Show>
         <span class="ell">{detailText(s())}</span>
       </div>
@@ -617,7 +630,8 @@ export function ContainerCard(props: { container: Container; selected: boolean; 
   );
 }
 
-export function CompactCard(props: { session: Session; agentTeamRole?: string; agentTeamName?: string; agentTeamSummary?: TeamSummary; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void; onOpenTeam?: () => void }) {
+export function CompactCard(props: { session: Session; agentTeamRole?: string; agentTeamName?: string; agentTeamSummary?: TeamSummary; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void; onOpenTeam?: () => void;
+  fromParent?: ParentBadge; onOpenParent?: (key: string) => void }) {
   const s = () => props.session;
   // Tooltips hold still under the pointer (zerus-5ryrx).
   const described = steadyTitle(() => compactDescription(s()));
@@ -636,6 +650,7 @@ export function CompactCard(props: { session: Session; agentTeamRole?: string; a
         <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
       <StatusBadge kind={badgeKind(s())} caption={statusCaption(s())} />
       <OptionalQuestionsChip session={s()} />
+      <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} compact live={s().parent?.state === "live"} onOpen={props.onOpenParent} />}</Show>
       <button class="cc-expand" title={expand.title()} onPointerEnter={expand.enter} onPointerLeave={expand.leave} aria-description={compactDescription(s())}
         onClick={(e) => { e.stopPropagation(); props.onExpand(); }} onDblClick={(e) => e.stopPropagation()}>
         <Icon name="expand-row" size={16} />
