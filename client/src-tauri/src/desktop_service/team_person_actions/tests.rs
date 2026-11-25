@@ -35,6 +35,78 @@ pub(super) fn review(call: &TeamCall) -> wire::Review {
         details: vec![("Name".into(), "New name".into())],
     }
 }
+
+#[test]
+fn only_a_valid_live_pong_selects_a_prepare_format() {
+    let id = "00000000-0000-4000-8000-000000000001";
+    let epoch = "00000000-0000-4000-8000-000000000002";
+    let mut pong = json!({"request_id":id,"accepted":true,"durable":false,"op":"pong"});
+    let negotiation = |pong: &Value| {
+        review_labels(&serde_json::to_vec(pong).unwrap(), id, epoch)
+    };
+    assert_eq!(negotiation(&pong), Some(false));
+    pong[wire::REVIEW_LABELS_CAPABILITY] =
+        json!({"version":wire::REVIEW_LABELS_VERSION,"epoch":epoch});
+    assert_eq!(negotiation(&pong), Some(true));
+    pong[wire::REVIEW_LABELS_CAPABILITY]["epoch"] = json!("stale epoch");
+    assert_eq!(negotiation(&pong), None);
+    pong[wire::REVIEW_LABELS_CAPABILITY] = json!(true);
+    assert_eq!(negotiation(&pong), None);
+    pong.as_object_mut().unwrap().remove(wire::REVIEW_LABELS_CAPABILITY);
+    pong["request_id"] = json!("other request");
+    assert_eq!(negotiation(&pong), None);
+    assert_eq!(negotiation(&json!({"accepted":false})), None);
+}
+
+#[test]
+fn prepare_requests_only_send_the_label_field_for_the_separate_capability() {
+    for op in [
+        "team_person_action_prepare",
+        "team_person_task_prepare",
+        "team_person_prepare",
+    ] {
+        let legacy = json!({"op":op,"scope":{"configuration":"example"}});
+        assert_eq!(review_query(legacy.clone(), false), legacy);
+        let mut expected = legacy.clone();
+        expected["with_labels"] = json!(true);
+        assert_eq!(review_query(legacy, true), expected);
+    }
+}
+
+#[test]
+fn review_reply_uses_only_the_negotiated_format() {
+    let call = call();
+    let review = review(&call);
+    let mut reply = json!({"ok":true,"review":review});
+    let legacy = serde_json::to_vec(&reply).unwrap();
+    let (parsed, labels) = parse_review(&legacy, false).unwrap();
+    assert_eq!(parsed["review"], json!(review));
+    assert!(labels.is_none());
+    assert!(parse_review(&legacy, true).is_none());
+
+    reply["labels"] = json!({"facts":review.intent.facts});
+    let labeled = serde_json::to_vec(&reply).unwrap();
+    let (_, labels) = parse_review(&labeled, true).unwrap();
+    assert_eq!(labels.unwrap().facts, review.intent.facts);
+
+    reply["labels"]["unexpected"] = json!(true);
+    assert!(parse_review(&serde_json::to_vec(&reply).unwrap(), true).is_none());
+    reply["ok"] = json!(false);
+    assert!(parse_review(&serde_json::to_vec(&reply).unwrap(), false).is_none());
+}
+
+#[test]
+fn legacy_confirmation_keeps_the_reviewed_identity_and_values() {
+    let call = call();
+    let review = review(&call);
+    let body = confirmation_body(&legacy_action_prompt(&review).body);
+    assert!(body.contains(&review.team_name));
+    assert!(body.contains(&review.intent.plan.team));
+    assert!(body.contains(&review.intent.machine));
+    assert!(body.contains("Name:\nNew name"));
+    assert!(!body.contains(&call.team_name));
+}
+
 #[test]
 fn native_confirmation_keeps_a_percent_sign_in_a_bound_team_name_literal() {
     let mut call = call();

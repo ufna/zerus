@@ -1,5 +1,5 @@
 //! Native owner-card confirmation and receipt-only recovery. No CLI fallback.
-use super::{creation_clone::Read, Service};
+use super::{creation_clone::Read, team_person_actions::team_review, Service};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -11,11 +11,12 @@ use std::{
 use zerus_client_core::{
     actions::Exit,
     desktop::{
-        team_confirmation::{self, Labels},
+        team_confirmation::{self, Prompt},
         team_person as wire,
         ui_requests::Request,
     },
     teams::action::{classify, TeamCall, TeamOutcome},
+    text::Text,
 };
 
 #[derive(Default)]
@@ -194,20 +195,14 @@ pub(crate) fn run(
             );
         }
     }
-    let review = read
-        .exchange(
-            None,
-            json!({"op":"team_person_prepare","scope":read.scope,"plan":plan,"with_labels":true}),
-            false,
-            None,
-        )
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| {
-            let review: wire::Review = serde_json::from_value(value["review"].clone()).ok()?;
-            let labels: Labels = serde_json::from_value(value["labels"].clone()).ok()?;
-            Some((review, labels))
-        });
+    let review = team_review(
+        &read,
+        json!({"op":"team_person_prepare","scope":read.scope,"plan":plan}),
+    )
+    .and_then(|(value, labels)| {
+        let review: wire::Review = serde_json::from_value(value["review"].clone()).ok()?;
+        Some((review, labels))
+    });
     let Some((review, labels)) = review.filter(|(review, _)| {
         review.valid() && review.intent.plan == plan && review.intent.scope == read.scope
     }) else {
@@ -224,12 +219,17 @@ pub(crate) fn run(
             "The main window is unavailable.",
         );
     };
-    let Some(prompt) = team_confirmation::card(&review, &labels) else {
-        return failed(
-            &call,
-            "owner_card_changed",
-            "Read the exact owner card again before confirming.",
-        );
+    let prompt = if let Some(labels) = labels {
+        let Some(prompt) = team_confirmation::card(&review, &labels) else {
+            return failed(
+                &call,
+                "owner_card_changed",
+                "Read the exact owner card again before confirming.",
+            );
+        };
+        prompt
+    } else {
+        legacy_card_prompt(&review)
     };
     let accepted = super::team_person_actions::show_confirmation(&app, &window, &prompt);
     let Some(confirmed) = Confirmed::after_dialog(review, accepted) else {
@@ -274,6 +274,37 @@ pub(crate) fn run(
             .remove(&call.request_id);
     }
     result
+}
+
+fn legacy_card_prompt(review: &wire::Review) -> Prompt {
+    let plan = &review.intent.plan;
+    let parameters = review
+        .card_parameters
+        .iter()
+        .map(|(key, value)| format!("{key}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = format!(
+        "{}\n\n{}\n\n{}\n{}\n{}\n\n{}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
+        serde_json::to_string(&review.team_name).unwrap_or_default(),
+        review.card_kind,
+        review.card_text,
+        parameters,
+        review.card_notes.join("\n"),
+        crate::native_text::render(&zerus_client_core::text!("Team ID: %1", plan.team.as_str())),
+        crate::native_text::render(&zerus_client_core::text!("Card")),
+        plan.card,
+        crate::native_text::render(&zerus_client_core::text!("Decision")),
+        plan.decision,
+        crate::native_text::render(&zerus_client_core::text!("Computer")),
+        review.intent.machine,
+        crate::native_text::render(&zerus_client_core::text!("Revision")),
+        plan.expected_revision,
+    );
+    Prompt {
+        title: zerus_client_core::text!("Decide owner card"),
+        body: vec![Text::verbatim(body)],
+    }
 }
 
 #[cfg(test)]

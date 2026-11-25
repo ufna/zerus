@@ -174,7 +174,13 @@ pub fn action(plan: &wire::Plan, review: &wire::Review, labels: &Labels) -> Opti
     let add = text!("Send task to team");
     let prompt = match &plan.action {
         wire::Action::Team { change } => team_action(change, &team, labels)?,
-        wire::Action::NewTask { title, backlog, role, pipeline, .. } => {
+        wire::Action::NewTask {
+            title,
+            backlog,
+            role,
+            pipeline,
+            ..
+        } => {
             let stage = if *backlog {
                 text!("Backlog")
             } else {
@@ -190,7 +196,9 @@ pub fn action(plan: &wire::Plan, review: &wire::Review, labels: &Labels) -> Opti
                 ),
             )
             .with(text!("The new task starts in %1.", stage));
-            result.body.extend(placement(role.as_deref(), pipeline.as_deref(), labels));
+            result
+                .body
+                .extend(placement(role.as_deref(), pipeline.as_deref(), labels));
             result
         }
         wire::Action::Intake { role, pipeline, .. } => {
@@ -213,7 +221,7 @@ pub fn action(plan: &wire::Plan, review: &wire::Review, labels: &Labels) -> Opti
             result
         }
     };
-    Some(prompt)
+    Some(prompt.with(text!("Team ID: %1", review.intent.plan.team.as_str())))
 }
 
 pub fn card(review: &team_person::Review, labels: &Labels) -> Option<Prompt> {
@@ -226,6 +234,7 @@ pub fn card(review: &team_person::Review, labels: &Labels) -> Option<Prompt> {
         &review.intent.plan.decision,
         labels,
     )
+    .map(|prompt| prompt.with(text!("Team ID: %1", review.intent.plan.team.as_str())))
 }
 
 fn card_action(team: &str, kind: &str, decision: &str, labels: &Labels) -> Option<Prompt> {

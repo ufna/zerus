@@ -81,8 +81,9 @@ fn rendered(prompt: &Prompt) -> String {
 }
 
 fn private_fields_stay_private(body: &str) {
+    // The reviewed team ID is now deliberate identity prose; receipt and
+    // other authority fields still stay private.
     for hidden in [
-        TEAM,
         REQUEST,
         HOME,
         ID,
@@ -542,4 +543,62 @@ fn an_unnamed_teams_confirmation_names_it_in_the_window_language() {
         "{}",
         window.text
     );
+}
+
+#[test]
+fn same_named_teams_keep_their_reviewed_identity_in_all_confirmation_paths() {
+    // The suffixes deliberately collide: the full service-reviewed UUID is
+    // readable, exact, and needs no unbounded same-name inventory lookup.
+    let other = "55555555-5555-4555-8555-111111111111";
+    for id in [TEAM, other] {
+        let mut input = call(TeamAction::RenameTeam {
+            name: "Next name".into(),
+        });
+        input.team = id.into();
+        let generic = wire::Plan::from_call(&input).unwrap();
+        let task = wire::TaskDraft {
+            request_id: REQUEST.into(),
+            team: id.into(),
+            action: wire::Action::NewTask {
+                project: ID.into(),
+                title: "Build parser".into(),
+                backlog: false,
+                role: None,
+                pipeline: None,
+            },
+        }
+        .plan(9)
+        .unwrap();
+        let mut owner = card_review("launch_blocked", "retry");
+        owner.intent.plan.team = id.into();
+        owner.team_name = "Shared team".into();
+        let mut prompts = Vec::new();
+        for plan in [&generic, &task] {
+            let mut reviewed = review(plan);
+            reviewed.team_name = "Shared team".into();
+            prompts.push(action(plan, &reviewed, &labels()).unwrap());
+        }
+        prompts.push(card(&owner, &labels()).unwrap());
+        for prompt in prompts {
+            assert!(rendered(&prompt).contains("Shared team"));
+            let identity = prompt
+                .body
+                .iter()
+                .find(|line| line.source == "Team ID: %1")
+                .expect("reviewed team identity");
+            assert_eq!(identity.english(), format!("Team ID: {id}"));
+            assert_eq!(identity.args, vec![crate::text::Arg::Verbatim(id.into())]);
+            let catalog: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../src/i18n.ru.json"
+            )))
+            .unwrap();
+            assert_eq!(catalog["Team ID: %1"], "Идентификатор команды: %1");
+            assert_eq!(
+                catalog["Team ID: %1"].as_str().unwrap().replace("%1", id),
+                format!("Идентификатор команды: {id}")
+            );
+            assert!(!rendered(&prompt).contains(if id == TEAM { other } else { TEAM }));
+        }
+    }
 }

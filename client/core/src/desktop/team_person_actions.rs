@@ -5,6 +5,10 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const HELP_MARKER: &str = "Desktop Teams Person actions ABI: desktop-team-person-actions-v2";
+/// A live service advertises this field in its desktop request pong once the
+/// three Team prepare queries accept `with_labels`.
+pub const REVIEW_LABELS_CAPABILITY: &str = "team_person_review_labels";
+pub const REVIEW_LABELS_VERSION: u64 = 1;
 /// A service that resolves a window Route's kept task fields
 /// (`keep_task_fields`, zerus-3u5yu). An older one refuses that plan; the
 /// window asks for this marker first and says to update the service.

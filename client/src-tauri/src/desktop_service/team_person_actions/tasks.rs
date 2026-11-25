@@ -148,34 +148,22 @@ pub(crate) fn run_task(
         ));
     }
     let _slot = ReviewSlot(&actions.reviewing);
-    let bytes = read
-        .exchange(
-            None,
-            json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft,"with_labels":true}),
-            false,
-            None,
-        )
-        .map_err(|_| {
-            TaskError::not_sent("The exact team/task review is unavailable. Nothing was sent.")
-        })?;
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| TaskError::not_sent("The exact team/task review is unavailable."))?;
+    let (value, labels) = team_review(
+        &read,
+        json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft}),
+    )
+    .ok_or_else(|| {
+        TaskError::not_sent("The exact team/task review is unavailable. Nothing was sent.")
+    })?;
     let plan: wire::Plan = serde_json::from_value(value["plan"].clone())
         .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
     let review: wire::Review = serde_json::from_value(value["review"].clone())
         .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
-    let labels: zerus_client_core::desktop::team_confirmation::Labels =
-        serde_json::from_value(value["labels"].clone())
-            .map_err(|_| TaskError::not_sent("Read the exact task and team again."))?;
     let original = wire::TaskOriginal {
         plan,
         intent: review.intent.clone(),
     };
-    if value["ok"] != true
-        || !review.valid()
-        || !matches(draft, &original)
-        || original.intent.scope != read.scope
-    {
+    if !review.valid() || !matches(draft, &original) || original.intent.scope != read.scope {
         return Err(TaskError::not_sent("The exact team/task review changed."));
     }
     if !stage(&read, &original.plan) {
@@ -183,7 +171,8 @@ pub(crate) fn run_task(
             "The complete task plan could not be prepared.",
         ));
     }
-    let confirmed = confirm(app, &original.plan, review, &labels).map_err(TaskError::not_sent)?;
+    let confirmed =
+        confirm(app, &original.plan, review, labels.as_ref()).map_err(TaskError::not_sent)?;
     if confirmed.0 != original.intent || !read.current() {
         return Err(TaskError::not_sent(
             "The selected service changed during confirmation.",

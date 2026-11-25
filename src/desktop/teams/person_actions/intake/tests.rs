@@ -140,7 +140,13 @@ fn native_intake_reviews_show_project_task_and_team_names_from_the_bound_documen
         for visible in [title, "example", team.name.as_str()] {
             assert!(body.contains(visible), "{body}");
         }
-        for hidden in [TEAM, &reference.project, &reference.uuid, &review.intent.plan.request_id] {
+        let identity = format!("Team ID: {TEAM}");
+        assert!(body.lines().any(|line| line == identity), "{body}");
+        for hidden in [
+            &reference.project,
+            &reference.uuid,
+            &review.intent.plan.request_id,
+        ] {
             assert!(!body.contains(hidden), "{body}");
         }
     }
