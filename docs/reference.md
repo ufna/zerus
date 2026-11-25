@@ -6636,11 +6636,18 @@ folder trust prompt of a Claude, Codex or Kimi member whose worktree Zerus
 created for that team, and resumes a member whose agent exited by itself, at
 most three times an hour, in its own conversation with a brief that points it
 at `hgs team current`. Each is checked against the exact run, conversation,
-prompt and hash, reserved in the approval journal under its own categories
-(`team_folder_trust`, `team_resume`) before delivery and finished from the
-receipt; an unknown delivery is never repeated. Ordinary automatic tool
-approvals never admit these categories. Anything the service cannot confirm
-opens a `standing_confirmation` card.
+prompt and hash. The service reserves each effect in the approval journal
+before delivery and settles it from the receipt. The service never repeats
+an unknown delivery. Ordinary automatic tool approvals never admit these
+categories. Anything the service cannot confirm opens a
+`standing_confirmation` card.
+
+The approval journal uses `team_folder_trust` for a folder grant,
+`team_resume` for the restart, `team_resume_brief` for the follow-up sent to
+the resumed run, and `team_launch_brief` for the lead's initial briefing. The
+three-per-hour budget counts restart reservations. Briefs have their own
+audit records and spend none of that budget. Existing records retain their
+saved categories and delivery identities.
 
 Folder trust applies on the member's account to the team's main Git checkout
 and its subfolders, as the permission checkbox states. A Codex repository

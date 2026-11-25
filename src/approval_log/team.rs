@@ -7,36 +7,48 @@ use super::*;
 pub(crate) enum TeamKind {
     FolderTrust,
     Resume,
-    /// Launch context through the guarded send, before a conversation exists.
-    Brief,
+    ResumeBrief,
+    LaunchBrief,
 }
 
 pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -> Result<Value> {
     let mut payload = payload.clone();
+    let category = match kind {
+        TeamKind::FolderTrust => "team_folder_trust",
+        TeamKind::Resume => "team_resume",
+        TeamKind::ResumeBrief => "team_resume_brief",
+        TeamKind::LaunchBrief => "team_launch_brief",
+    };
     let answers = match kind {
         TeamKind::FolderTrust => {
             let Some(answers) = folder_answers(&payload) else {
                 return Ok(json!({"eligible":false}));
             };
-            payload["categories"] = json!(["team_folder_trust"]);
             answers
         }
-        TeamKind::Resume | TeamKind::Brief => {
+        TeamKind::Resume | TeamKind::ResumeBrief | TeamKind::LaunchBrief => {
             if payload["question"]["source"] != "team_resume" {
                 return Ok(json!({"eligible":false}));
             }
-            if kind == TeamKind::Brief
+            if kind != TeamKind::Resume
                 && (payload["question"]["can_answer"] != false
                     || !payload["question"]["question_id"].as_str()
                         .is_some_and(|id| id.starts_with("brief:")))
             {
                 return Ok(json!({"eligible":false}));
             }
-            payload["categories"] = json!(["team_resume"]);
             json!([])
         }
     };
-    reserve(db, &payload, answers, matches!(kind, TeamKind::FolderTrust | TeamKind::Brief))
+    // The category is descriptive. The existing question identity and
+    // request key survive upgrades and prevent another delivery.
+    payload["categories"] = json!([category]);
+    reserve(
+        db,
+        &payload,
+        answers,
+        matches!(kind, TeamKind::FolderTrust | TeamKind::LaunchBrief),
+    )
 }
 
 fn folder_answers(payload: &Value) -> Option<Value> {

@@ -98,6 +98,18 @@ pub(super) struct Plan {
     pub parent: Option<String>,
 }
 
+impl Plan {
+    pub(super) fn audit_kind(&self) -> crate::approval_log::TeamKind {
+        use crate::approval_log::TeamKind;
+        match self.kind {
+            Kind::Trust => TeamKind::FolderTrust,
+            Kind::Brief if self.parent.is_none() => TeamKind::LaunchBrief,
+            Kind::Brief => TeamKind::ResumeBrief,
+            Kind::Resume | Kind::Notice => TeamKind::Resume,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Audit {

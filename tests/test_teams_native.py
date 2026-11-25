@@ -123,11 +123,15 @@ class ClassFixture:
         return outcome
 
 
+LEAD_LAUNCH_BRIEF = ('lead', 'team_resume', ('team_launch_brief',), 'approved')
+
+
 def journal_is(case, expected, label):
     """The whole audit journal settles to exactly `expected` (journal_summary) within a
     turn's bound; the last summary read is kept in the evidence either way."""
     fx = case.fx
     last = []
+    expected = sorted(expected)
 
     def settled():
         last[:] = [fx.journal_summary()]
@@ -137,6 +141,15 @@ def journal_is(case, expected, label):
     finally:
         fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
                           dict(expected=expected, last=last[0] if last else None))
+
+
+def assert_lead_launch_audit(case):
+    lead = case.fx.sessions['lead']
+    [brief] = [row for row in case.fx.audit_rows(lead['name'])
+               if row['categories'] == ['team_launch_brief']]
+    case.assertEqual((brief['question_id'], brief['run']), ('brief:' + lead['run'], lead['run']))
+    case.assertIsNone(brief['scope'])
+    case.assertIs(brief['saved_question']['can_answer'], False)
 
 
 # Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
@@ -473,13 +486,15 @@ class TrustContract(ClassFixture):
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
         fx.evidence.write('cards-after-trust.json', refusals)
         self.assertFalse(refusals, 'no member card was left for the person')
-        journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
+        journal_is(self, self.startup_journal(), 'the journal holds startup grants and the lead launch brief')
 
     def member_ids(self):
         return ('lead',) + tuple(f'm{number}' for number in range(1, self.count + 1))
 
-    def startup_grants(self):
-        return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
+    def startup_journal(self):
+        return [LEAD_LAUNCH_BRIEF,
+                *((member, self.trust_source, ('team_folder_trust',), 'approved')
+                  for member in self.member_ids())]
 
     def test_2_an_ordinary_question_stays_the_persons(self):
         """After the startup grants, every member asks an ordinary question (zerus-63rru.73)."""
@@ -598,8 +613,10 @@ class CodexTrustContract(ClassFixture):
                     self.assertEqual(seen[0]['question_id'], card['question_id'])
         fx.evidence.write('codex-trust-cards.json', fx.cards())
         self.assertFalse([c for c in fx.cards() if 'needs your attention' in c.get('text', '')])
-        journal_is(self, [(m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')],
-                   'the journal holds exactly the two startup grants')
+        journal_is(self, [LEAD_LAUNCH_BRIEF,
+                          *((m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1'))],
+                   'the journal holds startup grants and the lead launch brief')
+        assert_lead_launch_audit(self)
         records = fx.codex_trust_records()
         fx.evidence.write('codex-trust-records-asserted.json', records)
         accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
@@ -656,13 +673,18 @@ class ResumeContract(ClassFixture):
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
         fx.evidence.write('resume-audit.json', rows)
         # One reservation for the resume of the exited run and one for the brief in the new run.
-        self.assertEqual(sorted((r['question_id'].split(':', 1)[0], r['run']) for r in rows),
-                         [('brief', resumed['run_id']), ('resume', before['run_id'])], 'the resume and its brief are audited')
-        journal_is(self, self.resume_journal(), 'the journal holds exactly the resume and its brief')
+        self.assertEqual(sorted((r['question_id'], r['run'], tuple(r['categories'])) for r in rows), [
+            ('brief:' + resumed['run_id'], resumed['run_id'], ('team_resume_brief',)),
+            ('resume:' + before['run_id'], before['run_id'], ('team_resume',)),
+        ], 'the original resume and the new run brief have distinct audit categories')
+        journal_is(self, self.resume_journal(), 'the journal holds launch and resume records only')
+        assert_lead_launch_audit(self)
         type(self).resumed_run = resumed['run_id']
 
     def resume_journal(self):
-        return [('m1', 'team_resume', ('team_resume',), 'approved')] * 2
+        return [LEAD_LAUNCH_BRIEF,
+                ('m1', 'team_resume', ('team_resume',), 'approved'),
+                ('m1', 'team_resume', ('team_resume_brief',), 'approved')]
 
     def diagnose_refused_resume(self):
         """A refused resume: what the service reads at that moment, then the person's own
@@ -696,7 +718,7 @@ class ResumeContract(ClassFixture):
                 if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
         # The positive control: the same reader still finds the first resume and its brief.
-        journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
+        journal_is(self, self.resume_journal(), 'the journal still holds only the launch and original resume records')
         live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
         self.assertFalse(live, 'no session of the member launch runs again')
 
@@ -757,7 +779,7 @@ class QuestionAfterTrustContract(ClassFixture):
         self.assertEqual(plain, ['plain-native-claude', 'plain-zt-claude'], 'the capture saw the plain sessions\' trust cards')
         startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
         self.assertEqual(startup, [], 'no member showed a startup card')
-        journal_is(self, [], 'the journal holds no grant: there was no startup card')
+        journal_is(self, [LEAD_LAUNCH_BRIEF], 'the journal holds only the launch brief')
         ordinary_question_stays_the_persons(self, ['m1'])
 
 

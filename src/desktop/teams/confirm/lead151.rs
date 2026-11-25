@@ -72,6 +72,13 @@ impl World {
     fn restart(&mut self) {
         self.ledger = Ledger::open(self.h.temp.path()).unwrap();
     }
+    fn audit_categories(&self) -> Vec<String> {
+        let db = crate::approval_log::open(&self.h.temp.path().join("approval-audit")).unwrap();
+        let mut query = db.prepare(
+            "SELECT json_extract(question,'$.categories[0]') FROM attempts ORDER BY id"
+        ).unwrap();
+        query.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
     fn records(&self) -> u32 {
         let db = rusqlite::Connection::open_with_flags(
             self.h.temp.path().join("teams/standing-v1/journal.sqlite3"),
@@ -143,7 +150,7 @@ impl Ports for World {
     }
     fn audit_begin(&mut self, p: &Plan) -> Result<Audit> {
         let mut db = crate::approval_log::open(&self.h.temp.path().join("approval-audit")).unwrap();
-        let r = crate::approval_log::begin_team(&mut db, &json!({"host":p.binding.machine,"session":p.snapshot.name,"provider":p.binding.agent,"question":p.question}), if p.kind == Kind::Brief { crate::approval_log::TeamKind::Brief } else { crate::approval_log::TeamKind::Resume }).unwrap();
+        let r = crate::approval_log::begin_team(&mut db, &json!({"host":p.binding.machine,"session":p.snapshot.name,"provider":p.binding.agent,"question":p.question}), p.audit_kind()).unwrap();
         assert_eq!(r["eligible"], true);
         Ok(Audit {
             id: r["id"].as_i64().unwrap(),
@@ -227,6 +234,7 @@ fn lead_launch_brief_is_once_across_passes_restart_and_first_conversation() {
     assert_eq!(w.sends.len(), 1);
     assert!(!w.ledger.lead_brief_needed(&w.b).unwrap());
     assert_eq!(w.records(), 1, "no extra brief reservation across passes");
+    assert_eq!(w.audit_categories(), ["team_launch_brief"]);
     assert_eq!(w.h.store.queue(TEAM, 200, None).unwrap().rows, before);
     assert_eq!(w.h.store.task_observation(TEAM, node).unwrap(), observation);
 }
@@ -272,6 +280,7 @@ fn resumed_lead_gets_its_own_brief_once_without_an_extra_launch_brief() {
         3,
         "one launch brief, one resume and one resumed brief"
     );
+    assert_eq!(w.audit_categories(), ["team_launch_brief", "team_resume", "team_resume_brief"]);
 }
 #[test]
 fn unknown_lead_brief_never_replays_after_restart() {
@@ -333,7 +342,7 @@ fn the_startup_audit_is_brief_only_and_keeps_the_exact_request() {
     let mut changed = payload;
     changed["question"]["question_id"] = json!("resume:other");
     assert_eq!(
-        crate::approval_log::begin_team(&mut db, &changed, crate::approval_log::TeamKind::Brief)
+        crate::approval_log::begin_team(&mut db, &changed, crate::approval_log::TeamKind::LaunchBrief)
             .unwrap()["eligible"],
         false
     );

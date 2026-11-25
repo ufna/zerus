@@ -139,13 +139,7 @@ impl Ports for Native<'_> {
         self.ledger.save(row)
     }
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit> {
-        let kind = if plan.kind == Kind::Trust {
-            crate::approval_log::TeamKind::FolderTrust
-        } else if plan.kind == Kind::Brief {
-            crate::approval_log::TeamKind::Brief
-        } else {
-            crate::approval_log::TeamKind::Resume
-        };
+        let kind = plan.audit_kind();
         // The scope is recorded only for a FolderTrust plan: it is the
         // extent of the trust grant, never of a resume or any other plan
         // (zerus-63rru.66 round 4).
