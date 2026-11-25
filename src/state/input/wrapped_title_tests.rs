@@ -11,6 +11,36 @@ fn codex_wrapped_native_title_is_an_empty_composer() {
 }
 
 #[test]
+fn codex_main_role_can_wrap_after_the_title() {
+    let frame = include_str!("../../../tests/fixtures/codex-composer-wrapped-main-role-0170.txt");
+    let mut record = json!({
+        "agent": "codex",
+        "model": "gpt-6.1-sol",
+        "cwd": "/test/codex/fixture-000",
+    });
+    assert_eq!(frame.lines().count(), 52);
+    assert!(codex_wrapped_columns(&record, frame, 2, 47).is_some());
+    assert!(codex_wrapped_empty(&record, frame, 2, 47, 98));
+    assert!(!codex_wrapped_empty(&record, frame, 2, 47, 100));
+    assert!(!codex_wrapped_empty(&record, frame, 3, 47, 98));
+
+    for changed in [
+        frame.replace(" · Main", " · Other"),
+        frame.replace("[default]", "[explorer]"),
+        frame.replace(" · Main", " · extra · Main"),
+        frame.replace("[default]", "\x1b[7m[default]\x1b[0m"),
+        frame.replace("1 warning", "0 warnings"),
+        replace_row(frame, 47, "› Keep this draft"),
+        replace_row(frame, 47, "› 1. Approve these changes?"),
+        replace_row(frame, 48, "  Keep this draft continuation"),
+    ] {
+        assert!(!codex_wrapped_empty(&record, &changed, 2, 47, 98));
+    }
+    record["cwd"] = json!("/test/codex/fixture-001");
+    assert!(!codex_wrapped_empty(&record, frame, 2, 47, 98));
+}
+
+#[test]
 fn transcript_hyperlinks_do_not_hide_an_empty_wrapped_composer() {
     // Native tmux styled captures retain OSC-8 link targets in history. Those
     // bytes are not displayed columns and say nothing about the live footer.
