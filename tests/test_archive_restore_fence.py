@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Restore source controls with private state, fake agents and a private tmux."""
 from contextlib import closing, contextmanager
+import hashlib
 import json
 import os
 import sqlite3
@@ -92,6 +93,69 @@ class ArchiveRestoreSource(pause.Harness):
 
     def test_canonical_archive_listing_restore_hint_tracks_name_reuse(self):
         self.assert_restore_hint_tracks_name_reuse(indexed=False)
+
+    def archived_with_legacy_shadow(self):
+        name, record, archived = self.save_archive(tag="renamed")
+        old_name = name.rsplit("/", 1)[0] + "/original"
+        state = self.root / "state"
+        filename = hashlib.sha256(old_name.encode()).hexdigest() + ".json"
+        shadow = state / filename
+        routes = state / "name_routes"
+        routes.mkdir(mode=0o700, exist_ok=True)
+        route = routes / filename
+        route.write_text(json.dumps(dict(version=1, name=old_name, run_id=record["run_id"])))
+        shadow.write_text(json.dumps(dict(
+            record, name=old_name, rename_shadow=True, rename_target=name,
+            legacy_shadow=dict(name=old_name, run_id=record["run_id"]),
+        )))
+        self.assertFalse(self.binding(name))
+        return archived, [shadow, route, state / "archives" / f'{archived["archive_id"]}.json']
+
+    def assert_retained_legacy_shadow_allows_archive_preview(self, indexed):
+        archived, paths = self.archived_with_legacy_shadow()
+        before = [path.read_bytes() for path in paths]
+        generation = 0
+
+        def newer_generation():
+            nonlocal generation
+            status = json.loads(self.hgs("listing-index", "status", "--json"))
+            if status["state"] != "ready" or status["generation"] <= generation:
+                return False
+            generation = status["generation"]
+            return True
+
+        self.hgs("listing-index", "enable" if indexed else "disable", "--json")
+        if indexed:
+            self.wait(newer_generation)
+        page = self.ready_listing()
+        self.assertIsNot(page["archive_page"].get("catalog_complete"), False, page)
+        [row] = [row for row in page["sessions"] if row["state"] == "archived"]
+        self.assertEqual(row["archive_id"], archived["archive_id"])
+        self.assertIn("restore", row["allowed_actions"])
+        self.assertEqual([path.read_bytes() for path in paths], before)
+
+        self.assertEqual(self.start(tag="renamed"), archived["name"])
+        self.hgs("pause", archived["name"])
+        replacement_run = self.binding(archived["name"])["run_id"]
+        if indexed:
+            # Name reuse invalidates the pre-reuse certified generation.
+            self.wait(newer_generation)
+        page = self.ready_listing()
+        [replacement] = [
+            row for row in page["sessions"]
+            if row["name"] == archived["name"] and row["state"] != "archived"
+        ]
+        self.assertEqual(replacement["run_id"], replacement_run)
+        [row] = [row for row in page["sessions"] if row.get("archive_id") == archived["archive_id"]]
+        self.assertNotIn("restore", row["allowed_actions"])
+        self.assertEqual([path.read_bytes() for path in paths], before)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_indexed_archive_preview_keeps_a_shadow_whose_target_was_archived(self):
+        self.assert_retained_legacy_shadow_allows_archive_preview(indexed=True)
+
+    def test_canonical_archive_preview_keeps_a_shadow_whose_target_was_archived(self):
+        self.assert_retained_legacy_shadow_allows_archive_preview(indexed=False)
 
     @contextmanager
     def indexed_database(self):
