@@ -274,6 +274,11 @@ def wait_for_held_task(hgs, reference, bound):
         time.sleep(0.1)
 
 
+CODEX_ROLE_MODEL = 'gpt-6.1-sol'
+CLAUDE_ROLE_MODEL = 'claude-sonnet-4-6'
+ROLE_EFFORT = 'high'
+
+
 class Model(api.Handler):
     """The shared loopback fixture plus the Teams steps: a delivered task prompt and a
     typed `ZT-RUN <step>` each answer with one shell call that runs a fixture script."""
@@ -308,6 +313,17 @@ class Model(api.Handler):
         route = api.urlsplit(self.path).path.rstrip('/')
         if '/kimi-platform' in route:
             return self.reply(404, {'error': 'no platform in the fixture'})
+        if route == '/teams-codex-models':
+            return self.reply(200, {'models': [dict(
+                slug=CODEX_ROLE_MODEL, display_name='GPT-6.1-Sol',
+                supported_reasoning_levels=[dict(effort=level, description=level)
+                                            for level in ('medium', ROLE_EFFORT)],
+                default_reasoning_level='medium', shell_type='shell_command',
+                visibility='list', supported_in_api=True, priority=0,
+                base_instructions='Teams catalog fixture.', support_verbosity=False,
+                truncation_policy=dict(mode='bytes', limit=10000), context_window=16000,
+                experimental_supported_tools=[],
+            )]})
         if route.endswith('/models'):
             return self.reply(200, {'object': 'list', 'data': [{'id': 'fixture', 'object': 'model'}], 'has_more': False})
         self.reply(404, {'error': {'type': 'not_found_error', 'message': 'no such route'}})
@@ -775,6 +791,14 @@ class TeamFixture:
         (home / 'settings.json').write_text(json.dumps({'env': {
             'ANTHROPIC_BASE_URL': self.base, 'ANTHROPIC_API_KEY': FIXTURE_KEY, 'DISABLE_AUTOUPDATER': '1',
             'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'}}))
+        # The v2 picker cache supplies the explicit role model to the account reader.
+        catalog = home / 'cache/model-catalog'
+        catalog.mkdir(parents=True, exist_ok=True)
+        thinking = dict(type='effort', effort_options=[
+            dict(id='medium', badge=dict(message='Recommended')), dict(id=ROLE_EFFORT)])
+        model = dict(id=CLAUDE_ROLE_MODEL, name='Sonnet 4.6', section='main', thinking=thinking)
+        (catalog / 'fixture-000000000000-cc.json').write_text(json.dumps(
+            dict(version=2, catalog=dict(surface='cc', config=dict(models=[model])))))
 
     def codex_common(self):
         return ('check_for_update_on_startup=false\ncli_auth_credentials_store="file"\n'
@@ -792,7 +816,7 @@ class TeamFixture:
             self.claude_home(own / '.claude')
             (own / '.claude.json').write_text((own / '.claude/.claude.json').read_text())
         elif self.agent == 'codex':
-            self.codex_account(home)
+            self.codex_account(home, self.account)
             native_home = own / '.codex'
             native_home.mkdir(parents=True, exist_ok=True)
             (native_home / 'config.toml').write_text(self.codex_common())
@@ -801,7 +825,7 @@ class TeamFixture:
                 self.hgs('account', 'add', self.member_account, '--provider', 'codex', '--label', 'Teams member fixture')
                 member_home = Path(self.env['HGS_CONFIG_DIR']) / 'accounts' / self.member_account
                 member_home.mkdir(parents=True, exist_ok=True)
-                self.codex_account(member_home)
+                self.codex_account(member_home, self.member_account)
         else:
             for kimi_home in (home, own / '.kimi-code'):
                 kimi_home.mkdir(parents=True, exist_ok=True)
@@ -820,24 +844,40 @@ class TeamFixture:
         if self.split_codex_accounts:
             self.fixture_accounts.add(self.member_account)
         self.evidence.write('account-inspect.json', self.json('account', 'inspect', self.account, timeout=90))
+        role_model = {'claude': CLAUDE_ROLE_MODEL, 'codex': CODEX_ROLE_MODEL}.get(self.agent)
+        if role_model:
+            for account in sorted(self.fixture_accounts):
+                settings = self.json('account', 'model-settings', account)
+                offered = self.listed(settings, 'models', 'account model-settings')
+                self.evidence.write(f'model-settings-{account}.json', settings)
+                supports_role = any(row['id'] == role_model and ROLE_EFFORT in row['effort_options']
+                                    for row in offered)
+                if (settings['account_id'] != account or settings['provider'] != self.agent
+                        or settings['effort_supported'] is not True or not supports_role):
+                    raise AssertionError(f'{account} does not offer the fixture role model {role_model} at {ROLE_EFFORT}')
 
-    def codex_account(self, home):
+    def codex_account(self, home, account):
         (home / 'config.toml').write_text(
-            'model="gpt-6.1-sol"\nmodel_provider="fixture"\n' + self.codex_common() +
+            f'model="{CODEX_ROLE_MODEL}"\nmodel_provider="fixture"\n' + self.codex_common() +
             '[model_providers.fixture]\nname="Fixture"\n'
             f'base_url="{self.base}/v1"\nwire_api="responses"\nrequires_openai_auth=true\n'
+            f'model_catalog_url="{self.base}/teams-codex-models"\n'
             'request_max_retries=0\nstream_max_retries=0\n')
         login = subprocess.run([str(self.native), 'login', '--with-api-key'], input=FIXTURE_KEY + '\n',
                                env=dict(self.env, CODEX_HOME=str(home)), capture_output=True, text=True, timeout=60)
         if login.returncode != 0:
             raise AssertionError('codex login --with-api-key failed: ' + login.stderr[-500:])
+        # The native app server writes the fixture's model cache. The Team role
+        # supplies the explicit model and effort at launch.
+        self.json('account', 'model-defaults', account, '--model', CODEX_ROLE_MODEL, '--effort', ROLE_EFFORT)
+        self.json('account', 'model-defaults', account, '--model', '')
 
     def bundle(self):
         role = dict(id='zt-dev', name='Fixture member', agent=self.agent, prompt='Fixture member; run the fixture steps.')
         if self.agent == 'claude':
-            role.update(model='claude-sonnet-4-6', effort='high')
+            role.update(model=CLAUDE_ROLE_MODEL, effort=ROLE_EFFORT)
         elif self.agent == 'codex':
-            role.update(model='gpt-6.1-sol', effort='high')
+            role.update(model=CODEX_ROLE_MODEL, effort=ROLE_EFFORT)
         lead = dict(agent=self.agent)
         if self.split_codex_accounts:
             lead['account'] = {'mode': 'named', 'account': self.account}
