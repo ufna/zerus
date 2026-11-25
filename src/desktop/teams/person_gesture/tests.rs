@@ -348,6 +348,8 @@ fn review(
         desktop,
         &json!({"op":"team_person_prepare","scope":scope,"plan":plan}),
     );
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(reply.get("labels").is_none(), "{reply}");
     serde_json::from_value(reply["review"].clone()).unwrap_or_else(|_| {
         panic!(
             "review refused: {reply}; {:?}",
@@ -359,6 +361,69 @@ fn review(
             .err()
         )
     })
+}
+
+#[test]
+fn live_service_pong_advertises_review_labels_only_on_explicit_request() {
+    use zerus_client_core::desktop::team_person_actions as teams;
+
+    let (h, _) = sample();
+    let (config, mut desktop, scope) = service(&h);
+    let location = crate::desktop::store::Location::new(&config).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut input = json!({"op":"ping","request_id":id});
+    let ordinary = json!({"request_id":id,"op":"pong","accepted":true,"durable":false});
+    let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
+    assert_eq!(pong, ordinary);
+    input["capability"] = json!("unknown_capability");
+    let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
+    assert_eq!(pong, ordinary);
+    input["capability"] = json!(teams::REVIEW_LABELS_CAPABILITY);
+    let pong = crate::desktop::request(&location, &mut desktop, &scope.service_epoch, Some(&input));
+    assert_eq!(pong["request_id"], id);
+    assert_eq!(pong["op"], "pong");
+    assert_eq!(pong["accepted"], true);
+    assert_eq!(pong["durable"], false);
+    let capability = &pong[teams::REVIEW_LABELS_CAPABILITY];
+    assert_eq!(capability["version"], teams::REVIEW_LABELS_VERSION);
+    assert_eq!(capability["epoch"], scope.service_epoch);
+}
+
+#[test]
+fn confirmation_of_a_produced_owner_card_uses_the_same_facts_and_plain_words() {
+    let (h, request) = sample();
+    let (config, desktop, scope) = service(&h);
+    let ops::Operation::DecideCard { card, decision } = request.operation else {
+        unreachable!()
+    };
+    let plan = wire::Plan::from_call(&zerus_client_core::teams::action::TeamCall {
+        request_id: request.request_id,
+        team: request.team,
+        team_name: "Untrusted renderer title".into(),
+        expected_revision: Some(request.expected_revision),
+        confirmed: false,
+        action: zerus_client_core::teams::action::TeamAction::Decide { card, decision },
+    })
+    .unwrap();
+    let mut input = json!({"op":"team_person_prepare","scope":scope,"plan":plan});
+    let legacy = query(&config, &desktop, &input);
+    assert_eq!(legacy["review"]["card_text"], "No account available");
+    assert!(legacy.get("labels").is_none());
+    input["with_labels"] = json!(true);
+    let response = query(&config, &desktop, &input);
+    let review: wire::Review = serde_json::from_value(response["review"].clone()).unwrap();
+    let labels = serde_json::from_value(response["labels"].clone()).unwrap();
+    assert_eq!(review.intent.plan, plan);
+    assert_eq!(response["review"]["intent"], legacy["review"]["intent"]);
+    assert!(review.card_text.is_empty());
+    assert_eq!(response["labels"]["facts"], review.intent.facts);
+    let prompt = zerus_client_core::desktop::team_confirmation::card(&review, &labels).unwrap();
+    assert_eq!(prompt.title.english(), "Acknowledge");
+    let sentence = prompt.body[0].english();
+    assert!(sentence.contains(&review.team_name));
+    assert!(!sentence.contains(&plan.team));
+    assert!(!sentence.contains(&review.card_kind));
+    assert!(!sentence.contains(&plan.decision));
 }
 
 #[test]
@@ -512,3 +577,82 @@ fn store_nonce_and_original_native_evidence_are_immutable() {
 }
 
 mod merge;
+
+#[test]
+fn same_named_teams_have_distinct_identity_on_owner_card_prepares() {
+    let (mut h, first) = sample();
+    let other = producers::TEAM_B;
+    let mut second_team = producers::create();
+    if let ops::Operation::Create {
+        integration_branch, ..
+    } = &mut second_team
+    {
+        *integration_branch = "zerus/team/same-name-second".into();
+    }
+    h.run_for(other, &producers::person(), second_team).unwrap();
+    let other_service = crate::teams::ops::Actor::Service {
+        person: "local".into(),
+        team: other.into(),
+    };
+    let seq = h
+        .run_for(
+            other,
+            &other_service,
+            ops::Operation::OpenCard {
+                kind: "launch_refused".into(),
+                text: "No account available".into(),
+                node: None,
+                decisions: None,
+                parameters: None,
+            },
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let mut second = producers::request(
+        h.store.team(other).unwrap().unwrap().revision,
+        ops::Operation::DecideCard {
+            card: seq,
+            decision: "acknowledged".into(),
+        },
+    );
+    second.team = other.into();
+    assert_eq!(
+        h.store.team(TEAM).unwrap().unwrap().name,
+        h.store.team(other).unwrap().unwrap().name
+    );
+    let (config, desktop, scope) = service(&h);
+    for request in [first, second] {
+        let ops::Operation::DecideCard { card, decision } = &request.operation else {
+            unreachable!()
+        };
+        let plan = wire::Plan {
+            request_id: request.request_id,
+            team: request.team,
+            expected_revision: request.expected_revision,
+            card: *card,
+            decision: decision.clone(),
+        };
+        let response = query(
+            &config,
+            &desktop,
+            &json!({"op":"team_person_prepare","scope":scope,"plan":plan,"with_labels":true}),
+        );
+        let review: wire::Review = serde_json::from_value(response["review"].clone()).unwrap();
+        let labels = serde_json::from_value(response["labels"].clone()).unwrap();
+        assert_eq!(review.intent.plan, plan);
+        let prompt = zerus_client_core::desktop::team_confirmation::card(&review, &labels).unwrap();
+        let body = prompt
+            .body
+            .iter()
+            .map(|line| line.english())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(body.contains(&format!("Team ID: {}", plan.team)), "{body}");
+        assert!(body.contains(&h.store.team(&plan.team).unwrap().unwrap().name));
+        assert_eq!(
+            h.store.team(&plan.team).unwrap().unwrap().revision,
+            plan.expected_revision
+        );
+    }
+}

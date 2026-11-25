@@ -197,7 +197,7 @@ fn native_s5_preparation_rejects_wrong_nested_relative_generation_and_pause() {
     );
     let revision = h.store.team(TEAM).unwrap().unwrap().revision;
     assert_eq!(
-        review(&runtime.config, &runtime.scope, proposed)
+        review(&runtime.config, &runtime.scope, proposed, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION
@@ -219,7 +219,7 @@ fn native_s5_preparation_rejects_wrong_nested_relative_generation_and_pause() {
         },
     );
     assert_eq!(
-        review(&runtime.config, &runtime.scope, proposed)
+        review(&runtime.config, &runtime.scope, proposed, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION
@@ -313,7 +313,7 @@ fn native_s5_real_reservation_after_consent_refuses_cached_todo_and_new_consent(
             acceptance: Acceptance::Person,
         },
     );
-    assert!(review(&runtime.config, &runtime.scope, next).is_err());
+    assert!(review(&runtime.config, &runtime.scope, next, true).is_err());
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn native_s5_correction_binds_base_episode_generation_and_reserved_new_separatel
             reason: "Hold this exact correction publication.".into(),
         },
     );
-    let response = review(&runtime.config, &runtime.scope, expected).unwrap();
+    let response = review(&runtime.config, &runtime.scope, expected, true).unwrap();
     assert_eq!(response["ok"], true);
     let mut wrong = exact;
     let PhaseControlScope::Published {
@@ -499,7 +499,7 @@ fn native_s5_correction_binds_base_episode_generation_and_reserved_new_separatel
         },
     );
     assert_eq!(
-        review(&runtime.config, &runtime.scope, refused)
+        review(&runtime.config, &runtime.scope, refused, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION

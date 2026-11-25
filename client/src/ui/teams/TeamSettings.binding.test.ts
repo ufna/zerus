@@ -37,7 +37,7 @@ vi.mock("../../store/teams", async () => {
 });
 vi.mock("../../store/teamProviders", () => ({ readProviderConfig: f.providers }));
 vi.mock("../sessions/SessionCard", () => ({ AgentTile: () => null }));
-vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
+vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskBlocked: () => undefined, teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
 import { TeamTab } from "./TeamTab";
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.choose(undefined); f.setBinding({ state: "unknown" }); f.setTeam(undefined); f.setFailure(null); f.setUnresolved([]); document.body.replaceChildren(); vi.clearAllMocks(); f.busy.mockImplementation(() => false); });
@@ -105,12 +105,28 @@ it("reads provider metadata for a real Team view whose home is supplied by the l
   expect(f.run).not.toHaveBeenCalled();
 });
 
+// zerus-63rru.199 (C10): a list row of another team or project is never
+// used; the team's own status names its home, so the read still happens with
+// that home, never the foreign row's.
 it.each(["id", "project"] as const)("does not use a list row with another %s for provider inspection", async (field) => {
   select("a"); f.setBinding({ state: "lead", team: teamView.bar.id }); const host = setup();
   await vi.waitFor(() => expect(f.open).toHaveBeenCalled());
   f.setTeam({ ...teamView, settings: writtenSettings() });
-  const foreign = structuredClone(scope.list.teams); foreign[0][field] = "foreign";
+  const foreign = structuredClone(scope.list.teams); foreign[0][field] = "foreign"; foreign[0].home = "00000000-0000-4000-8000-0000000000ff";
   f.listed.mockReturnValue(foreign);
+  f.providers.mockResolvedValue(structuredClone(providers.inspection));
+  expect(providers.inspection.home).toBe(teamView.bar.home);
+  host.querySelector<HTMLButtonElement>("[data-team-settings-open]")!.click();
+  await vi.waitFor(() => expect(host.querySelector("[data-provider-source]")?.textContent).toContain("Detected from project metadata"));
+  expect(f.providers).toHaveBeenCalledWith({ team: teamView.bar.id });
+  expect(f.run).not.toHaveBeenCalled();
+});
+
+it("refuses provider inspection with no home from the list or the team's status", async () => {
+  select("a"); f.setBinding({ state: "lead", team: teamView.bar.id }); const host = setup();
+  await vi.waitFor(() => expect(f.open).toHaveBeenCalled());
+  f.setTeam({ ...teamView, bar: { ...teamView.bar, home: undefined }, settings: writtenSettings() });
+  f.listed.mockReturnValue([]);
   host.querySelector<HTMLButtonElement>("[data-team-settings-open]")!.click();
   await vi.waitFor(() => expect(host.textContent).toContain("The team’s home computer is missing from the loaded team list."));
   expect(f.providers).not.toHaveBeenCalled(); expect(f.run).not.toHaveBeenCalled();

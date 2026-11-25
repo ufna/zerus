@@ -11,8 +11,13 @@ use std::{
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use zerus_client_core::{
     actions::Exit,
-    desktop::{team_person_actions as wire, ui_requests::Request},
+    desktop::{
+        team_confirmation::{self, Labels, Prompt},
+        team_person_actions as wire,
+        ui_requests::Request,
+    },
     teams::action::{classify, TeamCall, TeamOutcome},
+    text::Text,
 };
 
 #[derive(Default)]
@@ -241,29 +246,27 @@ pub(crate) fn run(
             "The complete team plan could not be prepared. Nothing was confirmed.",
         );
     }
-    let review = read
-        .exchange(
-            None,
-            json!({"op":"team_person_action_prepare","scope":read.scope,"plan":plan.reference()}),
-            false,
-            None,
-        )
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| serde_json::from_value::<wire::Review>(value["review"].clone()).ok())
-        .filter(|review| {
-            review.valid()
-                && Some(&review.intent.plan) == plan.reference().as_ref()
-                && review.intent.scope == read.scope
-        });
-    let Some(review) = review else {
+    let review = team_review(
+        &read,
+        json!({"op":"team_person_action_prepare","scope":read.scope,"plan":plan.reference()}),
+    )
+    .and_then(|(value, labels)| {
+        let review: wire::Review = serde_json::from_value(value["review"].clone()).ok()?;
+        Some((review, labels))
+    })
+    .filter(|(review, _)| {
+        review.valid()
+            && Some(&review.intent.plan) == plan.reference().as_ref()
+            && review.intent.scope == read.scope
+    });
+    let Some((review, labels)) = review else {
         return failed(
             &call,
             "team_action_changed",
             "The exact team action is unavailable or changed. Read it again.",
         );
     };
-    let confirmed = match confirm(&app, &plan, review) {
+    let confirmed = match confirm(&app, &plan, review, labels.as_ref()) {
         Ok(confirmed) => confirmed,
         Err(message) => return failed(&call, "person_gesture_cancelled", &message),
     };
@@ -299,34 +302,137 @@ pub(crate) fn run(
     result
 }
 
-fn confirm(
-    app: &tauri::AppHandle,
-    plan: &wire::Plan,
-    review: wire::Review,
-) -> Result<Confirmed, String> {
-    let window = crate::main_window(app).ok_or("The main window is unavailable.")?;
-    let title = crate::native_text::render(&zerus_client_core::text!("Confirm team action"));
+pub(super) fn team_review(read: &Arc<Read>, query: Value) -> Option<(Value, Option<Labels>)> {
+    // The CLI on disk can be newer than the running service. Negotiate with
+    // the service before sending any prepare fields the older parser rejects.
+    let id = uuid::Uuid::new_v4().to_string();
+    let pong = read
+        .exchange(
+            None,
+            json!({"op":"ping","request_id":id,"capability":wire::REVIEW_LABELS_CAPABILITY}),
+            false,
+            None,
+        )
+        .ok()?;
+    let labeled = review_labels(&pong, &id, &read.scope.service_epoch)?;
+    let bytes = read
+        .exchange(None, review_query(query, labeled), false, None)
+        .ok()?;
+    parse_review(&bytes, labeled)
+}
+
+fn review_labels(bytes: &[u8], id: &str, epoch: &str) -> Option<bool> {
+    let pong: Value = serde_json::from_slice(bytes).ok()?;
+    if pong["op"] != "pong"
+        || pong["request_id"] != id
+        || pong["accepted"] != true
+        || pong["durable"] != false
+    {
+        return None;
+    }
+    match pong.get(wire::REVIEW_LABELS_CAPABILITY) {
+        None => Some(false),
+        Some(capability)
+            if capability["version"] == wire::REVIEW_LABELS_VERSION
+                && capability["epoch"] == epoch =>
+        {
+            Some(true)
+        }
+        Some(_) => None,
+    }
+}
+
+fn review_query(mut query: Value, labeled: bool) -> Value {
+    if labeled {
+        query["with_labels"] = Value::Bool(true);
+    }
+    query
+}
+
+fn parse_review(bytes: &[u8], labeled: bool) -> Option<(Value, Option<Labels>)> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    if value["ok"] != true {
+        return None;
+    }
+    let labels = if labeled {
+        Some(serde_json::from_value(value["labels"].clone()).ok()?)
+    } else {
+        None
+    };
+    Some((value, labels))
+}
+
+fn legacy_action_prompt(review: &wire::Review) -> Prompt {
     let details = review
         .details
         .iter()
         .map(|(key, value)| format!("{key}:\n{value}"))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let body=format!("{}\n\n{}\n\nTeam: {}\nComputer: {}\nRevision: {}\n\nReviewed values begin\n{}\nReviewed values end",
-        serde_json::to_string(&review.team_name).unwrap_or_default(),review.subject,plan.team,review.intent.machine,plan.expected_revision,details);
-    let accepted = app
-        .dialog()
-        .message(body)
+    Prompt {
+        title: zerus_client_core::text!("Confirm team action"),
+        body: vec![
+            Text::verbatim(format!(
+                "{}\n\n{}\n",
+                serde_json::to_string(&review.team_name).unwrap_or_default(),
+                review.subject,
+            )),
+            zerus_client_core::text!("Team ID: %1", review.intent.plan.team.as_str()),
+            Text::verbatim(format!(
+                "Computer: {}\nRevision: {}\n\nReviewed values begin\n{}\nReviewed values end",
+                review.intent.machine, review.intent.plan.expected_revision, details,
+            )),
+        ],
+    }
+}
+
+fn confirm(
+    app: &tauri::AppHandle,
+    plan: &wire::Plan,
+    review: wire::Review,
+    labels: Option<&Labels>,
+) -> Result<Confirmed, String> {
+    let window = crate::main_window(app).ok_or("The main window is unavailable.")?;
+    let prompt = match labels {
+        Some(labels) => team_confirmation::action(plan, &review, labels)
+            .ok_or("Read the exact team action again before confirming.")?,
+        None => legacy_action_prompt(&review),
+    };
+    let accepted = show_confirmation(app, &window, &prompt);
+    Confirmed::after_dialog(review, accepted).ok_or_else(|| {
+        crate::native_text::render(&zerus_client_core::text!(
+            "The team action was cancelled. Nothing was sent."
+        ))
+    })
+}
+
+pub(super) fn show_confirmation(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    prompt: &Prompt,
+) -> bool {
+    let title = crate::native_text::render(&prompt.title);
+    app.dialog()
+        .message(confirmation_body(&prompt.body))
         .title(title.clone())
-        .parent(&window)
+        .parent(window)
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
             title,
             crate::native_text::render(&zerus_client_core::text!("Cancel")),
         ))
-        .blocking_show();
-    Confirmed::after_dialog(review, accepted)
-        .ok_or_else(|| "The team action was cancelled. Nothing was sent.".into())
+        .blocking_show()
+}
+
+fn confirmation_body(lines: &[zerus_client_core::text::Text]) -> String {
+    let body = crate::native_text::lines(lines);
+    // rfd's GTK backend passes the secondary text to GTK as a format string.
+    // Quote percent signs at that boundary so captions remain literal.
+    if cfg!(target_os = "linux") {
+        body.replace('%', "%%")
+    } else {
+        body
+    }
 }
 
 mod tasks;

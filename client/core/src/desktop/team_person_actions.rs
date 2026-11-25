@@ -5,20 +5,44 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const HELP_MARKER: &str = "Desktop Teams Person actions ABI: desktop-team-person-actions-v2";
+/// Opt in to this live-service capability in a desktop request ping. Its
+/// presence in the pong means the three prepare queries accept `with_labels`.
+pub const REVIEW_LABELS_CAPABILITY: &str = "team_person_review_labels";
+pub const REVIEW_LABELS_VERSION: u64 = 1;
 /// A service that resolves a window Route's kept task fields
 /// (`keep_task_fields`, zerus-3u5yu). An older one refuses that plan; the
 /// window asks for this marker first and says to update the service.
 pub const PLACEMENT_MARKER: &str =
     "Desktop Teams Person placement fields: desktop-team-person-placement-v1";
+/// A service that reads a new team task's role and pipeline
+/// (zerus-63rru.199 B4). An older one refuses the extra fields; the window asks
+/// for this marker first and says to update the service.
+pub const NEW_TASK_ROUTE_MARKER: &str =
+    "Desktop Teams Person new task route fields: desktop-team-person-new-task-route-v1";
 
 /// The help markers the selected service must advertise for this plan.
 pub fn required_markers(plan: &Plan) -> Vec<&'static str> {
-    let keeps = matches!(&plan.action, Action::Team { change }
-        if matches!(change.as_ref(), TeamAction::Route { keep_task_fields: true, .. }));
-    if keeps {
-        vec![HELP_MARKER, PLACEMENT_MARKER]
-    } else {
-        vec![HELP_MARKER]
+    action_markers(&plan.action)
+}
+
+/// The help markers an action needs, for a plan or a task draft.
+pub fn action_markers(action: &Action) -> Vec<&'static str> {
+    match action {
+        Action::Team { change }
+            if matches!(
+                change.as_ref(),
+                TeamAction::Route {
+                    keep_task_fields: true,
+                    ..
+                }
+            ) =>
+        {
+            vec![HELP_MARKER, PLACEMENT_MARKER]
+        }
+        Action::NewTask { role, pipeline, .. } if role.is_some() || pipeline.is_some() => {
+            vec![HELP_MARKER, NEW_TASK_ROUTE_MARKER]
+        }
+        _ => vec![HELP_MARKER],
     }
 }
 pub const BYTES: usize = 768 << 10;
@@ -44,6 +68,13 @@ pub enum Action {
         project: String,
         title: String,
         backlog: bool,
+        /// The role and pipeline the person chose for the new team task; absent
+        /// means the template's default, and an unrouted task keeps the exact
+        /// older shape (zerus-63rru.199 B4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pipeline: Option<String>,
     },
     Intake {
         project: String,
@@ -120,8 +151,20 @@ impl Plan {
                         .call()
                         .is_some_and(|call| crate::teams::action::prepare(&call).is_ok())
             }
-            Action::NewTask { project, title, .. } => {
-                text(project, 128) && text(title, 512) && !title.trim().is_empty()
+            Action::NewTask {
+                project,
+                title,
+                role,
+                pipeline,
+                ..
+            } => {
+                text(project, 128)
+                    && text(title, 512)
+                    && !title.trim().is_empty()
+                    && [role, pipeline]
+                        .into_iter()
+                        .flatten()
+                        .all(|word| text(word, 200) && !word.trim().is_empty())
             }
             Action::Intake {
                 project,
@@ -478,6 +521,8 @@ mod tests {
                 project: "example".into(),
                 title: "Reviewed task".into(),
                 backlog: false,
+                role: None,
+                pipeline: None,
             },
         };
         assert!(draft.valid());
@@ -625,5 +670,53 @@ mod tests {
         assert_eq!(required_markers(&whole), [HELP_MARKER]);
         assert_eq!(required_markers(&plan()), [HELP_MARKER]);
         assert!(PLACEMENT_MARKER.starts_with("Desktop Teams Person placement"));
+    }
+
+    fn new_task(role: Option<&str>, pipeline: Option<&str>) -> Plan {
+        let mut plan = plan();
+        plan.action = Action::NewTask {
+            project: "example".into(),
+            title: "Trim long labels".into(),
+            backlog: false,
+            role: role.map(str::to_owned),
+            pipeline: pipeline.map(str::to_owned),
+        };
+        plan
+    }
+
+    /// zerus-63rru.199 (B4): a new task sent to a team with a role and
+    /// pipeline needs a service that reads them; one without them keeps the
+    /// exact older shape, so an older service and a saved original still read it.
+    #[test]
+    fn a_routed_new_task_needs_its_marker_and_an_unrouted_one_keeps_the_older_shape() {
+        assert_eq!(
+            required_markers(&new_task(Some("developer"), Some("reviewed"))),
+            [HELP_MARKER, NEW_TASK_ROUTE_MARKER]
+        );
+        assert_eq!(
+            required_markers(&new_task(None, Some("reviewed"))),
+            [HELP_MARKER, NEW_TASK_ROUTE_MARKER]
+        );
+        assert_eq!(required_markers(&new_task(None, None)), [HELP_MARKER]);
+        assert_eq!(
+            serde_json::to_value(&new_task(None, None).action).unwrap(),
+            serde_json::json!({"kind": "new_task", "project": "example", "title": "Trim long labels", "backlog": false})
+        );
+        let older: Action = serde_json::from_value(serde_json::json!(
+            {"kind": "new_task", "project": "example", "title": "Trim long labels", "backlog": false}
+        ))
+        .unwrap();
+        assert_eq!(older, new_task(None, None).action);
+        assert!(NEW_TASK_ROUTE_MARKER.starts_with("Desktop Teams Person new task route"));
+    }
+
+    #[test]
+    fn handwritten_a_new_tasks_role_and_pipeline_are_bounded_words() {
+        assert!(new_task(Some("developer"), Some("reviewed")).valid());
+        let long = "r".repeat(201);
+        for bad in ["", " ", "a\u{7}b", long.as_str()] {
+            assert!(!new_task(Some(bad), None).valid(), "{bad:?}");
+            assert!(!new_task(None, Some(bad)).valid(), "{bad:?}");
+        }
     }
 }

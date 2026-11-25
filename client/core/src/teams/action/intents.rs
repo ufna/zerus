@@ -392,12 +392,7 @@ mod tests {
         let mut intents = Intents::default();
         intents.admit(&call(ID));
         let confirmation = TeamOutcome::Confirm {
-            confirmation: crate::teams::action::Confirmation {
-                name: "teamStopConfirm".into(),
-                title: "Stop team?".into(),
-                text: "Stop it?".into(),
-                action: "Stop team".into(),
-            },
+            confirmation: TeamAction::Stop {}.confirmation("Orchard").unwrap(),
         };
         assert_eq!(
             intents.settle(&call(ID), confirmation.clone()),

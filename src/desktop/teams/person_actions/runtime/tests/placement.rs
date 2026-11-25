@@ -28,6 +28,26 @@ fn review(runtime: &mut Runtime, plan: &wire::Plan) -> wire::Review {
     serde_json::from_value(value["value"]["review"].clone()).unwrap()
 }
 
+fn labelled(runtime: &mut Runtime, plan: &wire::Plan) -> String {
+    stage(runtime, plan);
+    let queue = Arc::new(Queue::default());
+    runtime.query(
+        &json!({"op":"team_person_action_prepare","scope":runtime.scope,"plan":plan.reference(),"with_labels":true}),
+        queue.clone(), 1,
+    ).unwrap();
+    let value = take(&queue)["value"].clone();
+    assert_eq!(value["ok"], true, "{value}");
+    let review = serde_json::from_value(value["review"].clone()).unwrap();
+    let labels = serde_json::from_value(value["labels"].clone()).unwrap();
+    zerus_client_core::desktop::team_confirmation::action(plan, &review, &labels)
+        .unwrap()
+        .body
+        .iter()
+        .map(zerus_client_core::text::Text::english)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn execute(runtime: &mut Runtime, intent: wire::Intent) -> Value {
     let queue = Arc::new(Queue::default());
     runtime
@@ -89,6 +109,19 @@ fn native_placement_route_keeps_dependencies_and_writes_and_only_clears_a_change
     .unwrap();
 
     let same = plan(&h, route(node, "developer", "alternate"));
+    let shown = labelled(&mut runtime, &same);
+    assert!(
+        shown.contains(&format!("Task #{prerequisite} must start first.")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("src/example.rs") && shown.contains("docs/examples"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("Keep the assignment to") && shown.contains("m1"),
+        "{shown}"
+    );
     let reviewed = review(&mut runtime, &same);
     assert!(reviewed
         .details
@@ -103,6 +136,11 @@ fn native_placement_route_keeps_dependencies_and_writes_and_only_clears_a_change
     assert_eq!(after.writes, ["src/example.rs", "docs/examples"]);
 
     let changed = plan(&h, route(node, "reviewer", "analysis"));
+    let shown = labelled(&mut runtime, &changed);
+    assert!(
+        shown.contains("Clear the assignment to") && shown.contains("m1"),
+        "{shown}"
+    );
     let reviewed = review(&mut runtime, &changed);
     let result = execute(&mut runtime, reviewed.intent);
     assert_eq!(result["ok"], true, "{result}");
@@ -156,6 +194,22 @@ fn native_placement_reassign_refuses_a_stale_revision_and_records_the_reason_on_
     assert!(h.node(node).assignee.is_none());
 
     let fresh = plan(&h, change);
+    let shown = labelled(&mut runtime, &fresh);
+    let task = h.node(node);
+    assert!(
+        shown.contains(&format!("task #{node} “{}”", task.title)),
+        "{shown}"
+    );
+    let member = h.store.member(TEAM, "m2").unwrap().unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let role = &team
+        .bundle
+        .roles
+        .iter()
+        .find(|role| role.id == member.role)
+        .unwrap()
+        .name;
+    assert!(shown.contains(&format!("{role} (m2)")), "{shown}");
     let reviewed = review(&mut runtime, &fresh);
     let result = execute(&mut runtime, reviewed.intent);
     assert_eq!(result["ok"], true, "{result}");

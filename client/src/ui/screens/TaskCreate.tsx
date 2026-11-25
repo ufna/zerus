@@ -8,15 +8,20 @@ import { requestTaskDescription } from "../../store/taskNavigation";
 import { Icon } from "../lib/icons";
 import { tr } from "../../i18n";
 import { Dropdown } from "../lib/Dropdown";
-import { TeamChip } from "../teams/TeamChips";
+import { roleLabel, TeamChip } from "../teams/TeamChips";
 import { teams } from "../../store/teams";
-import { teamTaskCreation, setTeamTaskCreation } from "../../store/taskCreation";
+import { teamTaskCreation, setTeamTaskCreation, type TeamTaskSource } from "../../store/taskCreation";
 
 /** Mockup's inline new-card title; Escape retains its private per-project draft. */
 export default function TaskCreate(props: { project?: string; scope: string; backlog: boolean; accessible: boolean; children: JSX.Element }) {
   const [creating, setCreating] = createSignal(false);
   /** The team chosen in this form, for this project only. */
   const [team, setTeam] = createSignal("");
+  const [pageTeam, setPageTeam] = createSignal<TeamTaskSource>();
+  /** The role and pipeline for the chosen team's new card; "" is the template's default (zerus-63rru.199 B4). */
+  const [role, setRole] = createSignal("");
+  const [pipeline, setPipeline] = createSignal("");
+  createEffect(on(team, () => { setRole(""); setPipeline(""); }, { defer: true }));
   const [refusal, setRefusal] = createSignal("");
   /** A card the command line created and the team's queue did not take: the
    * task exists, so the way on is Send to team for that task, never a new card. */
@@ -28,11 +33,11 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   let field!: HTMLInputElement;
   /** The project's teams on the list's first page, while the preview is on: the card can join one's queue. */
   const teamChoices = createMemo(() => {
-    const rows = teams.list()?.teams ?? [], current = teams.team?.()?.bar;
+    const rows = teams.list()?.teams ?? [], current = pageTeam()?.bar ?? teams.team?.()?.bar;
     // The open board may be beyond the bounded list page or chooser limit.
     const listed = current && rows.find((row) => row.id === current.id);
     const preferred = current && current.project === props.project
-      ? listed && listed.revision > current.revision ? listed : { ...current, home: listed?.home ?? "" } : undefined;
+      ? listed && listed.revision > current.revision ? listed : { ...current, home: listed?.home || current.home || "" } : undefined;
     return taskTeamChoices(teams.available(), preferred ? [preferred, ...rows.filter((row) => row.id !== preferred.id)] : rows, props.project);
   });
   createEffect(on(() => [props.project, props.accessible] as const, ([project, accessible]) => { setCreating(false); newCard.follow(project && accessible ? { project, task: "", mode: "new_card" } : undefined); }));
@@ -42,7 +47,7 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   // lost access, Teams going off or a reserved card clear it.
   // Compared by value: an edit of the title is a new view of the same card and keeps the choice.
   const binding = createMemo(() => JSON.stringify([props.project ?? "", props.accessible, teams.available() ?? null, view()?.handle ?? null, !!view()?.recovery]));
-  createEffect(on(binding, () => { setTeam(""); setRefusal(""); }, { defer: true }));
+  createEffect(on(binding, () => { setTeam(""); setPageTeam(undefined); setRefusal(""); }, { defer: true }));
   createEffect(() => {
     const request = teamTaskCreation();
     if (!request) return;
@@ -51,9 +56,19 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     // Apply the choice only after the active handle's binding has settled;
     // recovery retains its original team.
     if (newCard.opening() || !view()?.handle) return;
-    setCreating(true); setTeam(view()?.recovery ? "" : request.team); setRefusal("");
+    const recovering = !!view()?.recovery;
+    setPageTeam(recovering ? undefined : request.fromPage);
+    setCreating(true); setTeam(recovering ? "" : request.team); setRefusal("");
     setTeamTaskCreation(undefined);
   });
+  /** Routing comes from this team's open workspace or its one-form handoff. */
+  const routing = createMemo(() => {
+    const chosen = team(), open = teams.team?.(), fromPage = pageTeam();
+    const source = open?.bar.id === chosen ? open : fromPage?.bar.id === chosen ? fromPage : undefined;
+    return source?.routing_pipelines?.length ? source.routing_pipelines : undefined;
+  });
+  const roles = createMemo(() => [...new Set((routing() ?? []).map((choice) => choice.role))]);
+  const pipelines = createMemo(() => (routing() ?? []).filter((choice) => choice.role === role()));
   /** A reserved card keeps the destination it was reserved with. */
   const reserved = () => view()?.recovery ? view()?.team ?? "" : undefined;
   const reservedName = () => teamChoices().find((candidate) => candidate.id === reserved())?.label ?? reserved() ?? "";
@@ -70,10 +85,11 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     }
     setRefusal(""); recovery.dismiss();
     const name = teamChoices().find((candidate) => candidate.id === chosen)?.label ?? chosen;
-    if (await createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined)) {
+    const route = chosen && routing() && role() && pipeline() ? { role: role(), pipeline: pipeline() } : undefined;
+    if (await (route ? createCard(project, false, selected(), chosen, route) : createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined))) {
       // The answer settles this submit only: its project's card, and the team
       // choice it sent, never one the person made meanwhile.
-      setCreating(false); if (team() === chosen) setTeam("");
+      setCreating(false); if (team() === chosen) { setTeam(""); setPageTeam(undefined); }
       const done = newCard.view();
       const id = done?.project === project ? done.created : undefined, refused = done?.not_queued;
       if (id && refused && refused.task === id && (!chosen || refused.team === chosen)) recovery.show({ project, task: id, team: refused.team, name: refused.team === chosen ? name : teamChoices().find((candidate) => candidate.id === refused.team)?.label ?? refused.team, reason: refused.reason, code: refused.code ?? "" });
@@ -90,6 +106,18 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     </Show><Show when={creating() && reserved() === undefined && teamChoices().length}>
       <Dropdown class="field tk-team" aria-label={tr("Team")} title={tr("Send the new task to a team's queue")}
         value={team()} onChange={(value) => { setTeam(value); setRefusal(""); }} options={[{ value: "", label: tr("No team") }, ...teamChoices().map((candidate) => ({ value: candidate.id, textValue: candidate.label, label: () => <TeamChip name={candidate.label} /> }))]} />
+    </Show><Show when={creating() && reserved() === undefined && routing()}>
+      <select class="field tk-team-role" data-new-task-role aria-label={tr("Role")} value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(pipelines()[0]?.id ?? ""); }}>
+        <option value="" selected={!role()}>{tr("Template default")}</option>
+        <For each={roles()}>{(id) => <option value={id} selected={id === role()}>{roleLabel(id) !== id ? roleLabel(id) : id}</option>}</For>
+      </select>
+      {/* The store routes a person's task only by a pipeline its role
+          implements (ops validation.rs route_valid): a chosen role takes one
+          of its own pipelines, and the template's default only with no role. */}
+      <select class="field tk-team-pipeline" data-new-task-pipeline aria-label={tr("Pipeline")} value={pipeline()} disabled={!role()} onChange={(event) => setPipeline(event.currentTarget.value)}>
+        <Show when={!role()}><option value="" selected={!pipeline()}>{tr("Template default")}</option></Show>
+        <For each={pipelines()}>{(choice) => <option value={choice.id} selected={choice.id === pipeline()}>{choice.name || choice.id}</option>}</For>
+      </select>
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>
     <Show when={(refusal() || newCard.error()) && creating()}><div class="tk-create-error" role="alert">{refusal() || newCard.error()}</div></Show>
     <Show when={recovery.notice()?.project === props.project ? recovery.notice() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>

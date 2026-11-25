@@ -1,10 +1,25 @@
 import { Show, onCleanup, onMount } from "solid-js";
 import { Icon } from "../lib/icons";
-import { tr } from "../../i18n";
+import { tr, trc } from "../../i18n";
+import { trText } from "../../text";
 import { teams } from "../../store/teams";
 
-function advanceText(asking: NonNullable<ReturnType<typeof teams.confirmation>>) {
-  return tr("Advance the base of %1 to %2? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged.", asking.call.team_name || asking.call.team, String(asking.call.action.commit));
+type Asking = NonNullable<ReturnType<typeof teams.confirmation>>;
+type Words = { title: string; text: string; action: string };
+
+/** The core's confirmation in the window's language (review of #2558). The
+ * sentence is the core's `message`: the native dialog's own first line for the
+ * same call (client/core teams/action/input.rs `confirmation_text`), rendered
+ * here from the same catalog key, so no sentence is defined twice. The title
+ * and button are the core's catalog sources; "Archive" is the team action's
+ * word. An older core without a message keeps its English text. */
+export function confirmationWords(asking: Asking): Words {
+  const asked = asking.confirmation;
+  return {
+    title: tr(asked.title),
+    text: asked.message ? trText(asked.message) : asked.text,
+    action: asked.name === "teamArchiveConfirm" ? trc("team action", "Archive") : tr(asked.action),
+  };
 }
 
 // The person's confirmation of a destructive team action: the core refused to
@@ -38,10 +53,11 @@ export function TeamConfirmation(props: { name: string; title: string; text: str
 export function TeamConfirmDialog(props: { source?: string } = {}) {
   return (
     <Show when={teams.confirmation()} keyed>
-      {(asking) => (
-        <TeamConfirmation name={asking.confirmation.name} title={asking.call.action.kind === "advance_base" ? tr("Advance base?") : asking.confirmation.title}
-          text={asking.call.action.kind === "advance_base" ? advanceText(asking) : asking.confirmation.text} action={asking.call.action.kind === "advance_base" ? tr("Advance base") : asking.confirmation.action} onConfirm={() => void teams.confirm(props.source)} onCancel={() => teams.cancelConfirmation()} />
-      )}
+      {(asking) => {
+        const words = confirmationWords(asking);
+        return <TeamConfirmation name={asking.confirmation.name} title={words.title} text={words.text} action={words.action}
+          onConfirm={() => void teams.confirm(props.source)} onCancel={() => teams.cancelConfirmation()} />;
+      }}
     </Show>
   );
 }
