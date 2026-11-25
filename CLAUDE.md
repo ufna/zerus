@@ -31,6 +31,8 @@ default; see `docs/agent-teams.md`.
 The repository language is English. Write documentation and other project-facing
 text in English; conversations may use the user's preferred language.
 
+Product lead and coordinator reviews follow the [product lead operating agreement](docs/superpowers/specs/2026-11-25-product-lead.md).
+
 ## Work tracking and memory
 
 Use the `beads` skill in `.agents/skills/beads/SKILL.md` and run `bd prime` at
