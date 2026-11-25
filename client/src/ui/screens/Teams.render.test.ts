@@ -30,6 +30,7 @@ let store: typeof import("../../store/teams").teams;
 let ui: typeof import("../../store/ui");
 let nav: typeof import("../teams/lead-navigation");
 let TeamsScreen: typeof import("./Teams").TeamsScreen;
+let TeamsListPage: typeof import("../teams/TeamRowMenu").TeamsListPage;
 let toSession: typeof import("../../store/catalog").toSession;
 const disposers: (() => void)[] = [];
 const entry = (key: string, kind: string, payload: unknown): TeamsOut => ({ computer: "", key, kind, payload });
@@ -44,10 +45,16 @@ function show(component = TeamsScreen) {
   disposers.push(render(() => createComponent(component, {}), host)); return host;
 }
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text)!;
+// A row opens its team's page (zerus-63rru.198); its lead's session is the row menu's.
+function leadItem(host: HTMLElement, team: TeamSummary) {
+  host.querySelector<HTMLButtonElement>(`[data-team-menu="${team.id}"]`)!.click();
+  return ui.menu()!.items.find((item) => "label" in item && item.label === "Open lead session") as { disabled?: boolean; note?: string; action?: () => void };
+}
 beforeEach(async (context) => {
   vi.resetModules(); f.rows = []; f.pages = []; f.follows = []; f.calls = [];
   ({ teams: store } = await import("../../store/teams")); ui = await import("../../store/ui");
   nav = await import("../teams/lead-navigation"); ({ TeamsScreen } = await import("./Teams"));
+  ({ TeamsListPage } = await import("../teams/TeamRowMenu"));
   ({ toSession } = await import("../../store/catalog")); ui.setPage("teams"); ui.setSelectedKey(undefined); ui.setDetailTab("activity");
   if (context.task.name.includes("Russian")) {
     const preferences = await import("../../store/settings"); await preferences.settingsReady;
@@ -88,11 +95,11 @@ it("browses every real cursor beyond the five-page lookup cache, then returns to
 });
 
 it("opens a seventh-page lead on its Team tab and keeps that binding after restoring the first page", async () => {
-  publish(data.pages[0]); const host = show();
+  publish(data.pages[0]); const host = show(TeamsListPage);
   for (let i = 1; i <= 6; i++) { button(host, "More teams").click(); publish(data.pages[i]); await Promise.resolve(); }
   const team = data.pages[6].teams[0]; f.rows = [session(team)];
   createRoot((dispose) => { disposers.push(dispose); nav.watchTeamNavigation(); });
-  host.querySelector<HTMLButtonElement>("[data-team-row]")!.click();
+  leadItem(host, team).action!();
   expect(ui.page()).toBe("sessions"); expect(ui.selectedKey()).toBe(f.rows[0].key); expect(ui.detailTab()).toBe("team");
   expect(nav.navigationTeamFor(f.rows[0])).toBe(team.id);
   // Leave the actual screen; the component must restore its reader itself.
@@ -118,9 +125,9 @@ it("refuses synthetic lookalikes with another machine or only the native session
   const team = data.running.teams[0]; const row = session(team); publish(data.running);
   // Deliberately corrupted Session inputs: no hand-authored Teams result rows.
   for (const changed of [{ ...row, computer: "another" }, { ...row, launchId: row.sessionId, runId: team.lead_session!.session_id.slice(10) }]) {
-    f.rows = [changed]; const host = show(); host.querySelector<HTMLButtonElement>("[data-team-row]")!.click();
-    expect(host.textContent).toContain("The team's lead session is not on the session list.");
-    expect(ui.selectedKey()).toBeUndefined();
+    f.rows = [changed]; const host = show(TeamsListPage); const item = leadItem(host, team);
+    expect(item).toMatchObject({ disabled: true, note: "The team's lead session is not on the session list." });
+    item.action!(); expect(ui.selectedKey()).toBeUndefined(); expect(ui.page()).toBe("teams");
   }
 });
 
@@ -211,9 +218,9 @@ it("rejects a navigation record after a same-key synthetic Session identity repl
 
 it("reports a product-unbound lead separately from a missing session-list row", () => {
   const view = rebind.between_list as unknown as TeamList;
-  publish(view); const host = show(); host.querySelector<HTMLButtonElement>("[data-team-row]")!.click();
-  expect(host.textContent).toContain("The team's lead has no session yet.");
-  expect(ui.selectedKey()).toBeUndefined();
+  publish(view); const host = show(TeamsListPage); const item = leadItem(host, view.teams[0]);
+  expect(item).toMatchObject({ disabled: true, note: "The team's lead has no session yet." });
+  item.action!(); expect(ui.selectedKey()).toBeUndefined(); expect(ui.page()).toBe("teams");
 });
 
 it("uses Russian team statuses consistently in the list, session strip and Team tab bar", async () => {
@@ -247,13 +254,14 @@ it("offers sibling header and row action hooks without opening the lead from a d
   expect(button(host, "Extra action")).toBeDefined(); button(host, "Extra action").click(); expect(headerClicks).toBe(1); expect(store.newTeamOpen()).toBe(false);
   const drawer = button(host, "Drawer"); expect(drawer.parentElement!.closest("button")).toBeNull();
   drawer.click(); expect(host.textContent).toContain("Team drawer content"); expect(ui.selectedKey()).toBeUndefined();
-  host.querySelector<HTMLButtonElement>("[data-team-row]")!.click(); expect(ui.selectedKey()).toBe(f.rows[0].key);
+  host.querySelector<HTMLButtonElement>("[data-team-row]")!.click();
+  expect(ui.page()).toBe("team"); expect(ui.selectedKey()).toBeUndefined();
 });
 
 it("opens the new product-bound lead from a refreshed list rather than its old session", () => {
   const before = rebind.before_list as unknown as TeamList, after = rebind.after_list as unknown as TeamList;
   const old = session(before.teams[0]), fresh = session(after.teams[0]); f.rows = [old, fresh];
-  publish(after); const host = show(); host.querySelector<HTMLButtonElement>("[data-team-row]")!.click();
+  publish(after); const host = show(TeamsListPage); leadItem(host, after.teams[0]).action!();
   expect(ui.selectedKey()).toBe(fresh.key); expect(nav.navigationTeamFor(old)).toBeUndefined();
 });
 

@@ -46,3 +46,16 @@ it("Escape's explicit title discard settles the saved draft instead of submittin
   taskTitle.edit("Cancelled title", 3, 1); expect(await taskTitle.discard()).toBe(true);
   expect(taskFormCancel).toHaveBeenCalledExactlyOnceWith("title", 20, 1); expect(taskFormSubmit).not.toHaveBeenCalled();
 });
+// zerus-63rru.199 (B4): a new card for a team carries the chosen role and
+// pipeline to the native submit; without a choice the submit is as before.
+it("sends a chosen role and pipeline with a team's new card, and nothing more without them", async () => {
+  const TEAM = "33333333-3333-4333-8333-333333333333";
+  newCard.follow({ project: "example", task: "", mode: "new_card" }); await settle();
+  expect(await createCard("example", false, undefined, TEAM, { role: "developer", pipeline: "reviewed" })).toBe(true);
+  expect(vi.mocked(taskFormSubmit).mock.calls[0][0]).toMatchObject({ kind: "new_card", team: TEAM, team_role: "developer", team_pipeline: "reviewed" });
+  newCard.follow(); await settle(); newCard.follow({ project: "example", task: "", mode: "new_card" }); await settle();
+  expect(await createCard("example", false, undefined, TEAM)).toBe(true);
+  const plain = vi.mocked(taskFormSubmit).mock.calls[1][0];
+  expect(plain.team).toBe(TEAM);
+  expect("team_role" in plain || "team_pipeline" in plain).toBe(false);
+});

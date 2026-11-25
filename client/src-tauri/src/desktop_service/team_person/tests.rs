@@ -34,6 +34,28 @@ fn review(call: &TeamCall) -> wire::Review {
         card_notes: Vec::new(),
     }
 }
+
+#[test]
+fn legacy_card_review_keeps_the_exact_team_and_card_facts() {
+    let call = call();
+    let mut review = review(&call);
+    review.card_parameters.push(("Account".into(), "example".into()));
+    review.card_notes.push("Reviewed note".into());
+    let body = crate::native_text::lines(&legacy_card_prompt(&review).body);
+    for fact in [
+        review.team_name.as_str(),
+        review.intent.plan.team.as_str(),
+        review.card_text.as_str(),
+        "Account: example",
+        "Reviewed note",
+        review.intent.plan.decision.as_str(),
+        review.intent.machine.as_str(),
+    ] {
+        assert!(body.contains(fact));
+    }
+    assert!(!body.contains(&call.team_name));
+}
+
 #[test]
 fn renderer_confirmation_cannot_replace_native_acceptance() {
     let call = call();

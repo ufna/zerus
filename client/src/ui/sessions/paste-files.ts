@@ -14,7 +14,13 @@ export type PasteRoute =
    * the image, then the text. A paste whose own uri-list names a file that is
    * not local never asks: Qt then attaches none of them (zerus-g01ok).
    */
-  | { kind: "native"; ask: boolean; image: File | undefined; text: string };
+  | { kind: "native"; ask: boolean; image: File | undefined; text: string }
+  /**
+   * Linux: WebKitGTK gives a clipboard image no type at all, so its paste
+   * event carries nothing; read the native clipboard's image (Qt's
+   * `QClipboard::image`, clipboard.rs `clipboard_image`).
+   */
+  | { kind: "image" };
 
 /**
  * The local paths of a text/uri-list (RFC 2483), as Qt's `allLocal` rule: null
@@ -45,7 +51,7 @@ export function localFilePaths(uriList: string, windows: boolean): string[] | nu
 }
 
 /** How a paste goes, from its clipboard data. */
-export function pasteRoute(data: DataTransfer, windows: boolean): PasteRoute {
+export function pasteRoute(data: DataTransfer, windows: boolean, linux = false): PasteRoute {
   const uris = data.types.includes("text/uri-list") ? data.getData("text/uri-list") : "";
   const listed = uris ? localFilePaths(uris, windows) : null;
   if (listed) return { kind: "paths", paths: listed };
@@ -53,8 +59,23 @@ export function pasteRoute(data: DataTransfer, windows: boolean): PasteRoute {
   const refused = uris.split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith("#"));
   const files = [...data.items].filter((item) => item.kind === "file").map((item) => item.getAsFile()).filter((file): file is File => !!file);
   if (!files.length) files.push(...data.files);
-  if (!files.length) return { kind: "text" };
+  if (!files.length) return linux && data.types.length === 0 ? { kind: "image" } : { kind: "text" };
   return { kind: "native", ask: !refused, image: files.find((file) => file.type.startsWith("image/")), text: data.getData("text/plain") };
+}
+
+/** What an image paste reads and does; tests pass their own. */
+export interface ClipboardImageDeps {
+  /** The native clipboard's image (clipboard.rs `clipboard_image`), null without one. */
+  read: () => Promise<File | null>;
+  /** The draft the paste was made in is still the composer's, unchanged and free. */
+  current: () => boolean;
+  image: (file: File) => void;
+}
+
+/** The native clipboard's image goes in the draft the paste was made in; nothing once it changed. */
+export async function pasteClipboardImage(deps: ClipboardImageDeps): Promise<void> {
+  const image = await deps.read().catch(() => null);
+  if (image && deps.current()) deps.image(image);
 }
 
 /** The draft a paste was made in: its composer, text epoch, text and selection (zerus-voy7d). */

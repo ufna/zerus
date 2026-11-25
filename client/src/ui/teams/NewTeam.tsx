@@ -424,6 +424,8 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
                   <ul class="nt-list"><For each={pipelineLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
                 </section>
               </div>
+              {/* A team keeps the roles and pipelines it was created with (zerus-63rru.199 B7). */}
+              <p class="dim" data-new-team-fixed>{tr("The roles and pipelines are fixed when the team is created. To change them, edit the template first.")}</p>
               <dl class="nt-caps"><For each={settingLines(chosen())}>{([label, value]) => <><dt>{label}</dt><dd>{value}</dd></>}</For></dl>
               <Show when={Object.keys(delegations()).length}>
                 <fieldset class="nt-permissions" data-permissions>

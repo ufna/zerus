@@ -10,6 +10,25 @@ const NOW: i64 = 1_800_000_000_000;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const ON: Writer = Writer { evidence: true };
 
+#[cfg(unix)]
+thread_local! {
+    static REPLACEMENT_PART: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Model a part mounted from another device after the native stat accepts
+/// its ownership, permissions and link count. The folder stays on its device.
+#[cfg(unix)]
+pub(super) fn simulate_part_device(path: &Path, actual: Option<Stamp>) -> Option<Stamp> {
+    actual.map(|mut stamp| {
+        if REPLACEMENT_PART.with_borrow(|part| part.as_deref() == Some(path)) {
+            stamp.change_device_for_test();
+        }
+        stamp
+    })
+}
+
 struct Folder(PathBuf);
 impl Folder {
     fn new() -> Self {
@@ -67,6 +86,56 @@ fn the_first_change_records_the_exact_index_it_replaces() {
     assert_eq!(folder.original(), Some(before));
     // The evidence folder is one of Zerus's own names, never an index entry.
     assert!(!String::from_utf8(folder.index()).unwrap().contains(DIR));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_same_stamp_part_on_another_device_refuses_live_report_and_download() {
+    use crate::migration::{download_report, SourceError};
+
+    let folder = Folder::new();
+    folder.plain("old.txt", b"from qt", 90_000);
+    let download = reserve(&folder.0).unwrap();
+    fs::write(download.path(), b"first maintained download").unwrap();
+    ON.complete(download, "first.txt", None, NOW).unwrap();
+    let held = download_report::retained(&folder.0).unwrap().unwrap();
+    assert!(held.reference().is_ok());
+    let live_index = folder.index();
+
+    let (canonical, object, birth) = super::folder(&folder.0).unwrap();
+    let original = slot(&canonical, &object, birth.as_deref()).join(part(0));
+    let pinned = disk::stat(&original).unwrap().unwrap();
+    let mtime = fs::metadata(&original).unwrap().modified().unwrap();
+    let mut bytes = fs::read(&original).unwrap();
+    bytes[0] ^= 1;
+    fs::write(&original, bytes).unwrap();
+    fs::File::open(&original)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
+    assert_eq!(disk::stat(&original).unwrap(), Some(pinned));
+    // With all metadata equal, the full reader still catches the changed bytes.
+    assert_eq!(evidence(&folder.0), Evidence::Unreadable);
+
+    let download = reserve(&folder.0).unwrap();
+    fs::write(download.path(), b"second maintained download").unwrap();
+    REPLACEMENT_PART.with(|part| {
+        part.replace(Some(original));
+        let reference = held.reference();
+        let evidence_status = status(&folder.0);
+        let completion = ON.complete(download, "refused.txt", None, NOW);
+        part.replace(None);
+        assert_eq!(
+            (reference, evidence_status, completion.err().as_deref()),
+            (
+                Err(SourceError::SourceChanged),
+                Evidence::Unreadable,
+                Some(NOT_RECORDED)
+            )
+        );
+    });
+    assert_eq!(folder.index(), live_index);
+    assert!(!folder.0.join("refused.txt").exists());
 }
 
 #[test]

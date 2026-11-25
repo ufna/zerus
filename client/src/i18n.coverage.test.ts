@@ -48,6 +48,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/teams/team-model.ts": "the core's team and member states",
   "./ui/teams/TeamTab.tsx": "the core's node states, roles and deciders, and its own label table",
   "./ui/teams/NewTeam.tsx": "the catalog's role, pipeline, stage and setting names",
+  "./ui/teams/TeamConfirmDialog.tsx": "the core confirmation's title and button, marked with source! in client/core teams/action/input.rs",
   "./ui/sessions/Activity.tsx": "the transcript voice state table, inbox-actions Remove texts and send-error native refusal",
   "./ui/sessions/shortcutHelp.ts": "the shortcut registry's command titles and its own group table",
   "./ui/screens/settings/Keyboard.tsx": "the shortcut registry's command titles and groups",

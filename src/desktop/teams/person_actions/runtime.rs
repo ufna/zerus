@@ -46,13 +46,20 @@ pub(in crate::desktop) struct Runtime {
 #[serde(tag = "op", deny_unknown_fields)]
 enum Query {
     #[serde(rename = "team_person_action_prepare")]
-    Prepare { scope: Scope, plan: wire::Reference },
+    Prepare {
+        scope: Scope,
+        plan: wire::Reference,
+        #[serde(default)]
+        with_labels: bool,
+    },
     #[serde(rename = "team_person_action_result")]
     Result { intent: wire::Intent },
     #[serde(rename = "team_person_task_prepare")]
     TaskPrepare {
         scope: Scope,
         draft: wire::TaskDraft,
+        #[serde(default)]
+        with_labels: bool,
     },
 }
 
@@ -88,10 +95,10 @@ impl Runtime {
     pub fn query(&mut self, value: &Value, queue: Arc<Queue>, seq: u64) -> Result<()> {
         let query: Query = serde_json::from_value(value.clone()).map_err(|_| required())?;
         let plan = match &query {
-            Query::Prepare { scope, plan } if scope == &self.scope => {
+            Query::Prepare { scope, plan, .. } if scope == &self.scope => {
                 Some(self.plans.get(plan).map_err(store::storage)?)
             }
-            Query::TaskPrepare { scope, draft } if scope == &self.scope && draft.valid() => None,
+            Query::TaskPrepare { scope, draft, .. } if scope == &self.scope && draft.valid() => None,
             Query::Result { intent }
                 if intent.valid() && intent.scope.configuration == self.scope.configuration =>
             {
@@ -103,9 +110,9 @@ impl Runtime {
         let scope = self.scope.clone();
         self.start(queue,seq, move || {
             let result = match query {
-                Query::Prepare { .. } => review(&config,&scope,plan.expect("checked native plan")),
+                Query::Prepare {with_labels,..} => review(&config,&scope,plan.expect("checked native plan"),with_labels),
                 Query::Result { intent } => lookup(&config,&scope,&intent),
-                Query::TaskPrepare {draft,..} => super::intake::review(&config,&scope,draft),
+                Query::TaskPrepare {draft,with_labels,..} => super::intake::review(&config,&scope,draft,with_labels),
             };
             result.unwrap_or_else(|_| json!({"ok":false,"code":"team_person_action_evidence_unavailable","message":"The exact native team action evidence is unavailable. Nothing was replayed."}))
         })
@@ -222,7 +229,7 @@ impl Drop for Runtime {
     }
 }
 
-fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value> {
+fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>, with_labels: bool) -> Result<Value> {
     let prepared = Prepared::resolve(config, plan.clone())?;
     let store = Store::person_evidence(&config.state)?;
     let phase_resources = ops::prepare_phase_controls(&store, &prepared.request);
@@ -237,15 +244,15 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     } else {
         (None, prepared.empty_facts()?)
     };
-    let team_name = if let Some(team) = team {
-        ops::authority(&prepared::actor(), &prepared.request.operation, &team)?;
+    let team_name = if let Some(team) = &team {
+        ops::authority(&prepared::actor(), &prepared.request.operation, team)?;
         if team.revision != plan.expected_revision {
             return Err(Problem::new(
                 code::STALE_REVISION,
                 "Read the current team before confirming its action.",
             ));
         }
-        team.name
+        team.name.clone()
     } else {
         match &prepared.request.operation {
             ops::Operation::Create { name, .. } | ops::Operation::StartPlanning { name, .. }
@@ -268,8 +275,13 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     let wire::Action::Team { change } = &plan.action else {
         return Err(required());
     };
-    let mut details = review_details(change, true)?;
-    details.extend(kept_details(&prepared.kept, true)?);
+    let details = if with_labels {
+        Vec::new()
+    } else {
+        let mut details = review_details(change, true)?;
+        kept_details(&mut details, prepared.kept.as_ref(), true)?;
+        details
+    };
     let mut review = wire::Review {
         intent: wire::Intent {
             scope: scope.clone(),
@@ -287,30 +299,54 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     // Pretty whitespace can expand a valid dependency-rich draft beyond the
     // fixed review envelope. Compact only its display encoding, preserving
     // the complete payload and all the existing byte/part/identity bounds.
-    if !review.valid() {
+    if !with_labels && !review.valid() {
         review.details = review_details(change, false)?;
-        review.details.extend(kept_details(&prepared.kept, false)?);
+        kept_details(&mut review.details, prepared.kept.as_ref(), false)?;
     }
     if !review.valid() {
         return Err(required());
     }
-    Ok(json!({"ok":true,"review":review}))
+    if !with_labels {
+        return Ok(json!({"ok":true,"review":review}));
+    }
+    let mut labels = super::super::confirmation_labels::action(
+        tx.as_deref(),
+        config,
+        team.as_ref(),
+        &prepared.request,
+        &review.intent.facts,
+        &review.intent.machine,
+    )?;
+    labels.kept_route = prepared.kept;
+    Ok(json!({"ok":true,"review":review,"labels":labels}))
 }
 
 /// What a window Route keeps from the stored task (zerus-3u5yu): the bound
 /// dependencies and write paths, and the assignee it keeps or clears, in the
 /// same bounded parts as the request's own fields. Text is shown as text.
-fn kept_details(kept: &[(&str, Value)], pretty: bool) -> Result<Vec<(String, String)>> {
-    let mut details = Vec::new();
-    for (key, value) in kept {
-        let text = match value {
-            Value::String(text) => text.clone(),
-            other if pretty => serde_json::to_string_pretty(other).map_err(store::storage)?,
-            other => serde_json::to_string(other).map_err(store::storage)?,
-        };
-        push_parts(&mut details, key, &text);
+fn kept_details(
+    details: &mut Vec<(String, String)>,
+    kept: Option<&zerus_client_core::desktop::team_confirmation::KeptRoute>,
+    pretty: bool,
+) -> Result<()> {
+    let Some(kept) = kept else { return Ok(()) };
+    for (key, value) in [("deps", json!(kept.deps)), ("writes", json!(kept.writes))] {
+        let text = if pretty {
+            serde_json::to_string_pretty(&value)
+        } else {
+            serde_json::to_string(&value)
+        }.map_err(store::storage)?;
+        push_parts(details, key, &text);
     }
-    Ok(details)
+    if let Some(assignment) = &kept.assignment {
+        let text = if assignment.cleared {
+            format!("{} → none", assignment.member)
+        } else {
+            assignment.member.clone()
+        };
+        push_parts(details, "assignee", &text);
+    }
+    Ok(())
 }
 
 /// One field's text in parts of at most 8 KiB, each named `key (n)`.

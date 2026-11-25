@@ -11,7 +11,13 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zerus_client_core::{desktop::team_person_actions as wire, teams::action::TeamAction};
+use zerus_client_core::{
+    desktop::{
+        team_confirmation::{KeptAssignment, KeptRoute},
+        team_person_actions as wire,
+    },
+    teams::action::TeamAction,
+};
 use zerus_team_plan::{model::Team, problem::code, Problem};
 
 type Result<T> = std::result::Result<T, Problem>;
@@ -23,7 +29,7 @@ pub(super) struct Prepared {
     /// What a window Route keeps from the stored task, for the native review
     /// (zerus-3u5yu): the dependencies and write paths it binds, and the
     /// assignee it keeps (`m1`) or clears (`m1 → none`). Empty otherwise.
-    pub kept: Vec<(&'static str, Value)>,
+    pub kept: Option<KeptRoute>,
 }
 
 pub(super) fn actor() -> ops::Actor {
@@ -43,9 +49,17 @@ impl Prepared {
         }
         let wire::Action::Team { change } = &plan.action else {
             let (project, uuid, role, pipeline) = match &plan.action {
-                wire::Action::NewTask { project, .. } => {
-                    (project, plan.request_id.clone(), None, None)
-                }
+                wire::Action::NewTask {
+                    project,
+                    role,
+                    pipeline,
+                    ..
+                } => (
+                    project,
+                    plan.request_id.clone(),
+                    role.clone(),
+                    pipeline.clone(),
+                ),
                 wire::Action::Intake {
                     project,
                     task,
@@ -73,7 +87,7 @@ impl Prepared {
             return Ok(Self {
                 plan,
                 request,
-                kept: Vec::new(),
+                kept: None,
             });
         };
         let call = plan.call().ok_or_else(required)?;
@@ -91,7 +105,7 @@ impl Prepared {
             _ => change.op().replace('-', "_"),
         };
         fields.insert("op".into(), json!(variant));
-        let mut kept = Vec::new();
+        let mut kept = None;
         if let TeamAction::Route {
             node,
             role,
@@ -128,16 +142,14 @@ impl Prepared {
             if let Some(id) = &bound {
                 fields.insert("assignee".into(), json!(id));
             }
-            kept.push(("deps", json!(task.deps)));
-            kept.push(("writes", json!(task.writes)));
-            if let Some(id) = &task.assignee {
-                let shown = if bound.is_some() {
-                    id.clone()
-                } else {
-                    format!("{id} → none")
-                };
-                kept.push(("assignee", Value::String(shown)));
-            }
+            kept = Some(KeptRoute {
+                deps: task.deps,
+                writes: task.writes,
+                assignment: task.assignee.map(|member| KeptAssignment {
+                    member,
+                    cleared: bound.is_none(),
+                }),
+            });
         }
         if let TeamAction::Create {
             template,

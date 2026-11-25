@@ -1201,7 +1201,11 @@ class NativeHarness(unittest.TestCase):
             # The next real tool hook sees the new Cordis service and spawns
             # through it. The resident bridge stays active during this swap.
             updated = self.spawn_probe(subject, 'once')
-            self.assertEqual(self.rpc('ping')['generation'], generation)
+            # The tool records its own service before a ping or cleanup can
+            # repair it. A different installation ID alone would also hold
+            # for a completely unwrapped replacement.
+            self.assertEqual(updated.get('wrapperMarked'), [True, True],
+                             'The post-swap tool did not see both HGS wrappers')
         finally:
             result = self.unload_spawn_bridge(subject, 'cleanup-swap', 'spawn-swap-cleanup.json', generation)
 

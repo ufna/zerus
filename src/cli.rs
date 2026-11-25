@@ -80,6 +80,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop Teams Person ABI: desktop-team-person-v1
        Desktop Teams Person actions ABI: desktop-team-person-actions-v2
        Desktop Teams Person placement fields: desktop-team-person-placement-v1
+       Desktop Teams Person new task route fields: desktop-team-person-new-task-route-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
        Desktop deferred session resume ABI: desktop-deferred-session-resume-v1
@@ -554,6 +555,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::team_person::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER,
+        zerus_client_core::desktop::team_person_actions::NEW_TASK_ROUTE_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
@@ -2558,6 +2560,21 @@ fn local_json_archives_with(
     archives: bool,
     ordinary: Option<&state::ListingQuery>,
 ) -> Result<Value> {
+    state::retry_ordinary_listing(ordinary, |until| {
+        local_json_archives_attempt(config, archives, ordinary, until)
+    })
+    .map_err(|error| match error.downcast::<Error>() {
+        Ok(error) => error,
+        Err(error) if ordinary.is_some() => Error::new(1, state::listing_public_error(&error)),
+        Err(error) => Error::new(1, error.to_string()),
+    })
+}
+fn local_json_archives_attempt(
+    config: &Config,
+    archives: bool,
+    ordinary: Option<&state::ListingQuery>,
+    until: Instant,
+) -> anyhow::Result<Value> {
     if !platform::local_sessions() {
         // A control console: no tmux, session state or local projects. Absent
         // `local_sessions` means true, so Unix listings stay as they were.
@@ -2597,10 +2614,9 @@ fn local_json_archives_with(
     // A session renamed before merge_listing reads the panes keeps its ID.
     let ids = state::listed_ids(&listing);
     let mut merged = match ordinary {
-        Some(query) => state::merge_ordinary_listing(raw, &ids, archives, query),
-        None => state::merge_listing_archives(raw, &ids, archives),
-    }
-    .map_err(|e| Error::new(1, e))?;
+        Some(query) => state::merge_ordinary_listing(raw, &ids, archives, query, until),
+        None => state::merge_listing_archives(raw, &ids, archives).map_err(anyhow::Error::msg),
+    }?;
     merged["archive_paging"] = json!(true);
     merged["archive_revision"] = json!(state::archive_catalog::revision().map_err(|e|Error::new(1,e))?);
     let ended = launches.ended(merged["sessions"].as_array().map_or(&[], Vec::as_slice));
@@ -4542,6 +4558,15 @@ mod tests {
         assert!(USAGE.lines().any(|line| line.trim() == marker));
     }
 
+    /// zerus-63rru.199 (B4): the service says it reads a new task's role and
+    /// pipeline, so the window can tell an older one apart before staging.
+    #[test]
+    fn usage_advertises_the_new_task_route_marker() {
+        let marker = zerus_client_core::desktop::team_person_actions::NEW_TASK_ROUTE_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == marker));
+        assert!(!usage_text(false).lines().any(|line| line.trim() == marker));
+    }
+
     #[test]
     fn usage_names_tmux_only_where_it_hosts_the_sessions() {
         // Unix keeps tmux's text byte for byte, capability markers included.
@@ -4655,6 +4680,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop Teams Person placement fields: desktop-team-person-placement-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams Person new task route fields: desktop-team-person-new-task-route-v1\n",
                     ""
                 )
                 .replace(

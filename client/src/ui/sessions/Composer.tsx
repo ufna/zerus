@@ -13,8 +13,8 @@ import { contentScale, selected } from "../../store/ui";
 import { computerFresh, computerOffline } from "../../store/catalog";
 import { detailsFor, followedFor } from "../../store/actions";
 import { onCommand, platform } from "../../store/shortcuts";
-import { clipboardFiles } from "../../bridge";
-import { pasteNative, pasteRoute, samePaste, type PasteBinding } from "./paste-files";
+import { clipboardFiles, clipboardImage } from "../../bridge";
+import { pasteClipboardImage, pasteNative, pasteRoute, samePaste, type PasteBinding } from "./paste-files";
 import { actionEntries } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
 import { markReadChip, runMarkRead } from "./mark-entries";
@@ -215,11 +215,12 @@ export function Composer() {
    * are attached, otherwise an image is pasted, otherwise the text. A paste
    * without files stays the webview's own. Files without their paths ask the
    * native clipboard (bounded, off the UI thread); its answer applies only to
-   * the draft the paste was made in.
+   * the draft the paste was made in. On Linux an empty event asks the native
+   * clipboard for its image the same way: WebKitGTK passes no image.
    */
   const onPaste = (e: ClipboardEvent) => {
     if (!e.clipboardData) return;
-    const route = pasteRoute(e.clipboardData, platform === "windows");
+    const route = pasteRoute(e.clipboardData, platform === "windows", platform === "linux");
     if (route.kind === "text") return;
     e.preventDefault();
     if (route.kind === "paths") { void composer.attachPasted(route.paths); return; }
@@ -227,9 +228,14 @@ export function Composer() {
     if (!view) return;
     const at = composer.selection();
     const bound: PasteBinding = { handle: view.handle, key: view.key, epoch: view.text_epoch, text: composer.text(), start: at.start, end: at.end };
+    const current = () => samePaste(composer.view(), bound, composer.locked(), composer.text(), composer.selection());
+    if (route.kind === "image") {
+      void pasteClipboardImage({ read: clipboardImage, current, image: (file) => { void composer.pasteImage(file); } });
+      return;
+    }
     void pasteNative(route, {
       native: clipboardFiles,
-      current: () => samePaste(composer.view(), bound, composer.locked(), composer.text(), composer.selection()),
+      current,
       attach: (paths) => { void composer.attachPasted(paths); },
       image: (file) => { void composer.pasteImage(file); },
       text: (text) => { if (document.activeElement === editor) document.execCommand("insertText", false, text); },

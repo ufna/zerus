@@ -51,7 +51,10 @@ Turning it off while a team may still be live asks "Turn Agent Teams off?":
 "Teams on this computer stop being served. Nothing is deleted." With the
 preview off, `hgs team` answers `teams_inactive`, the entry points disappear,
 and a team's tasks on this computer behave as ordinary tasks. A task whose
-team lives on another computer still refuses agents.
+team lives on another computer still refuses agents. The Teams page, Waiting
+for you and the catalog then say that Teams are off, with **Turn on in
+Settings**, which opens Settings > Agent Teams. A computer where Teams are
+unavailable gets no such link.
 
 ## Starting a team
 
@@ -108,7 +111,9 @@ shows everything the template brings, for you to confirm:
 
 - **Roster**: each role and how many members take it.
 - **Pipelines**: each pipeline the team uses, its stages, and who accepts its
-  work: "the lead accepts", "you accept" or "it accepts by itself".
+  work: "the lead accepts", "you accept" or "it accepts by itself". The roles
+  and pipelines are fixed when the team is created; to change them, edit the
+  template first.
 - **Integration**, **Queue**, **Routing** and **Land stage**.
 - **Permissions**: "What the lead and the service may do without you." Each is
   a checkbox that starts as the template sets it; the built-in templates turn
@@ -248,7 +253,9 @@ either goes through or ends in one of three ways:
 The lead's session has a **Team** tab. Its bar shows the team's status, its
 active members, open inbox items and open cards, and the team's actions:
 **Pause** or **Resume**, **Stop**, and **Archive** after a stop. Destructive
-actions ask for confirmation first.
+actions ask for confirmation first, and the one-way ones say so: a stopped
+team cannot be started again (**Pause** stops it for a while), and neither
+Archive nor removing a member can be undone.
 
 The bar also opens **Feed**, **Inbox**, **Reports**, **Cards** and **Lead chat**.
 The first four read one page at a time, at most 200 rows. **Next page** keeps
@@ -262,16 +269,25 @@ same way. Reports are the
 report items on the selected inbox page, not an exhaustive report search.
 Only one page is retained, and closing the drawer drops it.
 
-Reports offer **Accept** or **Reject** (return with a reason), open questions
-offer **Answer**, and cards offer the decisions their writer recorded. A
+A report offers **Open task**: Accept and Return are made in the task's
+details, beside its report and verdicts and with the board's own checks. Open
+questions offer **Answer** while the team is running or paused. Every other
+open inbox item says what closes it; no item is dismissed by hand. For example,
+an item about a task closes with the task's next report, reopen or
+settlement, and a sent-back phase's item stays as a record. An ended team
+closes no item. Cards offer the decisions their writer recorded. A
 changed team revision or an unreadable page blocks these actions until a
 fresh read. An uncertain action remains in the existing Check/Dismiss flow;
 opening or refreshing a drawer never repeats it.
 
 **Lead chat** uses the selected lead's ordinary composer and its saved draft,
 shared with Activity. The bound computer and session must match, and its run
-and conversation must be available. Sends keep the normal guarded delivery
-and durable request identity; an uncertain delivery is never replayed.
+and conversation must be available. When they are not, Lead chat names the
+cause and its fix: open the lead's session, close an open subagent, start the
+lead's session, or wait for its conversation to load. Sends keep the normal
+guarded delivery and durable request identity; an uncertain delivery is never
+replayed. On the standalone team page, Lead chat opens the lead’s session when
+it is listed and explains why it is unavailable otherwise.
 
 **Members** lists each member with its role, what it works on ("Working on
 #%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. The
@@ -280,7 +296,13 @@ menu open the member's own session, found by the same computer and launch
 binding the lead's Team tab uses; when that session is not on the session list
 the menu says so and nothing opens. A
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
-cannot be removed. Removing a member puts its open work back to the lead.
+cannot be removed. Removing a member puts its open work back to the lead and
+cannot be undone. A member that was never started has no session to resume:
+its card says that Zerus starts it when there is room. **Launch again…** opens
+the team's cards at that member's own start card, reading at most four pages,
+and focuses its **Retry**, which starts it again. When the card offers no Retry,
+lies beyond the pages read, or does not exist, one sentence says so. Launch
+again itself starts no agent.
 
 A member whose terminal holds input, such as an open question, an unsent
 draft or a dialog waiting for the person, takes no task: it is a fact about
@@ -324,7 +346,10 @@ for another active member of the same role and a reason; a stage's Reassign
 leaves out the members who implemented any round of its task. **Route**
 selects a role and one of its pipelines for a waiting or pending queue task.
 Routing keeps the dependencies and write paths, and the assignment while the
-role stays the same and the assigned member can still take it. Changing the
+role stays the same and the assigned member can still take it. **Assign to**
+and **Write paths** show the task's current values; changing either sends the
+whole placement, with the task's dependencies, instead. A task whose
+dependencies or write paths could not all be read keeps them, and says so. Changing the
 role, or a removed assigned member, clears the assignment. Both actions use
 the window's native confirmation, which lists what Route keeps and clears;
 the selected desktop service must be updated for Route if it is older. An
@@ -332,13 +357,23 @@ open form stays open while the team changes and keeps its choices, but it
 sends only the team revision you reviewed. When another change arrives, the
 form says so and waits until you check the choices and press **Review
 again**. The service refuses a request whose revision is no longer current.
-A stage's role follows its pipeline. Routing an approved task requires a
-logged plan edit.
+A stage's role follows its pipeline. To change an approved phase's tasks,
+send the phase back with corrections once all its tasks are decided; **Open
+phase** opens it.
 
 **Add task** opens the New task form in the Tasks side panel with this team
 preselected. If a previous draft is still saving, the team choice waits for
 the reopened form's active editor. A reserved card keeps its original
-destination. Stopped and archived teams offer no Add task.
+destination, role and pipeline. Stopped and archived teams offer no Add task,
+and the lead’s tab explains when the Tasks panel shows a different project.
+From the standalone page, Add task opens the team’s project if it has a
+session on the list. The form offers the team’s **Role** and **Pipeline** from
+either workspace. **Template default** leaves the choice to the team’s template.
+The native confirmation names any selected role and pipeline. An older desktop
+service is asked to update before a role or pipeline is sent.
+
+A task's **Dependencies** can be added as soft: a soft dependency orders the
+work without blocking its start.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
@@ -370,8 +405,9 @@ desktop service together.
 
 ## Preparing phase drafts
 
-Open **Layers** in the Team tab to read planned phases. **New phase draft**
-creates a proposed phase; **Edit draft** changes its title, barrier and tasks.
+Open **Layers** in the Team tab to read planned phases, one page at a time:
+**More phases** reads the next page and **First page** returns to the first.
+**New phase draft** creates a proposed phase; **Edit draft** changes its title, barrier and tasks.
 Each task has a description, acceptance criteria, pipeline, optional assignee,
 dependencies, write paths and estimate. Layers uses the shared dependency
 projection; opening a task shows its original description and criteria.
@@ -463,7 +499,8 @@ readable session and worktree through the usual launch service. Existing
 members keep their sessions and work.
 
 **Rename team** and **Edit goal** change the team's name and goal. Clearing the
-goal is allowed. A rename keeps existing session, folder and branch names.
+goal is allowed, and a team without a goal can be given one. When the window
+cannot read the complete goal, Edit goal is greyed and says why. A rename keeps existing session, folder and branch names.
 All four edits are yours alone and refuse a stale team revision; reopening the
 form after a refresh shows the current values.
 
@@ -506,13 +543,14 @@ opens the task on the team's board.
 
 A card offers the decisions it accepts. **Integration** and **Work
 acceptance** take **Approve** or **Reject**. **Acknowledge** closes a card and
-changes nothing else.
+changes nothing else. A phase card offers **Open phase** first; its **Hide
+card** closes the reminder only, and the phase keeps waiting in Layers.
 
 | Card | When it appears |
 |---|---|
 | **Integration** | The lead accepted a result, and merging it waits for you because Merge accepted work is off. **Approve**: the service merges it and finishes the task. **Reject**: no new merge is authorized; the task stays in review. A merge already recorded is not undone and opens the card below |
-| **Rejected result is merged** | A result reached the integration branch before its Integration card was rejected. The card and the lead's inbox name the task, commit and branch. Rejection did not undo that merge; only a revert on the integration branch removes it |
-| **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
+| **Rejected result is merged** | A result reached the integration branch before its Integration card was rejected. The card and the lead's inbox name the task, commit and branch. Rejection did not undo that merge, and Zerus cannot revert it: ask the lead, which has the same item, or revert the merge on the integration branch yourself, then acknowledge the card |
+| **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Open task** comes first: read the report and verdicts beside the task. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
 | **Member not started** | A member could not be started; the card says why and whether Zerus tries again |
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
 | **No room for members** | New members wait until there is room for another session or account |
@@ -698,7 +736,8 @@ to waiting for you with an Integration card.
   this closed-task cleanup.
 - A member whose session starts after the team stopped, or after you removed
   it, is not taken into the team: a **Late session** card names it.
-- **Archive** follows a stop and closes the team's open cards.
+- **Archive** follows a stop and closes the team's open cards. It cannot be
+  undone. The list of teams hides archived teams until **Show archived**.
 
 Zerus never stops a team's agents by itself. The sessions stay, and you end
 them as any other session. Quitting a member's agent by hand is not a stop of
@@ -904,7 +943,8 @@ merges using the base actually assigned to the reported task generation.
 ### Tests and Builds provider metadata
 
 Team settings can inspect the native-selected project folder and save a
-person-reviewed provider selection. Opening the section and **Check** only read
+person-reviewed provider selection. The team's home computer comes from the
+team list, or else from the team's own status. Opening the section and **Check** only read
 bounded metadata; neither saves a choice nor starts a program. Tests and builds
 remain ordinary member-agent tasks. Direct runners, executable templates,
 validation requests, report import and mandatory gates are unsupported.
