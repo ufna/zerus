@@ -177,31 +177,6 @@ echo "Teams fixture: $(basename -- "$0") is refused in this private root" >&2
 exit 97
 '''
 
-# The hosted Kimi workflow only: `hgs account inspect` signs a Kimi account in only
-# through api.kimi.com. With an expiring token hgs runs `node` with its bundled module
-# src/accounts/kimi-read.mjs, the producer of this value; this stand-in answers that
-# one call. Its value is built by kimi_inspection() from the producer's own starting
-# object, changing named keys only to what the producer writes for a signed-in profile
-# with no usage windows; a guard test compares both with kimi-read.mjs. Account choice
-# for Kimi is therefore not evidence here; everything after it is.
-KIMI_PRODUCER_BASE = {'identity': {}, 'windows': [], 'source': 'Kimi Code', 'status': 'unavailable'}
-
-
-def kimi_inspection():
-    value = json.loads(json.dumps(KIMI_PRODUCER_BASE))
-    value['identity'] = {'name': 'Fixture', 'email': '', 'plan': '', 'auth_method': 'Kimi Code'}
-    return value
-
-
-KIMI_NODE = r'''#!/bin/bash
-printf '%s\tnode %s\n' "$(date +%s.%N)" "${1:-}" >> @LOGS@/kimi-inspection-stand-in.log
-if [[ "${1:-}" == "--input-type=module" && "${2:-}" == "-e" && -n "${KIMI_CODE_HOME:-}" ]]; then
-  printf '%s\n' @VALUE@
-  exit 0
-fi
-exit 97
-'''
-
 KIMI_FD = r'''#!/bin/bash
 printf '%s\tfd %s\n' "$(date +%s.%N)" "$*" >> @LOGS@/fd-stand-in.log
 if [[ $# -eq 1 && "${1:-}" == "--version" ]]; then
@@ -311,6 +286,10 @@ class Model(api.Handler):
 
     def do_GET(self):
         route = api.urlsplit(self.path).path.rstrip('/')
+        if route in ('/kimi-inspection/me', '/kimi-inspection/usages'):
+            if self.headers.get('Authorization') != 'Bearer fixture-token':
+                return self.reply(401, {'error': 'expected the synthetic inspection grant'})
+            return self.reply(200, {'nickname': 'Fixture'} if route.endswith('/me') else {'usages': {}})
         if '/kimi-platform' in route:
             return self.reply(404, {'error': 'no platform in the fixture'})
         if route == '/teams-codex-models':
@@ -627,10 +606,6 @@ class TeamFixture:
                             .replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
             path.chmod(0o755)
         if self.agent == 'kimi':
-            path = r / 'home/.local/bin/node'
-            path.write_text(KIMI_NODE.replace('@LOGS@', shlex.quote(str(self.evidence.folder)))
-                            .replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
-            path.chmod(0o755)
             fd = r / 'home/.local/bin/fd'
             fd.write_text(KIMI_FD.replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
             fd.chmod(0o755)
@@ -687,10 +662,9 @@ class TeamFixture:
             if shutil.which(name, path=env['PATH']) != f'{r}/bin/{name}':
                 failures.append('resolves ' + name)
         if self.agent == 'kimi':
-            for name in ('node', 'fd'):
-                expected = Path(env['HOME']) / '.local/bin' / name
-                if shutil.which(name, path=env['PATH']) != str(expected):
-                    failures.append('resolves ' + name)
+            expected = Path(env['HOME']) / '.local/bin/fd'
+            if shutil.which('fd', path=env['PATH']) != str(expected):
+                failures.append('resolves fd')
         sock = Path(env['HGS_STATE_DIR']) / 'desktop/service.sock'
         if len(str(sock).encode()) >= 104:
             failures.append('service socket path length')
@@ -836,8 +810,10 @@ class TeamFixture:
                     '[loop_control]\nmax_attempts_per_step = 1\n')
                 (kimi_home / 'tui.toml').write_text('[upgrade]\nauto_install = false\n')
             (home / 'credentials').mkdir(exist_ok=True)
-            (home / 'credentials/kimi-code.json').write_text(json.dumps(dict(access_token='fixture-token', expires_at=1)))
+            (home / 'credentials/kimi-code.json').write_text(
+                json.dumps(dict(access_token='fixture-token', expires_at=int(time.time()) + 24 * 60 * 60)))
             self.env['KIMI_CODE_BASE_URL'] = self.base + '/kimi-platform'
+            self.env['HGS_TEST_KIMI_API_BASE'] = self.base + '/kimi-inspection'
         self.account_home = home
         # Accounts a launch may choose: those whose home holds the fixture's key.
         self.fixture_accounts = {self.account} | ({'native-claude'} if self.agent == 'claude' else set())

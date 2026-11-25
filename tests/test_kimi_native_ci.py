@@ -32,6 +32,7 @@ def current_metadata(version):
     """Synthetic agreeing current pointers for independent artifact controls."""
     return [(version.encode(), {}),
             (json.dumps(dict(name='@moonshot-ai/kimi-code', version=version)).encode(), {}),
+            (json.dumps([dict(ref='refs/tags/@moonshot-ai/kimi-code@' + version)]).encode(), {}),
             (json.dumps(dict(tag_name='@moonshot-ai/kimi-code@' + version, draft=False, prerelease=False,
                              html_url='https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai/kimi-code%40' + version)).encode(), {})]
 
@@ -80,7 +81,10 @@ class KimiNativeCI(unittest.TestCase):
         self.assertEqual(observed, raw)
         self.assertEqual(get.call_args_list, [mock.call('https://code.kimi.com/kimi-code/latest', 64),
             mock.call('https://registry.npmjs.org/@moonshot-ai/kimi-code/latest', 65536, policy='no-redirect'),
-            mock.call('https://api.github.com/repos/MoonshotAI/kimi-code/releases/latest', 262144, policy='no-redirect'),
+            mock.call('https://api.github.com/repos/MoonshotAI/kimi-code/git/matching-refs/tags/%40moonshot-ai%2Fkimi-code%40',
+                      ci.discovery.MAX_METADATA, policy='no-redirect', deadline=mock.ANY),
+            mock.call('https://api.github.com/repos/MoonshotAI/kimi-code/releases/tags/%40moonshot-ai%2Fkimi-code%402.3.1',
+                      262144, policy='no-redirect', deadline=mock.ANY),
             mock.call('https://code.kimi.com/kimi-code/binaries/2.3.1/manifest.json', 65536),
             mock.call('https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64', ci.IMAGE_LIMIT, method='HEAD')])
         for body in (b'', b'latest', b'2.3.1-beta', b'2.3.1/../2.2.0', b'2.3.1\n2.2.0'):
@@ -93,7 +97,7 @@ class KimiNativeCI(unittest.TestCase):
             with mock.patch.object(ci, 'metadata', side_effect=current_metadata('2.3.1') + [(changed, {})]) as get:
                 with self.assertRaises(ValueError):
                     ci.resolve_latest('linux-x64')
-                self.assertEqual(get.call_count, 4)
+                self.assertEqual(get.call_count, 5)
 
     def test_latest_metadata_refuses_bad_lengths_encoding_and_redirects(self):
         for body, declared in ((b'2.3.1', 5), (b'2.3.1', 4), (b'2.3', 5)):
@@ -150,7 +154,7 @@ class KimiNativeCI(unittest.TestCase):
             with mock.patch.object(ci, 'metadata', side_effect=current_metadata('2.3.1') + [(raw, {})]) as get:
                 with self.assertRaises(ValueError):
                     ci.resolve_latest('linux-x64')
-                self.assertEqual(get.call_count, 4)
+                self.assertEqual(get.call_count, 5)
 
     def test_one_release_is_staged_nonexecutable_before_its_record_is_admitted(self):
         root = self.root(); images, evidence = root / 'images', root / 'evidence'

@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from urllib.parse import quote
 from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -13,29 +14,43 @@ DATA=json.loads((FIXTURE/'current.json').read_text())
 spec=importlib.util.spec_from_file_location('kimi_current',ROOT/'scripts/ci/kimi-native.py')
 ci=importlib.util.module_from_spec(spec);spec.loader.exec_module(ci)
 
+GITHUB_REFS='https://api.github.com/repos/MoonshotAI/kimi-code/git/matching-refs/tags/%40moonshot-ai%2Fkimi-code%40'
+GITHUB_BY_TAG='https://api.github.com/repos/MoonshotAI/kimi-code/releases/tags/'
+
 
 class KimiCurrentRelease(unittest.TestCase):
     def sources(self, versions=('2.5.3','2.6.2','2.6.2')):
         data=copy.deepcopy(DATA)
         data['standalone']['body']=versions[0]+'\n'
         data['npm']['response']['version']=versions[1]
-        data['github']['response']['tag_name']='@moonshot-ai/kimi-code@'+versions[2]
+        tag='@moonshot-ai/kimi-code@'+versions[2]
+        data['github_refs']=dict(url=GITHUB_REFS,response=[dict(ref='refs/tags/'+tag)])
+        data['github']['url']=GITHUB_BY_TAG+quote(tag,safe='')
+        data['github']['response']['tag_name']=tag
         data['github']['response']['html_url']='https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai/kimi-code%40'+versions[2]
         return data
 
     def resolve(self, data=None, failed=None, raw=None):
-        data=data or self.sources();calls=[]
+        data=data or self.sources();calls=[];deadlines=[]
         def read(url,limit,method='GET',**kwargs):
             calls.append((url,method))
-            for source in ('standalone','npm','github'):
+            for source in ('standalone','npm','github_refs','github'):
                 if url==data[source]['url']:
-                    if source in ('npm','github'):
+                    if source=='npm':
                         self.assertEqual(kwargs,{'policy':'no-redirect'})
-                        self.assertEqual(limit,65536 if source=='npm' else 262144)
+                        self.assertEqual(limit,65536)
+                    if source in ('github_refs','github'):
+                        self.assertEqual(kwargs['policy'],'no-redirect')
+                        self.assertEqual(limit,ci.discovery.MAX_METADATA if source=='github_refs' else 262144)
+                        self.assertIsInstance(kwargs['deadline'],float)
+                        deadlines.append(kwargs['deadline'])
+                        self.assertTrue(all(end==deadlines[0] for end in deadlines))
                     if failed==source:raise ci.discovery.DiscoveryUnavailable('recorded source unavailable')
                     body=(data[source]['body'].encode() if source=='standalone' else json.dumps(data[source]['response']).encode())
                     if raw and source in raw:body=raw[source]
                     return body,{'url':url,'final_url':url,'size':len(body)}
+            if url.startswith(GITHUB_BY_TAG):
+                raise ci.discovery.DiscoveryUnavailable('the exact selected CLI tag is unpublished')
             prefix='https://code.kimi.com/kimi-code/binaries/'
             self.assertTrue(url.startswith(prefix),url)
             version=url[len(prefix):].split('/')[0]
@@ -57,22 +72,44 @@ class KimiCurrentRelease(unittest.TestCase):
         self.assertEqual((record['image_size'],record['image_sha256']),(DATA['linux_image']['size'],DATA['linux_image']['sha256']))
         self.assertEqual(record['manifest_sha256'],hashlib.sha256((FIXTURE/'manifest-2.6.2.json').read_bytes()).hexdigest())
         self.assertEqual(manifest,(FIXTURE/'manifest-2.6.2.json').read_bytes())
-        self.assertEqual([url for url,method in calls[:3]],[DATA[key]['url'] for key in ('standalone','npm','github')])
-        self.assertTrue(all('/2.6.2/' in url for url,method in calls[3:]))
-        self.assertEqual(len(calls),5)
+        current=self.sources()
+        self.assertEqual([url for url,method in calls[:4]],[current[key]['url'] for key in ('standalone','npm','github_refs','github')])
+        self.assertTrue(all('/2.6.2/' in url for url,method in calls[4:]))
+        self.assertEqual(len(calls),6)
         decision=evidence['selection']
         self.assertEqual(decision['version'],'2.6.2')
         self.assertEqual(decision['agreeing_sources'],['npm','github'])
         self.assertEqual({key:row['version'] for key,row in decision['sources'].items()},dict(standalone='2.5.3',npm='2.6.2',github='2.6.2'))
+        self.assertEqual(decision['sources']['github']['refs_fetch']['url'],GITHUB_REFS)
 
     def test_all_sources_agree_and_are_each_read_once(self):
         (record,_,_),calls=self.resolve(self.sources(('2.6.2',)*3))
-        self.assertEqual(record['version'],'2.6.2');self.assertEqual(len(calls),5)
+        self.assertEqual(record['version'],'2.6.2');self.assertEqual(len(calls),6)
 
     def test_numeric_version_order_and_either_independent_pair_can_agree(self):
         for versions in [('2.10.0','2.9.9','2.10.0'),('2.10.0','2.10.0','2.9.9')]:
             with self.subTest(versions=versions):
-                (record,_,_),calls=self.resolve(self.sources(versions));self.assertEqual(record['version'],'2.10.0');self.assertEqual(len(calls),5)
+                (record,_,_),calls=self.resolve(self.sources(versions));self.assertEqual(record['version'],'2.10.0');self.assertEqual(len(calls),6)
+
+    def test_cli_tag_lookup_ranks_numeric_versions_and_ignores_canaries(self):
+        data=self.sources(('2.10.0','2.10.0','2.10.0'))
+        data['github_refs']['response'] += [dict(ref='refs/tags/@moonshot-ai/kimi-code@'+version)
+                                            for version in ('2.9.9','3.0.0-canary.1-test')]
+        (record,_,_),calls=self.resolve(data)
+        self.assertEqual(record['version'],'2.10.0')
+        self.assertEqual(calls[3],(GITHUB_BY_TAG+'%40moonshot-ai%2Fkimi-code%402.10.0','GET'))
+
+    def test_a_higher_unpublished_cli_tag_fails_without_trying_older_tags(self):
+        data=self.sources(('2.6.2',)*3)
+        data['github_refs']['response'].append(dict(ref='refs/tags/@moonshot-ai/kimi-code@2.7.0'))
+        with self.assertRaisesRegex(ci.discovery.DiscoveryUnavailable,'exact selected CLI tag'):
+            self.resolve(data)
+
+    def test_tag_refs_must_be_in_the_exact_cli_namespace(self):
+        data=self.sources(('2.6.2',)*3)
+        data['github_refs']['response'].append(dict(ref='refs/tags/kimi-code-desktop@1.5.0'))
+        with self.assertRaisesRegex(ValueError,'refs name another package'):
+            self.resolve(data)
 
     def test_three_different_versions_fail_closed(self):
         with self.assertRaises(ValueError):self.resolve(self.sources(('2.5.3','2.6.2','2.7.0')))
@@ -82,11 +119,11 @@ class KimiCurrentRelease(unittest.TestCase):
             with self.subTest(versions=versions),self.assertRaises(ValueError):self.resolve(self.sources(versions))
 
     def test_any_official_source_failure_blocks_selection(self):
-        for source in ('standalone','npm','github'):
+        for source in ('standalone','npm','github_refs','github'):
             with self.subTest(source=source),self.assertRaises(ci.discovery.DiscoveryUnavailable):self.resolve(failed=source)
 
     def test_invalid_or_duplicate_source_metadata_cannot_be_ignored(self):
-        variants=[('npm',b'{"name":"@moonshot-ai/kimi-code","version":"2.6.2","version":"2.5.3"}'),('github',b'{"tag_name":"x","tag_name":"y"}'),('npm',b'not JSON'),('github',b'[]')]
+        variants=[('npm',b'{"name":"@moonshot-ai/kimi-code","version":"2.6.2","version":"2.5.3"}'),('github',b'{"tag_name":"x","tag_name":"y"}'),('npm',b'not JSON'),('github',b'[]'),('github_refs',b'{}'),('github_refs',b'[{"ref":"x","ref":"y"}]')]
         for source,body in variants:
             with self.subTest(source=source,body=body),self.assertRaises((ValueError,TypeError)):self.resolve(raw={source:body})
 

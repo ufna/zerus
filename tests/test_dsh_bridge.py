@@ -19,7 +19,7 @@ class ModelSelection(unittest.TestCase):
         script = """
 import assert from 'node:assert/strict';
 const { modelSelectionAdapter: adapt, completedForkCut, matchesForkCut,
-        scheduleSession, manageSchedule, blockingQuestion } = await import(process.argv[2]);
+        scheduleSession, manageSchedule, blockingQuestion, requireTopLevelAgent } = await import(process.argv[2]);
 const route = { provider: 'fixture', model: 'selected', reasoningEffort: 'off' };
 const control = () => ({
   composeAgent: async () => ({ setup() {}, agentPreset: 'standard' }),
@@ -31,6 +31,35 @@ const control = () => ({
         result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri()],
                                 input=script, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_root_membership_uses_exact_native_objects_on_both_apis(self):
+        self.run_js("""
+const root = { id: 'root', session: { header: { parentSession: 'historical-fork-source' } } };
+const twin = { ...root };
+const children = { rootOf(agent) { assert.equal(this, children); return root; } };
+const legacy = { roots() { assert.equal(this, legacy); return [root]; } };
+const delegated = { id: 'child', session: { header: { origin: 'subagent' } } };
+for (const agents of [legacy, {}]) {
+  assert.equal(requireTopLevelAgent(agents, children, undefined), undefined);
+  assert.equal(requireTopLevelAgent(agents, children, root), root);
+  assert.throws(() => requireTopLevelAgent(agents, children, twin), /^Error: Use the parent to manage a subagent$/);
+  assert.throws(() => requireTopLevelAgent(agents, children, delegated), /^Error: Use the parent to manage a subagent$/);
+}
+const registryCannotAdmitChild = { roots() { assert.fail('child reached legacy root lookup'); } };
+const activationCannotAdmitChild = { rootOf() { assert.fail('child reached activation root lookup'); } };
+assert.throws(() => requireTopLevelAgent(registryCannotAdmitChild, null, delegated), /Use the parent/);
+assert.throws(() => requireTopLevelAgent({}, activationCannotAdmitChild, delegated), /Use the parent/);
+""")
+
+    def test_root_membership_fails_closed_when_native_authority_is_missing_or_stale(self):
+        self.run_js("""
+const root = { id: 'root', session: { header: {} } };
+const stale = { rootOf() { throw Object.assign(new Error('stale native caller'), { code: 'UNAUTHORIZED' }); } };
+assert.throws(() => requireTopLevelAgent({}, stale, root), /^Error: Use the parent to manage a subagent$/);
+const error = new Error('native service unavailable');
+assert.throws(() => requireTopLevelAgent({}, { rootOf() { throw error; } }, root), thrown => thrown === error);
+assert.throws(() => requireTopLevelAgent({}, {}, root), /Native DeepSeek root verification is unavailable/);
+""")
 
     def test_blocking_question_requires_owned_root_foreground_and_no_person_intent(self):
         self.run_js("""

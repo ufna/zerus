@@ -371,6 +371,28 @@ export async function manageSchedule(schedule, p) {
   return result.code ? { ...result, updated: false } : { id: p.id, updated: true, record: scheduleRecord(result) };
 }
 
+// Older harnesses keep root membership in the Agent registry. On hosts
+// with activation-owned trees, rootOf validates the exact live instance.
+export function requireTopLevelAgent(agents, subagents, agent) {
+  if (!agent) return agent;
+  const child = () => new Error('Use the parent to manage a subagent');
+  if (agent.session.header.origin === 'subagent') throw child();
+  if (typeof agents.roots === 'function') {
+    if (!agents.roots().includes(agent)) throw child();
+  } else if (typeof subagents?.rootOf === 'function') {
+    let root;
+    try { root = subagents.rootOf(agent); }
+    catch (error) {
+      if (error?.code === 'UNAUTHORIZED') throw child();
+      throw error;
+    }
+    if (root !== agent) throw child();
+  } else {
+    throw new Error('Native DeepSeek root verification is unavailable');
+  }
+  return agent;
+}
+
 export function apply(ctx, config) {
   const api = ctx.sessionController;
   const control = api.agents;
@@ -560,11 +582,7 @@ export function apply(ctx, config) {
   // commands and interrupts it only through its parent's address. HGS messages
   // it through send-child. Send, settings, compact and interrupt refuse any
   // other than a top-level Agent before they change it.
-  const topLevel = agent => {
-    if (agent && (agent.session.header.origin === 'subagent' || !ctx.agents.roots().includes(agent)))
-      throw new Error('Use the parent to manage a subagent');
-    return agent;
-  };
+  const topLevel = agent => requireTopLevelAgent(ctx.agents, ctx.subagents, agent);
   const publicQuestions = sessionId => [...questions.values()].filter(q => q.sessionId === sessionId)
     .map(({ id, items, approval, blocking }) => ({ id, questions: items, approval: Boolean(approval), blocking: blocking === true }));
   // A live request is the only authority for answering. Disconnecting HGS does

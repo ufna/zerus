@@ -265,7 +265,7 @@ print('ZERUS_NATIVE_RESULT={"tests": 1, "skipped": 0}')
         with patch.object(kimi.discovery, 'fetch_metadata', return_value=(b'9.8.7', {})) as fetch:
             self.assertEqual(kimi.metadata('https://code.kimi.com/kimi-code/latest', 64), (b'9.8.7', {}))
             fetch.assert_called_once_with('https://code.kimi.com/kimi-code/latest', 64,
-                                          method='GET', policy='kimi', stage='official Kimi metadata')
+                                          method='GET', policy='kimi', deadline=None, stage='official Kimi metadata')
         end = time.monotonic() + 10
         with patch.object(dsh.discovery, 'fetch_metadata', return_value=(b'{}', {})) as fetch:
             self.assertEqual(dsh.discover(end), b'{}')

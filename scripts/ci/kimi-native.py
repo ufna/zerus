@@ -125,20 +125,65 @@ discovery_spec.loader.exec_module(discovery)
 OfficialRedirect = discovery.OfficialRedirect
 
 
-def metadata(url, limit, method='GET', *, policy='kimi'):
-    return discovery.fetch_metadata(url, limit, method=method, policy=policy, stage='official Kimi metadata')
+def metadata(url, limit, method='GET', *, policy='kimi', deadline=None):
+    return discovery.fetch_metadata(url, limit, method=method, policy=policy, deadline=deadline,
+                                     stage='official Kimi metadata')
 
 
 PACKAGE = '@moonshot-ai/kimi-code'
 NPM_LATEST = 'https://registry.npmjs.org/' + PACKAGE + '/latest'
-GITHUB_LATEST = 'https://api.github.com/repos/MoonshotAI/kimi-code/releases/latest'
+GITHUB_REPOSITORY = 'https://api.github.com/repos/MoonshotAI/kimi-code'
+GITHUB_TAG_PREFIX = 'refs/tags/' + PACKAGE + '@'
+GITHUB_TAG_REFS = GITHUB_REPOSITORY + '/git/matching-refs/tags/' + urllib.parse.quote(PACKAGE + '@', safe='')
 STABLE_VERSION = r'(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})'
+PRERELEASE_VERSION = STABLE_VERSION + r'-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*'
 
 
 def stable_version(value):
     if not isinstance(value, str) or re.fullmatch(STABLE_VERSION, value) is None:
         raise ValueError('official current release is not one bounded stable version')
     return value
+
+
+def github_current_release():
+    # CLI and Desktop share a GitHub repository. Inspect only CLI refs and
+    # verify publication of the highest stable CLI tag without trying older tags.
+    deadline = time.monotonic() + discovery.BUDGET_SECONDS
+    raw, refs_fetch = metadata(GITHUB_TAG_REFS, discovery.MAX_METADATA,
+                              policy='no-redirect', deadline=deadline)
+    refs = strict(raw)
+    if not isinstance(refs, list):
+        raise ValueError('official GitHub CLI tag refs must be a list')
+    versions = []
+    for entry in refs:
+        ref = entry.get('ref') if isinstance(entry, dict) else None
+        if not isinstance(ref, str) or not ref.startswith(GITHUB_TAG_PREFIX):
+            raise ValueError('official GitHub CLI tag refs name another package')
+        version = ref[len(GITHUB_TAG_PREFIX):]
+        if re.fullmatch(STABLE_VERSION, version):
+            versions.append(version)
+        elif not re.fullmatch(PRERELEASE_VERSION, version):
+            raise ValueError('official GitHub CLI tag ref is not a bounded version')
+    if not versions:
+        raise ValueError('official GitHub CLI tag refs have no stable version')
+    version = max(versions, key=lambda value: tuple(map(int, value.split('.'))))
+    tag = PACKAGE + '@' + version
+    endpoint = GITHUB_REPOSITORY + '/releases/tags/' + urllib.parse.quote(tag, safe='')
+    raw, release_fetch = metadata(endpoint, 262144, policy='no-redirect', deadline=deadline)
+    github = strict(raw)
+    if (not isinstance(github, dict) or github.get('draft') is not False
+            or github.get('prerelease') is not False):
+        raise ValueError('official GitHub current release is not published stable metadata')
+    if github.get('tag_name') != tag:
+        raise ValueError('official GitHub current release differs from the selected CLI tag')
+    location = github.get('html_url')
+    if not isinstance(location, str):
+        raise ValueError('official GitHub current release has no text page URL')
+    page = urllib.parse.urlsplit(location)
+    if (page.scheme != 'https' or page.netloc != 'github.com' or page.query or page.fragment
+            or urllib.parse.unquote(page.path) != '/MoonshotAI/kimi-code/releases/tag/' + tag):
+        raise ValueError('official GitHub current release page differs from its tag')
+    return version, release_fetch, refs_fetch
 
 
 def current_release():
@@ -149,31 +194,17 @@ def current_release():
     if not isinstance(npm, dict) or npm.get('name') != PACKAGE:
         raise ValueError('official npm current release names another package')
     npm_version = stable_version(npm.get('version'))
-    raw, github_fetch = metadata(GITHUB_LATEST, 262144, policy='no-redirect')
-    github = strict(raw)
-    if (not isinstance(github, dict) or github.get('draft') is not False
-            or github.get('prerelease') is not False):
-        raise ValueError('official GitHub current release is not published stable metadata')
-    tag = github.get('tag_name')
-    if not isinstance(tag, str) or not tag.startswith(PACKAGE + '@'):
-        raise ValueError('official GitHub current release names another package')
-    github_version = stable_version(tag[len(PACKAGE) + 1:])
-    location = github.get('html_url')
-    if not isinstance(location, str):
-        raise ValueError('official GitHub current release has no text page URL')
-    page = urllib.parse.urlsplit(location)
-    if (page.scheme != 'https' or page.netloc != 'github.com' or page.query or page.fragment
-            or urllib.parse.unquote(page.path) != '/MoonshotAI/kimi-code/releases/tag/' + tag):
-        raise ValueError('official GitHub current release page differs from its tag')
+    github_version, github_fetch, refs_fetch = github_current_release()
     versions = dict(standalone=standalone, npm=npm_version, github=github_version)
     version = max(versions.values(), key=lambda value: tuple(map(int, value.split('.'))))
     agreeing = [name for name, observed in versions.items() if observed == version]
     if len(agreeing) < 2:
         raise ValueError('official current-release disagreement: the highest version is not corroborated')
-    # Never drop a failed source or fall back to an older agreeing pair. Each
-    # source is read once; every later artifact URL uses this one exact decision.
+    # Never drop a failed source or fall back to an older agreeing pair.
+    # Every later artifact URL uses this one exact decision.
     sources = {name: dict(version=versions[name], fetch=fetch) for name, fetch in
                [('standalone', standalone_fetch), ('npm', npm_fetch), ('github', github_fetch)]}
+    sources['github']['refs_fetch'] = refs_fetch
     return version, dict(version=version, agreeing_sources=agreeing, sources=sources)
 
 

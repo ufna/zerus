@@ -5,6 +5,8 @@ use std::process::{Child, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod kimi_credentials;
+
 const MAX_OUTPUT: u64 = 1024 * 1024;
 pub(super) fn now() -> u64 {
     SystemTime::now()
@@ -108,10 +110,8 @@ pub(super) fn native_command(provider: &str, home: &Path, native: bool) -> Comma
     }
     cmd
 }
-/// How curl is run for one Kimi request. `isolated` is true only for the
-/// Zerus test seam: `-q` (which curl honours only as its first argument) and
-/// `--noproxy '*'` keep `~/.curlrc`, `$CURL_HOME`, `$XDG_CONFIG_HOME` and every
-/// proxy variable from routing the token anywhere but the validated endpoint.
+/// Only the loopback test transport disables the environment's proxies.
+/// Curl always ignores config files so they cannot add URLs or change TLS policy.
 #[derive(Clone, Copy)]
 struct CurlPolicy {
     allow_http: bool,
@@ -121,23 +121,20 @@ struct CurlPolicy {
 fn http_json(
     url: &str,
     token: &str,
-    extra: &[&str],
     policy: CurlPolicy,
 ) -> std::result::Result<Value, String> {
     if token.is_empty() || token.chars().any(char::is_control) {
         return Err("Sign in with the native agent to read usage.".into());
     }
-    let mut config = format!(
+    let config = format!(
         "url = {}\nheader = {}\nheader = \"Accept: application/json\"\n",
         json!(url),
         json!(format!("Authorization: Bearer {token}"))
     );
-    for header in extra {
-        config.push_str(&format!("header = {}\n", json!(header)));
-    }
     let mut cmd = Command::new("curl");
+    cmd.arg("-q"); // Curl honors this only as its first argument.
     if policy.isolated {
-        cmd.args(["-q", "--noproxy", "*"]);
+        cmd.args(["--noproxy", "*"]);
     }
     cmd.args([
         "--silent",
@@ -422,26 +419,10 @@ fn claude(config: &Config, home: &Path, native: bool, seed: &Value) -> Result<Va
     }
     Ok(result)
 }
-const KIMI_API_BASE: &str = "https://api.kimi.com/coding/v1";
-const KIMI_API_BASE_SLASH: &str = "https://api.kimi.com/coding/v1/";
 /// Zerus's test seam; a person's Kimi CLI never reads it.
 pub(super) const KIMI_TEST_BASE_ENV: &str = "HGS_TEST_KIMI_API_BASE";
-/// The Kimi CLI's own platform variable. The inspection reads it only to stay
-/// on the provider; the person's custom platform never receives this token.
-const KIMI_CLI_BASE_ENV: &str = "KIMI_CODE_BASE_URL";
 
-/// A test endpoint is accepted only when its host is a loopback address. Any
-/// other value is ignored and named in the inspection's detail; it never
-/// receives the token.
-fn ignored_kimi_base(result: &mut Value, variable: &str) {
-    let reason = if variable == KIMI_TEST_BASE_ENV {
-        "Kimi account inspection uses only a loopback http or https address."
-    } else {
-        "Kimi account inspection sends its token only to the default platform."
-    };
-    let sentence = format!("Ignored {variable}: {reason}");
-    // An invalid seam and a non-default CLI value can both apply; the later
-    // rule adds its own sentence instead of hiding the seam's.
+fn kimi_detail(result: &mut Value, sentence: &str) {
     result["detail"] = match result["detail"].as_str().filter(|text| !text.is_empty()) {
         Some(earlier) => json!(format!("{earlier} {sentence}")),
         None => json!(sentence),
@@ -491,97 +472,115 @@ fn loopback_test_base(value: &str) -> Option<(String, bool)> {
     Some((value.trim_end_matches('/').to_owned(), allow_http))
 }
 
-/// A valid Zerus test endpoint takes precedence over the Kimi CLI's platform
-/// variable; an invalid one is named in the detail, then that variable's rule
-/// applies. Any non-default `KIMI_CODE_BASE_URL` means the person's Kimi CLI
-/// uses another platform, so the inspection makes no request and sends no
-/// token. Only unset or the provider's own address (with or without its
-/// trailing slash) reaches the provider.
-fn kimi_base(result: &mut Value) -> Option<(String, CurlPolicy)> {
-    match env::var(KIMI_TEST_BASE_ENV) {
-        // Every account session's environment carries the seam as an empty
-        // value; that is unset, never an ignored endpoint.
-        Ok(value) if value.is_empty() => {}
-        Ok(value) => {
-            if let Some((base, allow_http)) = loopback_test_base(&value) {
-                return Some((
-                    base,
-                    CurlPolicy {
-                        allow_http,
-                        isolated: true,
-                    },
-                ));
+struct KimiProbe {
+    grant: std::result::Result<kimi_credentials::Grant, &'static str>,
+    test_base: Option<(String, bool)>,
+    invalid_test_base: bool,
+}
+
+impl KimiProbe {
+    fn load(home: &Path) -> Self {
+        let (test_base, invalid_test_base) = match env::var(KIMI_TEST_BASE_ENV) {
+            Ok(value) if value.is_empty() => (None, false),
+            Ok(value) => {
+                let endpoint = loopback_test_base(&value);
+                let invalid = endpoint.is_none();
+                (endpoint, invalid)
             }
-            ignored_kimi_base(result, KIMI_TEST_BASE_ENV);
-        }
-        Err(env::VarError::NotPresent) => {}
-        Err(env::VarError::NotUnicode(_)) => {
-            ignored_kimi_base(result, KIMI_TEST_BASE_ENV);
-        }
-    }
-    match env::var(KIMI_CLI_BASE_ENV) {
-        Ok(value) if value != KIMI_API_BASE && value != KIMI_API_BASE_SLASH => {
-            ignored_kimi_base(result, KIMI_CLI_BASE_ENV);
-            None
-        }
-        Ok(_) | Err(env::VarError::NotPresent) => Some((
-            KIMI_API_BASE.to_owned(),
-            CurlPolicy {
-                allow_http: false,
-                isolated: false,
-            },
-        )),
-        Err(env::VarError::NotUnicode(_)) => {
-            ignored_kimi_base(result, KIMI_CLI_BASE_ENV);
-            None
+            Err(env::VarError::NotPresent) => (None, false),
+            Err(env::VarError::NotUnicode(_)) => (None, true),
+        };
+        Self {
+            grant: kimi_credentials::load(home, test_base.as_ref().map(|(base, _)| base.as_str())),
+            test_base,
+            invalid_test_base,
         }
     }
 }
 
+#[cfg(test)]
 fn kimi(home: &Path) -> Value {
+    inspect_kimi(home, &KimiProbe::load(home))
+}
+
+fn inspect_kimi(home: &Path, probe: &KimiProbe) -> Value {
     let mut result =
         json!({"identity":{},"windows":[],"source":"Kimi Code","status":"unavailable"});
-    let auth = read_json(&home.join("credentials/kimi-code.json"));
-    let token = auth["access_token"].as_str().unwrap_or("");
-    if token.is_empty() {
+    if probe.invalid_test_base {
+        kimi_detail(&mut result, "Ignored HGS_TEST_KIMI_API_BASE: Kimi inspection uses only a loopback http or https address.");
+    }
+    let grant = match &probe.grant {
+        Ok(grant) => grant,
+        Err(detail) => {
+            kimi_detail(&mut result, detail);
+            return result;
+        }
+    };
+    let Some(bytes) = &grant.bytes else {
         result["status"] = json!("signed_out");
         return result;
-    }
+    };
+    let Ok(auth) = serde_json::from_slice::<Value>(bytes) else {
+        kimi_detail(&mut result, "The managed Kimi credential file is unreadable.");
+        return result;
+    };
+    let Some(token) = kimi_access_token(&auth) else {
+        result["status"] = json!("signed_out");
+        return result;
+    };
     if auth["expires_at"]
         .as_u64()
         .is_some_and(|expiry| expiry <= now() + 60)
     {
+        if grant.test_transport_only {
+            kimi_detail(&mut result, "The loopback test requires a current synthetic Kimi credential.");
+            return result;
+        }
         // Let the native server refresh/persist its own OAuth grant under its own lock.
+        let (Ok(home), Ok(work)) = (platform::canonical(home), tempfile::tempdir()) else {
+            kimi_detail(&mut result, "The private Kimi refresh environment could not be prepared.");
+            return result;
+        };
         let mut cmd = Command::new("node");
         cmd.args(["--input-type=module", "-e", include_str!("kimi-read.mjs")])
             .env("KIMI_CODE_HOME", home)
+            .env(kimi_credentials::API_ENV, grant.region.api())
+            .env(kimi_credentials::OAUTH_ENV, grant.region.oauth())
+            .env_remove(kimi_credentials::LEGACY_OAUTH_ENV)
             // The test seam is the inspection's alone: `node` starts the real
             // `kimi web`, which must never inherit it.
-            .env_remove(KIMI_TEST_BASE_ENV);
+            .env_remove(KIMI_TEST_BASE_ENV)
+            .current_dir(work.path());
         for key in AUTH_ENV {
             cmd.env_remove(key);
         }
-        let work = tempfile::tempdir().ok();
-        if let Some(dir) = &work {
-            cmd.current_dir(dir.path());
-        }
-        return capture(cmd, &[], 18)
+        if let Some(mut refreshed) = capture(cmd, &[], 18)
             .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or(result);
-    }
-    // The live-token path resolves the base only after the refresh, as on main:
-    // an expiring token still gets the native server's own answer.
-    let Some((base, policy)) = kimi_base(&mut result) else {
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .filter(Value::is_object)
+        {
+            if let Some(detail) = result["detail"].as_str() {
+                kimi_detail(&mut refreshed, detail);
+            }
+            return refreshed;
+        }
         return result;
+    }
+    let (base, policy) = match &probe.test_base {
+        Some((base, allow_http)) => (
+            base.as_str(),
+            CurlPolicy { allow_http: *allow_http, isolated: true },
+        ),
+        None => (
+            grant.region.api(),
+            CurlPolicy { allow_http: false, isolated: false },
+        ),
     };
-    // The same token goes to the default provider or to a validated loopback
-    // test endpoint; the path below the base stays the provider's.
-    if let Ok(a) = http_json(&format!("{base}/me"), token, &[], policy) {
+    if let Ok(a) = http_json(&format!("{base}/me"), token, policy) {
         let a = a.get("user").or_else(|| a.get("data")).unwrap_or(&a);
         result["identity"] = json!({"name":text(a,"nickname"),"email":text(a,"email"),"plan":text(a,"user_level_name"),"auth_method":"Kimi Code"});
     }
-    if let Ok(usage) = http_json(&format!("{base}/usages"), token, &[], policy) {
+    if let Ok(usage) = http_json(&format!("{base}/usages"), token, policy) {
         let mut windows = Vec::new();
         for (key, label, minutes) in [
             ("limit_5h", "", Some(300)),
@@ -643,10 +642,36 @@ fn dsh(home: &Path) -> Value {
 // Claude's every few hours, and Claude Code rewrites .claude.json constantly:
 // hashing those bytes discarded every cached status and limit within minutes.
 // Sign-out and another account still change it.
-pub(super) fn signature(home: &Path, provider: &str) -> String {
+#[cfg(test)]
+fn signature(home: &Path, provider: &str) -> String {
+    let kimi = (provider == "kimi").then(|| KimiProbe::load(home));
+    signature_for(home, provider, kimi.as_ref())
+}
+
+fn signature_for(home: &Path, provider: &str, kimi: Option<&KimiProbe>) -> String {
     let mut fingerprint = Sha256::new();
     fingerprint.update(home.as_os_str().as_encoded_bytes());
     fingerprint.update(provider.as_bytes());
+    if let Some(probe) = kimi {
+        fingerprint.update(b"managed-kimi-region-v1");
+        fingerprint.update([u8::from(probe.invalid_test_base)]);
+        match &probe.grant {
+            Ok(grant) => {
+                fingerprint.update(grant.region.api());
+                if let Some(bytes) = &grant.bytes {
+                    match signed_in(provider, "", bytes) {
+                        Some(account) => fingerprint.update(account),
+                        None => fingerprint.update(bytes),
+                    }
+                }
+            }
+            Err(detail) => fingerprint.update(detail),
+        }
+        if let Some((base, _)) = &probe.test_base {
+            fingerprint.update(base);
+        }
+        return format!("{:x}", fingerprint.finalize());
+    }
     if provider == "claude" {
         fingerprint.update(b"desktop-session-v2");
         if let Ok(bytes) = fs::read(home.join(".claude.json")) {
@@ -674,14 +699,21 @@ pub(super) fn signature(home: &Path, provider: &str) -> String {
     }
     format!("{:x}", fingerprint.finalize())
 }
+fn kimi_access_token(auth: &Value) -> Option<&str> {
+    auth["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty() && !token.chars().any(char::is_control))
+}
+
 // The lasting part of credentials whose tokens rotate, or None to use all bytes.
 // Kimi tokens are JWTs that name their user; claims are read only to tell
 // accounts apart, never to authenticate.
 fn signed_in(provider: &str, name: &str, bytes: &[u8]) -> Option<String> {
     let credentials = serde_json::from_slice::<Value>(bytes).ok()?;
     match (provider, name) {
-        ("kimi", "credentials/kimi-code.json") => {
+        ("kimi", _) => {
             use base64::Engine;
+            kimi_access_token(&credentials)?;
             ["access_token", "refresh_token"].iter().find_map(|key| {
                 let payload = credentials[*key].as_str()?.split('.').nth(1)?;
                 let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -712,9 +744,27 @@ fn cache_path(config: &Config, id: &str, home: &Path) -> PathBuf {
 
 // Catalog loading remains read-only and does not contact providers. A cached
 // identity is usable only for the same home and unchanged file credentials.
-pub(super) fn catalog_status(config: &Config, id: &str, provider: &str, home: &Path) -> Value {
+pub(super) fn catalog_snapshot(
+    config: &Config,
+    id: &str,
+    provider: &str,
+    home: &Path,
+) -> (Value, String, Option<bool>) {
+    let kimi = (provider == "kimi").then(|| KimiProbe::load(home));
+    let signature = signature_for(home, provider, kimi.as_ref());
+    let found = kimi.as_ref().map(|probe| {
+        probe.grant.as_ref().ok()
+            .and_then(|grant| grant.bytes.as_deref())
+            .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+            .is_some_and(|auth| kimi_access_token(&auth).is_some())
+    });
+    let status = catalog_status(config, id, home, &signature);
+    (status, signature, found)
+}
+
+fn catalog_status(config: &Config, id: &str, home: &Path, signature: &str) -> Value {
     let cache = claude_usage::read_cache(&cache_path(config, id, home)).unwrap_or(Value::Null);
-    if cache["signature"] != signature(home, provider) {
+    if cache["signature"] != signature {
         return Value::Null;
     }
     let data = &cache["data"];
@@ -838,12 +888,14 @@ pub(super) fn inspect(config: &Config, args: &[String]) -> Result<Value> {
             }
         }
     }
-    let signature = signature(&home, &profile.provider);
+    let kimi = (profile.provider == "kimi").then(|| KimiProbe::load(&home));
+    let signature = signature_for(&home, &profile.provider, kimi.as_ref());
     let cache_dir = config.dir.join("account-status");
     let cache_path = cache_path(config, &id, &home);
     let cached = claude_usage::read_cache(&cache_path)?;
     let refresh = args.iter().any(|s| s == "--refresh");
-    let same = cached["signature"] == signature;
+    let same = cached["signature"] == signature
+        && kimi.as_ref().is_none_or(|probe| probe.grant.is_ok());
     // Claude must observe native identity before reusing any quota/cooldown:
     // its durable auth revision deliberately excludes rotating bearer tokens.
     let mut data = if profile.provider != "claude" && same && !refresh
@@ -854,12 +906,22 @@ pub(super) fn inspect(config: &Config, args: &[String]) -> Result<Value> {
         let mut data = match profile.provider.as_str() {
             "codex" => codex(&home, native),
             "claude" => claude(config, &home, native, if same { &cached["data"] } else { &Value::Null })?,
-            "kimi" => kimi(&home),
+            "kimi" => inspect_kimi(&home, kimi.as_ref().expect("selected Kimi inspection")),
             "dsh" => dsh(&home),
             "opencode"=>json!({"status":"configured","source":"OpenCode","identity":{},"windows":[],"reason":"OpenCode uses its native inference-provider configuration; quota inspection is not available"}),
             _ => Value::Null,
         };
-        if profile.provider != "claude" {
+        if kimi.as_ref().is_some_and(|probe| probe.grant.is_ok()) {
+            let current = KimiProbe::load(&home);
+            if signature_for(&home, &profile.provider, Some(&current)) != signature {
+                data = json!({
+                    "identity": {}, "windows": [], "source": "Kimi Code", "status": "unavailable",
+                    "detail": "The Kimi sign-in changed while it was checked. Refresh again."
+                });
+            } else {
+                retain_cached_identity(&mut data, &cached, &signature);
+            }
+        } else if kimi.is_none() && profile.provider != "claude" {
             retain_cached_identity(&mut data, &cached, &signature);
         }
         // Both reuse this refresh: the balance it just read and local session logs.
@@ -911,11 +973,23 @@ mod tests {
     const TEST_BASE_VAR: &str = "HGS_TEST_KIMI_API_BASE";
     const CLI_BASE_VAR: &str = "KIMI_CODE_BASE_URL";
 
-    fn curl_lock() -> std::sync::MutexGuard<'static, ()> {
-        // A panicking test must not turn every later curl/environment test red.
-        crate::accounts::ENV_LOCK
+    struct KimiTestEnv {
+        _vars: EnvVars,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    fn curl_lock() -> KimiTestEnv {
+        // Restore the environment before releasing the shared lock, even on panic.
+        let lock = crate::accounts::ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let vars = EnvVars::set(&[
+            (TEST_BASE_VAR, None),
+            (CLI_BASE_VAR, None),
+            ("KIMI_CODE_OAUTH_HOST", None),
+            ("KIMI_OAUTH_HOST", None),
+        ]);
+        KimiTestEnv { _vars: vars, _lock: lock }
     }
 
     /// Restores every named variable on drop, including a previously unset one.
@@ -1097,7 +1171,7 @@ fi
     }
 
     #[cfg(unix)]
-    const KIMI_DEFAULT_ARGV: &str = "--silent\n--fail\n--proto\n=https\n--connect-timeout\n3\n--max-time\n6\n--max-filesize\n1048576\n--config\n-\n";
+    const KIMI_DEFAULT_ARGV: &str = "-q\n--silent\n--fail\n--proto\n=https\n--connect-timeout\n3\n--max-time\n6\n--max-filesize\n1048576\n--config\n-\n";
 
     #[test]
     fn kimi_inspection_uses_a_loopback_test_base_and_sends_the_token() {
@@ -1191,81 +1265,29 @@ fi
 
     #[cfg(unix)]
     #[test]
-    fn an_expired_token_with_a_custom_kimi_cli_base_refreshes_without_a_platform_request() {
+    fn an_expired_token_refuses_a_custom_base_before_running_a_refresh_child() {
         use std::os::unix::fs::PermissionsExt;
         let _lock = curl_lock();
         let platform = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         platform.set_nonblocking(true).unwrap();
-        let platform_url = format!(
-            "http://{}/kimi-platform",
-            platform.local_addr().unwrap()
-        );
+        let platform_url = format!("http://{}/kimi-platform", platform.local_addr().unwrap());
         let bin = tempfile::tempdir().unwrap();
-        let record = tempfile::tempdir().unwrap();
-        let marker = record.path().join("node-called");
-        let child_env = record.path().join("node-env");
+        let marker = bin.path().join("node-called");
         let node = bin.path().join("node");
-        fs::write(
-            &node,
-            format!(
-                "#!/bin/sh\nprintf 'called\\n' > '{}'\nenv > '{}'\nprintf '%s\\n' '{{\"identity\":{{\"name\":\"Fixture\",\"email\":\"fixture@example.test\",\"plan\":\"Pro\",\"auth_method\":\"Kimi Code\"}},\"windows\":[],\"source\":\"Kimi Code\",\"status\":\"ok\"}}'\n",
-                marker.display(),
-                child_env.display()
-            ),
-        )
-        .unwrap();
+        fs::write(&node, "#!/bin/sh\n: > \"$KIMI_NODE_MARKER\"\n").unwrap();
         fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
         let _path = PathEnv::prepend(bin.path());
         let home = kimi_home("synthetic-token", now().saturating_sub(120));
         let _env = EnvVars::set(&[
-            // An invalid seam: a base-first order would refuse before the refresh.
-            (TEST_BASE_VAR, Some("http://127.0.0.2:9")),
+            (TEST_BASE_VAR, None),
             (CLI_BASE_VAR, Some(&platform_url)),
-            ("NODE_RECORD_DIR", Some(record.path().to_str().unwrap())),
+            ("KIMI_NODE_MARKER", Some(marker.to_str().unwrap())),
         ]);
         let result = kimi(home.path());
-        assert_eq!(result["status"], "ok", "{result}");
-        assert_eq!(result["identity"]["auth_method"], "Kimi Code", "{result}");
-        assert_eq!(result["identity"]["name"], "Fixture", "{result}");
-        assert!(result.get("detail").is_none(), "{result}");
-        assert!(marker.exists(), "the expired token did not reach the refresh node");
-        let seen = fs::read_to_string(&child_env).unwrap();
-        assert!(
-            !seen.lines().any(|line| line.starts_with(&format!("{TEST_BASE_VAR}="))),
-            "the refresh child inherited {TEST_BASE_VAR}",
-        );
-        assert!(
-            platform.accept().is_err(),
-            "the inspection requested the custom platform"
-        );
-    }
-
-    #[test]
-    fn a_non_loopback_test_base_is_ignored_without_a_request() {
-        let _lock = curl_lock();
-        // Bind all interfaces and use 127.0.0.2 as the override host: the
-        // listener would see a request if the non-loopback value were used.
-        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        server.set_nonblocking(true).unwrap();
-        let port = server.local_addr().unwrap().port();
-        let home = kimi_home("synthetic-token", now() + 3600);
-        let _env = EnvVars::set(&[
-            (TEST_BASE_VAR, Some(&format!("http://127.0.0.2:{port}"))),
-            (CLI_BASE_VAR, None),
-        ]);
-        let result = kimi(home.path());
-        assert_eq!(result["status"], "unavailable", "{result}");
-        assert!(
-            result["detail"]
-                .as_str()
-                .unwrap()
-                .contains("Ignored HGS_TEST_KIMI_API_BASE"),
-            "{result}"
-        );
-        assert!(
-            server.accept().is_err(),
-            "a non-loopback base received the token"
-        );
+        assert_eq!(result["status"], "unavailable");
+        assert!(result["detail"].as_str().unwrap().contains(CLI_BASE_VAR));
+        assert!(!marker.exists(), "a refused endpoint ran a refresh child");
+        assert!(platform.accept().is_err(), "a refused endpoint received a request");
     }
 
     #[test]
@@ -1394,16 +1416,17 @@ fi
     }
 
     #[test]
-    fn a_valid_test_base_wins_over_the_kimi_cli_base() {
+    fn a_legacy_fixture_can_use_the_same_loopback_origin_for_native_and_inspection() {
         let _lock = curl_lock();
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         server.set_nonblocking(true).unwrap();
         let base = format!("http://{}", server.local_addr().unwrap());
         let worker = identity_worker(server);
         let home = kimi_home("synthetic-token", now() + 3600);
+        let native_base = format!("{base}/kimi-platform");
         let _env = EnvVars::set(&[
             (TEST_BASE_VAR, Some(&base)),
-            (CLI_BASE_VAR, Some("https://example.invalid/")),
+            (CLI_BASE_VAR, Some(&native_base)),
         ]);
         let result = kimi(home.path());
         worker.join().unwrap();
@@ -1465,6 +1488,251 @@ fi
         );
         assert_eq!(result["identity"]["name"], "Provider");
         assert_eq!(result["windows"][0]["used_percent"], 50.0);
+    }
+
+
+    const GLOBAL_BASE: &str = "https://api.kimi.ai/coding/v1";
+    const GLOBAL_KEY: &str = "oauth/kimi-code-env-0e4f99c69cc27850";
+
+    fn managed_kimi_config(base: &str, key: &str, oauth_host: &str) -> String {
+        format!(
+            "[providers.\"managed:kimi-code\"]\nbase_url = {base:?}\n\
+             [providers.\"managed:kimi-code\".oauth]\nstorage = \"file\"\n\
+             key = {key:?}\noauth_host = {oauth_host:?}\n"
+        )
+    }
+
+    fn write_global_grant(home: &Path, token: &str, expires_at: u64) {
+        fs::write(
+            home.join("credentials/kimi-code-env-0e4f99c69cc27850.json"),
+            json!({"access_token": token, "expires_at": expires_at}).to_string(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_global_config_and_explicit_override_send_only_the_scoped_grant() {
+        let _lock = curl_lock();
+        let home = kimi_home("synthetic-default", now() + 3600);
+        let config = home.path().join("config.toml");
+        let managed = managed_kimi_config(GLOBAL_BASE, GLOBAL_KEY, "https://auth.kimi.ai");
+        write_global_grant(home.path(), "synthetic-global", now() + 3600);
+        for (configured, explicit) in [
+            (true, None),
+            (true, Some(GLOBAL_BASE)),
+            (false, Some(GLOBAL_BASE)),
+        ] {
+            if configured {
+                fs::write(&config, &managed).unwrap();
+            } else {
+                fs::remove_file(&config).unwrap();
+            }
+            let bin = tempfile::tempdir().unwrap();
+            let _path = recording_curl(bin.path());
+            let _env = EnvVars::set(&[
+                (TEST_BASE_VAR, None),
+                (CLI_BASE_VAR, explicit),
+                ("CURL_RECORD_DIR", bin.path().to_str()),
+            ]);
+            let result = kimi(home.path());
+            assert_eq!(result["status"], "ok");
+            for (index, path) in ["me", "usages"].into_iter().enumerate() {
+                let data = fs::read_to_string(bin.path().join(format!("stdin.{index}"))).unwrap();
+                assert!(data.contains(&format!("{GLOBAL_BASE}/{path}")));
+                assert!(data.contains("Bearer synthetic-global"));
+                assert!(!data.contains("synthetic-default"));
+            }
+            assert!(!result.to_string().contains("synthetic-global"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_invalid_config_or_conflicting_override_never_sends_a_grant() {
+        let _lock = curl_lock();
+        let home = kimi_home("synthetic-default", now() + 3600);
+        let bin = tempfile::tempdir().unwrap();
+        let _path = recording_curl(bin.path());
+        let invalid = "\u{fffd}".to_owned();
+        let cases = [
+            (
+                "default key on global",
+                managed_kimi_config(GLOBAL_BASE, "oauth/kimi-code", "https://auth.kimi.ai"),
+                None,
+                None,
+            ),
+            (
+                "invalid key",
+                managed_kimi_config(GLOBAL_BASE, "oauth/../fixture", "https://auth.kimi.ai"),
+                None,
+                None,
+            ),
+            (
+                "invalid OAuth host",
+                managed_kimi_config(GLOBAL_BASE, GLOBAL_KEY, "https://auth.kimi.com"),
+                None,
+                None,
+            ),
+            (
+                "custom config",
+                managed_kimi_config(
+                    "https://example.invalid",
+                    GLOBAL_KEY,
+                    "https://auth.kimi.ai",
+                ),
+                None,
+                None,
+            ),
+            (
+                "conflicting API override",
+                managed_kimi_config(GLOBAL_BASE, GLOBAL_KEY, "https://auth.kimi.ai"),
+                Some("https://api.kimi.com/coding/v1"),
+                None,
+            ),
+            (
+                "conflicting OAuth override",
+                managed_kimi_config(GLOBAL_BASE, GLOBAL_KEY, "https://auth.kimi.ai"),
+                None,
+                Some("https://auth.kimi.com"),
+            ),
+            (
+                "missing OAuth",
+                format!("[providers.\"managed:kimi-code\"]\nbase_url = {GLOBAL_BASE:?}\n"),
+                None,
+                None,
+            ),
+            ("malformed TOML", invalid, None, None),
+            ("oversized config", "#".repeat(256 * 1024 + 1), None, None),
+        ];
+        for (case, body, base, oauth_host) in cases {
+            fs::write(home.path().join("config.toml"), body).unwrap();
+            let _env = EnvVars::set(&[
+                (TEST_BASE_VAR, None),
+                (CLI_BASE_VAR, base),
+                ("KIMI_CODE_OAUTH_HOST", oauth_host),
+                ("CURL_RECORD_DIR", bin.path().to_str()),
+            ]);
+            let result = kimi(home.path());
+            assert_eq!(result["status"], "unavailable", "{case}");
+            assert!(result["identity"].as_object().unwrap().is_empty(), "{case}");
+            assert!(
+                !bin.path().join("argv.0").exists(),
+                "{case} reached transport"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_missing_scoped_grant_does_not_use_the_default_file() {
+        let _lock = curl_lock();
+        let home = kimi_home("synthetic-default", now() + 3600);
+        let bin = tempfile::tempdir().unwrap();
+        let _path = recording_curl(bin.path());
+        let _env = EnvVars::set(&[
+            (TEST_BASE_VAR, None),
+            (CLI_BASE_VAR, Some(GLOBAL_BASE)),
+            ("CURL_RECORD_DIR", bin.path().to_str()),
+        ]);
+        assert_eq!(kimi(home.path())["status"], "signed_out");
+        fs::write(
+            home.path()
+                .join("credentials/kimi-code-env-0e4f99c69cc27850.json"),
+            vec![b' '; MAX_OUTPUT as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(kimi(home.path())["status"], "unavailable");
+        assert!(!bin.path().join("argv.0").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kimi_native_refresh_receives_the_validated_global_pair_without_the_test_seam() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = curl_lock();
+        let home = kimi_home("synthetic-default", now() + 3600);
+        let script_dir = tempfile::tempdir().unwrap();
+        let node = script_dir.path().join("node");
+        fs::write(
+            &node,
+            r#"#!/bin/sh
+[ "$KIMI_CODE_BASE_URL" = "https://api.kimi.ai/coding/v1" ] || exit 97
+[ "$KIMI_CODE_OAUTH_HOST" = "https://auth.kimi.ai" ] || exit 98
+[ -z "${KIMI_OAUTH_HOST+x}" ] && [ -z "${HGS_TEST_KIMI_API_BASE+x}" ] || exit 99
+[ "$KIMI_CODE_HOME" = "$EXPECTED_KIMI_HOME" ] || exit 100
+printf '%s\n' '{"status":"ok","identity":{"name":"Fixture"}}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        let _path = PathEnv::prepend(script_dir.path());
+        let canonical = platform::canonical(home.path()).unwrap();
+        let _env = EnvVars::set(&[
+            (TEST_BASE_VAR, Some("https://example.invalid")),
+            (CLI_BASE_VAR, Some(GLOBAL_BASE)),
+            ("KIMI_CODE_OAUTH_HOST", Some("https://auth.kimi.ai")),
+            ("KIMI_OAUTH_HOST", Some("https://auth.kimi.com")),
+            ("EXPECTED_KIMI_HOME", canonical.to_str()),
+        ]);
+        write_global_grant(
+            home.path(),
+            "synthetic-expiring-global",
+            now().saturating_sub(120),
+        );
+        let cwd = env::current_dir().unwrap();
+        let climb: PathBuf = std::iter::repeat_n("..", cwd.components().count() - 1).collect();
+        let relative = climb.join(home.path().strip_prefix("/").unwrap());
+        let result = kimi(&relative);
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["identity"]["name"], "Fixture");
+        assert!(result["detail"].as_str().unwrap().contains(TEST_BASE_VAR));
+    }
+
+    #[test]
+    fn kimi_signature_tracks_the_selected_grant_and_region() {
+        let _lock = curl_lock();
+        let home = kimi_home("synthetic-default", now() + 3600);
+        let _env = EnvVars::set(&[(TEST_BASE_VAR, None), (CLI_BASE_VAR, None)]);
+        let default = signature(home.path(), "kimi");
+        fs::write(
+            home.path().join("config.toml"),
+            managed_kimi_config(GLOBAL_BASE, GLOBAL_KEY, "https://auth.kimi.ai"),
+        )
+        .unwrap();
+        write_global_grant(
+            home.path(),
+            &jwt(json!({"sub": "synthetic-a", "iat": 100})),
+            now() + 3600,
+        );
+        let global = signature(home.path(), "kimi");
+        assert_ne!(global, default);
+        fs::write(
+            home.path().join("credentials/kimi-code.json"),
+            b"ignored default file",
+        )
+        .unwrap();
+        write_global_grant(
+            home.path(),
+            &jwt(json!({"sub": "synthetic-a", "iat": 200})),
+            now() + 3600,
+        );
+        assert_eq!(signature(home.path(), "kimi"), global);
+        let account_b = jwt(json!({"sub": "synthetic-b", "iat": 200}));
+        write_global_grant(home.path(), &account_b, now() + 3600);
+        let before_sign_out = signature(home.path(), "kimi");
+        assert_ne!(before_sign_out, global);
+
+        fs::write(
+            home.path().join("credentials/kimi-code-env-0e4f99c69cc27850.json"),
+            json!({"access_token": "", "refresh_token": account_b}).to_string(),
+        )
+        .unwrap();
+        assert_ne!(signature(home.path(), "kimi"), before_sign_out);
+        assert_eq!(kimi(home.path())["status"], "signed_out");
+        let plain = signature(home.path(), "kimi");
+        let _invalid_seam = EnvVars::set(&[(TEST_BASE_VAR, Some("https://example.invalid"))]);
+        assert_ne!(signature(home.path(), "kimi"), plain);
     }
 
     #[cfg(unix)]
@@ -1703,13 +1971,10 @@ fi
     }
 
     #[test]
-    fn hostile_test_bases_are_ignored_without_a_request() {
-        let _lock = curl_lock();
-        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
-        server.set_nonblocking(true).unwrap();
-        let port = server.local_addr().unwrap().port();
-        let home = kimi_home("synthetic-token", now() + 3600);
+    fn hostile_test_bases_fail_loopback_validation() {
+        let port = 9999;
         for value in [
+            format!("http://127.0.0.2:{port}"),
             // Userinfo, which curl would read as `localhost:1` and send the
             // token to `127.0.0.2`. M1 in the review.
             format!("http://localhost:1@127.0.0.2:{port}"),
@@ -1738,24 +2003,8 @@ fi
             "http://127.0.0.1/#x".to_string(),
             " http://127.0.0.1/".to_string(),
         ] {
-            let _env = EnvVars::set(&[
-                (TEST_BASE_VAR, Some(&value)),
-                (CLI_BASE_VAR, None),
-            ]);
-            let result = kimi(home.path());
-            assert_eq!(result["status"], "unavailable", "{value}: {result}");
-            assert!(
-                result["detail"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("Ignored HGS_TEST_KIMI_API_BASE"),
-                "{value}: {result}"
-            );
+            assert!(loopback_test_base(&value).is_none(), "{value}");
         }
-        assert!(
-            server.accept().is_err(),
-            "a hostile test base sent the token"
-        );
     }
 
     #[test]
@@ -1867,7 +2116,7 @@ fi
             )
             .unwrap();
         platform::persist(cache, cache_path(&config, "native-dsh", &home)).unwrap();
-        let status = catalog_status(&config, "native-dsh", "dsh", &home);
+        let (status, _, _) = catalog_snapshot(&config, "native-dsh", "dsh", &home);
         assert_eq!(status["status"], "configured");
         assert_eq!(status["balance_available"], false);
         assert_eq!(
@@ -1886,6 +2135,7 @@ fi
 
     #[test]
     fn kimi_token_refresh_keeps_the_account_signature() {
+        let _lock = curl_lock();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         fs::create_dir_all(home.join("credentials")).unwrap();

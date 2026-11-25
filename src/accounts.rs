@@ -272,13 +272,6 @@ fn credential_file(home: &Path, provider: &str) -> bool {
     match provider {
         "codex" => home.join("auth.json").is_file(),
         "claude" => home.join(".credentials.json").is_file(),
-        "kimi" => fs::read_dir(home.join("credentials"))
-            .ok()
-            .is_some_and(|entries| {
-                entries
-                    .filter_map(|x| x.ok())
-                    .any(|x| x.path().extension().is_some_and(|x| x == "json"))
-            }),
         _ => false,
     }
 }
@@ -288,10 +281,10 @@ fn row(config: &Config, id: &str, p: &Profile, native: bool) -> Value {
     } else {
         profile_home(config, id)
     };
-    let found = credential_file(&home, &p.provider);
+    let (status, revision, kimi_found) = inspection::catalog_snapshot(config, id, &p.provider, &home);
+    let found = kimi_found.unwrap_or_else(|| credential_file(&home, &p.provider));
     json!({"id":id,"provider":p.provider,"label":p.label,"home":home,"native":native,
-        "account_status":inspection::catalog_status(config,id,&p.provider,&home),
-        "auth_revision":inspection::signature(&home,&p.provider),
+        "account_status":status,"auth_revision":revision,
         "credential_file":found,"auth_status":if found {"credential_file"} else {"unknown"},
         "portable":p.provider!="claude","installed":platform::available(&p.provider)})
 }
@@ -333,7 +326,7 @@ fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
     {
         let home = native_home(config, "dsh");
         rows.push(json!({"id":"native-dsh","provider":"dsh","label":catalog.native_labels.get("native-dsh").map(String::as_str).unwrap_or(default_label("dsh")),"home":home,
-            "account_status":inspection::catalog_status(config,"native-dsh","dsh",&home),
+            "account_status":inspection::catalog_snapshot(config,"native-dsh","dsh",&home).0,
             "native":true,"credential_file":false,"auth_status":"unknown","portable":false,"installed":platform::available("dsh")}));
     }
     if wanted("opencode")
