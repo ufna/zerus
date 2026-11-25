@@ -434,6 +434,26 @@ pub(super) fn mirror_legacy(record: &Value) -> Result<()> {
     atomic_record(&path, &mut shadow)
 }
 
+/// A retained shadow can outlive its target. Under the writer lock, prove
+/// absence with bounded metadata reads when there is no terminal ID layout.
+/// A present or unreadable location still needs the ordinary resolver.
+fn absent_legacy_target(name: &str) -> bool {
+    let missing = |path: &Path| {
+        fs::symlink_metadata(path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+    };
+    let legacy = legacy_record_path(name);
+    let root = root();
+    if !missing(&root.join("sessions")) || !missing(&legacy) {
+        return false;
+    }
+    let bindings = root.join("bindings");
+    match fs::symlink_metadata(&bindings) {
+        Ok(directory) if directory.is_dir() => missing(&bindings.join(legacy.file_name().unwrap())),
+        Err(error) => error.kind() == io::ErrorKind::NotFound,
+        _ => false,
+    }
+}
+
 pub(super) fn sync_legacy_locked() -> Result<()> {
     for route in json_files(&root().join("name_routes"))? {
         let route = load(&route)?;
@@ -447,7 +467,10 @@ pub(super) fn sync_legacy_locked() -> Result<()> {
             return Err("invalid legacy rename shadow identity".into());
         }
         let name = string(&shadow, "rename_target");
-        if name.is_empty() || !record_path(name).exists() {
+        if name.is_empty()
+            || (storage::listing_scope::active() && absent_legacy_target(name))
+            || !record_path(name).exists()
+        {
             continue;
         }
         let mut record = read(name)?;
