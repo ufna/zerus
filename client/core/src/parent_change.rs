@@ -32,7 +32,7 @@ pub enum ParentChange {
         run_id: String,
         replace: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        project: Option<ProjectConsent>,
+        project: Option<Box<ProjectConsent>>,
     },
 }
 

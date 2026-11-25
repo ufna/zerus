@@ -390,12 +390,16 @@ fn state_command(verb: &str, args: &[String]) -> Result<i32> {
     command.extend_from_slice(args);
     state::dispatch(&command).map_err(|e| Error::new(1, e))
 }
-fn parent_peer_script(remote_args: &[String]) -> String {
-    let marker = if has(remote_args, "--project") {
+fn parent_peer_marker(args: &[String]) -> &'static str {
+    if has(args, "--project") {
         "session-parent-project-v1"
     } else {
         "session-parent-v1"
-    };
+    }
+}
+
+fn parent_peer_script(remote_args: &[String]) -> String {
+    let marker = parent_peer_marker(remote_args);
     platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*{marker}[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi", platform::join(remote_args)))
 }
 
@@ -2519,6 +2523,7 @@ fn remote_via(
             "notifications" => vec![("session-notifications-v1", true)],
             "keep-warm" => vec![("session-keep-warm-v1", true)],
             "question-routing" => vec![("session-question-routing-v1", true)],
+            "parent" => vec![(parent_peer_marker(&args), true)],
             "hooks" => vec![("hooks-health-v1", false)],
             "analytics" => vec![("hgs [@host] analytics --json", false)],
             "path-info" => vec![("hgs [@host] path-info --path", false)],
