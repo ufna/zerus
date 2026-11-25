@@ -296,10 +296,21 @@ fn row(config: &Config, id: &str, p: &Profile, native: bool) -> Value {
         "portable":p.provider!="claude","installed":platform::available(&p.provider)})
 }
 fn list(config: &Config) -> Result<Value> {
+    listing(config, None)
+}
+/// Every provider's accounts, or only `only`'s (`account ls --provider P`):
+/// Teams' member model pickers read one agent's accounts and never run or ask
+/// OpenCode or another provider's host for it. The revision is the whole
+/// catalog's either way.
+fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
+    let wanted = |provider: &str| only.is_none_or(|only| only == provider);
     let bytes = read(config)?;
     let catalog = decode(&bytes)?;
     let mut rows = Vec::new();
-    for provider in ["codex", "claude", "kimi"] {
+    for provider in ["codex", "claude", "kimi"]
+        .into_iter()
+        .filter(|p| wanted(p))
+    {
         rows.push(row(
             config,
             &format!("native-{provider}"),
@@ -314,16 +325,20 @@ fn list(config: &Config) -> Result<Value> {
             true,
         ));
     }
-    for (id, p) in &catalog.profiles {
+    for (id, p) in catalog.profiles.iter().filter(|(_, p)| wanted(&p.provider)) {
         rows.push(row(config, id, p, false));
     }
-    if platform::available("dsh") || catalog.hidden_profiles.contains("native-dsh") {
+    if wanted("dsh")
+        && (platform::available("dsh") || catalog.hidden_profiles.contains("native-dsh"))
+    {
         let home = native_home(config, "dsh");
         rows.push(json!({"id":"native-dsh","provider":"dsh","label":catalog.native_labels.get("native-dsh").map(String::as_str).unwrap_or(default_label("dsh")),"home":home,
             "account_status":inspection::catalog_status(config,"native-dsh","dsh",&home),
             "native":true,"credential_file":false,"auth_status":"unknown","portable":false,"installed":platform::available("dsh")}));
     }
-    if platform::available("opencode") || catalog.hidden_profiles.contains("native-opencode") {
+    if wanted("opencode")
+        && (platform::available("opencode") || catalog.hidden_profiles.contains("native-opencode"))
+    {
         let row=json!({"id":"native-opencode","provider":"opencode","label":catalog.native_labels.get("native-opencode").map(String::as_str).unwrap_or(default_label("opencode")),"home":native_home(config,"opencode"),"native":true,"credential_file":false,"auth_status":"native_configuration","portable":false,"installed":false,"permission_mode_supported":false});
         #[cfg(unix)]
         let row = {
@@ -553,6 +568,13 @@ fn check_revision(bytes: &[u8], args: &[String]) -> Result<()> {
     }
     Ok(())
 }
+/// `account model-settings ID`'s reply, for tests of its readers.
+#[cfg(test)]
+pub(crate) fn model_settings(config: &Config, id: &str) -> Result<Value> {
+    model_defaults::inspect(config, id)
+}
+/// The providers `account ls --provider` accepts.
+const PROVIDERS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
 pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     let dry = dry || args.iter().any(|arg| arg == "--dry-run");
     let operation = args.first().map(String::as_str).unwrap_or("ls");
@@ -576,7 +598,14 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
         check_revision(&read(config)?, args)?;
     }
     match operation {
-        "ls"=>{println!("{}",list(config)?);},
+        "ls"=>{
+            let only=match args.iter().position(|x|x=="--provider") {
+                None=>None,
+                Some(i)=>Some(args.get(i+1).map(String::as_str).filter(|p|PROVIDERS.contains(p))
+                    .ok_or_else(||Error::new(2,"Choose --provider codex, claude, kimi, dsh or opencode."))?),
+            };
+            println!("{}",listing(config,only)?);
+        },
         "inspect"=>{println!("{}",inspection::inspect(config,args)?);},
         "model-settings"=>{println!("{}",model_defaults::inspect(config,id)?);},
         "model-defaults"=>{println!("{}",model_defaults::set(config,args,dry)?);},

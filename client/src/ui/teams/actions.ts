@@ -109,16 +109,25 @@ export function taskButtons(card: TaskView, teamStatus: string): TaskButton[] {
   });
 }
 
+/** Member actions the Team tab handles itself and never sends: the core has
+ * no such kind (client/core teams/fixtures/action-kinds.json). */
+export const WINDOW_ONLY_MEMBER_ACTIONS: ReadonlySet<string> = new Set(["launch_again"]);
+
 /** A member's operations, by the team's status and the member's state: pause
  * an active member; resume a paused one that has a session; stop an active or
  * paused one the person has not stopped (the store refuses a second Stop);
  * remove any member that is not removed and is not the lead. Each id is the
- * action's kind as the core reads it (client/core teams/fixtures/action-kinds.json). */
+ * action's kind as the core reads it (client/core teams/fixtures/action-kinds.json),
+ * except `launch_again`: a member that was never started has no session to
+ * resume (ops members.rs resume), and its start card's Retry starts it again
+ * (desktop teams launch/card.rs), so the Team tab opens the team's cards
+ * (zerus-63rru.197 A3). */
 export function memberActions(member: MemberView, teamStatus: string): { id: string; text: string; danger?: boolean; disabled?: boolean; reason?: string }[] {
   if (!activeTeam(teamStatus)) return [];
   const active = member.state === "active";
   const paused = member.state === "paused";
   return [
+    ...(member.state === "not_created" ? [{ id: "launch_again", text: tr("Launch again…") }] : []),
     ...(active ? [{ id: "pause_member", text: tr("Pause") }] : []),
     ...(paused && member.session ? [{ id: "resume_member", text: tr("Resume") }] : []),
     ...(active || paused ? [{ id: "stop_member", text: tr("Stop"), danger: true,

@@ -130,7 +130,7 @@ enum Work {
         ticket: Ticket,
         live: Arc<Admitted>,
         worker: JoinHandle<()>,
-        result: mpsc::Receiver<Ended>,
+        result: mpsc::Receiver<(Ended, Option<target::Identity>)>,
         resources: Arc<Original>,
         roots: Arc<Roots>,
         token: Arc<()>,
@@ -140,6 +140,7 @@ enum Work {
         live: Arc<Admitted>,
         roots: Arc<Roots>,
         token: Arc<()>,
+        target: Option<target::Identity>,
         probe: Option<Probe>,
         next: Instant,
     },
@@ -360,12 +361,13 @@ impl Runtime {
             }
             // From here on nothing proves the request was not admitted.
             proof = Proof::Admitting;
-            let row = ledger::admit(
-                &tx,
-                &live.original,
-                &lease.writer_epoch,
-                chrono::Utc::now().timestamp_millis(),
-            )?;
+            let at = chrono::Utc::now().timestamp_millis();
+            let row = ledger::admit(&tx, &live.original, &lease.writer_epoch, at)?;
+            // The person's own message, admitted by their window permit: its
+            // mark commits with its original, never for a repeat (zerus-46l1q).
+            if original.is_none() {
+                crate::desktop::person_mark::record(&tx, &live.original, at)?;
+            }
             tx.commit()?;
             // The same original again gets only its own receipt; only the
             // first admission holds the live admission.
@@ -612,24 +614,38 @@ impl Runtime {
                                 // The selected session's actual backend and run;
                                 // the admission veto runs again in the final spawn
                                 // turn.
-                                let value = if selected.cancel.load(Ordering::Acquire)
-                                    || !target::current(&store_roots, &selected.original.plan)
-                                {
-                                    Ended::NotStarted
-                                } else {
-                                    send(
-                                        &selected,
-                                        &lock,
-                                        &guard,
-                                        #[cfg(target_os = "linux")]
-                                        image,
-                                        #[cfg(test)]
-                                        executor,
-                                        #[cfg(test)]
-                                        hook,
-                                    )
+                                if selected.cancel.load(Ordering::Acquire) {
+                                    let _ = done_send.send((Ended::NotStarted, None));
+                                    return;
+                                }
+                                let Some(record) =
+                                    target::record(&store_roots, &selected.original.plan)
+                                else {
+                                    let _ = done_send.send((Ended::NotStarted, None));
+                                    return;
                                 };
-                                let _ = done_send.send(value);
+                                let target =
+                                    if selected.original.binding.kind == wire::Kind::DeferredSend {
+                                        target::Identity::from_record(
+                                            &record,
+                                            selected.lease.machine_id(),
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                let value = send(
+                                    &selected,
+                                    &lock,
+                                    &guard,
+                                    target.is_some(),
+                                    #[cfg(target_os = "linux")]
+                                    image,
+                                    #[cfg(test)]
+                                    executor,
+                                    #[cfg(test)]
+                                    hook,
+                                );
+                                let _ = done_send.send((value, target));
                             });
                     match spawned {
                         Ok(worker) => {
@@ -671,11 +687,12 @@ impl Runtime {
                         });
                         return Ok(());
                     }
-                    let ended = worker
+                    let (ended, target) = worker
                         .join()
                         .ok()
                         .and_then(|_| result.try_recv().ok())
-                        .unwrap_or(Ended::Unknown("deferred_send_unobserved"));
+                        .unwrap_or((Ended::Unknown("deferred_send_unobserved"), None));
+                    let target = target.filter(|_| matches!(ended, Ended::Exited { code: 1, .. }));
                     let tx = store
                         .db
                         .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -704,6 +721,7 @@ impl Runtime {
                         live,
                         roots,
                         token,
+                        target,
                         probe: None,
                         next: Instant::now(),
                     });
@@ -713,9 +731,10 @@ impl Runtime {
                     live,
                     roots,
                     token,
+                    target,
                     probe,
                     next,
-                } => return self.drain(store, id, live, roots, token, probe, next),
+                } => return self.drain(store, id, live, roots, token, target, probe, next),
             }
             return Ok(());
         }
@@ -810,6 +829,7 @@ impl Runtime {
         live: Arc<Admitted>,
         roots: Arc<Roots>,
         token: Arc<()>,
+        target: Option<target::Identity>,
         probe: Option<Probe>,
         next: Instant,
     ) -> Result<()> {
@@ -819,6 +839,7 @@ impl Runtime {
                 live: live.clone(),
                 roots: roots.clone(),
                 token: token.clone(),
+                target: target.clone(),
                 probe,
                 next,
             });
@@ -888,6 +909,7 @@ impl Runtime {
         };
         let loans = (self.owner.clone(), live.clone(), token.clone());
         let store_roots = roots.clone();
+        let identity = target.clone();
         let wait = self.read_wait;
         #[cfg(test)]
         let hook = self.read_hook.clone();
@@ -909,7 +931,8 @@ impl Runtime {
                                 hook();
                             }
                         };
-                        let (cli, evidence) = receipt::read(&store_roots, &plan, &between);
+                        let (cli, evidence) =
+                            receipt::read(&store_roots, &plan, identity.as_ref(), &between);
                         let cli = if Instant::now() > deadline {
                             Observed::Unknown(receipt::TIMED_OUT)
                         } else {
@@ -1018,19 +1041,23 @@ impl Runtime {
         self.image = Some(Arc::new(Pin::open(path).unwrap()));
     }
 }
-/// The one original child: `hgs send <session> --json` with the frozen
-/// stdin. Nothing exists before the spawn, so every refusal here never
-/// started.
+/// The one original child, with the frozen send stdin. When the durable
+/// terminal target was captured, ask the same pinned CLI for a closed refusal.
 fn send(
     live: &Admitted,
     lock: &Arc<InheritedLock>,
     resources: &Arc<dyn Send + Sync>,
+    terminal_outcome: bool,
     #[cfg(target_os = "linux")] image: Option<Arc<Pin>>,
     #[cfg(test)] executor: Option<Executor>,
     #[cfg(test)] hook: Option<Hook>,
 ) -> Ended {
     let plan = &live.original.plan;
-    let args = plan.args().to_vec();
+    let mut args = plan.args().to_vec();
+    // The service executes its own pinned binary, which implements this option.
+    if terminal_outcome {
+        args.insert(2, "--delivery-outcome-v2".into());
+    }
     let input = live.original.intent.original.as_bytes();
     // The test executor receives exactly what the child would; it stands in
     // for the spawn turn, so the veto runs before it as in `child::run`.

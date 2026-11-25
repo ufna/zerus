@@ -64,6 +64,7 @@
         }
       },
       "goal": "",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000e001",
       "integration_branch": "zerus/team/p130-rebind",
       "lead": "lead",
@@ -72,6 +73,7 @@
       "revision": 4,
       "status": "running"
     },
+    "edit_goal": "",
     "groups": [
       {
         "cards": [],
@@ -289,6 +291,7 @@
         }
       },
       "goal": "",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000e001",
       "integration_branch": "zerus/team/p130-rebind",
       "lead": "lead",
@@ -297,6 +300,7 @@
       "revision": 2,
       "status": "running"
     },
+    "edit_goal": "",
     "groups": [
       {
         "cards": [],

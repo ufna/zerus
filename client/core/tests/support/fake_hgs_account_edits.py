@@ -14,6 +14,12 @@ assert args[:2] == ["--expect-machine", "11111111-1111-4111-8111-111111111111"]
 assert args[2] == "account"
 catalog = json.loads((root / "catalog.json").read_text())
 if args[3] == "ls":
+    # As the real CLI: `--provider P` lists only P's rows, same revision.
+    if "--provider" in args:
+        provider = args[args.index("--provider") + 1]
+        for key in ("profiles", "removed_profiles"):
+            if key in catalog:
+                catalog[key] = [p for p in catalog[key] if p["provider"] == provider]
     print(json.dumps(catalog))
     sys.exit()
 if args[3] == "add":
@@ -26,8 +32,10 @@ else:
     profile = next(p for p in catalog["profiles"] if p["id"] == args[4])
 if args[3] == "model-settings":
     print(json.dumps({"account_id": profile["id"], "provider": profile["provider"], "revision": catalog["revision"],
-        "models": [{"id": "model-a", "label": "Example model", "effort_options": ["low", "high"]}],
-        "effort_supported": True, "defaults": profile.get("model_defaults", {"model": "", "effort": ""}),
+        # A row may carry its own synthetic model list; otherwise one model.
+        "models": profile.get("models", [{"id": "model-a", "label": "Example model", "effort_options": ["low", "high"]}]),
+        # As the real CLI (src/accounts/model_defaults.rs effort_supported): Kimi keeps effort native.
+        "effort_supported": profile["provider"] in ("codex", "claude", "dsh"), "defaults": profile.get("model_defaults", {"model": "", "effort": ""}),
         "provider_defaults": {"model": "model-a", "effort": "low"}}))
     sys.exit()
 assert args[args.index("--revision") + 1] == catalog["revision"]

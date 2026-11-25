@@ -9,7 +9,7 @@ impl Reconcile {
     pub fn step(&mut self, root: &Path) -> anyhow::Result<()> {
         // Drop the RO SQLite transaction BEFORE taking the canonical writer.
         let candidates = {
-            let store = Store::read(root)?;
+            let store = Store::read_index(root, store::Index::Certified)?;
             let ready: bool =
                 store
                     .db

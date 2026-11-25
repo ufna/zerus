@@ -313,6 +313,62 @@ class Questions(unittest.TestCase):
         self.answer(self.payload(question_id=card['question_id'],expected_question_hash=card['question_hash']),success=False)
         self.assertEqual(self.received(),b'')
 
+    def person_turn(self):
+        # The session holds a person turn (zerus-46l1q): the answer writer
+        # under test, not this fixture, decides whether it survives.
+        data=json.loads(self.record_path.read_text())
+        request=str(uuid.uuid4())
+        data['person_turn']=dict(request_id=request,origin='desktop',run_id=data['run_id'],
+            conversation_id=data['conversation_id'],admitted_at=1,bound_at=2,native_turn=None)
+        self.record_path.write_text(json.dumps(data))
+        return request
+
+    def assert_turn_ended(self,request):
+        data=json.loads(self.record_path.read_text())
+        self.assertNotIn('person_turn',data)
+        self.assertEqual(data.get('person_turn_spent'),request)
+
+    def test_an_answer_ends_the_person_turn_whoever_appears_to_call(self):
+        # S1-2: the receiving side ends the turn at every answer it prepares
+        # for delivery, without any caller test.
+        request=self.person_turn()
+        self.assertEqual(self.answer()['status'],'answered')
+        self.assert_turn_ended(request)
+
+    def test_a_forwarded_answer_ends_the_person_turn_on_the_receiving_side(self):
+        self.script('ssh',"""#!/usr/bin/env python3
+import os,sys
+os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
+""")
+        request=self.person_turn()
+        self.assertEqual(self.answer(remote=True)['status'],'answered')
+        self.assert_turn_ended(request)
+
+    def test_an_answer_waits_for_a_writer_holding_the_person_authority(self):
+        # zerus-46l1q review D3: a writer acting at the person's request holds
+        # the state Root lock from its final recheck through its commit; the
+        # real answer writer ends the turn under that same lock, so it waits
+        # for the commit and ends the turn only after it.
+        import fcntl
+        request=self.person_turn()
+        lock=open(self.state/'.lock','a+')
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        try:
+            answer=subprocess.Popen([str(HGS),'answer',self.name,'--json'],stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=self.env)
+            answer.stdin.write(json.dumps(self.payload()))
+            answer.stdin.close()
+            time.sleep(1.0)
+            self.assertIsNone(answer.poll(),'the answer did not wait for the held commit')
+            self.assertEqual(json.loads(self.record_path.read_text())['person_turn']['request_id'],request)
+        finally:
+            fcntl.flock(lock,fcntl.LOCK_UN)
+            lock.close()
+        out,err=answer.communicate(timeout=15)
+        self.assertEqual(answer.returncode,0,err)
+        self.assertEqual(json.loads(out)['status'],'answered')
+        self.assert_turn_ended(request)
+
     def test_remote_answer_payload_remains_stdin(self):
         self.script('ssh',"""#!/usr/bin/env python3
 import json,os,pathlib,sys

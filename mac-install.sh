@@ -58,7 +58,9 @@ sources=(Cargo.toml Cargo.lock build.rs .cargo src scripts install.sh hgs hgs_st
   services/mobile/connector/Cargo.toml services/mobile/connector/Cargo.lock services/mobile/connector/.cargo
   services/mobile/connector/src services/mobile/relay/Cargo.toml services/mobile/relay/src
   services/mobile/crypto/Cargo.toml services/mobile/crypto/src
+  services/mobile/endpoint/Cargo.toml services/mobile/endpoint/src
   services/mobile/windows-private/Cargo.toml services/mobile/windows-private/src
+  crates/mobile-task-edit/Cargo.toml crates/mobile-task-edit/src
   crates/replica/Cargo.toml crates/replica/Cargo.lock crates/replica/.cargo crates/replica/src
   crates/watch-protocol/Cargo.toml crates/watch-protocol/Cargo.lock crates/watch-protocol/.cargo crates/watch-protocol/src
   client/core/Cargo.toml client/core/src
@@ -84,8 +86,9 @@ fi
 bash "$HOME/.local/src/hgs/.rust-build/install.sh"
 # Old callbacks and saved launch paths still refer to this checkout. Only publish
 # their entry points after a working native binary exists, using atomic renames.
+# Preserve the CLI's mobile path dependencies in that checkout as well.
 cd "$HOME/.local/src/hgs/.rust-build"
-copy="Cargo.toml Cargo.lock build.rs .cargo src crates client/core/Cargo.toml client/core/src scripts install.sh tests README.md LICENSE THIRD_PARTY_NOTICES.md docs mac-install.sh tmux.conf .gitignore"
+copy="Cargo.toml Cargo.lock build.rs .cargo src crates client/core/Cargo.toml client/core/src services/mobile/crypto/Cargo.toml services/mobile/crypto/src services/mobile/endpoint/Cargo.toml services/mobile/endpoint/src services/mobile/windows-private/Cargo.toml services/mobile/windows-private/src scripts install.sh tests README.md LICENSE THIRD_PARTY_NOTICES.md docs mac-install.sh tmux.conf .gitignore"
 (cd .. && rm -rf $copy)
 tar cf - $copy | tar xf - -C ..
 for entry in hgs hgs_state.py; do

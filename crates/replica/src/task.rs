@@ -75,6 +75,9 @@ pub struct TaskDoc {
     pub(crate) saved_stage: Option<Stage>,
     /// In-process creation witness. Importing bytes never manufactures it.
     pub(crate) created_here: bool,
+    /// The person's message this process's writes carry out, recorded with
+    /// each history entry it appends (zerus-46l1q). Never stored by itself.
+    request: Option<crate::PersonRequestRef>,
     /// A phone cache can project state, never mutate a sealed native task.
     pub(crate) projection_only: bool,
 }
@@ -241,6 +244,7 @@ impl TaskDoc {
             needs_fold: false,
             saved_stage: None,
             created_here: true,
+            request: None,
             projection_only: false,
         };
         this.log("created", &task.author, task.now, "", None)?;
@@ -265,6 +269,7 @@ impl TaskDoc {
             needs_fold: false,
             saved_stage: None,
             created_here: false,
+            request: None,
             projection_only: false,
         })
     }
@@ -296,6 +301,7 @@ impl TaskDoc {
             needs_fold: self.needs_fold,
             saved_stage: self.saved_stage,
             created_here: false,
+            request: None,
             projection_only: self.projection_only,
         };
         if string(&candidate.meta(), "uuid") != Some(self.uuid.clone())
@@ -723,6 +729,8 @@ impl TaskDoc {
                     considered: integer(&entry, "considered").and_then(|n| u64::try_from(n).ok()),
                     reviews: string(&entry, "reviews"),
                     of: string(&entry, "of"),
+                    person_request: string(&entry, "person_request")
+                        .and_then(|raw| serde_json::from_str(&raw).ok()),
                 },
             ));
         }
@@ -884,7 +892,35 @@ impl TaskDoc {
         if let Some(session) = session {
             entry.insert("session", serde_json::to_string(session)?)?;
         }
+        if let Some(request) = &self.request {
+            entry.insert("person_request", serde_json::to_string(request)?)?;
+        }
         Ok(entry)
+    }
+
+    /// Records `request` with every history entry this document appends from
+    /// now on: an agent carries out the person's own message (zerus-46l1q).
+    /// The caller proved the request; this records evidence only.
+    pub fn at_request(&mut self, request: Option<crate::PersonRequestRef>) {
+        self.request = request;
+    }
+
+    /// The person's message this document's new entries carry out.
+    pub fn request(&self) -> Option<&crate::PersonRequestRef> {
+        self.request.as_ref()
+    }
+
+    /// One history entry saying what an agent did at the person's request,
+    /// for an action whose own entries were written before the request was
+    /// recorded (a new task's creation).
+    pub fn record_at_request(&mut self, actor: &Actor, text: &str, now: i64) -> Result<()> {
+        self.writable()?;
+        if self.request.is_none() {
+            return Err(Error::new("no person request to record"));
+        }
+        crate::schema::check_text(text, "text")?;
+        self.log("person_request", actor, now, text, None)?;
+        self.commit()
     }
 
     /// Commits a change. A task that records attempts keeps the execution
@@ -1984,6 +2020,57 @@ mod tests {
             now: 1,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn a_request_marks_only_the_entries_written_after_it_and_survives_a_reload() {
+        let request = crate::PersonRequestRef {
+            machine: "m1".into(),
+            session: "codex/api".into(),
+            session_id: "launch_id:api".into(),
+            run_id: "run-1".into(),
+            conversation_id: "conversation-1".into(),
+            request_id: "44444444-4444-4444-8444-444444444444".into(),
+            origin: "desktop".into(),
+        };
+        let agent = Actor::Agent(api());
+        let mut task = task(Stage::Todo);
+        // Nothing to record without a request.
+        assert!(task.record_at_request(&agent, "Filed", 2).is_err());
+        task.comment("before", &agent, 2).unwrap();
+        task.at_request(Some(request.clone()));
+        task.record_at_request(&agent, "Filed for another session", 3)
+            .unwrap();
+        task.comment("during", &agent, 4).unwrap();
+        task.at_request(None);
+        task.comment("after", &agent, 5).unwrap();
+        let reloaded = TaskDoc::from_bytes(&task.snapshot().unwrap()).unwrap();
+        let marked: Vec<_> = reloaded
+            .view()
+            .unwrap()
+            .log
+            .into_iter()
+            .filter(|e| e.at >= 2)
+            .map(|e| (e.kind, e.text, e.person_request.is_some()))
+            .collect();
+        assert_eq!(
+            marked,
+            [
+                ("comment".into(), "before".into(), false),
+                (
+                    "person_request".into(),
+                    "Filed for another session".into(),
+                    true
+                ),
+                ("comment".into(), "during".into(), true),
+                ("comment".into(), "after".into(), false),
+            ]
+        );
+        // An older reader's entry without the field, and a newer one with it,
+        // decode alike; the field is optional evidence.
+        let entry: LogEntry =
+            serde_json::from_str(r#"{"kind":"comment","actor":{"kind":"person"},"at":1}"#).unwrap();
+        assert_eq!(entry.person_request, None);
     }
 
     fn api() -> SessionKey {

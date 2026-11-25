@@ -1,0 +1,104 @@
+{
+  "loaded": true,
+  "status": "1 project conflict(s) need review in Swarm.",
+  "status_error": true,
+  "conflicts": 1,
+  "unconnected": [],
+  "notice": null,
+  "projects": [
+    {
+      "id": "orders",
+      "name": "Orders API",
+      "color": "#3fb950",
+      "accessible": true,
+      "is_default": false,
+      "palette": 0,
+      "folders": [
+        {
+          "id": "o1",
+          "key": "o1",
+          "name": "example",
+          "path": "/workspace/example",
+          "computer": "workstation",
+          "machine": "workstation",
+          "machine_id": "00000000-0000-4000-8000-0000000000aa"
+        },
+        {
+          "id": "o2",
+          "key": "o2",
+          "name": "orders",
+          "path": "/srv/orders",
+          "computer": "studio",
+          "machine": "studio",
+          "machine_id": "00000000-0000-4000-8000-0000000000bb"
+        }
+      ]
+    },
+    {
+      "id": "two",
+      "name": "Two checkouts",
+      "color": null,
+      "accessible": true,
+      "is_default": false,
+      "palette": 1,
+      "folders": [
+        {
+          "id": "t1",
+          "key": "t1",
+          "name": "two-a",
+          "path": "/workspace/two-a",
+          "computer": "workstation",
+          "machine": "workstation",
+          "machine_id": "00000000-0000-4000-8000-0000000000aa"
+        },
+        {
+          "id": "t2",
+          "key": "t2",
+          "name": "two-b",
+          "path": "/workspace/two-b",
+          "computer": "workstation",
+          "machine": "workstation",
+          "machine_id": "00000000-0000-4000-8000-0000000000aa"
+        }
+      ]
+    },
+    {
+      "id": "elsewhere",
+      "name": "Studio only",
+      "color": null,
+      "accessible": true,
+      "is_default": false,
+      "palette": 2,
+      "folders": [
+        {
+          "id": "e1",
+          "key": "e1",
+          "name": "elsewhere",
+          "path": "/srv/elsewhere",
+          "computer": "studio",
+          "machine": "studio",
+          "machine_id": "00000000-0000-4000-8000-0000000000bb"
+        }
+      ]
+    },
+    {
+      "id": "ungrouped",
+      "name": "Inbox",
+      "color": null,
+      "accessible": true,
+      "is_default": true,
+      "palette": 3,
+      "folders": []
+    },
+    {
+      "id": "hidden",
+      "name": "Not shared here",
+      "color": null,
+      "accessible": false,
+      "is_default": false,
+      "palette": 4,
+      "folders": []
+    }
+  ],
+  "swarm_id": "swarm-1"
+}

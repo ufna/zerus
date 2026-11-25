@@ -470,7 +470,7 @@ fn cancel_recovery(owner: &Arc<owner::Owner>, record: &Value) -> Result<()> {
     staged.commit(&fence).map(drop)
 }
 
-fn mark_input(owner: &Arc<owner::Owner>, at: f64) -> Result<()> {
+fn mark_input(owner: &Arc<owner::Owner>, at: f64, receipt: &Value) -> Result<()> {
     with(owner, |held| {
         if held.phase != Phase::Staged || held.child.is_some() {
             return Err("Original Send input marker requires settled Stage".into());
@@ -478,8 +478,23 @@ fn mark_input(owner: &Arc<owner::Owner>, at: f64) -> Result<()> {
         Ok(())
     })?;
     let mut record = owner.snapshot()?.0;
+    // This send is input too: it ends any person turn (zerus-46l1q).
+    crate::state::person_turn::end(&mut record);
+    // The same acceptance metadata the ordinary input writer publishes for
+    // its new pending input (zerus-46l1q, review R3-4).
+    input::acceptance::bind_native_context(&mut record, receipt);
     record["input_pending_at"] = json!(at);
     record["input_pending_request"] = json!(header(owner)?.request_id);
+    record["input_pending_digest"] = receipt["digest"].clone();
+    record["input_pending_text_sha256"] = json!(format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(
+            receipt["submitted_text"]
+                .as_str()
+                .unwrap_or_default()
+                .as_bytes()
+        )
+    ));
     if header(owner)?.agent == "claude" {
         record["input_typing"] = json!({"request_id": header(owner)?.request_id, "until": now() + input::TYPING_SECONDS});
         if record.get("input_seen_at").is_none() { record["input_seen_at"] = json!(0.0); }
@@ -660,8 +675,9 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
         let mut receipt = with(owner, |held| Ok(held.value.clone()))?;
         receipt["submitted_at"] = json!(at);
         check_replies(&owner.snapshot()?.0, &receipt)?;
+        let published = receipt.clone();
         receipt_write(owner, receipt, false)?;
-        mark_input(owner, at)?;
+        mark_input(owner, at, &published)?;
         let mut transcript = if h.agent == "claude" { input::settle::Transcript::of(&owner.snapshot()?.0) } else { None };
         let pasted_at = now();
         send_helpers::paste(owner, progress.clone())?;

@@ -39,7 +39,7 @@ pub(crate) enum SendAnswer {
     /// `submitted` record, a submission to the terminal.
     Recorded(wire::Outcome),
     /// This original never reached the service, or its exact drained
-    /// receipt proves that its child never started. Nothing was sent.
+    /// receipt proves no input was offered. Nothing was sent.
     Unsent(String),
     /// The original's result is unknown. It is never sent again.
     Unconfirmed(String),
@@ -69,6 +69,11 @@ pub(crate) fn settled(receipt: &wire::Receipt, plan: &wire::Plan) -> Option<Send
     if receipt.not_started(plan) {
         return Some(SendAnswer::Unsent(NOT_STARTED.into()));
     }
+    if let Some(reason) = receipt.not_offered(plan) {
+        return Some(SendAnswer::Unsent(
+            wire::refusal::MESSAGE.replace("%1", reason),
+        ));
+    }
     if let Some(result) = receipt.result(plan) {
         return Some(match result {
             Ok(()) => SendAnswer::Recorded(receipt.outcome.clone()?),
@@ -78,7 +83,7 @@ pub(crate) fn settled(receipt: &wire::Receipt, plan: &wire::Plan) -> Option<Send
     // Drained but not Recorded or Failed: Unknown for good.
     (receipt.valid() && receipt.drained && receipt.binding.agrees(plan)).then(|| {
         if let Some(refusal) = receipt.refusal.as_ref().filter(|value| value.matches(plan)) {
-            return SendAnswer::Unconfirmed(wire::refusal::MESSAGE.replace("%1", &refusal.reason));
+            return SendAnswer::Unconfirmed(format!("{UNCONFIRMED}\n{}", refusal.reason));
         }
         let mut message = UNCONFIRMED.to_owned();
         if let Some(exit) = receipt.cli_exit.as_ref().filter(|exit| exit.code != 0) {

@@ -121,6 +121,36 @@ HGS path variables, never HGS session/run identity. `self` never routes to a pee
 and refuses `--dry-run`. Claimed identity never enters send/graph attribution,
 task ownership or permission proof.
 
+`person_request` in the JSON reply shows whether the person's own message lets
+this session act for the person now (zerus-46l1q): `request_id`, `origin`
+(`desktop`), `age_seconds` and `expires_in_seconds`, or `null`. A desktop
+composer message the window admits through its deferred send writes a person
+mark in the desktop store, in the same transaction as its original row, naming
+the exact session, run, conversation and `hgs send` stdin digest. Question
+routes, `hgs send`, launches, team hand-outs, task dispatch, timers, recovery
+and keep-warm never write one; a first message to a conversation not yet known,
+a full ledger (4096 marks) and macOS, which refuses every deferred send
+original, write none. The Claude, Codex or Kimi prompt hook that reports exactly
+that receipt's text, after it was sent and outside any running tool call, starts
+the person turn; one message starts at most one, within twelve hours of its
+admission. Any later prompt of the main agent, any input receipt, any answer
+delivered into the session, a run or conversation change, or twelve hours end
+it. The hook records the native identity of the input it reports (Claude's
+`prompt_id`, Codex's `turn_id`, Kimi's user `turn_id`). The turn grants nothing
+until the send itself witnessed exactly that input: Claude's send writer records
+the typed user row that proved its submission in its receipt (`native_input`,
+the row's `promptId` and `uuid`), and the hook's `prompt_id` must be that
+`promptId`. A queue entry witnesses nothing, and neither do Codex and Kimi
+sends, whose senders record no native input: they send as before and grant
+nothing. Only Linux writes marks; on macOS and Windows the person's own message
+lets no agent act yet.
+Each command proves it again from the live record, the mark and the receipt;
+the mark is read only from the store of its own configuration, so a copied or
+redirected state folder carries none. Nothing is exported to an environment
+variable, flag, file, child or team member, and a process outside the agent's
+ancestry has none. This guards against accidental use; a process of the same
+user that writes Zerus state files directly is outside it.
+
 `hgs [@host] guide [send|wait|launch|stop]` prints compact instructions for
 agents that read, message, wait for, launch or stop other sessions. The text is
 compiled into hgs and stays small because agents read it into their context;
@@ -5236,7 +5266,8 @@ not queued feedback and is never delivered by itself, and only the receipt
 moves the task back to In progress. Feedback to a task In progress
 (`--mode send`) stays an ordinary message.
 
-When recovery cannot settle an unknown delivery, the person can use
+When recovery cannot settle an unknown delivery, the person, or an agent at
+the person's own request, can use
 `hgs task cancel-attempt REF --attempt UUID [--reason TEXT]`. This abandons
 only that exact unknown attempt, records a `Cancelled` fact and an
 `attempt_cancelled` audit entry, and releases its hold. Delivery remains
@@ -5247,6 +5278,30 @@ attempts refuse. Other unknown attempts still hold the task. A later send
 uses a new attempt, and an old request is never replayed.
 The reply contains one task row; read its audit through the bounded task
 history command.
+
+Person requests in task commands (zerus-46l1q). An agent whose own session
+holds the person's request (`person_request` in `hgs self --json`) may take the
+task actions otherwise reserved to the person: set or clear the cutover hold,
+abandon an attempt whose delivery is unknown, confirm `review-copy`, cancel a
+task it was sent, file a task for another session with `--target`, and take
+the actions an agent cannot take on a live team's task. The request is proven
+again for the command (`caller::person_request`), and each writer checks the
+same request a last time while it holds the state lock that every end of a
+person turn takes, before the command's first durable write, and holds that
+lock through its last: an answer or other input that ends the request lands
+before that check (nothing is written) or after the commit. The state lock is
+always the last lock taken, and its wait is bounded by the command's deadline:
+a busy lock is a refusal to retry, with nothing written. A send checks it under the input writer's own lock before
+anything is typed; once admitted, its outcome stands. `review-copy` checks it
+after the review and its hashing, right before its confirmation record and the
+move. Another agent, a child, a forwarded `--agent` command or a command
+outside the agent's ancestry has none. Every
+history entry the action writes keeps `actor` as that agent and adds
+`person_request` with the message's `machine`, `session`, `session_id`,
+`run_id`, `conversation_id`, `request_id` and `origin`; the cutover hold keeps
+the same field, a task filed for another session gets one `person_request`
+entry, and `review-copy`'s reply names it. Starting a plan or delivery (`start-plan`,
+`start-deliver`) stays the window's. Older readers ignore the field.
 
 The task inspector's **Saved execution** section shows the saved attempt,
 generation, requirement revisions, executor and recorded events. Submitted does
@@ -5758,7 +5813,8 @@ names who set it and when (concurrent changes: the last writer wins). While on,
 no task of the project takes a new floor or a first attempt (the attempt
 writer refuses them as cutting over); it never lowers anything, and a
 task that never cut over keeps the legacy Start. Only a person sets or clears it,
-and clearing it takes `--hold off --confirm`. A hold that cannot be read is
+or an agent at the person's own request, which the hold records as
+`person_request`; clearing it takes `--hold off --confirm`. A hold that cannot be read is
 on. Times are in milliseconds.
 
 `task cutover --project P --task T --check` reads the task's writer universe
@@ -6468,6 +6524,8 @@ carry `stop_outcome: {code, reason?}` for its current recorded stop. Codes are
 `cancelled`, `released`, `cancel_refused`, `key_cleared`, `key_clear_refused`,
 `pending` and `unchanged`; refusal reasons are data, not a code inferred from
 text. An older stop without a recorded stop identity carries no such field.
+A stage's row also carries `earlier_implementers`: the members who implemented
+any round of its target, whom the stage's Reassign and hand-out refuse.
 
 Report, inbox and waiting-card reads keep member `text` separate from the
 service's additive `notes: [{code, text?}]`. Known codes are `text_shortened`
@@ -7016,6 +7074,12 @@ hgs @mac account login work
 hgs @mac codex /path/to/project --new --account work
 hgs account copy native-codex --from @local --to mac --as codex-work --label Work
 ```
+
+`account ls --provider P` (P is `codex`, `claude`, `kimi`, `dsh` or `opencode`)
+lists only that provider's current and removed accounts, with the whole
+catalog's `revision`. It runs and asks no other provider: Teams' member model
+choices use it so that OpenCode's service is never contacted for them. An older
+`hgs` ignores the option and lists every account.
 
 `account ls` advertises `setup_revision: true` when terminal setup accepts an
 optional `--revision REV` on `account login`, `account install` and `account start`.
@@ -8808,9 +8872,11 @@ Ordinary listing automatically initializes its internal display cache on qualifi
 Linux computers with no existing policy. No cache switch is needed for normal
 use. `hgs listing-index disable --json` remains an explicit kill switch;
 `enable --json` and `status --json` remain available for diagnostics. Existing
-disabled, malformed or unreadable policy is preserved. Initialization/enable
-reports or temporarily refuses as `building`; a coalesced background worker establishes coverage
-independently of automatic recovery policy. Status distinguishes disabled,
+disabled, malformed or unreadable policy is preserved. A coalesced background
+worker establishes coverage independently of automatic recovery policy. Ordinary
+unpaged listing retries publication races for up to two seconds, including first
+use. Each attempt observes the terminal and index again. Opening the index allows
+up to 100 ms for SQLite contention. Status distinguishes disabled,
 building, ready and unavailable. macOS/Windows activation and desktop watch
 consumption are separate follow-ups; their existing paths remain in use.
 
@@ -8818,9 +8884,11 @@ When explicitly disabled or policy is unavailable, ordinary Linux `ls` accepts o
 small inventory: at most 256 directory entries and 16 MiB of canonical record
 bodies, with 250-ms preflight/verification checks. Larger, changing or unsupported
 input refuses with a nonzero exit and no partial JSON. With the cache active, an
-unready, stale or corrupt index also refuses; it never rescues a request by
-scanning full canonical records. Stable pages use the exact generation's native
-row versions and a separate read-only SQLite transaction. The legacy JSON body
+unready or stale index at the end of the wait refuses a body, as does a corrupt
+index. Stable pages use the exact generation's native row versions, a separate
+read-only SQLite transaction and a small coverage witness outside the replaceable
+cache. A mismatched witness sends the background worker through a new census.
+The legacy JSON body
 is complete or refused (64 MiB/10-second cooperative response bound).
 
 `hgs ls --json --local --paged --page-size 64` returns at most 128 rows and a

@@ -84,6 +84,31 @@ describe("supervised child presentation (zerus-sa9qn.3)", () => {
   });
 });
 
+// Qt's Attention role includes the person's mark (SessionsWindowRows.cpp:181 at
+// 7aeb1a0af), so statusOf gives the badge and strip tile frame Attention ahead of
+// work; an error stays an error and Mute greys it (SessionCardDelegate.h:169-191).
+describe("Mark needs attention badge", () => {
+  beforeEach(() => mocks.online.mockReturnValue(true));
+
+  it("colours a marked ready, working, offline or quiet session as attention", () => {
+    expect(badgeKind(row({ unreadReply: false, reviewLater: true }))).toBe("attention");
+    expect(badgeKind(row({ status: "working", reviewLater: true }))).toBe("attention");
+    expect(badgeKind(row({ status: "background", reviewLater: true }))).toBe("attention");
+    expect(badgeKind(row({ unreadReply: false, draft: true, reviewLater: true }))).toBe("attention");
+    expect(badgeKind(row({ unreadReply: false, quiet: true, reviewLater: true }))).toBe("attention");
+    mocks.online.mockReturnValue(false);
+    expect(badgeKind(row({ reviewLater: true }))).toBe("attention");
+  });
+
+  it("keeps an error red and greys a muted mark", () => {
+    expect(badgeKind(row({ status: "error", reviewLater: true }))).toBe("error");
+    expect(badgeKind(row({ muted: true, reviewLater: true }))).toBe("muted-attention");
+    expect(emphasis(row({ unreadReply: false, muted: true, reviewLater: true }))).toBe("muted");
+    expect(emphasis(row({ unreadReply: false, reviewLater: true }))).toBe("attention");
+    expect(badgeKind(row({ unreadReply: false, reviewLater: false }))).toBe("neutral");
+  });
+});
+
 describe("session card unread presentation", () => {
   beforeEach(() => mocks.online.mockReset());
 

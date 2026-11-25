@@ -1,0 +1,1727 @@
+//! The person turn through the real producers (zerus-46l1q, S1): a real
+//! `hgs claude` session under a private tmux, the window's real frontend
+//! admission with its pinned `hgs send` child, the agent's real prompt hook,
+//! and agent commands that run inside that agent's own process tree. Every
+//! attack runs as an agent would run it; none may produce or carry a turn.
+use super::*;
+use std::process::Command;
+
+/// Names the private case of the child test process.
+const CASE: &str = "HGS_TEST_PERSON_REQUEST_REAL_CASE";
+/// Names the CLI image the child's runtime pins.
+const PINNED: &str = "HGS_TEST_PERSON_REQUEST_REAL_PINNED";
+/// Name the tmux program and the private socket the parent owns.
+const TMUX_PROGRAM: &str = "HGS_TEST_PERSON_REQUEST_REAL_TMUX";
+const SOCKET: &str = "HGS_TEST_PERSON_REQUEST_REAL_SOCKET";
+/// The pin's own bound on an image (`Pin::open`).
+const PIN_BYTES: u64 = 256 << 20;
+const PROMPT: &str = "❯ ";
+const PROJECT: &str = "project";
+
+fn cli() -> PathBuf {
+    std::fs::canonicalize(
+        std::env::var_os("HGS_TEST_BIN").expect("explicit separately built production CLI"),
+    )
+    .unwrap()
+}
+/// The CLI the runtime pins: `cli` itself, or, for a debug build over the
+/// pin's bound, a copy without its debug sections beside it.
+fn pinnable(cli: &Path) -> PathBuf {
+    if std::fs::metadata(cli).unwrap().len() <= PIN_BYTES {
+        return cli.to_path_buf();
+    }
+    let copy = cli.with_file_name("hgs-person-request-pinnable");
+    let fresh = |copy: &Path| {
+        std::fs::metadata(copy).and_then(|m| m.modified()).ok()
+            >= std::fs::metadata(cli).and_then(|m| m.modified()).ok()
+    };
+    if !fresh(&copy) {
+        let next = cli.with_file_name(format!(
+            "hgs-person-request-pinnable.{}",
+            std::process::id()
+        ));
+        let status = Command::new("objcopy")
+            .arg("--strip-debug")
+            .arg(cli)
+            .arg(&next)
+            .status()
+            .unwrap();
+        assert!(status.success(), "objcopy --strip-debug {}", cli.display());
+        std::fs::rename(&next, &copy).unwrap();
+    }
+    assert!(std::fs::metadata(&copy).unwrap().len() <= PIN_BYTES);
+    copy
+}
+fn on_path(name: &str) -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|dir| dir.join(name))
+        .find(|path| crate::platform::executable(path))
+        .unwrap_or_else(|| panic!("{name} is required"))
+}
+/// Ends the private tmux server, and every pane in it, on any exit.
+struct Server(PathBuf, PathBuf);
+impl Drop for Server {
+    fn drop(&mut self) {
+        if self.1.exists() {
+            let _ = Command::new(&self.0)
+                .arg("-S")
+                .arg(&self.1)
+                .args(["-f", "/dev/null", "kill-server"])
+                .output();
+        }
+    }
+}
+fn fake_agent(cli: &Path) -> PathBuf {
+    std::env::var_os("HGS_TEST_FAKE_AGENT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| cli.parent().unwrap().join("examples/fake_agent"))
+}
+
+/// The case runs alone in a child test process whose environment names only
+/// private folders, a private tmux socket and fake agents.
+#[test]
+#[ignore = "Explicit exact-source HGS_TEST_BIN and examples/fake_agent after cargo build; real sends, hooks and agent commands under a private tmux"]
+fn real_cli_person_turn_starts_only_at_the_persons_marked_message() {
+    let cli = cli();
+    assert_ne!(
+        crate::platform::file_identity(&cli),
+        crate::platform::file_identity(&std::env::current_exe().unwrap()),
+        "never run the libtest image as a CLI"
+    );
+    let agent = fake_agent(&cli);
+    assert!(agent.is_file(), "{} is missing", agent.display());
+    let pinned = pinnable(&cli);
+    let program = on_path("tmux");
+    let base = ["/dev/shm", "/tmp"]
+        .into_iter()
+        .map(Path::new)
+        .find(|p| p.is_dir())
+        .unwrap();
+    let dir = tempfile::Builder::new()
+        .prefix("hgs-pr-")
+        .tempdir_in(base)
+        .unwrap();
+    let tmp = dir.path().join("t");
+    std::fs::create_dir(&tmp).unwrap();
+    let server = Server(program.clone(), dir.path().join("tmux.sock"));
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "desktop::deferred_send::tests::actor::person_real::private_case",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_clear();
+    for (key, value) in std::env::vars_os() {
+        let text = key.to_string_lossy();
+        if !["HGS_", "TMUX", "FAKE_AGENT_", "CLAUDE_", "CODEX_", "KIMI_"]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+        {
+            command.env(key, value);
+        }
+    }
+    let output = command
+        .env(CASE, "all")
+        .env("TMPDIR", &tmp)
+        .env("HGS_TEST_BIN", &cli)
+        .env(PINNED, &pinned)
+        .env(TMUX_PROGRAM, &server.0)
+        .env(SOCKET, &server.1)
+        .env("HGS_TEST_FAKE_AGENT", &agent)
+        .env(
+            "HGS_TEST_PERSON_REQUEST_ROOT",
+            std::env::var_os("HGS_TEST_PERSON_REQUEST_ROOT").unwrap_or_default(),
+        )
+        .output()
+        .unwrap();
+    drop(server);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("{stdout}");
+    assert!(
+        output.status.success() && stdout.contains("PERSON_REQUEST_REAL_EXECUTED"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn hgs(args: &[&str]) -> std::process::Output {
+    let output = Command::new(cli())
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "hgs {args:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output
+}
+/// The person's own command in a terminal outside every agent.
+fn person(args: &[&str], input: &str) -> Value {
+    use std::io::Write;
+    let mut child = Command::new(cli())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "hgs {args:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or(Value::Null)
+}
+fn tmux(args: &[&str]) -> std::process::Output {
+    Command::new("tmux").args(args).output().unwrap()
+}
+/// The session's current record, wherever its layout keeps it.
+fn record_of(state: &Path, name: &str) -> Value {
+    let folders = [
+        state.to_path_buf(),
+        state.join("bindings"),
+        state.join("sessions"),
+    ];
+    folders
+        .iter()
+        .filter_map(|folder| folder.read_dir().ok())
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .find(|record| record["name"] == name && record.get("rename_shadow").is_none())
+        .unwrap_or(Value::Null)
+}
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let until = Instant::now() + Duration::from_secs(60);
+    while !done() {
+        assert!(Instant::now() < until, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+/// The file that holds the session's current record.
+fn record_path(state: &Path, name: &str) -> PathBuf {
+    [
+        state.to_path_buf(),
+        state.join("bindings"),
+        state.join("sessions"),
+    ]
+    .iter()
+    .filter_map(|folder| folder.read_dir().ok())
+    .flatten()
+    .flatten()
+    .map(|entry| entry.path())
+    .filter(|path| path.extension().is_some_and(|e| e == "json"))
+    .find(|path| {
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|r| r["name"] == name && r.get("rename_shadow").is_none())
+    })
+    .expect("the session's record")
+}
+fn key(name: &str) -> String {
+    name.replace('/', "_")
+}
+
+/// The scenario's private world: the fixture's store and runtime, and the
+/// folders the fake agents' tools and controls use.
+struct World {
+    f: Fixture,
+    root: PathBuf,
+    project: PathBuf,
+}
+/// What one agent command printed.
+struct Ran {
+    code: i32,
+    out: String,
+    err: String,
+}
+impl World {
+    fn record(&self, name: &str) -> Value {
+        record_of(&self.f.config.state, name)
+    }
+    fn turn(&self, name: &str) -> Value {
+        self.record(name)["person_turn"].clone()
+    }
+    /// Starts a real session through the real CLI and waits until idle.
+    fn launch(&self, short: &str) -> String {
+        hgs(&[
+            "claude",
+            self.project.to_str().unwrap(),
+            "--new",
+            "-n",
+            short,
+            "-d",
+        ]);
+        let name = format!("claude/{PROJECT}/{short}");
+        self.idle(&name);
+        name
+    }
+    fn idle(&self, name: &str) {
+        wait_for(&format!("{name} to be idle"), || {
+            let record = self.record(name);
+            record["activity"] == "idle"
+                && record["conversation_id"]
+                    .as_str()
+                    .is_some_and(|c| !c.is_empty())
+        });
+    }
+    /// Runs `script` with `sh` inside the agent of `name`: its own hook
+    /// process, a descendant of that agent with that agent's environment, as
+    /// a tool call of the agent runs.
+    fn agent(&self, name: &str, script: &str) -> Ran {
+        self.agent_start(name, script);
+        self.agent_end(name, script)
+    }
+    /// Starts `script` inside the agent of `name` without waiting for it.
+    fn agent_start(&self, name: &str, script: &str) {
+        let tools = self.root.join("tools").join(key(name));
+        std::fs::create_dir_all(&tools).unwrap();
+        for file in ["code", "out", "err", "running"] {
+            let _ = std::fs::remove_file(tools.join(file));
+        }
+        std::fs::write(tools.join("command.tmp"), script).unwrap();
+        std::fs::rename(tools.join("command.tmp"), tools.join("command")).unwrap();
+        let control = self.root.join("control").join(key(name));
+        std::fs::write(control.with_extension("tmp"), "hook stop\n").unwrap();
+        std::fs::rename(control.with_extension("tmp"), &control).unwrap();
+    }
+    /// What `script`, started in the agent of `name`, printed and returned.
+    fn agent_end(&self, name: &str, script: &str) -> Ran {
+        let tools = self.root.join("tools").join(key(name));
+        wait_for(&format!("{name} to run {script}"), || {
+            tools.join("code").exists()
+        });
+        let read = |file: &str| std::fs::read_to_string(tools.join(file)).unwrap_or_default();
+        let ran = Ran {
+            code: read("code").trim().parse().unwrap_or(-1),
+            out: read("out"),
+            err: read("err"),
+        };
+        println!(
+            "agent {name}: {script}\n  code={} out={} err={}",
+            ran.code,
+            ran.out.trim(),
+            ran.err.trim()
+        );
+        ran
+    }
+    /// What `hgs self --json` shows the agent of `name` as its person
+    /// request, run inside that agent.
+    fn person_request(&self, name: &str) -> Value {
+        self.person_request_with(name, "")
+    }
+    fn person_request_with(&self, name: &str, prefix: &str) -> Value {
+        let ran = self.agent(name, &format!("{prefix}hgs self --json"));
+        serde_json::from_str::<Value>(ran.out.trim())
+            .map(|value| value["person_request"].clone())
+            .unwrap_or(Value::Null)
+    }
+    /// The person types `text` to `name` in the window: the real frontend
+    /// admission, its pinned `hgs send` child and the agent's real hook.
+    fn person_says(&mut self, name: &str, text: &str) -> String {
+        let record = self.record(name);
+        let original = original_for(
+            &self.f.location.configuration,
+            &self.f.epoch,
+            name,
+            record["run_id"].as_str().unwrap(),
+            record["conversation_id"].as_str().unwrap(),
+            text,
+        );
+        assert!(self.f.admit(&original).accepted);
+        self.f.until("the person's send to settle", |f| {
+            f.row(&original).receipt.drained
+        });
+        let receipt = self.f.row(&original).receipt;
+        assert_eq!(
+            (receipt.phase, receipt.code.as_str()),
+            (Phase::Recorded, ""),
+            "{}",
+            serde_json::to_string(&receipt).unwrap()
+        );
+        let id = original.plan.request_id.clone();
+        self.idle(name);
+        id
+    }
+    /// An agent's guarded send of `text` to `to`, run inside `from`.
+    fn agent_sends(&self, from: &str, to: &str, text: &str, prefix: &str) -> Ran {
+        let target = self.record(to);
+        let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": text,
+            "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+        let file = self
+            .root
+            .join("tools")
+            .join(format!("{}.json", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, payload.to_string()).unwrap();
+        let ran = self.agent(
+            from,
+            &format!("{prefix}hgs send '{to}' --json < '{}'", file.display()),
+        );
+        assert_eq!(ran.code, 0, "{}", ran.err);
+        self.idle(to);
+        ran
+    }
+    /// The person's message to `name` whose delivery the agent never
+    /// confirms: the window admits it, its `hgs send` child ends without
+    /// native proof. Returns the request and the window's receipt.
+    fn person_says_unconfirmed(&mut self, name: &str, text: &str) -> (String, wire::Receipt) {
+        let record = self.record(name);
+        let original = original_for(
+            &self.f.location.configuration,
+            &self.f.epoch,
+            name,
+            record["run_id"].as_str().unwrap(),
+            record["conversation_id"].as_str().unwrap(),
+            text,
+        );
+        assert!(self.f.admit(&original).accepted);
+        // The send waits out its whole native proof window first.
+        let until = Instant::now() + Duration::from_secs(40);
+        while !self.f.row(&original).receipt.drained {
+            assert!(Instant::now() < until, "the unconfirmed send never settled");
+            self.f
+                .runtime
+                .poll(&mut self.f.store, Some(self.f.exclusion.clone()));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (
+            original.plan.request_id.clone(),
+            self.f.row(&original).receipt,
+        )
+    }
+    fn bound(&mut self, name: &str, text: &str) -> String {
+        let id = self.person_says(name, text);
+        wait_for(&format!("{name}'s person turn"), || {
+            self.turn(name)["request_id"] == id.as_str()
+        });
+        assert_eq!(self.person_request(name)["request_id"], id.as_str());
+        id
+    }
+    /// Moves the stored times of the live turn of `name` and its mark
+    /// `by` milliseconds into the past, as that much time passing would.
+    fn age(&mut self, name: &str, by: i64) {
+        let path = record_path(&self.f.config.state, name);
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let turn = &mut record["person_turn"];
+        let request = turn["request_id"].as_str().unwrap().to_owned();
+        for field in ["bound_at", "admitted_at"] {
+            turn[field] = json!(turn[field].as_i64().unwrap() - by);
+        }
+        let temp = path.with_extension("aged");
+        std::fs::write(&temp, record.to_string()).unwrap();
+        mode(&temp, 0o600);
+        std::fs::rename(&temp, &path).unwrap();
+        self.f
+            .store
+            .db
+            .execute_batch(&format!(
+                "DROP TRIGGER desktop_person_mark_original;
+                 UPDATE desktop_person_marks SET at=at-{by} WHERE request_id='{request}';
+                 CREATE TRIGGER desktop_person_mark_original BEFORE UPDATE ON desktop_person_marks BEGIN
+                 SELECT RAISE(ABORT,'immutable person mark'); END;"
+            ))
+            .unwrap();
+    }
+    /// The prompt hook `hgs` runs, with `events` reported in order from
+    /// inside the agent of `name`.
+    fn hook(&self, name: &str, events: &[Value]) -> Ran {
+        let record = self.record(name);
+        let script = events
+            .iter()
+            .map(|event| {
+                let mut event = event.clone();
+                event["session_id"] = record["conversation_id"].clone();
+                event["cwd"] = json!(self.project);
+                format!("printf '%s' '{event}' | hgs __state hook")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.agent(name, &script)
+    }
+    /// A prompt hook for `text` with a prompt ID of its own: no transcript
+    /// row is that prompt (review D1).
+    fn prompt(&self, name: &str, text: &str) -> Ran {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.hook(
+            name,
+            &[json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "prompt_id": id})],
+        )
+    }
+    /// The prompt hook of the agent's own last prompt of `text`, with the
+    /// `promptId` its transcript user row records.
+    fn native_prompt(&self, name: &str, text: &str) -> Ran {
+        let id = self.prompt_id(name, text);
+        self.hook(
+            name,
+            &[json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "prompt_id": id})],
+        )
+    }
+    /// The `promptId` of the last transcript user row of `text`.
+    fn prompt_id(&self, name: &str, text: &str) -> String {
+        let record = self.record(name);
+        let transcript = std::fs::read_to_string(record["transcript"].as_str().unwrap()).unwrap();
+        transcript
+            .lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|row| row["type"] == "user" && row["message"]["content"] == text)
+            .and_then(|row| row["promptId"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("no transcript row of {text:?} in {name}"))
+    }
+    /// Moves one mark `by` milliseconds into the past.
+    fn age_mark(&mut self, request: &str, by: i64) {
+        self.f
+            .store
+            .db
+            .execute_batch(&format!(
+                "DROP TRIGGER desktop_person_mark_original;
+                 UPDATE desktop_person_marks SET at=at-{by} WHERE request_id='{request}';
+                 CREATE TRIGGER desktop_person_mark_original BEFORE UPDATE ON desktop_person_marks BEGIN
+                 SELECT RAISE(ABORT,'immutable person mark'); END;"
+            ))
+            .unwrap();
+    }
+    /// A live team of this computer and one of its queued tasks, as the
+    /// team task harness models the window's admission; its reference.
+    fn live_team_task(&self) -> String {
+        use crate::teams::ops::{self, tests as fixtures};
+        let config = &self.f.config;
+        let state = &config.state;
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let machine = crate::swarm::local_node_id(config).unwrap();
+        let mut store = crate::teams::store::Store::open(state).unwrap();
+        if store.team(fixtures::TEAM).unwrap().is_none() {
+            let mut create = fixtures::create();
+            if let ops::Operation::Create { home, .. } = &mut create {
+                *home = machine.clone();
+            }
+            fixtures::apply_fixture(
+                &mut store,
+                &fixtures::person(),
+                &fixtures::request(0, create),
+                1234,
+            )
+            .unwrap();
+        }
+        drop(store);
+        let tasks =
+            zerus_replica::ProjectStore::open(&state.join("replica"), "example-project").unwrap();
+        let mut document = tasks
+            .new_task(
+                "A team task",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        let id = document.id().to_owned();
+        let reference = zerus_team_plan::model::TaskRef {
+            project: "example-project".into(),
+            uuid: document.uuid().into(),
+        };
+        drop(tasks);
+        let admitted = crate::teams::tasks::models::send(
+            &crate::teams::tasks::Caller {
+                state,
+                machine: &machine,
+                actor: zerus_replica::Actor::Person,
+            },
+            &reference,
+            fixtures::TEAM,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(admitted.queued, "{admitted:?}");
+        format!("{PROJECT}/{id}")
+    }
+    /// A live team's task that the person sent to `name`: the queued team
+    /// task, then the person's dispatch recorded on it.
+    fn held_team_task(&self, name: &str) -> String {
+        let reference = self.live_team_task();
+        let record = self.record(name);
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        let tasks = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap();
+        let mut document = tasks.find(reference.rsplit('/').next().unwrap()).unwrap();
+        let holder = zerus_replica::SessionKey {
+            machine,
+            session: name.into(),
+            session_id: crate::teams::caller::identity(&record),
+        };
+        document
+            .record_send(
+                &holder,
+                &uuid::Uuid::new_v4().to_string(),
+                &zerus_replica::Actor::Person,
+                3,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        reference
+    }
+    /// Review D3: `command`, run by `name` at its live person turn, held
+    /// right after its final recheck (inside the person-authority
+    /// serialization point) while `other` sends `name` another input, which
+    /// ends that turn. The input waits for the commit: while the command is
+    /// held the turn stays bound; the command commits under its request, and
+    /// only then does the input end the turn. Returns the command's result.
+    fn race(&self, name: &str, other: &str, command: &str, step: &str) -> Ran {
+        let pause = self.root.join(format!("pause-{step}"));
+        std::fs::create_dir_all(&pause).unwrap();
+        // The other agent's input is ready first and waits for `go`, so it
+        // starts the moment the command is held, with no agent start-up time
+        // spent inside the command's own budget.
+        let target = self.record(name);
+        let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": format!("{step}: another agent's input"),
+            "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+        let file = self.root.join("tools").join(format!("{step}.json"));
+        std::fs::write(&file, payload.to_string()).unwrap();
+        let go = pause.join("go");
+        let send = format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; hgs send '{name}' --json < '{}'",
+            go.display(),
+            file.display()
+        );
+        self.agent_start(other, &send);
+        let running = self.root.join("tools").join(key(other)).join("running");
+        wait_for(&format!("{step}'s other input to be ready"), || {
+            running.exists()
+        });
+        let held = format!(
+            "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_commit sh -c \"{}\"",
+            pause.display(),
+            command.replace('"', "\\\"")
+        );
+        self.agent_start(name, &held);
+        let tools = self.root.join("tools").join(key(name));
+        wait_for(&format!("{step} to hold its commit"), || {
+            pause.join("ready").exists() || tools.join("code").exists()
+        });
+        if !pause.join("ready").exists() {
+            let ran = self.agent_end(name, &held);
+            panic!("{step} ended before its commit: {} {}", ran.out, ran.err);
+        }
+        // The other input cannot end the turn while the commit is held.
+        std::fs::write(&go, "").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let seen = self.record(name);
+        assert!(
+            !self.turn(name).is_null(),
+            "{step}: the other input ended the turn during the held commit: spent={} pending={}",
+            seen["person_turn_spent"],
+            seen["input_pending_request"]
+        );
+        std::fs::write(pause.join("release"), "").unwrap();
+        let ran = self.agent_end(name, &held);
+        let sent = self.agent_end(other, &send);
+        assert_eq!(sent.code, 0, "{step}: {}", sent.err);
+        wait_for(&format!("{step}'s other input to end the turn"), || {
+            self.turn(name).is_null()
+        });
+        self.idle(name);
+        ran
+    }
+    /// Whether this computer's live team still binds task `reference`.
+    fn team_bound(&self, reference: &str) -> bool {
+        let id = reference.rsplit('/').next().unwrap();
+        let task = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap()
+        .find(id)
+        .unwrap();
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        crate::teams::tasks::guarded(&self.f.config.state, &machine, &task).unwrap()
+    }
+    /// A task of the project whose kept copy is damaged, and the fingerprint
+    /// of its review, read in Rust (the review itself is read-only).
+    fn damaged_copy(&self) -> (String, String) {
+        let root = self.f.config.state.join("replica");
+        let tasks = zerus_replica::ProjectStore::open(&root, "example-project").unwrap();
+        let mut document = tasks
+            .new_task(
+                "A task whose copy breaks",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        let uuid = document.uuid().to_owned();
+        drop(tasks);
+        let folder = root
+            .join(format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(b"example-project")
+            ))
+            .join("tasks");
+        std::fs::write(folder.join(format!("{uuid}.loro")), b"damaged").unwrap();
+        let mut review = zerus_replica::ProjectStore::open_copy_review(
+            &root,
+            "example-project",
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .unwrap();
+        let fingerprint = review.prepare_copy_review(&uuid).unwrap().fingerprint;
+        (uuid, fingerprint)
+    }
+    /// The history of task `reference`, read from the project store in Rust:
+    /// the person's own task commands refuse under the agent this test may
+    /// run in, and are never rerouted around that refusal.
+    fn log(&self, reference: &str) -> Vec<zerus_replica::LogEntry> {
+        let id = reference.rsplit('/').next().unwrap();
+        zerus_replica::ProjectStore::open(&self.f.config.state.join("replica"), "example-project")
+            .unwrap()
+            .find(id)
+            .unwrap()
+            .view()
+            .unwrap()
+            .log
+    }
+    /// A task the person sent to `name`, produced in Rust as the person's
+    /// dispatch records it; no input reaches the agent.
+    fn sent_task(&self, name: &str) -> String {
+        let record = self.record(name);
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        let tasks = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap();
+        let mut document = tasks
+            .new_task(
+                "Sent to the asked agent",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        let holder = zerus_replica::SessionKey {
+            machine,
+            session: name.into(),
+            session_id: crate::teams::caller::identity(&record),
+        };
+        document
+            .record_send(
+                &holder,
+                &uuid::Uuid::new_v4().to_string(),
+                &zerus_replica::Actor::Person,
+                2,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        format!("{PROJECT}/{}", document.id())
+    }
+    /// What `script` printed as JSON inside the agent of `name`.
+    fn agent_json(&self, name: &str, script: &str) -> (Ran, Value) {
+        let ran = self.agent(name, script);
+        let value = serde_json::from_str(ran.out.trim()).unwrap_or(Value::Null);
+        (ran, value)
+    }
+    fn none(&self, name: &str, step: &str) {
+        assert!(self.turn(name).is_null(), "{step}: {}", self.turn(name));
+        assert!(self.person_request(name).is_null(), "{step}");
+        println!("PERSON_REQUEST_STEP={step} ok");
+    }
+}
+
+#[test]
+#[ignore = "Run only by real_cli_person_turn_starts_only_at_the_persons_marked_message in its private environment"]
+fn private_case() {
+    std::env::var(CASE).expect("run only by its parent test");
+    let cli = cli();
+    // A kept root (for evidence) or a temporary one.
+    let kept = std::env::var_os("HGS_TEST_PERSON_REQUEST_ROOT").filter(|v| !v.is_empty());
+    let temp = match &kept {
+        Some(parent) => tempfile::Builder::new()
+            .prefix("person-")
+            .tempdir_in(parent)
+            .unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    };
+    let root = temp.path().canonicalize().unwrap();
+    let bin = root.join(".local/bin");
+    let agents = root.join("agents");
+    let project = root.join(PROJECT);
+    for folder in [
+        &bin,
+        &agents,
+        &project,
+        &root.join("tmux"),
+        &root.join("tools"),
+        &root.join("control"),
+        &root.join("agentenv"),
+    ] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    mode(&root.join("tmux"), 0o700);
+    let script = |name: &str, text: String| {
+        std::fs::write(bin.join(name), text).unwrap();
+        mode(&bin.join(name), 0o755);
+    };
+    let server = Server(
+        std::env::var_os(TMUX_PROGRAM)
+            .expect("set by the parent")
+            .into(),
+        std::env::var_os(SOCKET).expect("set by the parent").into(),
+    );
+    script(
+        "tmux",
+        format!(
+            "#!/bin/sh\nexec {} -S {} -f /dev/null \"$@\"\n",
+            server.0.display(),
+            server.1.display()
+        ),
+    );
+    script(
+        "shell",
+        "#!/bin/sh\nshift\ncommand=$1; shift\ncase $command in exec\\ *) ;; *) command=\"exec $command\" ;; esac\nexec /bin/sh -c \"$command\" \"$@\"\n".into(),
+    );
+    // Every `hgs` an agent runs is the CLI under test, whatever its file name.
+    std::os::unix::fs::symlink(&cli, bin.join("hgs")).unwrap();
+    // Each agent reads its own control file, named by its session.
+    std::os::unix::fs::symlink(fake_agent(&cli), agents.join("claude")).unwrap();
+    script(
+        "claude",
+        format!(
+            "#!/bin/sh\nkey=$(printf %s \"$HGS_SESSION\" | tr / _)\nexport FAKE_AGENT_CONTROL=\"{}/$key\"\n[ -f \"{}/$key\" ] && . \"{}/$key\"\nexec {} \"$@\"\n",
+            root.join("control").display(),
+            root.join("agentenv").display(),
+            root.join("agentenv").display(),
+            agents.join("claude").display()
+        ),
+    );
+    // The agent's tool: on a Stop hook, run the one waiting command inside
+    // the agent's own process tree and environment.
+    script(
+        "tool",
+        format!(
+            "#!/bin/sh\nevent=$(cat)\ncase $event in *'\"hook_event_name\":\"Stop\"'*) ;; *) exit 0 ;; esac\ndir=\"{}/$(printf %s \"$HGS_SESSION\" | tr / _)\"\n[ -f \"$dir/command\" ] || exit 0\nmv \"$dir/command\" \"$dir/running\" 2>/dev/null || exit 0\n/bin/sh \"$dir/running\" >\"$dir/out\" 2>\"$dir/err\" </dev/null\necho $? >\"$dir/code.tmp\" && mv \"$dir/code.tmp\" \"$dir/code\"\nexit 0\n",
+            root.join("tools").display()
+        ),
+    );
+    // Single-threaded: nothing else runs in this process yet.
+    for (key, value) in [
+        ("HOME", root.display().to_string()),
+        ("HGS_CONFIG_DIR", root.join("config").display().to_string()),
+        ("HGS_STATE_DIR", root.join("state").display().to_string()),
+        ("HGS_SELF", "test".into()),
+        ("HGS_PEERS", String::new()),
+        ("HGS_TAB", "0".into()),
+        ("TERM", "xterm-256color".into()),
+        ("TMUX_TMPDIR", root.join("tmux").display().to_string()),
+        ("SHELL", bin.join("shell").display().to_string()),
+        (
+            "PATH",
+            format!(
+                "{}:{}:{}",
+                bin.display(),
+                cli.parent().unwrap().display(),
+                std::env::var("PATH").unwrap()
+            ),
+        ),
+        (
+            "FAKE_AGENT_RECORD",
+            root.join("agents.jsonl").display().to_string(),
+        ),
+        (
+            "FAKE_AGENT_TRANSCRIPT_DIR",
+            root.join("history").display().to_string(),
+        ),
+        ("FAKE_AGENT_PROMPT", PROMPT.into()),
+        ("FAKE_AGENT_ECHO", "1".into()),
+        ("FAKE_AGENT_CLAUDE_FRAME", "1".into()),
+        ("FAKE_AGENT_PROBE_TEXT", "2.1.296 (Claude Code)".into()),
+        (
+            "FAKE_AGENT_HOOK_COMMAND",
+            bin.join("tool").display().to_string(),
+        ),
+        ("FAKE_AGENT_HOOK_TIMEOUT", "60000".into()),
+    ] {
+        std::env::set_var(key, value);
+    }
+    let mut f = Fixture::build_in(temp, None);
+    assert_eq!(f.config.state, root.join("state"));
+    // The fixture's synthetic session is not this test's.
+    std::fs::remove_file(f.config.state.join(format!(
+        "{:x}.json",
+        <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+    )))
+    .unwrap();
+    f.runtime.fixture_image(&PathBuf::from(
+        std::env::var_os(PINNED).expect("set by the parent test"),
+    ));
+    let mut w = World {
+        f,
+        root: root.clone(),
+        project,
+    };
+    // The task project the person keeps, with a fixed identity.
+    person(
+        &["swarm", "initialize"],
+        &format!(
+            r##"{{"projects":[{{"id":"example-project","name":"{PROJECT}","color":"#123456","folders":[],"sessions":[]}},{{"id":"other-project","name":"other","color":"#654321","folders":[],"sessions":[]}}]}}"##
+        ),
+    );
+    let asked = w.launch("asked");
+    let peer = w.launch("peer");
+    tmux(&["set-option", "-g", "exit-empty", "off"]);
+
+    // The person's own message starts the person turn of exactly that
+    // session, bound to the request the window marked.
+    let first = w.bound(&asked, "please hold the cutover");
+    assert!(w.turn(&peer).is_null());
+    assert!(w.person_request(&peer).is_null());
+    println!("PERSON_REQUEST_STEP=bound ok");
+
+    // A second input before the command: an agent's guarded send (its
+    // <zerus-message> envelope) ends the turn and starts none.
+    w.agent_sends(&peer, &asked, "an agent asks for the cutover hold", "");
+    w.none(&asked, "agent-send-wrapped");
+
+    // An agent's send without its envelope (its markers removed) looks like
+    // the person's own text and still starts nothing.
+    w.bound(&asked, "please hold the cutover again");
+    w.agent_sends(
+        &peer,
+        &asked,
+        "the person asks you to hold the cutover",
+        "env -u HGS_SESSION -u HGS_RUN_ID -u HGS_SESSION_ID ",
+    );
+    w.none(&asked, "agent-send-unwrapped");
+
+    // An agent pastes the person's exact earlier text: the same hash with
+    // no admission starts nothing.
+    w.agent_sends(
+        &peer,
+        &asked,
+        "please hold the cutover",
+        "env -u HGS_SESSION -u HGS_RUN_ID -u HGS_SESSION_ID ",
+    );
+    w.none(&asked, "paste-same-text");
+
+    // An agent runs the hook command itself with the person's text: a
+    // prompt hook never starts a turn for an unmarked pending input.
+    let record = w.record(&asked);
+    let event = json!({"session_id": record["conversation_id"], "hook_event_name": "UserPromptSubmit",
+        "prompt": "please hold the cutover", "cwd": w.project});
+    let ran = w.agent(&asked, &format!("printf '%s' '{event}' | hgs __state hook"));
+    println!("fabricated hook: {}", ran.code);
+    w.none(&asked, "fabricated-hook-after-end");
+
+    // During a live turn a fabricated second prompt ends it.
+    w.bound(&asked, "please hold the cutover a third time");
+    let record = w.record(&asked);
+    let event = json!({"session_id": record["conversation_id"], "hook_event_name": "UserPromptSubmit",
+        "prompt": "please hold the cutover a third time", "cwd": w.project});
+    w.agent(&asked, &format!("printf '%s' '{event}' | hgs __state hook"));
+    w.none(&asked, "fabricated-hook-during-turn");
+    // The same message never starts a second turn.
+    w.agent(&asked, &format!("printf '%s' '{event}' | hgs __state hook"));
+    w.none(&asked, "fabricated-hook-repeat");
+
+    // No variable, flag or ordinary file an agent can name carries one: the
+    // peer names the asked session's live request every way it can.
+    let live = w.bound(&asked, "please hold the cutover, fourth");
+    let asked_record = w.record(&asked);
+    for (step, prefix) in [
+        (
+            "environment",
+            format!("HGS_PERSON_REQUEST={live} HGS_PERSON_TURN={live} HGS_REQUEST_ID={live} "),
+        ),
+        (
+            "claimed-identity",
+            format!(
+                "HGS_SESSION='{asked}' HGS_RUN_ID={} HGS_SESSION_ID= ",
+                asked_record["run_id"].as_str().unwrap()
+            ),
+        ),
+        (
+            "ordinary-file",
+            format!(
+                "printf '%s' '{{\"person_turn\":{{\"request_id\":\"{live}\"}}}}' > person_turn.json; "
+            ),
+        ),
+    ] {
+        assert!(w.person_request_with(&peer, &prefix).is_null(), "{step}");
+        println!("PERSON_REQUEST_STEP={step} ok");
+    }
+    let flag = w.agent(&peer, &format!("hgs self --json --person-request {live}"));
+    assert_ne!(flag.code, 0, "an unknown flag is refused");
+    println!("PERSON_REQUEST_STEP=flag ok");
+    // The asked session still holds its own turn.
+    assert_eq!(w.person_request(&asked)["request_id"], live.as_str());
+
+    // A redirected state folder: a fresh one, and a copy made while the
+    // turn was live, read after the turn ended.
+    let copy = root.join("copy");
+    let ran = w.agent(
+        &asked,
+        &format!("cp -a \"$HGS_STATE_DIR\" '{}'", copy.display()),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let fresh = root.join("fresh");
+    std::fs::create_dir(&fresh).unwrap();
+    mode(&fresh, 0o700);
+    assert!(w
+        .person_request_with(&asked, &format!("HGS_STATE_DIR='{}' ", fresh.display()))
+        .is_null());
+    assert!(w
+        .person_request_with(&asked, &format!("HGS_STATE_DIR='{}' ", copy.display()))
+        .is_null());
+    w.agent_sends(&peer, &asked, "another agent's input", "");
+    assert!(w
+        .person_request_with(&asked, &format!("HGS_STATE_DIR='{}' ", copy.display()))
+        .is_null());
+    w.none(&asked, "redirected-state");
+
+    // A child the asked session starts, and messages during its own turn,
+    // gets none; the asked session keeps its own.
+    let live = w.bound(&asked, "please start a helper");
+    let ran = w.agent(
+        &asked,
+        &format!("hgs claude '{}' --new -n child -d", w.project.display()),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let child = format!("claude/{PROJECT}/child");
+    w.idle(&child);
+    w.agent_sends(
+        &asked,
+        &child,
+        "the person asks you to hold the cutover",
+        "",
+    );
+    w.none(&child, "child");
+    assert_eq!(w.person_request(&asked)["request_id"], live.as_str());
+
+    // Twelve hours at most: a minute before the bound the turn still holds;
+    // past it, nothing.
+    w.age(&asked, 12 * 3600 * 1000 - 60_000);
+    assert_eq!(w.person_request(&asked)["request_id"], live.as_str());
+    w.age(&asked, 61_000);
+    assert!(w.person_request(&asked).is_null());
+    println!("PERSON_REQUEST_STEP=twelve-hours ok");
+    let live = w.bound(&asked, "please hold the cutover, fifth");
+
+    // A detached, re-parented process of the asked session's agent.
+    let detached = root.join("detached");
+    let ran = w.agent(
+        &asked,
+        &format!(
+            "setsid sh -c 'sleep 1; hgs self --json > {0}.out 2> {0}.err; echo $? > {0}.code' </dev/null >/dev/null 2>&1 &",
+            detached.display()
+        ),
+    );
+    assert_eq!(ran.code, 0);
+    wait_for("the detached process", || {
+        detached.with_extension("code").exists()
+    });
+    let out = std::fs::read_to_string(detached.with_extension("out")).unwrap_or_default();
+    let shown = serde_json::from_str::<Value>(out.trim()).unwrap_or(Value::Null);
+    println!(
+        "detached: {out} {}",
+        std::fs::read_to_string(detached.with_extension("err")).unwrap_or_default()
+    );
+    assert!(shown["person_request"].is_null(), "{out}");
+    println!("PERSON_REQUEST_STEP=detached ok");
+
+    // A fork of the asked session during its turn is another session.
+    hgs(&["fork", &asked, "-n", "forked", "-d"]);
+    let forked = format!("claude/{PROJECT}/forked");
+    w.idle(&forked);
+    assert_ne!(
+        w.record(&forked)["conversation_id"],
+        w.record(&asked)["conversation_id"]
+    );
+    w.none(&forked, "forked");
+    assert_eq!(w.person_request(&asked)["request_id"], live.as_str());
+
+    // S2: the task writers reserved to the person accept the person's own
+    // request in the agent's conversation, and record its message.
+    let tasks = person_tasks(&mut w, &asked, &peer);
+    println!("PERSON_REQUEST_TASKS={tasks}");
+
+    // A session whose agent reports no prompt hook of its own: the input
+    // stays pending while its agent reports prompts, one bind rule at a
+    // time.
+    std::fs::write(
+        root.join("agentenv")
+            .join(key(&format!("claude/{PROJECT}/quiet"))),
+        "export FAKE_AGENT_HOOK_EVENTS=start,stop,end\n",
+    )
+    .unwrap();
+    let quiet = w.launch("quiet");
+    // Another text than the marked message's.
+    w.person_says(&quiet, "quiet one");
+    w.prompt(&quiet, "something else entirely");
+    w.none(&quiet, "bind-other-text");
+    // A prompt reported from inside a running tool call.
+    w.person_says(&quiet, "quiet two");
+    w.hook(
+        &quiet,
+        &[
+            json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tool-1",
+                "tool_input": {"command": "true"}}),
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "quiet two",
+                "prompt_id": w.prompt_id(&quiet, "quiet two")}),
+        ],
+    );
+    w.none(&quiet, "bind-inside-tool-call");
+    // A message admitted more than twelve hours before its prompt.
+    let old = w.person_says(&quiet, "quiet three");
+    w.age_mark(&old, 12 * 3600 * 1000 + 1000);
+    w.native_prompt(&quiet, "quiet three");
+    w.none(&quiet, "bind-old-mark");
+    // Review D1: the marked text reported as another prompt than the one
+    // Claude recorded for it binds a turn by content, but no delivery of
+    // that prompt exists: it grants nothing.
+    let five = w.person_says(&quiet, "quiet five");
+    w.prompt(&quiet, "quiet five");
+    assert_eq!(w.turn(&quiet)["request_id"], five.as_str());
+    assert!(w.person_request(&quiet).is_null(), "{}", w.turn(&quiet));
+    println!("PERSON_REQUEST_STEP=bind-other-prompt ok");
+    w.prompt(&quiet, "something else");
+    assert!(w.turn(&quiet).is_null());
+    // The exact marked message, reported outside any tool call as the
+    // prompt Claude recorded it as, binds and grants.
+    let four = w.person_says(&quiet, "quiet four");
+    w.native_prompt(&quiet, "quiet four");
+    assert_eq!(w.turn(&quiet)["request_id"], four.as_str());
+    assert_eq!(w.person_request(&quiet)["request_id"], four.as_str());
+    println!("PERSON_REQUEST_STEP=bind-exact ok");
+    // Another prompt ends it, and the same message never binds again.
+    w.prompt(&quiet, "something else");
+    w.native_prompt(&quiet, "quiet four");
+    w.none(&quiet, "bind-spent");
+    // An agent's send that takes the window's queued request ID first.
+    let record = w.record(&quiet);
+    let original = original_for(
+        &w.f.location.configuration,
+        &w.f.epoch,
+        &quiet,
+        record["run_id"].as_str().unwrap(),
+        record["conversation_id"].as_str().unwrap(),
+        "quiet six",
+    );
+    assert!(w.f.admit(&original).accepted);
+    let payload = json!({"request_id": original.plan.request_id, "text": "agent six",
+        "expected_run_id": record["run_id"], "expected_conversation_id": record["conversation_id"]});
+    let file = root.join("tools").join("preempt.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let ran = w.agent(
+        &peer,
+        &format!(
+            "env -u HGS_SESSION -u HGS_RUN_ID -u HGS_SESSION_ID hgs send '{quiet}' --json < '{}'",
+            file.display()
+        ),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    // The agent's prompt names the marked request with the agent's stdin:
+    // no turn, checked before any later prompt could end one.
+    w.native_prompt(&quiet, "agent six");
+    assert!(w.turn(&quiet).is_null(), "{}", w.turn(&quiet));
+    w.prompt(&quiet, "quiet six");
+    assert!(w.turn(&quiet).is_null(), "{}", w.turn(&quiet));
+    w.f.until("the window's own send to settle", |f| {
+        f.row(&original).receipt.drained
+    });
+    println!(
+        "preempted window send: {}",
+        serde_json::to_string(&w.f.row(&original).receipt).unwrap()
+    );
+    w.none(&quiet, "bind-preempted-request");
+
+    // A message the window admitted but whose delivery the agent never
+    // confirmed (its Enter swallowed): a prompt of exactly that text, from
+    // anyone, may record the turn, but grants nothing (review S1-1).
+    std::fs::write(
+        root.join("agentenv")
+            .join(key(&format!("claude/{PROJECT}/stuck"))),
+        "export FAKE_AGENT_SWALLOW_ENTER=1\nexport FAKE_AGENT_HOOK_EVENTS=start,stop,end\n",
+    )
+    .unwrap();
+    let stuck = w.launch("stuck");
+    let (id, receipt) = w.person_says_unconfirmed(&stuck, "a message never confirmed");
+    println!(
+        "unconfirmed window send: {}",
+        serde_json::to_string(&receipt).unwrap()
+    );
+    assert_ne!(receipt.phase, Phase::Recorded);
+    w.prompt(&stuck, "a message never confirmed");
+    println!("stuck turn: {}", w.turn(&stuck));
+    assert!(w.person_request(&stuck).is_null(), "{id}");
+    println!("PERSON_REQUEST_STEP=undelivered ok");
+
+    // A paused and resumed session is a new run.
+    hgs(&["pause", &asked]);
+    wait_for("the paused terminal to end", || {
+        !tmux(&["has-session", "-t", &format!("={asked}")])
+            .status
+            .success()
+    });
+    hgs(&["resume", &asked, "-d"]);
+    wait_for("the resumed run", || {
+        let record = w.record(&asked);
+        record["run_id"] != asked_record["run_id"] && record["activity"] == "idle"
+    });
+    assert!(w.person_request(&asked).is_null());
+    println!("PERSON_REQUEST_STEP=resumed ok");
+
+    // Every mark the window wrote names a request it admitted.
+    let marks: i64 =
+        w.f.store
+            .db
+            .query_row("SELECT count(*) FROM desktop_person_marks", [], |r| {
+                r.get(0)
+            })
+            .unwrap_or(-1);
+    println!("marks: {marks}, first: {first}");
+    drop(server);
+    println!("PERSON_REQUEST_REAL_EXECUTED");
+}
+
+/// The task steps (S2), each refused for an agent without the person's
+/// request and taken, with its message recorded, at the person's request.
+fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
+    let mut steps = 0;
+    let refused = |ran: &Ran, step: &str| {
+        assert_ne!(ran.code, 0, "{step}: {}", ran.out);
+        assert!(
+            ran.err.contains("ask the person in your own conversation")
+                || ran.err.contains("asks you to in your own conversation")
+                || ran.err.contains("ask the person in your"),
+            "{step}: {}",
+            ran.err
+        );
+    };
+    // T3: the project's cutover hold.
+    let live = w.bound(asked, "please hold the project's cutover");
+    let (ran, hold) = w.agent_json(
+        asked,
+        &format!("hgs task cutover --project {PROJECT} --hold on --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(hold["hold"]["on"], true, "{hold}");
+    assert_eq!(
+        hold["hold"]["person_request"]["request_id"],
+        live.as_str(),
+        "{hold}"
+    );
+    assert_eq!(hold["hold"]["person_request"]["session"], asked);
+    let ran = w.agent(
+        peer,
+        &format!("hgs task cutover --project {PROJECT} --hold on --json"),
+    );
+    refused(&ran, "cutover-hold-refused");
+    println!("PERSON_REQUEST_STEP=task-cutover-hold ok");
+    steps += 1;
+
+    // T9: a task filed for another session.
+    let file = format!("printf 'For the peer' | hgs task add --project {PROJECT} --title 'Filed for the peer' --target '{peer}' --json");
+    let ran = w.agent(
+        peer,
+        &file.replace(&format!("'{peer}'"), &format!("'{asked}'")),
+    );
+    refused(&ran, "task-target-refused");
+    let (ran, filed) = w.agent_json(asked, &file);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let filed_ref = filed["task"]["ref"].as_str().unwrap().to_owned();
+    assert_eq!(filed["task"]["target"]["session"], peer, "{filed}");
+    let entry = w.log(&filed_ref).pop().unwrap();
+    assert_eq!(entry.kind, "person_request", "{entry:?}");
+    assert_eq!(
+        entry.person_request.map(|r| r.request_id),
+        Some(live.clone())
+    );
+    println!("PERSON_REQUEST_STEP=task-target ok");
+    steps += 1;
+
+    // T4 and T5 reach their own checks past the person rule.
+    let attempt = uuid::Uuid::new_v4().to_string();
+    let abandon = format!("hgs task cancel-attempt {filed_ref} --attempt {attempt}");
+    let ran = w.agent(peer, &abandon);
+    refused(&ran, "cancel-attempt-refused");
+    let ran = w.agent(asked, &abandon);
+    assert_ne!(ran.code, 0);
+    assert!(
+        ran.err.contains("is not an attempt of this task"),
+        "{}",
+        ran.err
+    );
+    println!("PERSON_REQUEST_STEP=task-cancel-attempt-gate ok");
+    steps += 1;
+    let uuid = filed["task"]["uuid"].as_str().unwrap().to_owned();
+    let review = format!(
+        "hgs task review-copy --project {PROJECT} --uuid {uuid} --confirm {} --json",
+        "0".repeat(64)
+    );
+    let ran = w.agent(peer, &review);
+    refused(&ran, "review-copy-refused");
+    let (ran, reviewed) = w.agent_json(asked, &review);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(
+        reviewed["person_request"]["request_id"],
+        live.as_str(),
+        "{reviewed}"
+    );
+    println!("PERSON_REQUEST_STEP=task-review-copy-gate ok");
+    steps += 1;
+
+    // T8: a live team's task.
+    let team_task = w.live_team_task();
+    let rename = format!("printf 'Renamed at the request' | hgs task rename {team_task} --json");
+    let ran = w.agent(peer, &rename);
+    assert_ne!(ran.code, 0);
+    assert!(ran.err.contains("not_allowed"), "{}", ran.err);
+    let (ran, renamed) = w.agent_json(asked, &rename);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(
+        renamed["task"]["title"], "Renamed at the request",
+        "{renamed}"
+    );
+    let log = w.log(&team_task);
+    let by_request = |entry: &zerus_replica::LogEntry| {
+        entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == live)
+    };
+    assert!(
+        log.iter().any(by_request)
+            && log.iter().all(|entry| {
+                !matches!(entry.actor, zerus_replica::Actor::Agent(_)) || by_request(entry)
+            }),
+        "{log:?}"
+    );
+    println!("PERSON_REQUEST_STEP=team-task ok");
+    steps += 1;
+
+    // Review S2-5: a refused hold change opens no project store at all.
+    let other = w.f.config.state.join("replica").join(format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(b"other-project")
+    ));
+    let ran = w.agent(peer, "hgs task cutover --project other --hold on --json");
+    refused(&ran, "cutover-refused-before-store");
+    assert!(!other.exists(), "{}", other.display());
+    println!("PERSON_REQUEST_STEP=task-cutover-no-store ok");
+    steps += 1;
+
+    // Review S2-2: a live team's task held by another session, cancelled at
+    // the request: the cancel keeps the request its guard needed.
+    let held_task = w.held_team_task(peer);
+    let cancel_live = w.bound(asked, "please cancel the team task the peer holds");
+    let ran = w.agent(
+        asked,
+        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let log = w.log(&held_task);
+    assert!(
+        log.iter().any(|entry| entry.kind.contains("cancel")
+            && entry
+                .person_request
+                .as_ref()
+                .is_some_and(|r| r.request_id == cancel_live)),
+        "{log:?}"
+    );
+    w.idle(peer);
+    println!("PERSON_REQUEST_STEP=team-task-cancel-keeps-request ok");
+    steps += 1;
+
+    // Review D3: every writer holds the person-authority serialization point
+    // from its final recheck through its commit; another input that would
+    // end the request waits for that commit (`World::race`).
+    let json = |ran: &Ran| -> Value {
+        assert_eq!(ran.code, 0, "{}", ran.err);
+        serde_json::from_str(&ran.out).unwrap()
+    };
+    // The change path (T8): a live team's rename.
+    let raced = w.bound(asked, "please rename the team task during the race");
+    let renamed = json(&w.race(
+        asked,
+        peer,
+        &format!("printf 'Renamed during the race' | hgs task rename {team_task} --json"),
+        "race-rename",
+    ));
+    assert_eq!(renamed["task"]["title"], "Renamed during the race");
+    assert!(
+        w.log(&team_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == raced)),
+        "race-rename"
+    );
+    println!("PERSON_REQUEST_STEP=race-rename ok");
+    steps += 1;
+    // T9: a task filed for another session.
+    let raced = w.bound(asked, "please file a task for the peer during the race");
+    let filed = json(&w.race(
+        asked,
+        peer,
+        &format!("printf 'Raced' | hgs task add --project {PROJECT} --title 'Filed during the race' --target '{peer}' --json"),
+        "race-target",
+    ));
+    let entry = w.log(filed["task"]["ref"].as_str().unwrap()).pop().unwrap();
+    assert_eq!(entry.person_request.map(|r| r.request_id), Some(raced));
+    println!("PERSON_REQUEST_STEP=race-target ok");
+    steps += 1;
+    // A third session holds or receives the raced task, so the agent that
+    // sends the other input is never the target of the writer's own effect.
+    let holder = w.launch("holder");
+    // The cancel path (T8, and T7's same writer): a team task another
+    // session holds.
+    let held_task = w.held_team_task(&holder);
+    let raced = w.bound(asked, "please cancel that team task during the race");
+    json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
+        "race-cancel",
+    ));
+    assert!(
+        w.log(&held_task)
+            .iter()
+            .any(|entry| entry.kind.contains("cancel")
+                && entry
+                    .person_request
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == raced)),
+        "race-cancel"
+    );
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=race-cancel ok");
+    steps += 1;
+    // T3: the hold back off, at a new request, raced; sends follow it.
+    let off = w.bound(asked, "clear the cutover hold");
+    let hold = json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task cutover --project {PROJECT} --hold off --confirm --json"),
+        "race-cutover",
+    ));
+    assert_eq!(hold["hold"]["on"], false, "{hold}");
+    assert_eq!(
+        hold["hold"]["person_request"]["request_id"],
+        off.as_str(),
+        "{hold}"
+    );
+    println!("PERSON_REQUEST_STEP=race-cutover ok");
+    steps += 1;
+    // Review D2: a live team's task sent to the holder at the request; the
+    // send's own admission (under Root, before any effect) is held.
+    let send_task = w.live_team_task();
+    let raced = w.bound(
+        asked,
+        "please send the team task to the holder during the race",
+    );
+    let sent = json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task send {send_task} --session '{holder}' --json"),
+        "race-send",
+    ));
+    assert_eq!(sent["receipt"]["status"], "submitted", "{sent}");
+    assert!(
+        w.log(&send_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == raced)),
+        "race-send"
+    );
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=race-send ok");
+    steps += 1;
+    // Review D2: the request ends after the send's early check and before
+    // its admission: the input writer's own check under Root refuses it and
+    // nothing reaches the destination or the task's history.
+    let send_task = w.live_team_task();
+    let ended = w.bound(asked, "please send that other team task to the holder");
+    let before = w.record(&holder)["input_pending_request"].clone();
+    let pause = w.root.join("pause-admit");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=admission hgs task send {send_task} --session '{holder}' --json",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the send to reach its admission", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input before the admission",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-admission.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for(
+        "the other input to end the turn before the admission",
+        || w.turn(asked).is_null(),
+    );
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    refused(&ran, "send-request-ends-before-admission");
+    assert_eq!(w.record(&holder)["input_pending_request"], before);
+    assert!(
+        !w.log(&send_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == ended)),
+        "send-request-ends-before-admission"
+    );
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=send-request-ends-before-admission ok");
+    steps += 1;
+    // T5: a damaged copy moved aside; the request is checked after the
+    // review and its hashing, right before the confirmation and the move.
+    let (uuid, fingerprint) = w.damaged_copy();
+    let raced = w.bound(asked, "please move the damaged copy aside during the race");
+    let moved = json(&w.race(
+        asked,
+        peer,
+        &format!(
+            "hgs task review-copy --project {PROJECT} --uuid {uuid} --confirm {fingerprint} --json"
+        ),
+        "race-review-copy",
+    ));
+    assert_eq!(moved["state"], "moved", "{moved}");
+    let confirmed: Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(moved["backup"].as_str().unwrap()).join("confirmed.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed["person_request"]["request_id"], raced.as_str());
+    println!("PERSON_REQUEST_STEP=race-review-copy ok");
+    steps += 1;
+
+    // Review R3-3: the request ends before a live team's retarget writes
+    // anything: the check comes before its first write (the Teams
+    // observation), so the task keeps its team binding.
+    let team_target = w.live_team_task();
+    let ended = w.bound(asked, "please give the team task to the holder");
+    let pause = w.root.join("pause-target");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_recheck hgs task target {team_target} '{holder}' --json",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the target to reach its check", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input before the target",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-target.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for("the other input to end the turn before the target", || {
+        w.turn(asked).is_null()
+    });
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    refused(&ran, "target-request-ends-before-first-write");
+    assert!(
+        w.team_bound(&team_target),
+        "the Teams observation was written"
+    );
+    assert!(!w.log(&team_target).iter().any(|entry| entry
+        .person_request
+        .as_ref()
+        .is_some_and(|r| r.request_id == ended)));
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=target-request-ends-before-first-write ok");
+    steps += 1;
+    // And at a live request, held at its check while another input arrives:
+    // the retarget and its Teams observation commit under it.
+    let raced = w.bound(asked, "please give the team task to the holder now");
+    let targeted = w.race(
+        asked,
+        peer,
+        &format!("hgs task target {team_target} '{holder}' --json"),
+        "race-target-team",
+    );
+    assert_eq!(targeted.code, 0, "{}", targeted.err);
+    assert!(
+        !w.team_bound(&team_target),
+        "the Teams observation is written"
+    );
+    assert!(w.log(&team_target).iter().any(|entry| entry
+        .person_request
+        .as_ref()
+        .is_some_and(|r| r.request_id == raced)));
+    println!("PERSON_REQUEST_STEP=race-target-team ok");
+    steps += 1;
+
+    // Review R3-2: one lock order, Root last. An input writer holds the
+    // state lock while a managed send at the request holds the catalog and
+    // the project and waits for Root. The writer's attribution reads this
+    // machine's ID without the catalog lock, so both finish at once: the send
+    // refuses because the input ended its request, never on a busy lock.
+    let send_task = w.live_team_task();
+    w.bound(
+        asked,
+        "please send the team task while another input arrives",
+    );
+    let hold = w.root.join("pause-receipt");
+    std::fs::create_dir_all(&hold).unwrap();
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "an input under the state lock",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("lock-order.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let input = format!(
+        "HGS_TEST_RECEIPT_PAUSE='{}' hgs send '{asked}' --json < '{}'",
+        hold.display(),
+        file.display()
+    );
+    w.agent_start(peer, &input);
+    wait_for("the input writer to hold the state lock", || {
+        hold.join("ready").exists()
+    });
+    // The managed send takes the catalog and the project, then is held right
+    // before it waits for Root, which the input writer holds.
+    let wait = w.root.join("pause-wait");
+    std::fs::create_dir_all(&wait).unwrap();
+    let sending = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_wait hgs task send {send_task} --session '{holder}' --json",
+        wait.display()
+    );
+    w.agent_start(asked, &sending);
+    wait_for("the managed send to hold the catalog", || {
+        wait.join("ready").exists()
+    });
+    std::fs::write(wait.join("release"), "").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    // Both orders are now in place: the writer goes on under Root.
+    let started = Instant::now();
+    std::fs::write(hold.join("release"), "").unwrap();
+    let sent = w.agent_end(asked, &sending);
+    let elapsed = started.elapsed();
+    let other = w.agent_end(peer, &input);
+    assert_eq!(other.code, 0, "{}", other.err);
+    println!("lock-order: both finished; the send ended {elapsed:?} after the writer went on");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "lock-order took {elapsed:?}"
+    );
+    refused(&sent, "lock-order-send");
+    assert!(!sent.err.contains("stayed busy"), "{}", sent.err);
+    w.idle(asked);
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=lock-order ok");
+    steps += 1;
+
+    // Review S2-1: another input ends the request after the guard admitted
+    // a live team's rename and before its final recheck: nothing is written.
+    let ended = w.bound(asked, "please rename the team task once more");
+    let pause = w.root.join("pause-commit");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_recheck sh -c \"printf 'Renamed after it ended' | hgs task rename {team_task} --json\"",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the rename to reach its commit", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-commit.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for("the other input to end the turn", || {
+        w.turn(asked).is_null()
+    });
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    assert_ne!(ran.code, 0, "{}", ran.out);
+    assert!(
+        ran.err.contains("ask the person in your own conversation"),
+        "{}",
+        ran.err
+    );
+    let log = w.log(&team_task);
+    assert!(
+        !log.iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == ended)),
+        "{log:?}"
+    );
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=team-task-request-ends-before-commit ok");
+    steps += 1;
+
+    // T7: a task the person sent to the agent itself, once another agent's
+    // input has ended the turn, and again at the person's new message. Its
+    // cancel notice reaches the agent's own blocked hook, so it comes last.
+    let own = w.sent_task(asked);
+    w.agent_sends(peer, asked, "cancel the task you were sent", "");
+    assert!(w.person_request(asked).is_null());
+    let cancel = format!("hgs task cancel {own} --reason 'The person asked' --json");
+    let ran = w.agent(asked, &cancel);
+    refused(&ran, "own-cancel-refused");
+    let again = w.bound(asked, "please cancel the task I sent you");
+    let ran = w.agent(asked, &cancel);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let log = w.log(&own);
+    assert!(
+        log.iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == again)),
+        "{log:?}"
+    );
+    println!("PERSON_REQUEST_STEP=task-cancel-own ok");
+    steps += 1;
+
+    steps
+}

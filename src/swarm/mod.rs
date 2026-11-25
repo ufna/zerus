@@ -366,7 +366,16 @@ fn session_project_in(
 
 /// Persist and return the machine identity without retaining the catalog lock.
 pub(crate) fn local_node_id(config: &Config) -> Result<String> {
-    let mut store = LockedStore::load(config)?;
+    save_local_node_id(LockedStore::load(config)?)
+}
+
+/// Bootstrap optional receipt metadata without waiting behind a catalog writer.
+/// The receipt can proceed without attribution if first use is contended.
+pub(crate) fn try_local_node_id(config: &Config) -> Result<String> {
+    save_local_node_id(LockedStore::try_load(config)?)
+}
+
+fn save_local_node_id(mut store: LockedStore) -> Result<String> {
     let id = uuid::Uuid::parse_str(&store.data.node_id)?;
     ensure!(
         !id.is_nil() && id.to_string() == store.data.node_id,
@@ -381,6 +390,14 @@ pub(crate) fn save_test_node_id(config: &Config, id: &str) -> Result<()> {
     let mut store = LockedStore::load(config)?;
     store.data.node_id = id.into();
     store.save()
+}
+
+/// This machine's ID from its existing catalog: one bounded read, without the
+/// catalog lock, never creating or saving anything. `None` when no valid
+/// catalog exists yet.
+pub(crate) fn existing_local_node_id(config: &Config) -> Option<String> {
+    let bytes = read_regular(&config.dir.join("swarm/catalog.json"), 128 * 1024 * 1024).ok()?;
+    existing_node_id(&bytes).ok()
 }
 
 /// Validate an already admitted existing catalog without loading, initializing

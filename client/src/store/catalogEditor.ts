@@ -54,7 +54,8 @@ export function createCatalogEditor(port: CatalogPort = desktopCatalog) {
   }
   async function load() {
     if (snapshot()) return;
-    await run(async () => { const got = await port.load(); setSnapshot(got); setWorking(copy(got.person)); });
+    // A successful read ends an earlier read's error (zerus-efeo3 G12).
+    await run(async () => { const got = await port.load(); setSnapshot(got); setWorking(copy(got.person)); setNotice(""); });
   }
   function replace(value: Catalog) { if (!locked()) {
     if (new TextEncoder().encode(JSON.stringify(value, null, 2) + "\n").length > 240_000 || [value.roles, value.pipelines, value.templates].some((rows) => rows && rows.length > 200)) { setNotice("The catalog exceeds the editor size limit."); return; }

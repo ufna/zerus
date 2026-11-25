@@ -3,6 +3,7 @@ import { createRoot, createSignal, batch } from "solid-js";
 import { inTauri } from "../bridge";
 import type { TeamsOut } from "../types";
 import type { PhasePane } from "./team-phases";
+import type { Text as CoreText } from "../text";
 
 // The Teams views the desktop shows (M1): the team list, one followed team
 // and the owner cards. Every value comes from the `teams` key of the per-frame
@@ -55,6 +56,8 @@ export interface TeamCard {
   deps?: TeamDependency[]; phase?: number | null; origin?: number | null; layer?: number | null;
   node: number; title: string; state: string; task: TeamTaskRef | null; role: string; pipeline: string;
   assignee: string; implementer: string; rank: string; round: number; held: boolean; admitted: boolean;
+  /** For a stage card, its target's earlier implementers, whom its Reassign refuses (zerus-3u5yu). */
+  earlier_implementers?: string[];
   integrated: boolean; decided_by: string; stages: TeamStage[];
   kind?: "task" | "stage" | null; rounds?: number | null;
   /** Who holds the attempt (the holder the store's decisions use): null when
@@ -62,6 +65,11 @@ export interface TeamCard {
   holder?: string | null;
   /** The kind of the decision that has not settled, when one is pending. */
   pending_decision?: string | null;
+  /** Files or folders the task may change; absent when it names none (zerus-63rru.199 B3). */
+  writes?: string[];
+  /** The core could not read every dependency or write path of this row, so
+   * the window never sends a placement that would drop one (zerus-63rru.199 B3). */
+  fields_incomplete?: boolean;
   /** The pending decision has not started and a new Return, Reassign or
    * Cancel replaces it; absent (an older hgs) reads as false. */
   pending_replaceable?: boolean;
@@ -74,6 +82,8 @@ export interface TeamGroup { state: string; cards: TeamCard[] }
 export interface TeamBar {
   id: string; project: string; name: string; status: string; goal: string; lead: string;
   integration_branch: string; base_commit: string; revision: number; counts: TeamCounts;
+  /** The computer the team lives on, from its status (zerus-63rru.199 C10); absent on an older read. */
+  home?: string;
 }
 export interface TeamView {
   planning?: { known: boolean; paused: boolean; goal: string } | null;
@@ -124,7 +134,9 @@ export interface WaitingView {
   after?: string | null;
 }
 
-export interface TeamConfirmation { name: string; title: string; text: string; action: string }
+/** The core's confirmation; `message` is the native dialog's sentence as a
+ * catalog text (an older core sends only the English `text`). */
+export interface TeamConfirmation { name: string; title: string; text: string; action: string; message?: CoreText }
 export interface TeamCall {
   team: string;
   team_name?: string;

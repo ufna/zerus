@@ -1982,11 +1982,15 @@ fn track(name: String, token: String, mut event: Value, output: &mut StartOutput
         write(&mut record)?;
     }
     let seen_before = record["input_seen_at"].clone();
+    let person_before = person_turn::before(&record);
     let acceptance_allowed = input::acceptance::allows_hook(&record, &event);
     journal::update_activity(&mut record, &event);
     if !acceptance_allowed {
         record["input_seen_at"] = seen_before.clone();
     }
+    // The person turn starts only at the native prompt that accepted the
+    // person's marked message, and any other prompt ends it (zerus-46l1q).
+    person_turn::observe(&mut record, &event, &person_before);
     keep_warm::settle(&mut record, &event, now());
     // Native acceptance is gate evidence, not a by-product of Activity or
     // analytics. Persist it after the existing caller/conversation checks and

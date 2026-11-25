@@ -41,6 +41,30 @@ fn chain(mut attempt: impl FnMut(Method) -> Result<(), String>) -> Result<(), St
     ))
 }
 
+/// Starts reading the clipboard's image on GTK's thread, as Qt read
+/// `QClipboard::image`: the PNG its owner offers, otherwise any image GTK can
+/// load, encoded as PNG. GTK's requests do not block its loop; the reply
+/// answers once they finish. False when GTK's thread could not take it.
+pub(super) fn image(app: &AppHandle, reply: super::ImageReply) -> bool {
+    app.run_on_main_thread(move || {
+        let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+        clipboard.request_contents(
+            &gtk::gdk::Atom::intern("image/png"),
+            move |clipboard, data| {
+                let png = data.data();
+                if !png.is_empty() {
+                    reply.send(Some(png));
+                    return;
+                }
+                clipboard.request_image(move |_, image| {
+                    reply.send(image.and_then(|image| image.save_to_bufferv("png", &[]).ok()));
+                });
+            },
+        );
+    })
+    .is_ok()
+}
+
 pub(super) fn write(app: &AppHandle, text: &str) -> Result<(), String> {
     let _copying = COPYING.lock().unwrap_or_else(|error| error.into_inner());
     chain(|method| match method {

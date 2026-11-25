@@ -31,6 +31,7 @@ APP_SMOKES = {
 NOT_APP_STARTS = {
     "menu-smoke.py": "a browser against the local Vite server",
     "teams-workspace-layout-smoke.py": "a private WebKitGTK page with synthetic Teams callbacks",
+    "newteam-footer-smoke.py": "a private WebKitGTK page with the New team form and synthetic refusals",
     "window-resize-smoke.py": "a synthetic window fixture, never the instance claim",
     "window-theme-smoke.py": "a synthetic window fixture, never the instance claim",
     "phase4-wheel-driver.py": "the app child phase4-smoke.py starts inside its sandbox",

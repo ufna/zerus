@@ -110,6 +110,15 @@ impl Runtime {
             self.block(row, problem, now)?;
             return Ok(true);
         }
+        // The model was checked when the account was chosen, before the
+        // worktree; the account's list may have changed since (#2533 delta
+        // review). Read it again at the last step and refuse with the same
+        // reason: the row waits on its card, with no retry loop and no
+        // launch with the account's defaults instead.
+        if let Err(problem) = super::member::still_offered(effects, plan) {
+            self.block(row, problem, now)?;
+            return Ok(true);
+        }
         let tree = row
             .worktree
             .as_ref()

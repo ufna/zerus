@@ -60,7 +60,7 @@ class PublicListingRecovery(unittest.TestCase):
         if indexed:
             import sqlite3
             from contextlib import closing
-            with closing(sqlite3.connect(self.state/'listing-metadata/index.sqlite3')) as db:
+            with closing(sqlite3.connect(self.state/'listing-metadata/certified/index.sqlite3')) as db:
                 seed = json.loads(db.execute('SELECT seed FROM sources WHERE source=?',
                                             (path.name,)).fetchone()[0])
             self.assertEqual({key: seed['record'][key] for key in KEYS},
@@ -93,7 +93,7 @@ class PublicListingRecovery(unittest.TestCase):
             self.ready()
             import sqlite3
             from contextlib import closing
-            with closing(sqlite3.connect(self.state/'listing-metadata/index.sqlite3')) as db:
+            with closing(sqlite3.connect(self.state/'listing-metadata/certified/index.sqlite3')) as db:
                 seeds = dict(db.execute('SELECT source,seed FROM sources'))
         rows = self.complete()['sessions']
         self.assertEqual({row['name'] for row in rows}, {record['name'] for record, _, _ in records})
@@ -115,7 +115,7 @@ class PublicListingRecovery(unittest.TestCase):
         if indexed:
             import sqlite3
             from contextlib import closing
-            with closing(sqlite3.connect(self.state/'listing-metadata/index.sqlite3')) as db:
+            with closing(sqlite3.connect(self.state/'listing-metadata/certified/index.sqlite3')) as db:
                 for _, path, _ in records:
                     seed = json.loads(db.execute('SELECT seed FROM sources WHERE source=?',
                                                 (path.name,)).fetchone()[0])

@@ -12,9 +12,9 @@ afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildre
 const tick = async () => { await new Promise((resolve) => setTimeout(resolve, 0)); };
 const inspection = () => structuredClone(payload.inspection) as ProviderInspection;
 const view = (): TeamView => structuredClone(scope.team) as unknown as TeamView;
-function setup(port = vi.fn(async (_: ProviderRead) => inspection()), outcome: TeamOutcome = { outcome: "done", receipt: {}, request_id: "example" }, home = inspection().home) {
+function setup(port = vi.fn(async (_: ProviderRead) => inspection()), outcome: TeamOutcome = { outcome: "done", receipt: {}, request_id: "example" }, home = inspection().home, team = view()) {
   const host = document.createElement("div"); document.body.append(host);
-  const [shown, show] = createSignal(view());
+  const [shown, show] = createSignal(team);
   const save = vi.fn(async (_: TeamCall) => outcome);
   dispose = render(() => createComponent(ProviderSettings, { get view() { return shown(); }, home, locked: false, onSave: save, port }), host);
   const button = (key: string) => host.querySelector<HTMLButtonElement>(`[data-provider-${key}]`)!;
@@ -82,8 +82,11 @@ it("does not launch a reread when a save completes after the dialog closed", asy
   expect(f.save).toHaveBeenCalledOnce(); expect(f.port).toHaveBeenCalledTimes(2);
 });
 
-it("cannot inspect or save without a team home from the followed list", async () => {
-  const f = setup(undefined, undefined, ""); await tick();
+// zerus-63rru.199 (C10): the team's own status names its home when the list
+// page does not; with neither, nothing is read.
+it("cannot inspect or save without a team home from the list or the team's status", async () => {
+  const team = view(); delete team.bar.home;
+  const f = setup(undefined, undefined, "", team); await tick();
   expect(f.port).not.toHaveBeenCalled(); expect(f.save).not.toHaveBeenCalled();
   expect(f.button("save").disabled).toBe(true);
   expect(f.host.textContent).toContain("The team’s home computer is missing from the loaded team list.");

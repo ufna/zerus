@@ -1,6 +1,6 @@
 //! The binding surface, called from Rust as the apps call it.
 use zerus_replica_ffi::{
-    ReplicaError, TaskPosition, TaskSettings, TaskStage, TaskStore, TaskTarget,
+    DamagedTask, ReplicaError, TaskPosition, TaskSettings, TaskStage, TaskStore, TaskTarget,
 };
 
 /// A task sent, reported and accepted into Done, as only hgs records a send.
@@ -216,6 +216,51 @@ fn a_held_project_answers_busy_instead_of_waiting() {
     assert!(started.elapsed() < std::time::Duration::from_secs(15));
     drop(held);
     assert_eq!(store.list().unwrap().tasks.len(), 1);
+}
+
+#[test]
+fn exchange_reports_a_received_task_refusal_with_its_identity_and_reason() {
+    let (a, b, c) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let computer = store(&a);
+    let task = computer
+        .add(
+            "Add rate limiting".into(),
+            TaskStage::Todo,
+            TaskTarget::AnySession,
+            TaskPosition::End,
+        )
+        .unwrap();
+    let same_project = store(&b).exchange();
+    let answer = computer
+        .answer_exchange(same_project.next_request().unwrap().unwrap())
+        .unwrap();
+    let other_project = TaskStore::new(
+        c.path().display().to_string(),
+        "project-2".into(),
+        "meadow".into(),
+    );
+    let before = other_project.live_digest().unwrap();
+    let exchange = other_project.clone().exchange();
+    exchange.next_request().unwrap().unwrap();
+    let progress = exchange.accept(answer).unwrap();
+
+    assert_eq!(progress.changed, 0);
+    assert_eq!(
+        progress.refused_here,
+        [DamagedTask {
+            uuid: task.uuid,
+            error: "the task belongs to another project".into(),
+        }]
+    );
+    assert!(progress.refused_there.is_empty());
+    assert!(progress.unsent.is_empty());
+    assert_eq!(progress.digest, computer.live_digest().unwrap());
+    assert_eq!(other_project.live_digest().unwrap(), before);
+    assert!(other_project.list().unwrap().tasks.is_empty());
 }
 
 #[test]

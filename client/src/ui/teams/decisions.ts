@@ -189,7 +189,7 @@ export function waitingKindSentence(item: CardCopy): string {
     case "report_waiting": return tr("A member's report has waited for the lead's decision longer than the team allows.");
     case "silent_lead": return tr("The lead has not worked for a while although items wait in its inbox.");
     case "late_session": return tr("A member's session started after the team stopped or the member was removed; Zerus does not stop it.");
-    case "rejected_merge": return tr("The rejection did not undo the merge; only a revert on the integration branch removes it.");
+    case "rejected_merge": return tr("The rejection did not undo the merge, and Zerus cannot revert it: ask the lead, which has the same item in its inbox, or revert the merge on the integration branch yourself, then acknowledge this card.");
     default: return item.text;
   }
 }
@@ -230,13 +230,19 @@ const DECISION_WORDS: Record<string, { text: () => string; danger?: boolean }> =
  * nothing else (zerus-63rru.29: every opener states the decisions something
  * reads, and the store refuses one the card does not list). No decision comes
  * from the card's kind; a token this version has no words for is not offered;
- * a row without a list (an older hgs) takes acknowledged alone. */
-export function waitingDecisions(item: Pick<WaitingItem, "kind" | "decisions">): WaitingDecision[] {
+ * a row without a list (an older hgs) takes acknowledged alone. A phase card's
+ * acknowledgement only closes the reminder, and no later card repeats it for
+ * the same draft (ops phase_review.rs), so it reads Hide card (zerus-63rru.197 C5). */
+export function waitingDecisions(item: Pick<WaitingItem, "kind" | "decisions" | "phase_reference">): WaitingDecision[] {
   return (item.decisions ?? ["acknowledged"]).flatMap((token) => {
     const words = Object.hasOwn(DECISION_WORDS, token) ? DECISION_WORDS[token] : undefined;
-    return words ? [{ decision: token, text: words.text(), ...(words.danger ? { danger: true } : {}) }] : [];
+    const text = token === "acknowledged" && item.phase_reference ? tr("Hide card") : words?.text();
+    return words ? [{ decision: token, text: text!, ...(words.danger ? { danger: true } : {}) }] : [];
   });
 }
+
+/** What hiding a phase card leaves undecided, said beside its buttons. */
+export const PHASE_CARD_HIDE = () => tr("Hiding the card does not decide the phase; it keeps waiting in Layers.");
 
 /** The card's age in words, from its creation time. */
 export function waitingAge(created_ms: number, now_ms: number): string {

@@ -494,6 +494,13 @@ export async function copyVerbatim(text: string): Promise<void> {
 
 /** The files copied in a file manager, for a paste into the composer: null when the clipboard holds none (clipboard.rs `clipboard_files`). */
 export const clipboardFiles = (): Promise<string[] | null> => inTauri() ? invoke<string[] | null>("clipboard_files") : Promise.resolve(null);
+/** The clipboard's image as a PNG, for a paste whose WebKitGTK event carried nothing: null without one (clipboard.rs `clipboard_image`). */
+export async function clipboardImage(): Promise<File | null> {
+  if (!inTauri()) return null;
+  const reply = await invoke<ArrayBuffer | number[]>("clipboard_image");
+  const bytes = reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
+  return bytes.byteLength ? new File([bytes], "pasted-image.png", { type: "image/png" }) : null;
+}
 
 /** The clipboard's text for a paste into Terminal: from Rust in the app, the page's clipboard in a browser. */
 export async function pasteText(): Promise<string> {
@@ -615,6 +622,25 @@ export interface AccountEditResult { notices: Text[]; errors: string[];
 export async function accountEditOpen(account: string, profile: string, kind: AccountEditKind): Promise<AccountEditView> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("account_edit_open", { account, profile, kind });
+}
+/** Teams Add member and Swap (zerus-efeo3 G16; #2533 review): a named
+ * account's own catalog, the one Default model and effort reads, or for the
+ * freest account the models every account of the agent lists. Read only,
+ * from the agent's own account rows; the native side keeps each catalog for
+ * the accounts revision it was read at. */
+export interface MemberModels {
+  /** The named account, or "" for the freest. */
+  account: string; revision: string;
+  /** The named account's catalog, or the models every account of the agent lists. */
+  catalog: AccountModelCatalog;
+  /** The named account, or every account of the agent (the launch planner's inputs). */
+  accounts: { id: string; label: string }[];
+  /** The freest account's models that only some accounts list, and which. */
+  on_some: { id: string; label: string; accounts: string[] }[];
+}
+export async function teamMemberModels(agent: string, account: string): Promise<MemberModels> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("team_member_models", { agent, account });
 }
 export async function accountEditApply(handle: string, values: AccountEditValues): Promise<AccountEditResult> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);

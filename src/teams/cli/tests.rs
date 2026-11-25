@@ -33,6 +33,7 @@ mod recorded_timings;
 #[cfg(unix)]
 mod rework;
 mod session_groups;
+mod team_page_screen;
 mod status_items;
 mod storage_failure;
 mod teams_followup;

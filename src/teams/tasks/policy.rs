@@ -27,13 +27,36 @@ fn acknowledgement(task: &TaskDoc, actor: &TaskActor) -> Result<bool> {
         }))
 }
 
+/// What the guard decided for an admitted caller.
+pub(crate) enum Decision {
+    Allowed,
+    /// The one policy refusal of an agent on a live team's task, which the
+    /// person's own request may replace (zerus-46l1q); nothing else may.
+    AgentRefused(Problem),
+}
+
 /// An agent decides through hgs team; only the service drives a team task.
+/// Production callers use [`decide`], which keeps the agent refusal apart.
+#[cfg(test)]
 pub(crate) fn guard(
     caller: &Caller<'_>,
     meeting: &mut Meeting<'_, '_>,
     task: &TaskDoc,
     action: &str,
 ) -> Result<()> {
+    match decide(caller, meeting, task, action)? {
+        Decision::Allowed => Ok(()),
+        Decision::AgentRefused(problem) => Err(problem),
+    }
+}
+
+/// [`guard`], with its agent refusal kept apart from every other error.
+pub(crate) fn decide(
+    caller: &Caller<'_>,
+    meeting: &mut Meeting<'_, '_>,
+    task: &TaskDoc,
+    action: &str,
+) -> Result<Decision> {
     if !matches!(
         action,
         "send"
@@ -50,28 +73,28 @@ pub(crate) fn guard(
             | "edit"
             | "rename"
     ) {
-        return Ok(());
+        return Ok(Decision::Allowed);
     }
     if matches!(caller.actor, TaskActor::Person) {
-        return Ok(());
+        return Ok(Decision::Allowed);
     }
     let guarded = guarded(caller.state, caller.machine, task)?;
     if guarded && matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
-        return Ok(());
+        return Ok(Decision::Allowed);
     }
     // zerus-63rru.97: meet the returned key of a team stopped or archived
     // on this computer at every agent meeting, before the early exit for a
     // non-live header. Meeting it clears it with the sweep's own write,
     // once; the task is usable again. A foreign key still refuses below.
     if meet(caller.state, caller.machine, task, meeting)? || !guarded {
-        return Ok(());
+        return Ok(Decision::Allowed);
     }
-    Err(Problem::new(
+    Ok(Decision::AgentRefused(Problem::new(
         code::NOT_ALLOWED,
         format!(
             "An agent cannot {action} a live team's task; the team service performs this action."
         ),
-    ))
+    )))
 }
 
 /// The key-clear half of a guard meeting. A command whose task is not

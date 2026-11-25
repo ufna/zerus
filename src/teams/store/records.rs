@@ -64,6 +64,9 @@ pub struct QueueRow {
     pub pending: Option<String>,
     pub pending_replaceable: bool,
     pub unstaffed: Option<String>,
+    /// For a stage, the members who implemented any round of its target, whom
+    /// its Reassign refuses (zerus-3u5yu); empty for any other row.
+    pub earlier_implementers: Vec<String>,
     /// The stop facts the store keeps for the node (zerus-63rru.52): the
     /// newest recorded cancel, the key clear, and whether a cancel is still
     /// pending. None until the page's query fills them.

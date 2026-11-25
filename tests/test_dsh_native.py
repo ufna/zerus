@@ -1167,16 +1167,13 @@ class NativeHarness(unittest.TestCase):
         self.assertEqual(self.rpc('ping')['generation'], generation)
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
-    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
-        subject = self.launch_spawn_subject()
-        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+    def unload_spawn_bridge(self, subject, action, evidence_file, generation):
         self.rpc('send', {'sessionId': subject['conversation_id'], 'requestId': str(uuid.uuid4()),
                           'mode': 'steer',
-                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE cleanup'}]})
-        evidence = self.root / 'holds' / 'spawn-cleanup.json'
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE ' + action}]})
+        evidence = self.root / 'holds' / evidence_file
         self.wait(evidence.is_file, timeout=30)
         result = json.loads(evidence.read_text())
-        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
 
         def reloaded():
             try:
@@ -1186,6 +1183,41 @@ class NativeHarness(unittest.TestCase):
             return ping if ping['generation'] != generation else None
 
         self.assertTrue(self.wait(reloaded)['shellIdentity'])
+        return result
+
+    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        result = self.unload_spawn_bridge(subject, 'cleanup', 'spawn-cleanup.json', generation)
+        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
+    def test_spawn_wrappers_follow_replaced_cordis_service_on_same_host(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        initial = self.spawn_probe(subject, 'once')
+        changed = self.spawn_probe(subject, 'swap')
+        try:
+            # The next real tool hook sees the new Cordis service and spawns
+            # through it. The resident bridge stays active during this swap.
+            updated = self.spawn_probe(subject, 'once')
+            # The tool records its own service before a ping or cleanup can
+            # repair it. A different installation ID alone would also hold
+            # for a completely unwrapped replacement.
+            self.assertEqual(updated.get('wrapperMarked'), [True, True],
+                             'The post-swap tool did not see both HGS wrappers')
+        finally:
+            result = self.unload_spawn_bridge(subject, 'cleanup-swap', 'spawn-swap-cleanup.json', generation)
+
+        self.assertEqual(changed, {'replacementNative': [True, True]})
+        self.assertEqual(initial.get('completed'), 1, initial)
+        self.assertEqual(updated.get('completed'), 1, updated)
+        self.assertNotEqual(updated['installation'], initial['installation'])
+        self.assertEqual(result.get('wrapped'), [True, True], result)
+        self.assertEqual(result.get('previousRestored'), [True, True],
+                         'The previous service kept the HGS wrapper after the swap')
+        self.assertEqual(result.get('restored'), [True, True],
+                         'The replacement service kept the HGS wrapper after bridge unload')
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
     def test_pause_resume_preserves_identity_and_other_agent(self):

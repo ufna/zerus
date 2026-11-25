@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeam } from "./NewTeam";
-import { catalog } from "./fixtures";
+import { catalog, projectsView } from "./fixtures";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -18,7 +18,7 @@ function setup(overrides: Partial<Parameters<typeof NewTeam>[0]> = {}) {
   const [shownCatalog, setCatalog] = createSignal("catalog" in overrides ? overrides.catalog : catalog);
   dispose = render(() => createComponent(NewTeam, {
     busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
-    defaultProject: "example-project", defaultFolder: "/workspace/example",
+    defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
     onCreate: async (input) => { created.push(input); return { outcome: "done", receipt: {}, request_id: input.request_id }; }, onSaveTemplate: async () => {}, onClose: () => {}, ...overrides,
     get catalog() { return shownCatalog(); },
@@ -73,7 +73,7 @@ it("cannot create before the folder is a verified Git folder", async () => {
   find(host, "Create team").click();
   expect(created).toHaveLength(1);
   expect(created[0]).toMatchObject({
-    team: expect.any(String), template: "bugfix", project: "example-project", name: "Fixes",
+    team: expect.any(String), template: "bugfix", project: "orders", name: "Fixes",
     home: "00000000-0000-4000-8000-0000000000aa",
     base_commit: "0123456789abcdef0123456789abcdef01234567", integration: "branch",
   });
@@ -113,8 +113,9 @@ it("drops a late folder check for a folder that is no longer shown", async () =>
   const folder = host.querySelector<HTMLInputElement>('input[aria-label="Project folder"]')!;
   folder.value = "/workspace/a"; folder.dispatchEvent(new Event("input", { bubbles: true }));
   find(host, "Check folder").click();
-  // The person edits the folder while the check is in flight.
-  folder.value = "/workspace/not-checked"; folder.dispatchEvent(new Event("input", { bubbles: true }));
+  // The person edits the folder while the check is in flight, back to the
+  // chosen project's own folder (another folder would block Create by itself).
+  folder.value = "/workspace/example"; folder.dispatchEvent(new Event("input", { bubbles: true }));
   resolveFirst({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" });
   await vi.waitFor(() => expect(find(host, "Check folder").disabled).toBe(false));
   expect(host.querySelector("[data-folder-ok]")).toBeNull();

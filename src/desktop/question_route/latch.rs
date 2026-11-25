@@ -59,6 +59,8 @@ pub(super) fn migrate_order(tx: &Transaction<'_>) -> Result<()> {
 }
 #[cfg(test)]
 pub(super) fn remove_order_fixture(db: &Connection) {
+    // The later schema-43 person mark leaf first (zerus-46l1q).
+    crate::desktop::person_mark::remove_fixture(db);
     db.execute_batch("DROP TRIGGER desktop_question_route_child_fenced; ALTER TABLE desktop_question_route_children DROP COLUMN revision_guarded;").unwrap();
 }
 

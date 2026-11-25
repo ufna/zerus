@@ -1,5 +1,7 @@
 import { trNoop } from "../../i18n";
 import type { TeamCatalog, TeamView } from "../../store/teams";
+import type { ProjectsView } from "../../types";
+import newTeamProjects from "./fixtures/new-team-projects.json";
 
 // The pinned Teams replies of package 5 (`crates/team-plan/fixtures/cli-status.json`
 // and `cli-queue.json`, copied into client/core), projected the way the core
@@ -132,3 +134,8 @@ export const fidelityView: TeamView = {
   groups: ["waiting", "pending", "in_progress", "reported", "accepted", "cancelled"].map((state) => ({ state, cards: boardCards.filter((card) => card.state === state) })),
   truncated: false, next: null,
 };
+
+/** The Projects catalog as client core projects it (views::projects::tests::
+ * the_new_team_projects_fixture_is_this_projection): "orders" has one folder
+ * on this computer, /workspace/example, so New team starts from it. */
+export const projectsView = newTeamProjects as unknown as ProjectsView;

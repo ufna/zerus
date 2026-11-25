@@ -761,13 +761,27 @@ pub(super) fn drained(
             next.outcome = None;
             next.refusal = Some(refusal.clone());
         }
+        Observed::NotOffered(refusal)
+            if row.verified.binding.kind == wire::Kind::DeferredSend
+                && row
+                    .receipt
+                    .cli_exit
+                    .as_ref()
+                    .is_some_and(|exit| exit.code == 1)
+                && refusal.matches(&row.verified.plan) =>
+        {
+            next.phase = Phase::Unknown;
+            next.code = wire::NOT_OFFERED.into();
+            next.outcome = None;
+            next.cli_exit = Some(wire::CliExit::new(1, &refusal.reason));
+        }
         // The closed pre-child result, confirmed by the absence of any
         // record of the request: nothing ran and nothing else submitted it.
         Observed::Unknown(receipt::MISSING) if not_started => {
             next.phase = Phase::Failed;
             next.code = wire::NOT_STARTED.into();
         }
-        Observed::Submitted(_) | Observed::Refused(_) => {
+        Observed::Submitted(_) | Observed::Refused(_) | Observed::NotOffered(_) => {
             next.phase = Phase::Unknown;
             next.code = wire::RECEIPT_MISMATCH.into();
         }

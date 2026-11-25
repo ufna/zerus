@@ -86,7 +86,7 @@ fn exact_previous_store_upgrade_adds_only_the_independent_clone_leaf() {
         // outcome25, task message26, task message input27, deferred send28,
         // deferred answer29 and compact-to-send30 tables, and the question
         // route leaves' (zerus-sa9qn.8, .32, .50, .36 and .52).
-        before + 2 + 4 + 2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1
+        before + 2 + 4 + 2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1 + 1
     );
     assert_eq!(
         store

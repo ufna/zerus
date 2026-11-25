@@ -21,6 +21,7 @@
       }
     },
     "goal": "",
+    "home": "00000000-0000-4000-8000-0000000000aa",
     "id": "00000000-0000-4000-8000-00000000beef",
     "integration_branch": "zerus/team/fixes",
     "lead": "lead",
@@ -29,6 +30,7 @@
     "revision": 18,
     "status": "running"
   },
+  "edit_goal": "",
   "groups": [
     {
       "cards": [],

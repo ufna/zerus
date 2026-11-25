@@ -96,6 +96,9 @@ pub(super) trait Effects {
     fn branch_exists(&mut self, plan: &super::ledger::BranchPlan) -> Result<bool>;
     fn create_branch(&mut self, plan: &super::ledger::BranchPlan) -> Effect<()>;
     fn accounts(&mut self, agent: &str) -> Result<Vec<AccountUsage>>;
+    /// The chosen launch account's own model list, as `hgs account
+    /// model-settings` reads it from the account's local catalog. Read only.
+    fn model_catalog(&mut self, agent: &str, account: &str) -> Result<serde_json::Value>;
     /// None means creation settled successfully but ownership still needs a read.
     fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Option<Worktree>>;
     fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree>;

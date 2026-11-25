@@ -20,6 +20,27 @@ impl Stamp {
     pub(crate) fn size(&self) -> u64 {
         self.size
     }
+
+    /// Match an archive stamp written by an earlier process. Unix device
+    /// numbers can change on remount. Windows records a volume serial number.
+    /// Use ordinary equality for identities pinned in the current process.
+    pub(crate) fn matches_persisted(&self, current: &Self) -> bool {
+        #[cfg(unix)]
+        {
+            self.object[1] == current.object[1]
+                && self.size == current.size
+                && self.modified == current.modified
+        }
+        #[cfg(not(unix))]
+        {
+            self == current
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn change_device_for_test(&mut self) {
+        self.object[0] ^= 1;
+    }
 }
 fn refused() -> io::Error {
     io::Error::new(

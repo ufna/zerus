@@ -357,6 +357,60 @@ impl Machines {
     }
 }
 
+/// What an agent needs for an action reserved to the person: the person's own
+/// request in its own conversation (zerus-46l1q). `None` for the person; a
+/// refusal names `rule` and how to ask. The writer records the request's
+/// identity with the action and checks it again before it writes.
+pub(super) fn person_request_for(
+    who: &Actor,
+    rule: &str,
+) -> Result<Option<crate::caller::PersonRequest>> {
+    let Actor::Agent(own) = who else {
+        return Ok(None);
+    };
+    let request = crate::caller::person_request().map_err(|why| fail(format!("{rule}: {why}")))?;
+    if !request.is_of(own) {
+        return Err(fail(format!(
+            "{rule}: the person's request belongs to another session; {}",
+            crate::caller::ASK
+        )));
+    }
+    Ok(Some(request))
+}
+
+/// Checks `request` again just before its writer writes.
+pub(super) fn recheck(request: Option<&crate::caller::PersonRequest>) -> Result<()> {
+    request.map_or(Ok(()), |request| request.recheck().map_err(fail))
+}
+
+/// The final recheck of the person's request `request` under the one
+/// person-authority serialization point (zerus-46l1q, review D3): the guard
+/// it returns is held through the commit that follows, so a revocation
+/// either comes first (refused here) or after that commit. A debug test may
+/// hold the command right after it (`person_commit`). Without a request
+/// nothing is taken. The guard is never held across an input delivery.
+pub(super) fn recheck_held(
+    request: Option<&crate::caller::PersonRequest>,
+    task: &str,
+    deadline: std::time::Instant,
+) -> Result<Option<crate::state::PersonAuthority>> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    // Bounded by the command's deadline: a busy state lock is a refusal to
+    // retry, never a wait that holds the project's locks (review R3-2).
+    let authority = crate::state::person_authority_until(deadline).map_err(fail)?;
+    request.recheck().map_err(fail)?;
+    attempts::pause_at(task, "person_commit");
+    Ok(Some(authority))
+}
+
+/// The deadline of a writer's person-authority wait, when the command has
+/// no attempt deadline of its own.
+pub(super) fn person_deadline() -> std::time::Instant {
+    std::time::Instant::now() + attempts::BUDGET
+}
+
 /// The refusal for a resident DeepSeek host's tool call (`HGS_AGENT=dsh`)
 /// whose session cannot be proven.
 const UNPROVEN_HOSTED_AGENT: &str = "a DeepSeek agent's tool call (HGS_AGENT=dsh) never acts as the person, and its session cannot be proven here; run person actions from a terminal outside the DeepSeek host";
@@ -1158,11 +1212,20 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     if option(args, "--host")?.is_some() && matches!(option(args, "--target")?, None | Some("any")) {
         return Err(fail("--host needs a --target session"));
     }
+    // ... unless the person asked the agent for it in its own conversation
+    // (zerus-46l1q), which the new task's history records.
+    let mut filed_for = None;
     let target = if team.is_some() { Target::Any } else { match (&author, option(args, "--target")?) {
-        (Actor::Agent(_), Some(_)) => {
-            return Err(fail(
-                "a task an agent files is pinned to its own session; --target is for people",
-            ))
+        (Actor::Agent(_), Some(session)) => {
+            filed_for = person_request_for(
+                &author,
+                "a task an agent files is pinned to its own session; --target is for people, or for an agent the person asked in its own conversation",
+            )?;
+            if session == "any" {
+                Target::Any
+            } else {
+                Target::Session(machines.target(machines.node(option(args, "--host")?)?, session, args)?)
+            }
         }
         (Actor::Agent(own), None) => Target::Session(own.clone()),
         (Actor::Person, None | Some("any")) => Target::Any,
@@ -1170,6 +1233,9 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     }};
     let position = position_index(args)?.map_or(Position::End, Position::Index);
     let store = store(config, &id)?;
+    // Checked again before the first durable write (placement may renumber
+    // and save other tasks) and held through the card's save (review R3-3).
+    let authority = recheck_held(filed_for.as_ref(), &id, person_deadline())?;
     let request = option(args, "--request-id")?;
     let (mut task, created) = placed(&store, |placement| if let Some(title) = title {
         store.new_named_task_placed(placement, title, &text, content.attachments.as_deref().unwrap_or_default(), stage, target, author.clone(), &position, &name, now(), request, flag(args, "--start")).map_err(fail)
@@ -1181,8 +1247,13 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     })?;
     if created {
         if title.is_none() && flag(args, "--start") { task.record_start(&author, now()).map_err(fail)?; }
+        if let Some(person) = &filed_for {
+            task.at_request(Some(person.reference()));
+            task.record_at_request(&author, "Filed for another session at the person's request", now()).map_err(fail)?;
+        }
         store.save(&mut task).map_err(fail)?;
     }
+    drop(authority);
     let (store, task, team_reply) = if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
         drop(store);
@@ -1336,10 +1407,20 @@ fn change_guarded(
     if let Some(guard) = guard {
         guard.check(&task)?;
     }
-    {
+    // The person's request a live team's task needs (zerus-46l1q): this
+    // exact request is checked again right before every commit below.
+    let mut person = {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        teams::guard(config, &machines, &task, action, args, &mut meeting)?;
-    }
+        teams::guard(
+            config,
+            &machines,
+            &mut task,
+            action,
+            args,
+            &mut meeting,
+            None,
+        )?
+    };
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef {
             project: project_id.clone(),
@@ -1427,7 +1508,15 @@ fn change_guarded(
             // A cancel goes through while that computer is out of reach: the task
             // moves to In review here and its session is not told.
             Err(reason) if action == "cancel" => cancel_here(
-                config, &machines, &r.project, &uuid, args, &who, reason, guard,
+                config,
+                &machines,
+                &r.project,
+                &uuid,
+                args,
+                &who,
+                reason,
+                guard,
+                person.as_ref(),
             )?,
             Err(reason) => return Err(refuse(fail(reason), &to)),
         };
@@ -1458,6 +1547,7 @@ fn change_guarded(
                 &machines,
                 args,
                 deadline,
+                person.as_ref(),
             )
             .map_err(|e| refuse(e, &to.session))?;
             match sent {
@@ -1471,13 +1561,34 @@ fn change_guarded(
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
                     let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-                    teams::guard(config, &machines, &task, action, args, &mut meeting)?;
+                    person = teams::guard(
+                        config,
+                        &machines,
+                        &mut task,
+                        action,
+                        args,
+                        &mut meeting,
+                        person.as_ref(),
+                    )?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
             }
         }
         None => (store, task),
+    };
+    // A send or a cancel commits its effect under the request itself (the
+    // send's admission, the cancel's own save), never under this lock, and
+    // keeps that outcome. Every other change is checked again here, at the
+    // one serialization point, before its first durable write (a target's
+    // Teams observation, a move's or stage's renumbering) and holds it through
+    // its last (reviews D3 and R3-3). A debug test may hold the command
+    // right before that check.
+    let authority = if matches!(action, "send" | "handoff" | "cancel") {
+        None
+    } else {
+        attempts::pause_at(task.uuid(), "person_recheck");
+        recheck_held(person.as_ref(), task.uuid(), deadline)?
     };
     let text = text.unwrap_or_default();
     let mut extra = json!({});
@@ -1628,6 +1739,7 @@ fn change_guarded(
                 &who,
                 action == "handoff",
                 deadline,
+                person.as_ref(),
             )
             .map_err(|e| refuse(e, &destination))?;
         }
@@ -1640,6 +1752,7 @@ fn change_guarded(
                 cancellation::reason(args, guard)?,
                 &who,
                 None,
+                person.as_ref(),
             )?
         }
         _ => return Err(fail(USAGE)),
@@ -1652,6 +1765,7 @@ fn change_guarded(
             fail(e)
         }
     })?;
+    drop(authority);
     let at = if action == "move" {
         place(&store, &task)?
     } else {
@@ -1851,11 +1965,12 @@ fn cancel_here(
     who: &Actor,
     reason: String,
     guard: Option<&cancellation::Guard>,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     let store = store(config, &project.0)?;
     let mut task = find(&store, uuid)?;
     if let Some(guard) = guard { guard.check(&task)?; }
-    let extra = cancel(&store, machines, &mut task, &project.1, cancellation::reason(args, guard)?, who, Some(reason))?;
+    let extra = cancel(&store, machines, &mut task, &project.1, cancellation::reason(args, guard)?, who, Some(reason), held)?;
     store.save(&mut task).map_err(fail)?;
     let mut out = json!({"task": view(&task, &project.1, guard.is_none(), machines)?});
     out["cancel_message"] = extra["cancel_message"].clone();
@@ -1873,10 +1988,16 @@ fn send(
     who: &Actor,
     handoff: bool,
     deadline: std::time::Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     // Everything that could stop the send from being recorded is checked
     // before the paste; only I/O can fail after it.
     if handoff { task.check_handoff(who).map_err(fail)?; } else { task.check_send().map_err(fail)?; }
+    // At the person's request: checked before counting or rendering, and
+    // again by the input writer under Root right before its first effect
+    // (review D2). Once that admits the send, its outcome stands, even when
+    // the input ends the caller's own request.
+    recheck(held)?;
     let view = task.view().map_err(fail)?;
     let settings = store.project().map_err(fail)?.settings();
     // Only an agent's start under a limit is counted.
@@ -1893,7 +2014,15 @@ fn send(
             .map_err(fail)?;
     }
     let (prompt, attachments) = dispatch_content(&settings, &task.view().map_err(fail)?, project_name, matches!(view.target, Target::Subagent { .. }))?;
-    let receipt = crate::state::submit_task_message(&session, &prompt, &attachments).map_err(fail)?;
+    let receipt = match held {
+        Some(held) => {
+            crate::state::submit_task_message_admitted(&session, &prompt, &attachments, &|| {
+                held.recheck()
+            })
+        }
+        None => crate::state::submit_task_message(&session, &prompt, &attachments),
+    }
+    .map_err(fail)?;
     let request_id = receipt["request_id"].as_str().unwrap_or_default().to_owned();
     (if handoff { task.record_handoff(&session, &request_id, who, now()) }
      else { task.record_send(&session, &request_id, who, now()) })
@@ -1923,6 +2052,7 @@ fn dispatch_content(settings: &Settings, view: &zerus_replica::TaskView, project
 
 /// Moves the task to In review and pastes the cancel message; the turn is not
 /// stopped. `undelivered` says why the message cannot reach the session.
+#[allow(clippy::too_many_arguments)]
 fn cancel(
     store: &ProjectStore,
     machines: &Machines,
@@ -1931,6 +2061,7 @@ fn cancel(
     reason: &str,
     who: &Actor,
     undelivered: Option<String>,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     let stored_session = task
         .view()
@@ -1939,20 +2070,46 @@ fn cancel(
         .ok_or_else(|| fail("only a task In progress can be cancelled"))?;
     let resolved = machines.resolve(&stored_session);
     let session = resolved.as_ref().unwrap_or(&stored_session);
-    if let Actor::Agent(own) = who {
-        if own == session {
-            return Err(fail(format!(
-                "You cannot cancel {project_name}/{}, a task you were sent. If it cannot be done, report what is left undone.",
+    // A task sent to the agent itself: only at the person's own request
+    // (zerus-46l1q), which its history records. A live team's task may
+    // already hold the request its guard needed (`held`).
+    let own = match who {
+        Actor::Agent(own) if own == session => person_request_for(
+            who,
+            &format!(
+                "You cannot cancel {project_name}/{}, a task you were sent, unless the person asks you to in your own conversation. If it cannot be done, report what is left undone",
                 task.id()
-            )));
+            ),
+        )?,
+        _ => None,
+    };
+    // The request this cancel needs is recorded with it and never cleared
+    // by the other rule (review S2-2). A request a live team's guard held is
+    // never replaced by a fresh one for the self-cancel rule: both rules
+    // stand on the same request, or nothing is written (review D3).
+    let person = match (own.as_ref(), held) {
+        (Some(own), Some(held)) if !own.same(held) => {
+            return Err(fail(format!(
+                "the person's request changed during this command; nothing was written; {}",
+                crate::caller::ASK
+            )))
         }
-    }
+        (_, Some(held)) => Some(held),
+        (own, None) => own,
+    };
     let settings = store.project().map_err(fail)?.settings();
     settings
         .check_agent(who, session, false, 0)
         .map_err(fail)?;
+    // Checked again and held through this save, which commits the cancel;
+    // its notice is delivered only after it (review D3).
+    let authority = recheck_held(person, task.uuid(), person_deadline())?;
+    if let Some(person) = person {
+        task.at_request(Some(person.reference()));
+    }
     task.record_cancel(reason, who, now()).map_err(fail)?;
     store.save(task).map_err(fail)?;
+    drop(authority);
     cancel_notice(machines, task, project_name, who, &settings, undelivered)
 }
 

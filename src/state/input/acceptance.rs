@@ -49,6 +49,19 @@ fn stamp(file: &fs::File) -> Option<(u64, u64, u64, std::time::SystemTime)> {
 // A held regular file, bounded header + tail. A clipped row, replacement,
 // truncation, concurrent append, gap or malformed row yields unknown.
 fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
+    // Codex tool-result rows can exceed 1MiB. They still share the SAME
+    // 16MiB aggregate tail and row count; parse them rather than treating
+    // unrelated tool output as lost exact-user evidence. Kimi is unchanged.
+    let row_bytes = if conversation.is_some() {
+        BYTES as usize
+    } else {
+        1 << 20
+    };
+    source_bounded(path, conversation, row_bytes)
+}
+
+/// [`source`] with an explicit bound on one row.
+fn source_bounded(path: &Path, conversation: Option<&str>, row_bytes: usize) -> Option<Source> {
     if !path.is_absolute() {
         return None;
     }
@@ -82,14 +95,6 @@ fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
         if start > 0 && index == 0 {
             continue;
         }
-        // Codex tool-result rows can exceed 1MiB. They still share the SAME
-        // 16MiB aggregate tail and row count; parse them rather than treating
-        // unrelated tool output as lost exact-user evidence. Kimi is unchanged.
-        let row_bytes = if conversation.is_some() {
-            BYTES as usize
-        } else {
-            1 << 20
-        };
         if !line.ends_with(b"\n") || line.len() > row_bytes || rows.len() == ROWS {
             return None;
         }
@@ -182,6 +187,20 @@ fn consumed(
     submitted: &str,
     after: Option<u64>,
 ) -> Option<(f64, Option<u64>)> {
+    scan(rows, agent, pending, after, |input, _| input == submitted)
+        .map(|(at, native)| (at, native.and_then(|id| id.as_u64())))
+}
+
+/// The first main user input of `rows` after `pending` that `pick` takes,
+/// given its text and its native identity (Codex's turn, Kimi's turn): its
+/// time and that identity.
+fn scan(
+    rows: &[Value],
+    agent: &str,
+    pending: f64,
+    after: Option<u64>,
+    mut pick: impl FnMut(&str, Option<&Value>) -> bool,
+) -> Option<(f64, Option<Value>)> {
     let mut turn = None;
     for row in rows {
         let (at, input, native_id) = if agent == "codex" {
@@ -208,7 +227,7 @@ fn consumed(
             let Some(at) = timestamp(row) else {
                 continue;
             };
-            let Some((started, _)) = &turn else {
+            let Some((started, id)) = &turn else {
                 continue;
             };
             if *started <= pending || *started > at {
@@ -217,7 +236,7 @@ fn consumed(
             let Some(input) = text(&payload["content"], "input_text") else {
                 continue;
             };
-            (at, input, None)
+            (at, input, Some(id.clone()))
         } else {
             if row["type"] != "turn.prompt"
                 || row["agentId"] != "main"
@@ -234,9 +253,9 @@ fn consumed(
             if after.is_some_and(|floor| id <= floor) {
                 continue;
             }
-            (at / 1000.0, input, Some(id))
+            (at / 1000.0, input, Some(Value::from(id)))
         };
-        if at.is_finite() && at > pending && at <= now() && input == submitted {
+        if at.is_finite() && at > pending && at <= now() && pick(input, native_id.as_ref()) {
             return Some((at, native_id));
         }
     }
@@ -287,6 +306,13 @@ fn stored_receipt(record: &Value) -> Option<Value> {
         return None;
     }
     Some(receipt)
+}
+
+/// The CLI's own receipt of the record's pending request, checked against
+/// the record as the acceptance rule checks it; the person turn binds only
+/// such a receipt (zerus-46l1q).
+pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
+    stored_receipt(record)
 }
 
 fn bound_receipt(record: &Value, bootstrap: bool) -> Option<Value> {
@@ -556,6 +582,11 @@ pub(in crate::state) fn native_idle(record: &Value) -> bool {
     ended && source.current()
 }
 
+/// A Codex hook event's or rollout event's turn ID, as acceptance reads it.
+pub(in crate::state) fn codex_turn(payload: &Value) -> Option<Value> {
+    native_turn("codex", payload)
+}
+
 fn native_turn(agent: &str, payload: &Value) -> Option<Value> {
     if agent == "kimi" {
         return payload["turnId"]
@@ -581,6 +612,30 @@ mod tests {
     fn consumed(rows: &[Value], agent: &str, pending: f64, text: &str) -> Option<f64> {
         super::consumed(rows, agent, pending, text, None).map(|(at, _)| at)
     }
+    #[test]
+    fn the_scan_yields_each_inputs_own_turn() {
+        let rows = vec![
+            json!({"type":"turn.prompt","agentId":"main","origin":{"kind":"user"},"turnId":5,"time":11_000.0,"input":[{"type":"text","text":"same words"}]}),
+            json!({"type":"turn.prompt","agentId":"main","origin":{"kind":"user"},"turnId":6,"time":12_000.0,"input":[{"type":"text","text":"same words"}]}),
+        ];
+        let pick = |native: Value| {
+            scan(&rows, "kimi", 10.0, None, |input, id| {
+                input == "same words" && id == Some(&native)
+            })
+            .is_some()
+        };
+        assert!(pick(json!(5)));
+        assert!(pick(json!(6)));
+        assert!(
+            !pick(json!(7)),
+            "a turn without its own prompt row is no delivery"
+        );
+        // Only the later turn when the earlier one is not this send's.
+        assert!(scan(&rows[..1], "kimi", 10.0, None, |_, id| id
+            == Some(&json!(6)))
+        .is_none());
+    }
+
     #[test]
     fn native_hook_text_accepts_only_the_complete_native_input() {
         let kimi = json!({"prompt":[{"type":"text","text":"literal"}]});

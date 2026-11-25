@@ -88,6 +88,8 @@ mod process_index;
 // Advisory display data only; no production reader uses it in this slice.
 mod listing_metadata;
 pub(crate) use listing_metadata::control::MARKER as LISTING_METADATA_MARKER;
+pub(crate) use listing_metadata::listing::retry as retry_ordinary_listing;
+pub(crate) use listing_metadata::public_index_error as listing_public_error;
 pub(crate) use listing_metadata::listing::Query as ListingQuery;
 pub(crate) fn display_name(row: &Value) -> &str {
     string(row, "name")
@@ -97,8 +99,9 @@ pub(crate) fn merge_ordinary_listing(
     ids: &BTreeMap<String, String>,
     archives: bool,
     query: &ListingQuery,
-) -> Result<Value> {
-    listing_metadata::listing::merge(value, ids, archives, query)
+    until: std::time::Instant,
+) -> anyhow::Result<Value> {
+    listing_metadata::listing::merge(value, ids, archives, query, until)
 }
 pub(crate) fn listing_index(args: &[String]) -> Result<Value> {
     listing_metadata::control::dispatch(args)
@@ -133,6 +136,7 @@ mod notifications;
 pub(crate) mod question_routing;
 pub(crate) mod question_route_outcomes;
 pub(crate) mod parent_link;
+pub(crate) mod person_turn;
 mod recipes;
 mod rename;
 mod resume_input;
@@ -1067,6 +1071,47 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
     output["session_reference"] = json!({"machine_id":reference.machine,"host":reference.host,"original_name":reference.name,
         "name":name,"conversation_id":reference.conversation,"agent_id":reference.agent});
     Ok(output)
+}
+
+/// The one person-authority serialization point (zerus-46l1q, review D3):
+/// the state Root lock. Every revocation of a person turn writes its session
+/// record under it (an answer, any input receipt, a prompt hook, a run or
+/// conversation change), so a writer that holds this from its final recheck
+/// of the person's request through its commit sees a revocation in that
+/// recheck or not before its commit. Never held across an input delivery:
+/// the input writer takes Root itself and checks a held request there
+/// ([`submit_task_message_admitted`]).
+pub(crate) struct PersonAuthority(#[allow(dead_code)] storage::Guard);
+
+/// Takes the person-authority serialization point, waiting no later than
+/// `deadline` (review R3-2): it is always the last lock taken, and a writer
+/// that cannot have it in time fails closed with a refusal it may retry,
+/// never blocking on it. See [`PersonAuthority`].
+pub(crate) fn person_authority_until(deadline: std::time::Instant) -> Result<PersonAuthority> {
+    storage::writer_until(deadline)?
+        .map(PersonAuthority)
+        .ok_or_else(|| {
+            "the session state stayed busy; nothing was written; run the command again".into()
+        })
+}
+
+/// [`submit_task_message`] for a writer acting at the person's request
+/// (review D2): `admit` runs under the input writer's own Root, after its
+/// duplicate check and before anything is typed or counted, so the request
+/// is checked again at the send's first effect, ordered with every
+/// revocation. Its refusal sends nothing. A DeepSeek session, whose
+/// delivery holds no Root, is refused at the person's request.
+pub(crate) fn submit_task_message_admitted(
+    session: &zerus_replica::SessionKey,
+    text: &str,
+    attachments: &[Value],
+    admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> Result<Value> {
+    local_sessions()?;
+    if session.session.starts_with("dsh/") {
+        return Err("a DeepSeek session does not take a task at the person's request; ask the person to send it".into());
+    }
+    input::submit_task_admitted(session, text, attachments, admit)
 }
 
 /// Pastes a task prompt or cancel message into `name` for its current run and

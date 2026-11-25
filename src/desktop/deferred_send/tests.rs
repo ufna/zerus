@@ -43,6 +43,43 @@ fn original_text(configuration: &str, epoch: &str, text: &str) -> Verified {
     .verify()
     .unwrap()
 }
+/// The person's original for `session`, `run` and `conversation` with
+/// `text`, exactly as the window's checkpoint and stdin name it.
+fn original_for(
+    configuration: &str,
+    epoch: &str,
+    session: &str,
+    run: &str,
+    conversation: &str,
+    text: &str,
+) -> Verified {
+    let checkpoint = Checkpoint::reserve(checkpoint::Intent {
+        kind: checkpoint::Kind::Send,
+        draft_revision: 3,
+        message_sha256: checkpoint::message_sha256(text, Vec::<(&str, &str, &str, &[u8])>::new()),
+        run_id: run.into(),
+        conversation_id: conversation.into(),
+        question: None,
+        start: None,
+        retry_of: None,
+        consent: true,
+    });
+    let stdin = json!({"request_id": checkpoint.request_id, "text": text, "attachments": [],
+        "expected_run_id": run, "expected_conversation_id": conversation});
+    Intent {
+        scope: wire::Scope {
+            configuration: configuration.into(),
+            service_epoch: epoch.into(),
+        },
+        session: session.into(),
+        request_id: checkpoint.request_id.clone(),
+        checkpoint: serde_json::to_string(&checkpoint).unwrap(),
+        original: stdin.to_string(),
+    }
+    .verify()
+    .unwrap()
+}
+
 /// The CLI's own record of `plan`'s request with `status`, as `hgs send`
 /// writes it.
 fn cli_record(plan: &wire::Plan, status: &str) -> Value {
@@ -129,7 +166,10 @@ fn exact_previous_store_upgrade_adds_only_the_independent_send_leaf() {
     );
     // This leaf, then the later deferred answer and compact-to-send leaves.
     // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50, .36 and .52).
-    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1);
+    assert_eq!(
+        tables(&store.db),
+        before + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1 + 1
+    );
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
     assert_eq!(
         store.operation_status()["kinds"]["deferred_send"]["undrained"],
@@ -846,7 +886,7 @@ fn state_root(parent: &Path) -> PathBuf {
 }
 fn observe(state: &Path, plan: &wire::Plan) -> super::receipt::Observed {
     let roots = super::receipt::Roots::open(state, super::receipt::FOLDER).unwrap();
-    super::receipt::read(&roots, plan, &|| {}).0
+    super::receipt::read(&roots, plan, None, &|| {}).0
 }
 
 /// The observation of the CLI's own receipt (G1 condition 2): only an exact,
@@ -1090,7 +1130,7 @@ fn only_the_original_unchanged_store_proves_a_submission() {
         let (state, roots) = fresh(&parent, folder);
         change(&parent, &state);
         assert_eq!(
-            read(&roots, plan, &|| {}).0,
+            read(&roots, plan, None, &|| {}).0,
             Observed::Unknown(code),
             "{name}"
         );
@@ -1162,7 +1202,7 @@ fn only_the_original_unchanged_store_proves_a_submission() {
         let (state, roots) = fresh(&parent, true);
         let between = || change(&parent, &state);
         assert_eq!(
-            read(&roots, plan, &between).0,
+            read(&roots, plan, None, &between).0,
             Observed::Unknown(CHANGED),
             "{name}"
         );
@@ -1171,7 +1211,7 @@ fn only_the_original_unchanged_store_proves_a_submission() {
     // roots were opened is read from the held root.
     let (_, roots) = fresh(&base.join("unchanged"), true);
     assert!(matches!(
-        read(&roots, plan, &|| {}).0,
+        read(&roots, plan, None, &|| {}).0,
         Observed::Submitted(_)
     ));
     // A record renamed into the original folder before the read is how the
@@ -1180,14 +1220,14 @@ fn only_the_original_unchanged_store_proves_a_submission() {
     let (state, roots) = fresh(&base.join("rewritten"), true);
     write_receipt(&state, &id, exact.as_bytes());
     assert!(matches!(
-        read(&roots, plan, &|| {}).0,
+        read(&roots, plan, None, &|| {}).0,
         Observed::Submitted(_)
     ));
     let (state, roots) = fresh(&base.join("later-folder"), false);
-    assert_eq!(read(&roots, plan, &|| {}).0, Observed::Unknown(MISSING));
+    assert_eq!(read(&roots, plan, None, &|| {}).0, Observed::Unknown(MISSING));
     write_receipt(&state, &id, exact.as_bytes());
     assert!(matches!(
-        read(&roots, plan, &|| {}).0,
+        read(&roots, plan, None, &|| {}).0,
         Observed::Submitted(_)
     ));
 }
@@ -1250,7 +1290,11 @@ mod actor {
             Self::build(None)
         }
         fn build(execute: Option<Arc<Execute>>) -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            Self::build_in(tempfile::tempdir().unwrap(), execute)
+        }
+        /// The fixture over the private root `temp`, which a real CLI under
+        /// test also names as its home, state and configuration.
+        fn build_in(temp: tempfile::TempDir, execute: Option<Arc<Execute>>) -> Self {
             let root = temp.path().canonicalize().unwrap();
             let config = Config {
                 home: root.to_str().unwrap().into(),
@@ -1381,6 +1425,11 @@ mod actor {
             cli_record(plan, wire::SUBMITTED).to_string().as_bytes(),
         );
     }
+
+    /// The person mark and turn through the real admission (zerus-46l1q).
+    mod person;
+    #[cfg(target_os = "linux")]
+    mod person_real;
 
     #[test]
     fn an_admitted_send_runs_once_and_settles_only_from_its_cli_receipt() {
@@ -1545,6 +1594,116 @@ mod actor {
         ledger::startup(&mut f.store.db).unwrap();
         assert_eq!(f.row(&original).receipt, receipt);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn only_the_bound_cli_terminal_refusal_allows_a_new_send_after_drain() {
+        use sha2::Digest;
+
+        let session_id = "55555555-5555-4555-8555-555555555555";
+        let reason = "terminal has a draft";
+        for mismatch in [
+            None,
+            Some("machine_id"),
+            Some("session_id"),
+            Some("provider"),
+            Some("digest"),
+            Some("other_account"),
+            Some("unavailable_namespace"),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let sent = calls.clone();
+            let mut f = Fixture::new(move |state, plan, args, _, _, _| {
+                sent.fetch_add(1, Ordering::SeqCst);
+                if mismatch == Some("unavailable_namespace") {
+                    assert_eq!(args, ["send", SESSION, "--json"]);
+                } else {
+                    assert_eq!(args, ["send", SESSION, "--delivery-outcome-v2", "--json"]);
+                }
+                let path = state.join(format!(
+                    "{:x}.json",
+                    sha2::Sha256::digest(SESSION.as_bytes())
+                ));
+                let mut session: Value =
+                    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+                // Always make a valid CLI namespace for this receipt. In the
+                // unavailable case even a plausible candidate must not settle.
+                session.as_object_mut().unwrap().remove("creation_pending");
+                let canonical = crate::state::session_graph::target_receipt_for_machine;
+                let original_namespace =
+                    canonical(&session, MACHINE).unwrap()["endpoint"]["namespace"].clone();
+                if mismatch == Some("other_account") {
+                    session["account_id"] = json!("other-fixture-account");
+                }
+                let target = canonical(&session, MACHINE).unwrap();
+                if mismatch == Some("other_account") {
+                    assert_ne!(target["endpoint"]["namespace"], original_namespace);
+                }
+                let mut record = json!({
+                    "refusal_schema": 2,
+                    "request_id": plan.request_id,
+                    "name": plan.session,
+                    "run_id": plan.run_id,
+                    "conversation_id": plan.conversation_id,
+                    "first_message": false,
+                    "digest": plan.input_sha256,
+                    "status": "not_offered",
+                    "transport": "terminal",
+                    "reason": reason,
+                    "delivery_binding": {
+                        "schema": 1,
+                        "machine_id": MACHINE,
+                        "session_id": session_id,
+                        "provider": "claude",
+                        "namespace": target["endpoint"]["namespace"],
+                    },
+                });
+                match mismatch {
+                    Some("digest") => record["digest"] = json!("f".repeat(64)),
+                    Some(key @ ("machine_id" | "session_id" | "provider")) => {
+                        record["delivery_binding"][key] = json!("mismatch");
+                    }
+                    _ => (),
+                }
+                write_receipt(state, &plan.request_id, record.to_string().as_bytes());
+                Ended::Exited {
+                    code: 1,
+                    stderr: format!("hgs: Message was not sent: {reason}"),
+                }
+            });
+            let path = f.config.state.join(format!(
+                "{:x}.json",
+                sha2::Sha256::digest(SESSION.as_bytes())
+            ));
+            let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            record["session_id"] = json!(session_id);
+            record["account_id"] = json!("original-fixture-account");
+            record["agent_home"] = json!("/example/private-agent");
+            if mismatch == Some("unavailable_namespace") {
+                record["creation_pending"] = json!(true);
+            }
+            std::fs::write(path, record.to_string()).unwrap();
+
+            let original = f.original();
+            assert!(f.admit(&original).accepted);
+            f.until("terminal outcome drain", |f| {
+                f.row(&original).receipt.drained
+            });
+            let receipt = f.row(&original).receipt;
+            assert_eq!(
+                receipt.not_offered(&original.plan),
+                mismatch.is_none().then_some(reason),
+                "{mismatch:?}",
+            );
+            assert!(receipt.outcome.is_none());
+            assert!(!receipt.not_started(&original.plan));
+            if mismatch.is_some() {
+                assert_eq!(receipt.phase, Phase::Unknown);
+                assert_eq!(receipt.result(&original.plan), None);
+            }
+            assert_eq!(f.admit(&original).receipt, Some(receipt));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[test]

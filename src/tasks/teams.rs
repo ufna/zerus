@@ -249,33 +249,65 @@ pub(super) fn annotate(mut out: Value) -> Value {
     }
     out
 }
+/// The team guard of an ordinary task action. `Ok(None)`: the caller may act
+/// as it is. `Ok(Some(request))`: an agent may act only through the person's
+/// own request `request` (zerus-46l1q), which this write's history records;
+/// the writer keeps that exact request and checks it again under its own lock
+/// right before it commits. Only the policy's agent refusal is replaced this
+/// way; every other error stands. `held` is the request an earlier guard of
+/// the same command used: a later guard admits only that same request.
 pub(super) fn guard(
     config: &Config,
     machines: &Machines,
-    task: &TaskDoc,
+    task: &mut TaskDoc,
     action: &str,
     args: &[String],
     meeting: &mut bridge::Meeting<'_, '_>,
-) -> Result<()> {
+    held: Option<&crate::caller::PersonRequest>,
+) -> Result<Option<crate::caller::PersonRequest>> {
     let action = match action {
         "send" | "handoff" | "stage" | "target" | "start" | "worker" | "reopen" | "cancel"
         | "cancel-execution" | "move" | "edit" | "rename" => action,
         "message" if option(args, "--mode")? == Some("reopen") => "reopen",
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     if !bridge::guarded(&config.state, &machines.here, task).map_err(problem)? {
         // A non-live team's task is not guarded, but the meeting still
         // clears a key returned after the stop sweep (zerus-63rru.97 F1).
         bridge::meet(&config.state, &machines.here, task, meeting).map_err(problem)?;
-        return Ok(());
+        return Ok(None);
     }
-    bridge::guard(
-        &caller(config, machines, args, true).map_err(problem)?,
-        meeting,
-        task,
-        action,
-    )
-    .map_err(problem)
+    let caller = caller(config, machines, args, true).map_err(problem)?;
+    let refused = match bridge::decide(&caller, meeting, task, action).map_err(problem)? {
+        bridge::Decision::Allowed => return Ok(None),
+        bridge::Decision::AgentRefused(refused) => refused,
+    };
+    // What works instead depends on the platform (review D4): the shared
+    // text says whether the person's own message lets the agent act here.
+    let ask = || {
+        fail(format!(
+            "{}: {} Or {}.",
+            refused.code,
+            refused.message,
+            crate::caller::ASK
+        ))
+    };
+    let Actor::Agent(own) = &caller.actor else {
+        return Err(problem(refused));
+    };
+    let request = crate::caller::person_request().map_err(|_| ask())?;
+    if !request.is_of(own) {
+        return Err(ask());
+    }
+    if !request.continues(held) {
+        return Err(fail(format!(
+            "{}: the person's request changed during this command; nothing was written. {}",
+            refused.code,
+            crate::caller::ASK
+        )));
+    }
+    task.at_request(Some(request.reference()));
+    Ok(Some(request))
 }
 pub(super) fn clear(config: &Config, here: &str, task: &mut TaskDoc, who: &Actor) -> Result<()> {
     bridge::retarget(&config.state, here, task, who).map_err(problem)

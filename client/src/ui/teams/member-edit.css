@@ -1,6 +1,6 @@
 .team-member-edit { width: min(500px, calc(100vw - 32px)); }
 .team-member-edit .dlg-body { display: grid; gap: 14px; }
-.team-member-edit label { display: grid; gap: 5px; }
+.team-member-edit label, .team-member-edit .team-member-field { display: grid; gap: 5px; }
 .team-member-edit-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .team-member-edit-fields > p { grid-column: 1 / -1; }
 .team-member-edit textarea { resize: vertical; }

@@ -27,6 +27,7 @@ vi.mock("../../store/teams", async () => {
 });
 vi.mock("../lib/icons", () => ({ Icon: () => null }));
 import { TeamConfirmDialog } from "./TeamConfirmDialog";
+import confirmations from "../../../core/src/teams/fixtures/confirmations.json";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.setAsking(null); document.body.replaceChildren(); vi.clearAllMocks(); });
@@ -40,15 +41,14 @@ const show = () => {
 
 it("shows the core's confirmation and sends nothing until its action is pressed", () => {
   vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) { this.open = true; });
-  f.setAsking({
-    call: { request_id: "11111111-2222-4333-8444-555555555555", action: { kind: "stop" } },
-    confirmation: { name: "teamStopConfirm", title: "Stop team?", text: "Stop Fixes? Every open task is cancelled.", action: "Stop team" },
-  });
+  // The core's own Stop confirmation for the team "Fixes" (fixtures/confirmations.json).
+  const stop = confirmations.find((row) => row.confirmation.name === "teamStopConfirm" && row.call.team_name === "Fixes")!;
+  f.setAsking(stop);
   const host = show();
   const dialog = host.querySelector("dialog.team-confirm")!;
   expect(dialog.getAttribute("data-name")).toBe("teamStopConfirm");
   expect(host.textContent).toContain("Stop team?");
-  expect(host.textContent).toContain("Every open task is cancelled.");
+  expect(host.textContent).toContain(stop.confirmation.text);
   expect(f.confirm).not.toHaveBeenCalled();
   const action = [...host.querySelectorAll("button")].find((button) => button.textContent === "Stop team") as HTMLButtonElement;
   action.click();

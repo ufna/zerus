@@ -559,9 +559,12 @@ impl TaskDoc {
         now: i64,
     ) -> Result<()> {
         self.writable()?;
-        if actor != &Actor::Person {
+        // The person, or an agent carrying out the person's own request
+        // (zerus-46l1q), which every entry below records.
+        let requested = matches!(actor, Actor::Agent(_)) && self.request().is_some();
+        if actor != &Actor::Person && !requested {
             return Err(Error::new(
-                "only the person cancels an attempt whose delivery is unknown",
+                "only the person, or an agent at the person's own request, cancels an attempt whose delivery is unknown",
             ));
         }
         if !canonical_uuid(id) {
@@ -575,15 +578,19 @@ impl TaskDoc {
         if let Some(attempt) = self.attempt(id)? {
             let (_, events) = self.execution_records()?;
             let fingerprint = attempt.fingerprint();
+            // The same disposition: the person's own, or an agent's at the
+            // person's request, by the same actor in its event and entry.
+            let log = self.view()?.log;
             if events.iter().any(|event| {
                 event.attempt == id
                     && event.kind == EventKind::Cancelled
-                    && event.actor == Actor::Person
                     && event.of == fingerprint
-            }) && self.view()?.log.iter().any(|entry| {
-                entry.kind == "attempt_cancelled"
-                    && entry.actor == Actor::Person
-                    && entry.request_id.as_deref() == Some(id)
+                    && log.iter().any(|entry| {
+                        entry.kind == "attempt_cancelled"
+                            && entry.request_id.as_deref() == Some(id)
+                            && entry.actor == event.actor
+                            && (entry.actor == Actor::Person || entry.person_request.is_some())
+                    })
             }) {
                 return Ok(());
             }
@@ -1452,6 +1459,54 @@ mod tests {
         let settled = task.revision();
         assert!(task.cancel_attempt(TWO, "", &Actor::Person, 15).is_err());
         assert_eq!(task.revision(), settled);
+    }
+
+    fn requested(by: &str) -> crate::PersonRequestRef {
+        crate::PersonRequestRef {
+            machine: "m1".into(),
+            session: format!("codex/{by}"),
+            session_id: format!("launch_id:{by}"),
+            run_id: "run-1".into(),
+            conversation_id: "conversation-1".into(),
+            request_id: "44444444-4444-4444-8444-444444444444".into(),
+            origin: "desktop".into(),
+        }
+    }
+
+    #[test]
+    fn an_agent_abandons_the_unknown_attempt_only_at_the_persons_request_which_its_entries_record()
+    {
+        let mut task = task();
+        send(&mut task, ONE, "api");
+        let before = task.revision();
+        assert!(task.cancel_attempt(ONE, "", &agent("lead"), 11).is_err());
+        assert_eq!(task.revision(), before);
+        task.at_request(Some(requested("lead")));
+        task.cancel_attempt(ONE, "The person asked", &agent("lead"), 12)
+            .unwrap();
+        let view = task.view().unwrap();
+        let written: Vec<_> = view.log.iter().filter(|e| e.at == 12).collect();
+        assert_eq!(
+            written.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            ["attempt_cancelled", "comment"]
+        );
+        assert!(written
+            .iter()
+            .all(|e| e.person_request == Some(requested("lead"))));
+        assert_eq!(
+            task.attempt_facts(ONE).unwrap().unwrap(),
+            vec![EventKind::Unknown, EventKind::Cancelled]
+        );
+        // The same disposition again is idempotent, for either actor.
+        let cancelled = task.revision();
+        task.cancel_attempt(ONE, "Again", &agent("lead"), 13)
+            .unwrap();
+        task.at_request(None);
+        task.cancel_attempt(ONE, "Again", &Actor::Person, 13)
+            .unwrap();
+        assert_eq!(task.revision(), cancelled);
+        // Without the request the agent is refused again.
+        assert!(task.cancel_attempt(ONE, "", &agent("lead"), 14).is_err());
     }
 
     #[test]

@@ -74,6 +74,161 @@ fn added_seat_launches_with_its_own_choices_and_leaves_other_originals_alone() {
     assert!(p.session_name.ends_with("-m4-developer"));
     assert_eq!(row(&h, &added).state, State::Done);
 }
+/// #2533 review (P2; review2533's launch-choice.py adopted): the planner picks
+/// the freest account, and a model override that account does not offer is
+/// refused with its reason, on the member's launch card, instead of launched.
+#[test]
+fn a_model_the_chosen_account_does_not_offer_is_refused_with_its_reason() {
+    let (mut h, mut r, mut e) = started();
+    let usage = |id: &str, used: f64| zerus_team_plan::accounts::AccountUsage {
+        id: id.into(),
+        agent: "claude".into(),
+        signed_in: true,
+        windows: vec![zerus_team_plan::accounts::UsageWindow {
+            used_percent: used,
+            resets_at: Some(1800000000),
+        }],
+    };
+    // The planner picks "a" (more room); only the busier "b" lists the model.
+    e.accounts = vec![usage("a", 10.0), usage("b", 75.0)];
+    let listing = |id: &str, model: &str| {
+        serde_json::json!({"account_id": id, "provider": "claude", "revision": "r1", "effort_supported": true,
+            "models": [{"id": model, "label": model, "effort_options": ["low", "high"]}]})
+    };
+    e.catalogs.insert("a".into(), listing("a", "other-model"));
+    e.catalogs.insert("b".into(), listing("b", "only-on-b"));
+    let launched = e.plans.len();
+    let add = |account: AccountChoice| Operation::AddMember {
+        role: "developer".into(),
+        agent: "claude".into(),
+        model: "only-on-b".into(),
+        effort: "high".into(),
+        account,
+    };
+    let added = h
+        .run(&person(), add(AccountChoice::Freest))
+        .unwrap()
+        .member
+        .unwrap();
+    advance(&mut r, &mut h, &mut e, 30);
+    assert_eq!(
+        e.plans.len(),
+        launched,
+        "nothing launched with a model account a does not offer"
+    );
+    let refused = row(&h, &added);
+    assert_eq!(refused.state, State::Retry);
+    let problem = refused.problem.unwrap();
+    assert_eq!(
+        problem.message,
+        "Account \"a\" does not offer model \"only-on-b\". Choose one of its models, the account's defaults, or an account that offers it."
+    );
+    assert!(cards(&h)
+        .iter()
+        .any(|card| card.text.contains("does not offer model")));
+    // The account that offers it, named, launches with the model and effort.
+    let named = h
+        .run(
+            &person(),
+            add(AccountChoice::Named {
+                account: "b".into(),
+            }),
+        )
+        .unwrap()
+        .member
+        .unwrap();
+    advance(&mut r, &mut h, &mut e, 30);
+    let plan = e.plans.iter().find(|p| p.member == named).unwrap();
+    assert_eq!(
+        (
+            plan.account.as_str(),
+            plan.model.as_str(),
+            plan.effort.as_str()
+        ),
+        ("b", "only-on-b", "high")
+    );
+}
+/// #2533 delta review (P2-2; review2529-cx's `a_removed_model_is_refused_before_start`
+/// adopted): the plan's model was checked when the account was chosen, and the
+/// account's list can change before the launch. The last step reads it again
+/// and refuses with the same reason, once: the row waits on its card, no retry
+/// loop reads the list again, and nothing launches with defaults instead.
+fn refused_before_start(models: serde_json::Value, reason: &str) {
+    let (mut h, mut r, mut e) = started();
+    let before = e.plans.len();
+    let added = h
+        .run(
+            &person(),
+            Operation::AddMember {
+                role: "developer".into(),
+                agent: "claude".into(),
+                model: "seat-model".into(),
+                effort: "low".into(),
+                account: AccountChoice::Named {
+                    account: "b".into(),
+                },
+            },
+        )
+        .unwrap()
+        .member
+        .unwrap();
+    until(&mut r, &mut h, &mut e, |h, _| {
+        Ledger::open(h.temp.path())
+            .unwrap()
+            .get(TEAM, &added)
+            .unwrap()
+            .is_some_and(|entry| entry.state == State::WorktreeDone)
+    });
+    assert_eq!(e.plans.len(), before);
+    let reads_before = e.catalog_reads.len();
+    assert_eq!(e.catalog_reads.last().map(String::as_str), Some("b"));
+    e.catalogs.insert(
+        "b".into(),
+        serde_json::json!({
+            "account_id": "b",
+            "provider": "claude",
+            "revision": "r2",
+            "effort_supported": true,
+            "models": models
+        }),
+    );
+    advance(&mut r, &mut h, &mut e, 30);
+    let started = e.plans.iter().find(|plan| plan.member == added);
+    assert!(
+        started.is_none(),
+        "worker passed the removed model to its launch effect"
+    );
+    let refused = row(&h, &added);
+    assert_eq!(refused.state, State::Blocked, "no retry loop");
+    assert_eq!(refused.problem.unwrap().message, reason);
+    assert_eq!(
+        e.catalog_reads.len() - reads_before,
+        1,
+        "one read at the last step"
+    );
+    assert!(cards(&h).iter().any(|card| card.text.contains(reason)));
+    // Later passes neither read the list again nor launch.
+    for now in [61_234, 181_234, 3_601_234] {
+        r.tick(&mut h.store, &mut e, TEAM, now).unwrap();
+    }
+    assert_eq!(e.catalog_reads.len() - reads_before, 1);
+    assert!(!e.plans.iter().any(|plan| plan.member == added));
+}
+#[test]
+fn a_removed_model_is_refused_before_start() {
+    refused_before_start(
+        serde_json::json!([{"id": "replacement", "effort_options": ["low"]}]),
+        "Account \"b\" does not offer model \"seat-model\". Choose one of its models, the account's defaults, or an account that offers it.",
+    );
+}
+/// The same last-step read refuses an effort the model no longer offers.
+#[test]
+fn a_removed_effort_is_refused_before_start() {
+    refused_before_start(
+        serde_json::json!([{"id": "seat-model", "effort_options": ["high"]}]),
+        "Model \"seat-model\" on account \"b\" does not offer effort \"low\". Choose one of its efforts or the default effort.",
+    );
+}
 #[test]
 fn stopped_swap_retains_identity_checkout_and_old_receipts_without_replay() {
     for target in ["lead", "m1"] {

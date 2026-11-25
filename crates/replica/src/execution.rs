@@ -980,6 +980,7 @@ mod tests {
             reported_attempt: None,
             reviews: None,
             of: None,
+            person_request: None,
         }
     }
 

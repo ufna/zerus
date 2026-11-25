@@ -18,9 +18,15 @@ pub struct Confirmation {
     /// The dialog's stable name, for the frontend's labels.
     pub name: String,
     pub title: String,
+    /// The sentence in English (`message` rendered without a catalog).
     pub text: String,
     /// The confirming button's text.
     pub action: String,
+    /// The sentence as a catalog text: the native prompt's own first line for
+    /// the same call (`TeamAction::confirmation_text`), so the window's
+    /// fallback dialog renders the very sentence the native dialog shows.
+    /// Boxed, so a confirmation keeps `TeamOutcome` small.
+    pub message: Box<crate::text::Text>,
 }
 
 /// A create's permissions as the person confirmed them: every one of the

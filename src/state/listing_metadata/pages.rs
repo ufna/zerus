@@ -31,7 +31,9 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let generation = cursor.map_or(active, |c| c.generation);
-        anyhow::ensure!(generation > 0, "Listing metadata is still rebuilding");
+        if generation <= 0 {
+            return Err(PublicationPending("Listing metadata is still rebuilding").into());
+        }
         if let Some(c) = cursor {
             anyhow::ensure!(
                 c.epoch == epoch && c.after.len() <= 256,
@@ -107,14 +109,17 @@ impl Reader {
     pub fn verify_source(&self, source: &str, stamp: &str) -> anyhow::Result<()> {
         let key = Key(source.into());
         key.validate()?;
-        anyhow::ensure!(
-            stamp.len() <= 1024 && self.0.source_stamp(&key)?.as_deref() == Some(stamp),
-            source!("Public listing source changed before publication")
-        );
+        if stamp.len() > 1024 || self.0.source_stamp(&key)?.as_deref() != Some(stamp) {
+            return Err(PublicationPending(source!("Public listing source changed before publication")).into());
+        }
         Ok(())
     }
+    pub fn open_index(root: &Path, index: store::Index) -> anyhow::Result<Self> {
+        Ok(Self(Store::read_listing(root, index)?, std::cell::Cell::new(BYTES)))
+    }
+    #[cfg(test)]
     pub fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Store::read(root)?, std::cell::Cell::new(BYTES)))
+        Self::open_index(root, store::Index::Shared)
     }
     pub fn page(&self, cursor: Option<&Cursor>) -> anyhow::Result<Page> {
         self.page_limit(cursor, ROWS)
@@ -129,14 +134,16 @@ impl Reader {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
-            let current = Store::read(&self.0.root.path)?;
+            let current = Store::read_index(&self.0.root.path, self.0.index)?;
             let (epoch, generation, writes, ready): (String, i64, i64, bool) =
                 current.db.query_row(
                     "SELECT epoch,generation,writes,ready FROM meta WHERE id=1",
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )?;
-            Ok(ready && pinned == (epoch, generation, writes))
+            Ok(ready
+                && pinned == (epoch, generation, writes)
+                && current.active_cut()?.is_some_and(|cut| current.covers(&cut)))
         };
         page.fresh &= check().unwrap_or(false);
         Ok(page)
