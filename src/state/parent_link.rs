@@ -492,10 +492,12 @@ pub(super) fn read_session(id: &str, name: &str) -> Result<Option<Value>> {
 /// `hgs parent <session> --json`: read, adopt (set the link to the proven
 /// caller) or clear one tracked session's parent link.
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
-    let [name, flag] = args else {
-        return Err(USAGE.into());
+    let (name, project) = match args {
+        [name, flag] if flag == "--json" => (name, false),
+        [name, flag, project] if flag == "--json" && project == "--project" => (name, true),
+        _ => return Err(USAGE.into()),
     };
-    if flag != "--json" || name.starts_with(['-', '@']) {
+    if name.starts_with(['-', '@']) {
         return Err(USAGE.into());
     }
     let mut bytes = Vec::new();
@@ -507,6 +509,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("parent request exceeds limits".into());
     }
     let request: Request = serde_json::from_slice(&bytes).map_err(|_| USAGE.to_owned())?;
+    if project != request.project.is_some() {
+        return Err(USAGE.into());
+    }
     let reply = apply(name, request)?;
     println!("{reply}");
     Ok(0)
@@ -547,7 +552,7 @@ fn apply(name: &str, request: Request) -> Result<Value> {
     let _writer = lock(None)?;
     // Parent writers share the state lock for cycle checks, then the native
     // provider's own lock so a metadata change cannot overwrite its updates.
-    let project_parent_provider = request.project.as_ref().and_then(|_| request.parent.as_ref())
+    let project_parent_provider = request.project.as_ref().and(request.parent.as_ref())
         .and_then(|parent| provider_binding::Provider::named(&parent.name));
     let providers = [provider, project_parent_provider];
     let _dsh = if providers.iter().any(|p| matches!(p, Some(provider_binding::Provider::DeepSeek))) {
@@ -866,15 +871,24 @@ mod tests {
         assert!(run(select("move")).unwrap_err().contains("projects changed"));
         assert_eq!(read_bounded(name, storage::ID_RECORD_BYTES).unwrap(), original);
         assert_eq!(membership(&child), "child-project");
+        let mut same_project = select("keep");
+        same_project["project"]["parent_project"] = json!("child-project");
+        let kept_same = run(same_project.clone()).unwrap();
+        assert_eq!(kept_same["project_status"], "kept");
+        assert_eq!(kept_same["parent"]["session_id"], parent["session_id"]);
+        assert_eq!(membership(&child), "child-project");
+        let clear = || run(json!({"action":"clear", "expected_run_id":child["run_id"],
+            "expected_conversation_id":child["conversation_id"]})).unwrap();
+        clear();
         place(&parent, "parent-project");
+        assert!(run(same_project).unwrap_err().contains("projects changed"));
+        assert!(listed(&read_bounded(name, storage::ID_RECORD_BYTES).unwrap()).is_none());
 
         let mut legacy = select("keep");
         legacy.as_object_mut().unwrap().remove("project");
         let outcome = run(legacy).unwrap();
         assert!(outcome.get("project_status").is_none());
         assert_eq!(membership(&child), "child-project");
-        let clear = || run(json!({"action":"clear", "expected_run_id":child["run_id"],
-            "expected_conversation_id":child["conversation_id"]})).unwrap();
         clear();
 
         let kept = run(select("keep")).unwrap();

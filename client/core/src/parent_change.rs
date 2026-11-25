@@ -114,6 +114,9 @@ pub fn invocation(target: &Target, change: &ParentChange) -> Result<Invocation, 
         target.name.clone(),
         "--json".to_owned(),
     ];
+    if input.get("project").is_some() {
+        args.push("--project".to_owned());
+    }
     let peer = prepend_alias(&mut args, &target.computer);
     Ok(Invocation {
         args,
@@ -328,7 +331,9 @@ mod tests {
         });
         let change: ParentChange = serde_json::from_value(input.clone()).unwrap();
         let target = target("");
-        let sent = stdin(&invocation(&target, &change).unwrap());
+        let call = invocation(&target, &change).unwrap();
+        assert_eq!(call.args, ["parent", "codex/p/kid", "--json", "--project"]);
+        let sent = stdin(&call);
         assert_eq!(sent["project"], input["project"]);
         let result = |parent: &Value, status: &str| Exit::Code {
             code: 0,

@@ -312,6 +312,40 @@ describe("Set parent across projects", () => {
       : "The parent session change was not confirmed.");
   });
 
+
+  it("waits for memberships before classifying an uninitialized project view", async () => {
+    const { dialog } = await openChoices();
+    receive({ ...emptyBatch(), grouping: { loaded: false, ready: false, reason: "Project sync is starting.",
+      default_project: "ungrouped", headers: [], busy: false, status: "", status_error: false, conflicts: 0 } });
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it("does not submit apparently equal memberships from an unready project view", async () => {
+    const { childKey, dialog } = await openChoices();
+    receive({ ...emptyBatch(), groups: [{ computer: "", key: childKey.slice(1), group: "beta", rank: 0 }] });
+    const { grouping } = await import("../../store/organization");
+    receive({ ...emptyBatch(), grouping: { ...grouping(), ready: false, reason: "Project sync unavailable" } });
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(transport.parent).not.toHaveBeenCalled();
+  });
+
+  it("binds a verified same-project confirmation without showing a move choice", async () => {
+    const { childKey, dialog } = await openChoices();
+    receive({ ...emptyBatch(), groups: [{ computer: "", key: childKey.slice(1), group: "beta", rank: 0 }] });
+    expect(projectOption(dialog, "Move to parent’s project")).toBeUndefined();
+    expect(dialog.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    dialog.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    expect(transport.parent).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      project: expect.objectContaining({ choice: "keep", child_project: "beta", parent_project: "beta" }),
+    }));
+  });
+
 });
 
 it("shows a neutral Archive beside destructive Forget in a stopped session's header", async () => {

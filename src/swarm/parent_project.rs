@@ -131,13 +131,13 @@ impl Consent {
         };
         let child_key = membership(child, &self.child_project)?;
         membership(parent, &self.parent_project)?;
-        ensure!(self.child_project != self.parent_project, stale);
         if self.choice == Choice::Keep {
             return Ok(Pending {
                 store,
                 choice: Choice::Keep,
             });
         }
+        ensure!(self.child_project != self.parent_project, stale);
         assign_project(
             &mut store.data,
             &child_key,

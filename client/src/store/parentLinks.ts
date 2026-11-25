@@ -56,7 +56,7 @@ const short = (name: string) => name.split("/").pop() || name;
 export function parentProjects(child: Session, parent: Session) {
   const machine = machineCards[child.computer]?.machine_id;
   const from = headerOf(groups[child.key]?.group ?? ""), to = headerOf(groups[parent.key]?.group ?? "");
-  if (!machine || !grouping().loaded || !from || !to || from.id === to.id) return undefined;
+  if (!machine || !grouping().loaded || !from || !to) return undefined;
   return { machine, from, to, fallback: grouping().default_project };
 }
 
@@ -96,20 +96,20 @@ export const detachParent = (child: Session) =>
 export type ParentProjects = NonNullable<ReturnType<typeof parentProjects>>;
 export type ParentProjectChoice = { projects: ParentProjects; choice: ParentProjectConsent["choice"] };
 
-export function chooseParent(child: Session, parent: Session, placement?: ParentProjectChoice) {
+export function chooseParent(child: Session, parent: Session, placement: ParentProjectChoice) {
   if (busy()) return false;
   const now = parentProjects(child, parent);
-  const before = placement?.projects;
-  const moved = before && (now?.from.id !== before.from.id || now?.to.id !== before.to.id
-    || now.fallback !== before.fallback || now.machine !== before.machine);
-  if (!nestable(child, parent) || !currentInstance(child) || !currentInstance(parent) || moved || (now && !placement)) {
+  const before = placement.projects;
+  const moved = now?.from.id !== before.from.id || now.to.id !== before.to.id
+    || now.fallback !== before.fallback || now.machine !== before.machine;
+  if (!nestable(child, parent) || !currentInstance(child) || !currentInstance(parent) || moved) {
     toast(tr("Parent session"), tr("The sessions or projects changed. Open Set parent again."), "error", true);
     return true;
   }
-  if (placement && (!grouping().ready || grouping().busy || !computerFresh(child.computer))) return false;
+  if (!grouping().ready || grouping().busy || !computerFresh(child.computer)) return false;
 
   const previous = child.parent;
-  const project: ParentProjectConsent | undefined = placement && {
+  const project: ParentProjectConsent = {
     choice: placement.choice,
     machine_id: placement.projects.machine, child_id: child.sessionId ?? "",
     child_project: placement.projects.from.id, parent_project: placement.projects.to.id, default_project: placement.projects.fallback,
@@ -119,7 +119,7 @@ export function chooseParent(child: Session, parent: Session, placement?: Parent
   return change(child, {
     kind: "set", session_id: parent.sessionId ?? "", name: parent.name, conversation_id: parent.conversationId ?? "",
     run_id: parent.runId ?? "", replace: !!previous, project,
-  }, placement?.choice === "move"
+  }, placement.choice === "move"
     ? tr("%1 is now a child of %2 and belongs to %3.", short(child.title), short(parent.title), placement.projects.to.name)
     : tr("%1 is now a child of %2.", short(child.title), short(parent.title)));
 }

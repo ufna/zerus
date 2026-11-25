@@ -41,11 +41,15 @@ function SetDialog(props: { child: Session; parent?: Session }) {
   }, undefined, { equals: (a, b) => a === b || (!!a && !!b && a.machine === b.machine
     && a.fallback === b.fallback && a.from.id === b.from.id && a.to.id === b.to.id
     && a.from.name === b.from.name && a.to.name === b.to.name) });
+  const crossProject = () => {
+    const pair = projects();
+    return pair && pair.from.id !== pair.to.id ? pair : undefined;
+  };
   const choice = () => placement()?.projects === projects() ? placement() : undefined;
-  const projectReady = () => grouping().ready && !grouping().busy && computerFresh(props.child.computer);
+  const projectReady = () => !!projects() && grouping().ready && !grouping().busy && computerFresh(props.child.computer);
   const projectsChanged = () => !!placement() && !choice();
-  const canSubmit = () => !parentChangeBusy() && !!chosen() && !projectsChanged()
-    && (!projects() || (projectReady() && !!choice()));
+  const canSubmit = () => !parentChangeBusy() && !!chosen() && projectReady() && !projectsChanged()
+    && (!crossProject() || !!choice());
   const all = createMemo(() => parentCandidates(props.child));
   const shown = createMemo(() => {
     const q = query().trim().toLowerCase();
@@ -53,8 +57,9 @@ function SetDialog(props: { child: Session; parent?: Session }) {
   });
   const current = () => props.child.parent?.name;
   const run = async () => {
-    const parent = chosen();
-    if (parent && canSubmit() && await chooseParent(props.child, parent, choice())) close();
+    const parent = chosen(), pair = projects();
+    if (parent && pair && canSubmit()
+      && await chooseParent(props.child, parent, choice() ?? { projects: pair, choice: "keep" })) close();
   };
   return (
     <form onSubmit={(e) => { e.preventDefault(); void run(); }}>
@@ -74,17 +79,17 @@ function SetDialog(props: { child: Session; parent?: Session }) {
             )}</For>
           </div>
         </Show>
-        <Show when={projects()}>{(pair) => (
+        <Show when={crossProject()}>{(pair) => (
           <fieldset class="parent-project-choices" disabled={!projectReady() || parentChangeBusy()}>
             <legend>{tr("Project for this session")}</legend>
             <label><input type="radio" name="parent-project" checked={choice()?.choice === "keep"}
               onChange={() => setPlacement({ choice: "keep", projects: pair() })} /> {tr("Keep current project (%1)", pair().from.name)}</label>
             <label><input type="radio" name="parent-project" checked={choice()?.choice === "move"}
               onChange={() => setPlacement({ choice: "move", projects: pair() })} /> {tr("Move to parent’s project (%1)", pair().to.name)}</label>
-            <Show when={!projectReady()}><p class="dim">{tr("Wait for this computer and project sync to be ready.")}</p></Show>
           </fieldset>
         )}</Show>
-        <Show when={projectsChanged() && !projects()}><p class="warn-text">{tr("The sessions or projects changed. Open Set parent again.")}</p></Show>
+        <Show when={chosen() && !projectReady()}><p class="dim">{tr("Wait for this computer and project sync to be ready.")}</p></Show>
+        <Show when={projectsChanged() && !crossProject()}><p class="warn-text">{tr("The sessions or projects changed. Open Set parent again.")}</p></Show>
         <p>{tr("Its replies, questions and errors go quietly to the parent while the parent runs. Approvals and sign-in still draw your attention.")}</p>
         <Show when={current()}>{(old) => <p class="warn-text">{tr("It is now a child of %1; this replaces that parent.", old())}</p>}</Show>
       </div>

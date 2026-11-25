@@ -390,6 +390,60 @@ fn state_command(verb: &str, args: &[String]) -> Result<i32> {
     command.extend_from_slice(args);
     state::dispatch(&command).map_err(|e| Error::new(1, e))
 }
+fn parent_peer_script(remote_args: &[String]) -> String {
+    let marker = if has(remote_args, "--project") {
+        "session-parent-project-v1"
+    } else {
+        "session-parent-v1"
+    };
+    platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*{marker}[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi", platform::join(remote_args)))
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn parent_project_peer_requires_the_new_marker_before_delivering() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    let home = tempfile::tempdir().unwrap();
+    let bin = home.path().join(".local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let hgs = bin.join("hgs");
+    std::fs::write(
+        &hgs,
+        "#!/bin/sh\nif [ \"$1\" = --help ]; then printf '%s\\n' session-parent-v1 \"$NEW_PARENT_MARKER\"; exit; fi\ncat",
+    ).unwrap();
+    std::fs::set_permissions(&hgs, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let run = |args: &[&str], advertised: &str| {
+        let command = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", &parent_peer_script(&command)])
+            .env("HOME", home.path())
+            .env("NEW_PARENT_MARKER", advertised)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Err(error) = child.stdin.take().unwrap().write_all(b"exact request") {
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        }
+        child.wait_with_output().unwrap()
+    };
+    let guarded = ["parent", "codex/example/child", "--json", "--project"];
+    let refused = run(&guarded, "");
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("update the selected computer"));
+    let accepted = run(&guarded, "session-parent-project-v1");
+    assert!(accepted.status.success());
+    assert_eq!(accepted.stdout, b"exact request");
+    let legacy = run(&guarded[..3], "");
+    assert!(legacy.status.success());
+    assert_eq!(legacy.stdout, b"exact request");
+}
+
 fn has(args: &[String], arg: &str) -> bool {
     args.iter().any(|a| a == arg)
 }
@@ -2397,7 +2451,7 @@ fn remote_via(
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*delivery-receipt-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to read original send receipts' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "parent" {
         // An older peer would read an unknown command as an agent launch.
-        platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change parent sessions' >&2; exit 1; fi",platform::join(&remote_args)))
+        parent_peer_script(&remote_args)
     } else if command == "notifications" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*session-notifications-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to change notification preferences' >&2; exit 1; fi",platform::join(&remote_args)))
     } else if command == "archives" && has(&args, "--bounded") {
