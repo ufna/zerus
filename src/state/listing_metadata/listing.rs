@@ -363,7 +363,7 @@ pub(in crate::state) fn merge(
             worker::request(&root);
         }
         let reader = if indexed {
-            Some(pages::Reader::open(&root)?)
+            Some(pages::Reader::open_index(&root, store::Index::Certified)?)
         } else {
             None
         };

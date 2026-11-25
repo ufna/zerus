@@ -114,8 +114,12 @@ impl Reader {
         }
         Ok(())
     }
+    pub fn open_index(root: &Path, index: store::Index) -> anyhow::Result<Self> {
+        Ok(Self(Store::read_listing(root, index)?, std::cell::Cell::new(BYTES)))
+    }
+    #[cfg(test)]
     pub fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Store::read_listing(root)?, std::cell::Cell::new(BYTES)))
+        Self::open_index(root, store::Index::Shared)
     }
     pub fn page(&self, cursor: Option<&Cursor>) -> anyhow::Result<Page> {
         self.page_limit(cursor, ROWS)
@@ -130,7 +134,7 @@ impl Reader {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
-            let current = Store::read(&self.0.root.path)?;
+            let current = Store::read_index(&self.0.root.path, self.0.index)?;
             let (epoch, generation, writes, ready): (String, i64, i64, bool) =
                 current.db.query_row(
                     "SELECT epoch,generation,writes,ready FROM meta WHERE id=1",

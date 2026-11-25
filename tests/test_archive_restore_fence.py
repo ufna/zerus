@@ -101,7 +101,7 @@ class ArchiveRestoreSource(pause.Harness):
         directory = self.root / "state/listing-metadata"
         enabled = directory / "enabled"
         held = directory / "fixture-held-enabled"
-        with (directory / "worker.lock").open("rb") as lease:
+        with (self.root / "state/listing-coverage-v1/certified-worker.lock").open("rb") as lease:
             def acquire():
                 try:
                     fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -115,7 +115,7 @@ class ArchiveRestoreSource(pause.Harness):
             finally:
                 held.rename(enabled)
             try:
-                yield directory / "index.sqlite3"
+                yield directory / "certified/index.sqlite3"
             finally:
                 self.hgs("listing-index", "disable", "--json")
 
@@ -246,16 +246,13 @@ class ArchiveRestoreSource(pause.Harness):
         self.wait(lambda: listing_with(False))
         state = self.root / "state"
         cache = state / "listing-metadata"
-        database = cache / "index.sqlite3"
+        database = cache / "certified/index.sqlite3"
         saved = self.root / "older.sqlite3"
-        folders = ("", "bindings", "dsh/bindings", "opencode/bindings", "sessions",
-                   "dsh/sessions", "opencode/sessions", "renames", "name_routes", "labels")
+        active = ("SELECT generation,dirs,gap FROM generations WHERE generation = "
+                  "(SELECT generation FROM meta WHERE id=1) AND complete=1")
         with closing(sqlite3.connect(database)) as current, closing(sqlite3.connect(saved)) as older:
             current.backup(older)
-            generation, encoded = older.execute(
-                "SELECT generation,dirs FROM generations WHERE generation = "
-                "(SELECT generation FROM meta WHERE id=1) AND complete=1").fetchone()
-        self.assertEqual(len(json.loads(encoded)), len(folders))
+            generation, _, _ = older.execute(active).fetchone()
 
         self.assertEqual(self.start(tag="rollback"), name)
         self.hgs("pause", name)
@@ -265,18 +262,16 @@ class ArchiveRestoreSource(pause.Harness):
         with (cache / "writer.lock").open("rb") as writer:
             fcntl.flock(writer, fcntl.LOCK_EX)
             with closing(sqlite3.connect(saved)) as older, closing(sqlite3.connect(database)) as current:
+                latest_generation, current_dirs, current_gap = current.execute(active).fetchone()
+                self.assertGreater(latest_generation, generation)
                 older.backup(current)
-            # Model a rollback that also preserves the cache's old directory
-            # mtime observations. The real canonical bindings stay in place.
-            for folder, stamp in zip(folders, json.loads(encoded)):
-                path = state / folder
-                if stamp is None:
-                    self.assertFalse(path.exists(), path)
-                    continue
-                observed = path.stat()
-                self.assertEqual((observed.st_dev, observed.st_ino, observed.st_size),
-                                 (stamp[0], stamp[1], stamp[4]), path)
-                os.utime(path, ns=(observed.st_atime_ns, stamp[2] * 10**9 + stamp[3]))
+                # Keep the current directory and gap witnesses while rolling
+                # back the body. That combination must still fail certification.
+                with current:
+                    current.execute("UPDATE generations SET dirs=?,gap=? WHERE generation=?",
+                                    (current_dirs, current_gap, generation))
+                self.assertEqual(current.execute(active).fetchone(),
+                                 (generation, current_dirs, current_gap))
 
             self.assertNotEqual(json.loads(self.hgs("listing-index", "status", "--json"))["state"],
                                 "ready", "status certified the rolled-back cut")

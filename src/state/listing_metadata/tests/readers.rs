@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+#[cfg(target_os = "linux")]
+fn certified_reads_refuse_a_shared_write_before_the_native_record_changes() {
+    let root = fixture();
+    let source = path(root.path());
+    let mut value = record();
+    storage::atomic(&source, &value.to_string()).unwrap();
+    let saved = fs::read(&source).unwrap();
+    drop(Store::open(root.path()).unwrap());
+    let mut work = None;
+    let index = store::Index::Certified;
+    let rebuild = |work: &mut Option<repair::Background>| {
+        assert!((0..128).any(|_| repair::background_for(root.path(), index, work)
+            .unwrap()
+            .complete));
+    };
+    let page = || {
+        pages::Reader::open_index(root.path(), index)
+            .unwrap()
+            .page(None)
+            .unwrap()
+    };
+    rebuild(&mut work);
+    assert!(page().fresh);
+
+    value["prompt"] = json!("Updated by the real publisher");
+    write_at(root.path(), &source, &value, |publication| {
+        assert!(publication.is_some());
+        assert_eq!(fs::read(&source).unwrap(), saved);
+        assert!(!page().fresh, "a shared reservation remained publicly fresh");
+        let blocked = repair::background_for(root.path(), index, &mut work).unwrap();
+        assert_eq!((blocked.entries, blocked.rows, blocked.bytes), (0, 0, 0));
+        storage::atomic_observed(&source, &value.to_string(), publication)
+    })
+    .unwrap();
+    assert!(!page().fresh, "a settled write reused the previous certificate");
+    rebuild(&mut work);
+    let updated = page();
+    assert!(updated.fresh);
+    assert_eq!(updated.rows.len(), 1);
+}
+
+#[test]
 fn a_listing_reader_recovers_from_a_brief_exclusive_database_lock() {
     let root = fixture();
     drop(Store::open(root.path()).unwrap());
@@ -24,7 +66,7 @@ fn a_listing_reader_recovers_from_a_brief_exclusive_database_lock() {
         writer.execute_batch("ROLLBACK").unwrap();
     });
     start.send(()).unwrap();
-    let reader = Store::read_listing(root.path());
+    let reader = Store::read_listing(root.path(), store::Index::Shared);
     release.join().unwrap();
     let timeout: i64 = reader
         .expect("listing reader must survive a brief exclusive lock")
@@ -485,6 +527,7 @@ fn pinned_pages_retain_their_own_rows_during_generation_gc_and_epoch_replacement
     assert!(
         Store::recover(
             root.path(),
+            store::Index::Shared,
             &anyhow::anyhow!("Display root/store identity changed")
         )
         .unwrap()

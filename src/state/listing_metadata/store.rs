@@ -13,9 +13,36 @@ fn index_file(dir: &Directory) -> anyhow::Result<File> {
         PublicationPending("The session listing index is still being built. Try again shortly.").into()
     })
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Index {
+    Shared,
+    Certified,
+}
+
+impl Index {
+    const CERTIFIED: &str = "certified";
+
+    pub fn directory(self, directory: Directory) -> anyhow::Result<Directory> {
+        match self {
+            Self::Shared => Ok(directory),
+            Self::Certified => {
+                match std::fs::symlink_metadata(directory.path.join(Self::CERTIFIED)) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(
+                        PublicationPending("The session listing index is still being built. Try again shortly.").into(),
+                    ),
+                    Err(error) => Err(error.into()),
+                    Ok(_) => checked(directory.child(Self::CERTIFIED)),
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct Store {
     pub db: Connection,
     pub root: Directory,
+    pub index: Index,
     selected: PathBuf,
     dir: Directory,
     file: File,
@@ -32,9 +59,12 @@ impl std::fmt::Display for PublisherBusy {
 impl std::error::Error for PublisherBusy {}
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        Self::open_for(path, false)
+        Self::open_index(path, Index::Shared)
     }
-    fn open_for(path: &Path, checkpoint: bool) -> anyhow::Result<Self> {
+    pub fn open_index(path: &Path, index: Index) -> anyhow::Result<Self> {
+        Self::open_for(path, index, false)
+    }
+    fn open_for(path: &Path, index: Index, checkpoint: bool) -> anyhow::Result<Self> {
         let root = checked(Directory::open(&crate::platform::canonical(path)?))?;
         let dir = checked(root.ensure_child("listing-metadata"))?;
         anyhow::ensure!(
@@ -49,6 +79,12 @@ impl Store {
             }
             Err(error) => return Err(error.into()),
         }
+        // Canonical publications from every supported binary still reserve
+        // the shared index under this same gate.
+        let dir = match index {
+            Index::Shared => dir,
+            Index::Certified => checked(dir.ensure_child(Index::CERTIFIED))?,
+        };
         if !checkpoint {
             wal_budget(&dir)?;
         }
@@ -118,6 +154,7 @@ impl Store {
         let store = Self {
             db,
             root,
+            index,
             selected: path.to_path_buf(),
             dir,
             file,
@@ -130,19 +167,23 @@ impl Store {
     /// A pinned reader never takes the advisory writer gate or initializes
     /// schema. WAL readers cannot force ordinary publishers to lose coverage.
     pub(super) fn read(path: &Path) -> anyhow::Result<Self> {
-        Self::read_with_busy_timeout(path, Duration::ZERO)
+        Self::read_index(path, Index::Shared)
     }
 
-    pub(super) fn read_listing(path: &Path) -> anyhow::Result<Self> {
+    pub(super) fn read_index(path: &Path, index: Index) -> anyhow::Result<Self> {
+        Self::read_with_busy_timeout(path, index, Duration::ZERO)
+    }
+
+    pub(super) fn read_listing(path: &Path, index: Index) -> anyhow::Result<Self> {
         // SQLite can briefly hold an exclusive lock during WAL recovery.
         // Give the foreground admission read time to obtain its snapshot.
-        Self::read_with_busy_timeout(path, Duration::from_millis(100))
+        Self::read_with_busy_timeout(path, index, Duration::from_millis(100))
     }
 
-    fn read_with_busy_timeout(path: &Path, timeout: Duration) -> anyhow::Result<Self> {
+    fn read_with_busy_timeout(path: &Path, index: Index, timeout: Duration) -> anyhow::Result<Self> {
         anyhow::ensure!(enabled(path), "Display index is disabled");
         let root = checked(Directory::open(&crate::platform::canonical(path)?))?;
-        let dir = checked(root.child("listing-metadata"))?;
+        let dir = index.directory(checked(root.child("listing-metadata"))?)?;
         wal_budget(&dir)?;
         let file = index_file(&dir)?;
         // Leave the empty database to its creator. A SQLite reader can hold
@@ -174,6 +215,7 @@ impl Store {
         let store = Self {
             db,
             root,
+            index,
             selected: path.to_path_buf(),
             dir,
             file,
@@ -301,16 +343,16 @@ fn stamp(id: &crate::platform::FileIdentity, m: &std::fs::Metadata) -> anyhow::R
 impl Store {
     /// Recover only this component's disposable cache, never canonical files.
     /// One retained cache set bounds quarantine storage across repeated faults.
-    pub fn recover(path: &Path, error: &anyhow::Error) -> anyhow::Result<bool> {
+    pub fn recover(path: &Path, index: Index, error: &anyhow::Error) -> anyhow::Result<bool> {
         if error.to_string() == WAL_QUOTA {
             // Only the background owner may checkpoint. A pinned reader makes
             // this nonblocking attempt report busy; canonical writers do not wait.
-            let store = match Self::open_for(path, true) {
+            let store = match Self::open_for(path, index, true) {
                 Ok(store) => store,
                 Err(error)
                     if error.to_string() == "Display reader schema requires background rebuild" =>
                 {
-                    return Self::recover(path, &error);
+                    return Self::recover(path, index, &error);
                 }
                 Err(error) => return Err(error),
             };
@@ -353,6 +395,7 @@ impl Store {
         );
         let gate = checked(dir.open_private_lock("writer.lock"))?;
         gate.try_lock_exclusive()?;
+        let dir = index.directory(dir)?;
         if checked(dir.read_private_optional("index.sqlite3"))?.is_some() {
             if let Ok(db) = Connection::open_with_flags(
                 dir.path.join("index.sqlite3"),

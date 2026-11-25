@@ -22,6 +22,7 @@ pub(super) mod worker;
 mod pages;
 use model::{Key, Seed};
 pub(super) use publication::Publication;
+#[cfg(any(test, not(target_os = "linux")))]
 pub(super) use repair::background_at;
 use store::Store;
 
@@ -88,9 +89,13 @@ pub(crate) fn public_index_error(error: &anyhow::Error) -> String {
 }
 
 fn gap(root: &Path) {
+    gap_at(root, store::Index::Shared);
+}
+
+fn gap_at(root: &Path, index: store::Index) {
     let attempt = || -> anyhow::Result<()> {
         let root = checked(Directory::open(&crate::platform::canonical(root)?))?;
-        let dir = checked(root.ensure_child("listing-metadata"))?;
+        let dir = index.directory(checked(root.ensure_child("listing-metadata"))?)?;
         checked(
             dir.replace_file(
                 "coverage-lost.json",
