@@ -137,6 +137,23 @@ can cancel an abandoned wait after checking the scope. Keep the refused work
 stopped. A transient error, unreadable evidence or an unknown result grants
 no replay authority. The check never sends input.
 
+## Read a supervised child's policy advisory
+
+From the child's original local launch or verified adopt parent, run
+`hgs parent CHILD --json` with `action: "read"` and the child's exact
+`expected_run_id` and `expected_conversation_id`. A current policy refusal
+in a fresh Codex run can add one `policy_advisory` to the parent response. It
+contains only the child session, run and conversation IDs and the native
+event and turn IDs with its timestamp. The same refusal keeps the same
+identity on repeated reads.
+
+This is session-scoped. It does not identify an assignment or settle a wait.
+A completed wait with a verified result submitted at or after the refusal
+for the exact parent and child suppresses the advisory. A different run, a
+forwarded or manually set link, a resumed or forked history, or a refusal
+predating the verified link does not qualify. The read does not send a
+message, retry, or change providers.
+
 ## Retire finished sub-sessions
 
 Reuse an idle sub-session for its own follow-up. Retire a sub-session you

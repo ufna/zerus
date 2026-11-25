@@ -24,6 +24,11 @@ Check a missing result from the waiting session on the producer's computer:
   for its original result. Preserve prior results and continue independent work.
   A transient error or an unreadable result cannot prove non-delivery.
 
+For a fresh, locally supervised Codex child, its verified parent can read one
+session-level policy_advisory with hgs parent CHILD --json and
+action "read", expected_run_id and expected_conversation_id for the child.
+The advisory identifies a native event. It leaves all waits as they are.
+
 Cancel an abandoned wait: hgs wait cancel --json with request_id, wait_id,
 waiter_machine, expected_run_id and expected_conversation_id.
 List open and settled waits: hgs wait list --json with expected_run_id and
