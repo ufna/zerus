@@ -10,9 +10,10 @@ import { navigationTeamFor } from "./lead-navigation";
 import { WINDOW_ONLY_MEMBER_ACTIONS, type TaskButton } from "./actions";
 import { createTeamEditors, TeamEditButtons, type EditAction } from "./TeamEditors";
 import { MemberCard } from "./MemberCard";
-import { memberSessions } from "./member-session";
+import { isRunningMemberSession, memberSessions } from "./member-session";
 import { TeamBar } from "./team-bar";
 import { TeamLeadContact } from "./TeamLeadContact";
+import { TeamLeadAvailability } from "./TeamLeadAvailability";
 import { TeamSettingsDialog } from "./TeamSettingsDialog";
 import { TaskActions } from "./TeamActions";
 import { TeamConfirmDialog } from "./TeamConfirmDialog";
@@ -69,6 +70,7 @@ export function TeamWorkspace(props: {
   view: TeamView;
   providerHome?: string;
   busy: boolean;
+  readOnly?: string;
   failure: { code: string; message: string } | null;
   actionFailure?: TeamFailure | null;
   onDismissFailure?: () => void;
@@ -138,6 +140,17 @@ export function TeamWorkspace(props: {
   const all = createMemo(() => props.view.groups.flatMap((group) => group.cards));
   // One bounded pass finds every member's own session row (G2 of zerus-rzvct).
   const memberRows = createMemo(() => memberSessions(props.view.members));
+  const liveSessions = createMemo(() => {
+    const live = new Set<string>();
+    for (const member of props.view.members) {
+      if (member.state === "removed") continue;
+      const row = memberRows().get(member.id)?.row;
+      if (row && isRunningMemberSession(row)) live.add(row.key);
+    }
+    return live.size;
+  });
+  const lead = () => props.view.members.find((member) => member.lead && member.id === props.view.bar.lead);
+  const pendingLead = () => teams.unresolved().some(({ call }) => call.team === teamId() && call.action.member === props.view.bar.lead);
   // Waiting for you's Open task: the node it names, or the card a stage of that
   // number is folded into, is selected once. A node not on this page is looked
   // for from the first page through at most OPEN_NODE_PAGES pages; then a
@@ -231,9 +244,13 @@ export function TeamWorkspace(props: {
   const send = (kind: string, fields: Record<string, unknown> = {}) => { if (kind === "swap_member") { editors.open(kind, String(fields.member)); return; } props.onAction(kind, fields); setAsking(null); setReason(""); };
   return (
     <div ref={workspace} class="team-tab" data-team-tab on:keydown={dismissKey}>
-      <TeamBar view={props.view} busy={props.busy} onAction={(kind) => kind === "advance_base" ? setAdvance(true) : send(kind)}
+      <TeamBar view={props.view} liveSessions={liveSessions()} busy={props.busy} onAction={(kind) => kind === "advance_base" ? setAdvance(true) : send(kind)}
         onSettings={props.onSettingsSave ? () => setSettingsView(props.view) : undefined} settingsBlocked={props.settingsBlocked}
         drawers={<><TeamDrawerButtons value={drawer()} leadNotices={props.view.bar.counts.lead_notices} onOpen={(kind) => setDrawer(drawer() === kind ? null : kind)} />{props.barExtra}</>} />
+      <Show when={props.view.bar.status === "running"}>
+        <TeamLeadAvailability lead={lead()} row={memberRows().get(props.view.bar.lead)?.row}
+          busy={props.busy} readOnly={props.readOnly} pending={pendingLead()} onAction={(kind, member) => send(kind, { member })} />
+      </Show>
       <TeamLeadContact team={props.view.bar.id} revision={props.view.revision} status={props.view.bar.status}
         busy={props.busy} onAction={props.onAction} />
       <Show when={settingsView()}><TeamSettingsDialog view={props.view} providerHome={props.providerHome} busy={props.busy || !!props.settingsBlocked}

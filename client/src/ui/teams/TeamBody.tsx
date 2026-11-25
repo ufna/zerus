@@ -33,7 +33,7 @@ export function TeamBody(props: {
     if (revision !== undefined) call.expected_revision = revision;
     return teams.run(call, props.source);
   };
-  return <TeamWorkspace view={props.view} busy={!!props.readOnly || teams.busy(id())} failure={teams.readFailureFor(`team:${id()}`)}
+  return <TeamWorkspace view={props.view} busy={!!props.readOnly || teams.busy(id())} readOnly={props.readOnly} failure={teams.readFailureFor(`team:${id()}`)}
     actionFailure={teams.failureFor(props.source)} onDismissFailure={() => teams.clearFailure(props.source)}
     providerHome={teams.listed().find((row) => row.id === id() && row.project === props.view.bar.project)?.home}
     onSettingsSave={(call) => teams.run(call, props.source)}

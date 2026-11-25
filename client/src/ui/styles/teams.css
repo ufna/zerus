@@ -130,6 +130,8 @@
   .team-unresolved-entry { flex: none; }
   .team-unresolved-name { margin: 8px 12px -6px; font-size: var(--fs-xs); color: var(--z-color-muted); }
   .team-notice, .team-uncertain { margin: 10px 12px; }
+  .team-lead-availability { flex-wrap: wrap; }
+  .team-lead-availability > [role="status"] { flex: 1 1 240px; overflow-wrap: anywhere; }
   .team-uncertain { flex-wrap: wrap; align-items: center; }
   .team-uncertain > span:first-of-type { flex: 1 1 240px; }
   .team-toolbar { flex: none; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--z-color-divider); min-height: 38px; }

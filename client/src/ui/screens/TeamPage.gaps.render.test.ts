@@ -18,19 +18,34 @@ import type { DesktopService, TeamsOut, ViewRow } from "../../types";
 
 const data = fixture as unknown as { running: TeamList; team: TeamView };
 const HERE = "00000000-0000-4000-8000-0000000000aa", STUDIO = "00000000-0000-4000-8000-0000000000bb";
-const f = vi.hoisted(() => ({ rows: [] as Session[], groups: {} as Record<string, string>, actions: [] as unknown[] }));
+const f = vi.hoisted(() => ({
+  rows: [] as Session[], archives: [] as Session[], groups: {} as Record<string, string>,
+  actions: [] as unknown[], stop: "" as "" | "confirm" | "pending",
+}));
 vi.mock("../../bridge", async (original) => ({ ...(await original<object>()), inTauri: () => true }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args?: Record<string, unknown>) => {
-  if (command === "team_action") { f.actions.push(args!.call); return { outcome: "done", request_id: (args!.call as { request_id: string }).request_id, receipt: {} }; }
+  if (command === "team_action") {
+    const call = args!.call as { request_id: string; action: { kind: string } };
+    f.actions.push(call);
+    if (call.action.kind === "stop_member" && f.stop === "confirm") return { outcome: "confirm", confirmation: {
+      name: "Stop member", title: "Stop member", text: "Stop the lead seat", action: "Stop",
+    } };
+    if (call.action.kind === "stop_member" && f.stop === "pending") return { outcome: "pending", request_id: call.request_id };
+    return { outcome: "done", request_id: call.request_id, receipt: {} };
+  }
   return undefined;
 }, isTauri: () => false }));
 vi.mock("../../store/machines", async (original) => ({ ...(await original<object>()),
   machineCards: { "": { machine_id: "00000000-0000-4000-8000-0000000000aa", host: "workstation.example" }, studio: { machine_id: "00000000-0000-4000-8000-0000000000bb", host: "studio.example" } } }));
 vi.mock("../../store/catalog", async (original) => ({ ...(await original<object>()), orderedRows: () => f.rows }));
+vi.mock("../../store/archive", async (original) => {
+  const fixture = await original<typeof import("../../store/archive")>();
+  return { ...fixture, archive: { ...fixture.archive, rows: () => f.archives } };
+});
 vi.mock("../../store/organization", async (original) => ({ ...(await original<object>()), groupOf: (key: string) => f.groups[key] ?? "inbox" }));
 vi.mock("../../store/ui", async (original) => {
   const ui = await original<typeof import("../../store/ui")>();
-  return { ...ui, selected: () => f.rows.find((row) => row.key === ui.selectedKey()) };
+  return { ...ui, selected: () => [...f.rows, ...f.archives].find((row) => row.key === ui.selectedKey()) };
 });
 
 const view = data.team;
@@ -53,14 +68,14 @@ function row(key: string, launch: string): Session {
 const leadRow = () => row("lead-row", lead.session_id.slice("launch_id:".length));
 function host() { const element = document.createElement("div"); document.body.append(element); return element; }
 /** The page as App's page Switch mounts it, with the team's view applied. */
-async function openPage(summary: TeamSummary = listed()) {
+async function openPage(summary: TeamSummary = listed(), shown = view) {
   teams.apply([entry("list", "list", { ...data.running, teams: [summary] })]);
   const navigation = await load<typeof import("../teams/team-navigation")>("../teams/team-navigation");
   const { TeamPage } = await load<typeof import("../teams/TeamPage")>("../teams/TeamPage");
   navigation.openTeamPage(view.bar.id);
   const element = host();
   disposers.push(render(() => createComponent(Show, { keyed: true, get when() { return ui.page() === "team"; }, get children() { return createComponent(TeamPage, {}); } }), element));
-  await flush(); teams.apply([entry(`team:${view.bar.id}`, "team", view)]); await flush();
+  await flush(); teams.apply([entry(`team:${view.bar.id}`, "team", shown)]); await flush();
   expect(element.querySelector("[data-team-tab]")).not.toBeNull();
   return element;
 }
@@ -70,12 +85,147 @@ async function openChat(element: HTMLElement) {
   return element.querySelector<HTMLElement>(".team-lead-chat")!;
 }
 beforeEach(async () => {
-  vi.resetModules(); f.rows = []; f.groups = {}; f.actions = [];
+  vi.resetModules(); f.rows = []; f.archives = []; f.groups = {}; f.actions = []; f.stop = "";
   ({ teams } = await import("../../store/teams")); ui = await import("../../store/ui");
   ({ toSession } = await import("../../store/catalog")); ({ desktopService: service } = await import("../../store/desktopService"));
   ui.setPage("teams"); ui.setSelectedKey(undefined); ui.setDetailTab("activity"); ui.setSubagentOpen(undefined);
+  ui.setStateFilter("all");
 });
 afterEach(() => { while (disposers.length) disposers.pop()!(); document.body.replaceChildren(); });
+
+const a = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-team-lead-availability]")!;
+const leadAction = (host: HTMLElement) => a(host).querySelector<HTMLButtonElement>("[data-team-lead-review]");
+const leadOpen = (host: HTMLElement) => a(host).querySelector<HTMLButtonElement>("[data-team-lead-open]")!;
+const rosterLaunch = (i: number) => `00000000-0000-4000-8000-00000000d00${i}`;
+const liveMembers = () => [1, 2, 3].map((i) => row(`m${i}`, rosterLaunch(i)));
+function emptyRoster(openWork: number | null = 0) {
+  const members = [
+    { ...view.members[0], open_work: openWork },
+    ...[1, 2, 3, 4].map((i) => ({ ...view.members[1], id: `m${i}`, state: "active",
+      session: { machine: HERE, session_id: `launch_id:${rosterLaunch(i)}` } })),
+  ];
+  return { ...view, bar: { ...view.bar, counts: { ...view.bar.counts,
+    members: { active: 5, total: 5, not_created: 0, paused: 0, removed: 0 } } }, members };
+}
+function archivedLead(allowed = "restore") {
+  return { ...leadRow(), key: "\narchive:lead", state: "archived", archiveId: "lead-archive",
+    resumable: true, allowed };
+}
+
+const languages = [
+  { lang: "en", roster: "Active roster seats (5)", liveCount: "Live sessions shown (3)",
+    empty: "The queue is empty.", archived: "The lead's session is archived.", live: "The lead's session is live.",
+    missing: "The lead's session is missing from the current list.", browse: "Browse Archive",
+    open: "Open archived lead session", restore: "choose Restore session", unavailable: "Restore is unavailable for this archive.",
+    stop: "Review Stop member", swap: "Review Swap", dialog: "Swap lead", receipts: "checks the saved receipts" },
+  { lang: "ru", roster: "Активные места в составе (5)", liveCount: "Сессии, работающие по данным списка (3)",
+    empty: "Очередь пуста.", archived: "Сессия лида в архиве.", live: "Сессия лида работает.",
+    missing: "Сессии лида нет в текущем списке.", browse: "Открыть архив",
+    open: "Открыть архивную сессию лида", restore: "выберите «Восстановить сессию»", unavailable: "Эту архивную сессию нельзя восстановить.",
+    stop: "Открыть остановку участника", swap: "Открыть замену", dialog: "Заменить lead", receipts: "проверит сохранённые результаты" },
+];
+async function useLanguage(lang: string) {
+  const settings = await import("../../store/settings");
+  await settings.settingsReady;
+  await settings.setSetting("workspace/language", lang, { persist: false });
+  const i18n = await import("../../i18n");
+  i18n.installUiLanguage();
+  await vi.waitFor(() => expect(i18n.uiLanguage()).toBe(lang));
+}
+
+it.each(languages)("shows the archived lead and separate roster/live counts in $lang", async (copy) => {
+  await useLanguage(copy.lang);
+  f.rows = [...liveMembers(), { ...row("m4", rosterLaunch(4)), state: "stopped", processState: "exited" }];
+  f.archives = [archivedLead()];
+  const host = await openPage(listed(), emptyRoster());
+  expect(host.querySelector("[data-team-bar]")?.textContent).toContain(copy.roster);
+  expect(host.querySelector("[data-team-bar]")?.textContent).toContain(copy.liveCount);
+  expect(host.querySelector("[data-team-board]")?.textContent).toContain(copy.empty);
+  expect(a(host).dataset.teamLeadAvailability).toBe("archived");
+  expect(a(host).textContent).toContain(copy.archived);
+  expect(a(host).textContent).toContain(copy.restore);
+  expect(leadOpen(host).textContent).toBe(copy.open);
+  expect(leadAction(host)).toBeNull();
+  leadOpen(host).click();
+  expect(ui.page()).toBe("sessions");
+  expect(ui.stateFilter()).toBe("archived");
+  expect(ui.selected()?.archiveId).toBe("lead-archive");
+  expect(ui.detailTab()).toBe("activity");
+  expect(f.actions).toEqual([]);
+});
+
+it.each(languages)("keeps a missing lead unknown until the exact live row is listed in $lang", async (copy) => {
+  await useLanguage(copy.lang);
+  f.rows = liveMembers();
+  f.archives = [{ ...archivedLead(), computer: "studio" }];
+  const current = emptyRoster();
+  const host = await openPage(listed(), current);
+  expect(a(host).dataset.teamLeadAvailability).toBe("unavailable");
+  expect(a(host).textContent).toContain(copy.missing);
+  expect(leadOpen(host).textContent).toBe(copy.browse);
+  expect(leadAction(host)).toBeNull();
+  f.rows.push(leadRow());
+  teams.apply([entry(`team:${view.bar.id}`, "team", { ...current, revision: current.revision + 1 })]);
+  await flush();
+  expect(a(host).dataset.teamLeadAvailability).toBe("live");
+  expect(a(host).textContent).toContain(copy.live);
+  expect(f.actions).toEqual([]);
+});
+
+it.each(languages)("uses the existing Stop confirmation then offers Swap on a stopped seat in $lang", async (copy) => {
+  await useLanguage(copy.lang);
+  f.rows = liveMembers();
+  f.archives = [archivedLead("forget")];
+  f.stop = "confirm";
+  const current = emptyRoster();
+  const host = await openPage(listed(), current);
+  expect(a(host).textContent).toContain(copy.unavailable);
+  expect(a(host).textContent).toContain(copy.receipts);
+  expect(leadAction(host)?.textContent).toBe(copy.stop);
+  leadAction(host)!.click();
+  await vi.waitFor(() => expect(teams.confirmation()?.call.action).toEqual({ kind: "stop_member", member: "lead" }));
+  expect(f.actions).toHaveLength(1);
+  expect(teams.confirmation()?.call.confirmed).toBe(false);
+  teams.cancelConfirmation();
+  const stopped = { ...current, revision: current.revision + 1,
+    members: current.members.map((member) => member.lead ? { ...member, state: "paused", person_stopped: true } : member) };
+  teams.apply([entry(`team:${view.bar.id}`, "team", stopped)]);
+  await flush();
+  expect(leadAction(host)?.textContent).toBe(copy.swap);
+  leadAction(host)!.click();
+  await vi.waitFor(() => expect(host.querySelector("dialog[open] h2")?.textContent).toBe(copy.dialog));
+  expect(f.actions).toHaveLength(1);
+});
+
+it("points a pending lead action to Check and withholds the replacement path", async () => {
+  f.archives = [archivedLead("forget")];
+  f.stop = "pending";
+  const host = await openPage(listed(), emptyRoster());
+  leadAction(host)!.click();
+  await vi.waitFor(() => expect(a(host).textContent).toContain("Use Check on the pending lead action"));
+  expect(leadAction(host)).toBeNull();
+  expect(f.actions).toHaveLength(1);
+});
+
+it("browses Archive without selecting an ambiguous match for the same launch", async () => {
+  f.archives = [archivedLead(), { ...archivedLead(), key: "\narchive:earlier", archiveId: "earlier", runId: "earlier-run" }];
+  const host = await openPage(listed(), emptyRoster());
+  expect(a(host).dataset.teamLeadAvailability).toBe("unavailable");
+  expect(leadAction(host)).toBeNull();
+  leadOpen(host).click();
+  expect(ui.page()).toBe("sessions");
+  expect(ui.stateFilter()).toBe("archived");
+  expect(ui.selected()).toBeUndefined();
+  expect(f.actions).toEqual([]);
+});
+
+it("explains the unsettled-work restriction without suggesting a replacement", async () => {
+  f.archives = [archivedLead("forget")];
+  const host = await openPage(listed(), emptyRoster(1));
+  expect(a(host).textContent).toContain("The lead has open or unsettled work (1). Swap requires that work to settle.");
+  expect(leadAction(host)).toBeNull();
+  expect(f.actions).toEqual([]);
+});
 
 it("Lead chat on the page says where the lead is talked to, and opens its listed session (audit C4)", async () => {
   f.rows = [leadRow()];

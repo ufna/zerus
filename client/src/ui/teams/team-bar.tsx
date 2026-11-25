@@ -14,6 +14,7 @@ export const compactFor = (width: number): "none" | "low" | "high" => (width < 9
 
 export function TeamBar(props: {
   view: TeamView;
+  liveSessions?: number;
   busy: boolean;
   onAction: (kind: string) => void;
   onSettings?: () => void;
@@ -59,7 +60,10 @@ export function TeamBar(props: {
       </div>
       <span class="mono team-count">{counts().accepted}/{counts().total}</span>
       <span class="team-chips" data-strip-chips>
-        <span class="chip team-chip" title={tr("Active members")}><Icon name="users" size={12} />{tr("%1 active", props.view.bar.counts.members.active)}</span>
+        <span class="chip team-chip"><Icon name="users" size={12} />{tr("Active roster seats (%1)", props.view.bar.counts.members.active)}</span>
+        <Show when={props.liveSessions !== undefined}>
+          <span class="chip team-chip"><Icon name="terminal" size={12} />{tr("Live sessions shown (%1)", props.liveSessions!)}</span>
+        </Show>
         <span class="chip team-chip" title={tr("Open inbox items")}><Icon name="inbox" size={12} />{props.view.bar.counts.inbox === 1 ? tr("%n inbox item", 1) : tr("%n inbox items", props.view.bar.counts.inbox)}</span>
         <span class="chip team-chip" title={tr("Open cards")}><Icon name="layers" size={12} />{props.view.bar.counts.cards === 1 ? tr("%n card", 1) : tr("%n cards", props.view.bar.counts.cards)}</span>
       </span>
