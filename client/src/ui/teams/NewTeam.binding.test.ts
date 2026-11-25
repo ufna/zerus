@@ -17,10 +17,10 @@ import { projectsView } from "./fixtures";
 
 const FIVE = ["accept_results", "answer_members", "confirm_trust", "resume_exited", "merge_accepted"] as const;
 type Five = Record<(typeof FIVE)[number], boolean>;
-const f = vi.hoisted(() => ({ catalog: null as unknown as TeamCatalog, acts: [] as TeamCall[], grants: [] as unknown[], reads: 0 }));
+const f = vi.hoisted(() => ({ catalog: null as unknown as TeamCatalog, acts: [] as TeamCall[], grants: [] as unknown[], reads: 0, refusal: "", pick: async (): Promise<string | null> => null }));
 // The dialog reads the Projects catalog once; client core's own projection.
 vi.mock("../../bridge", async (original) => ({ ...(await original() as object), inTauri: () => true,
-  projectsView: async () => (await import("./fixtures")).projectsView }));
+  projectsView: async () => (await import("./fixtures")).projectsView, pickLocalFolder: () => f.pick() }));
 vi.mock("../../store/ui", async (original) => ({ ...(await original() as object), selected: () => ({ project: "example-project", gitRoot: "/workspace/example" }) }));
 vi.mock("../../store/machines", async (original) => ({ ...(await original() as object), machineCards: { "": { machine_id: "00000000-0000-4000-8000-0000000000aa" } } }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +31,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "team_action") {
       const call = structuredClone(args.call);
       f.acts.push(call);
+      if (f.refusal) return { outcome: "failed", detail: f.refusal, request_id: call.request_id };
       const action = call.action as Record<string, unknown>;
       const template = f.catalog.templates.find((candidate) => candidate.id === action.template);
       if (!template || action.expected_template !== template.digest) {
@@ -60,7 +61,7 @@ beforeEach(async () => {
   f.catalog = structuredClone(fixture);
   f.catalog.templates[0].settings.delegations = { ...none };
   f.catalog.templates[0].digest = D1;
-  f.acts = []; f.grants = []; f.reads = 0;
+  f.acts = []; f.grants = []; f.reads = 0; f.refusal = ""; f.pick = async () => null;
 });
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); vi.clearAllMocks(); });
 
@@ -246,4 +247,35 @@ it("a catalog without digests, from an older command line, disables Create and s
   button(host, "Create team").click();
   await settle();
   expect(f.acts).toEqual([]);
+});
+
+// The native dialog and browser-rendered form share these controlled fields.
+// Browse resolves asynchronously; a long service refusal must keep that draft.
+it.each([null, "/workspace/example/"])("retains the open dialog draft across Browse returning %s and a long create refusal", async (picked) => {
+  const host = await open();
+  const name = host.querySelector<HTMLInputElement>('input[placeholder="Fixes"]')!;
+  const goal = host.querySelector<HTMLInputElement>('input[placeholder="What should the team work on?"]')!;
+  const branch = [...host.querySelectorAll("label")].find((label) => label.textContent?.startsWith("Integration branch"))!.querySelector<HTMLInputElement>("input")!;
+  for (const [input, value] of [[name, "Unsaved name"], [goal, "Unsaved goal"], [branch, "team/draft"]] as const) {
+    input.value = value; input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  toggle(host, "merge_accepted", true);
+  const permissions = shown(host);
+  let finish!: (path: string | null) => void;
+  f.pick = () => new Promise((resolve) => { finish = resolve; });
+  button(host, "Browse…").click(); await settle();
+  expect(name.value).toBe("Unsaved name");
+  expect(f.acts).toEqual([]);
+  finish(picked); await settle();
+  await vi.waitFor(() => expect(button(host, "Create team").disabled).toBe(false));
+  f.refusal = "The team store is busy. Nothing was written; try again. ".repeat(40).trim();
+  button(host, "Create team").click();
+  await vi.waitFor(() => expect(host.querySelector("[data-create-error] span")?.textContent).toBe(f.refusal));
+  expect(host.querySelector('input[placeholder="Fixes"]')).toBe(name);
+  expect(name.value).toBe("Unsaved name"); expect(goal.value).toBe("Unsaved goal"); expect(branch.value).toBe("team/draft");
+  expect(shown(host)).toEqual(permissions);
+  expect((f.acts[0].action as Record<string, unknown>)).toMatchObject({ name: "Unsaved name", goal: "Unsaved goal", integration_branch: "team/draft", delegations: permissions });
+  expect(f.acts).toHaveLength(1); expect(f.grants).toEqual([]);
+  expect(button(host, "Create team").disabled).toBe(false);
+  expect(store.newTeamOpen()).toBe(true);
 });
