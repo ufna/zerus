@@ -7,9 +7,19 @@ import { sendToTeam, writingTask } from "./taskBoard";
 import { draggedTask, readTaskDrag, setDraggedTask, TASK_MIME } from "./taskAssignment";
 import { setTeamTaskCreation } from "./taskCreation";
 
+/** Why Add task cannot open the New task form for this team now: the store
+ * takes tasks only on a running or paused team, and the task panel must show
+ * the team's project (zerus-63rru.199 A6). The button and the request share it. */
+export function teamTaskBlocked(team: Pick<TeamBar, "project" | "status">, panelProject: string | undefined): string | undefined {
+  if (!["running", "paused"].includes(team.status)) return tr("Only a running or paused team takes new tasks.");
+  if (panelProject !== team.project) return tr("The task panel shows another project. Open a session of %1 to add a task to this team.", team.project);
+  return undefined;
+}
+
 export function requestTeamTask(team: TeamBar) {
-  if (teams.available() !== true || tasks.project() !== team.project || !["running", "paused"].includes(team.status)) {
-    notify("error", tr("The chosen team is no longer offered for this project. Nothing was sent.")); return;
+  const blocked = teamTaskBlocked(team, tasks.project());
+  if (teams.available() !== true || blocked) {
+    notify("error", blocked ?? tr("The chosen team is no longer offered for this project. Nothing was sent.")); return;
   }
   setTeamTaskCreation({ project: team.project, team: team.id });
   openInspector("tasks");

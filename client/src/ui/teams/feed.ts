@@ -9,6 +9,37 @@ export function feedClock(atMs: number): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
+/** What closes an open lead inbox item that is neither a question nor a
+ * report (zerus-63rru.197 C6). No person operation dismisses an item; each
+ * line names the store's own closer: an item of a task closes with the task's
+ * next report, reopen or settlement (ops common.rs, the node-wide close); the
+ * lead queue notices close when their queue is empty (lead_queue.rs); a
+ * planning goal with the first submitted draft (drafts.rs); an unstaffed task's
+ * item once it is held or covered again, and a paused member's start notice
+ * once that member is active again; a phase rejection
+ * with a new draft, new corrections or an undo (phase_review.rs); a sent-back
+ * phase's note is never closed (rework.rs). An ended team closes nothing. */
+export function inboxCloses(row: Pick<DrawerRow, "kind" | "node" | "state">, status: string): string | undefined {
+  if (row.state !== "open" || row.kind === "report" || row.kind.startsWith("question:")) return undefined;
+  if (["stopped", "finished", "archived"].includes(status)) return tr("The team has ended, so this item stays open as a record.");
+  switch (row.kind.split(":")[0]) {
+    case "planning_goal": return tr("This item closes when you or the lead submit a phase draft.");
+    case "phase_rejected": return tr("This item closes when the phase's draft or corrections are submitted again, or its rejection is undone.");
+    case "phase_sent_back": return tr("This item records that the phase was sent back; nothing closes it. Make the corrections in Layers.");
+    case "lead_admission": return tr("This item closes by itself when no task waits for admission.");
+    case "lead_routing": return tr("This item closes by itself when no task waits for routing.");
+    // Staffing reconciliation closes it once the task is held or covered again
+    // (ops unstaffed.rs reconcile; review of #2558).
+    case "unstaffed": if (row.node) return tr("This item closes by itself when task #%1 is held or a member can take it again.", row.node); break;
+    // member_started:<node>:<member>:<n> closes when that member is active
+    // again (ops members.rs close_paused_started, actor schedule.rs).
+    case "member_started": { const member = row.kind.split(":")[2]; if (member) return tr("This item closes by itself when member %1 is active again.", member); break; }
+  }
+  return row.node
+    ? tr("This item closes by itself when task #%1 is reported again, reopened or settled.", row.node)
+    : tr("Nothing in this window closes this item; the team's service closes it when its cause is settled.");
+}
+
 export function inboxKind(kind: string): string {
   switch (kind.split(":")[0]) {
     case "report": return tr("Report");
@@ -19,6 +50,18 @@ export function inboxKind(kind: string): string {
     case "planning_goal": return tr("Planning goal");
     default: return kind;
   }
+}
+
+export function inboxText(row: DrawerRow): string {
+  if (!row.kind.startsWith("unstaffed:") || row.text_truncated) return row.text;
+  // Retain the stored English sentence for older CLI readers. Translate
+  // only the service's exact notice, with IDs kept as data.
+  const notice = /^(Task|Pipeline stage) ([1-9][0-9]*) is ready\. The service cannot read any eligible member \(([a-zA-Z0-9_-]+(?:, [a-zA-Z0-9_-]+)*)\)\. It will check again\.$/.exec(row.text);
+  if (!notice || notice[2] !== String(row.node)) return row.text;
+  const [, subject, node, members] = notice;
+  return subject === "Pipeline stage"
+    ? tr("Pipeline stage %1 is ready. The service cannot read any eligible member (%2). It will check again.", node, members)
+    : tr("Task %1 is ready. The service cannot read any eligible member (%2). It will check again.", node, members);
 }
 
 export const reportRows = (rows: readonly DrawerRow[]) => rows.filter((row) => row.kind === "report");
@@ -103,6 +146,7 @@ export function journalSentence(kind: string): string {
     case "fire_timer": return tr("Timer fired");
     case "record_key_clear": return tr("Team key cleared from a task");
     case "record_late_session": return tr("Late session recorded");
+    case "record_member_readability": return tr("The service recorded whether member data could be read");
     case "reconcile_unstaffed": return tr("Tasks without a member checked");
     case "end_stale_unstaffed": return tr("Notice about tasks without a member closed");
     case "close_stale_reopen_notices": return tr("The service closed reopen notices that no longer need the lead's attention");
@@ -157,10 +201,21 @@ function handoutOutcome(word: string): string | undefined {
  * decision, or a sentence the service wrote. The generic "<kind> at revision
  * N" says nothing more and gives "". The exact text stays the row's title. */
 export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
+  if (row.kind === "close_card" && row.text === "Member removed") return tr("Member removed");
   const generic = new RegExp(`^${row.kind.replace(/[^a-z_]/g, "")} at revision \\d+`);
   const matched = row.text.match(generic);
   if (!matched) return row.text;
   const rest = row.text.slice(matched[0].length).replace(/^[:;]\s*/, "");
+  if (row.kind === "record_report" || row.kind === "verdict") {
+    const skip = /^Land stages skipped for task #([1-9][0-9]*) because landing is disabled in Team settings\.(?=; |$)/.exec(rest);
+    if (skip) {
+      return tr("Land stages skipped for task #%1 because landing is disabled in Team settings.", skip[1]) + rest.slice(skip[0].length);
+    }
+  }
+  if (row.kind === "release_provider_stop"
+      && rest === ". The service confirmed that the member stopped after a provider error.") {
+    return tr("The service confirmed that the member stopped after a provider error.");
+  }
   if (row.kind === "handout_outcome" && rest) {
     const [word, ...reason] = rest.split(": ");
     const translated = handoutOutcome(word);

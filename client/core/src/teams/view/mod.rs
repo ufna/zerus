@@ -535,6 +535,19 @@ pub struct QueueCard {
     pub pipeline: String,
     pub assignee: String,
     pub implementer: String,
+    /// For a stage card, the members who implemented any round of its
+    /// target, whom the stage's Reassign refuses (zerus-3u5yu). Empty, and
+    /// omitted, for any other card and for older replies.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier_implementers: Vec<String>,
+    /// Files or folders the task may change, as the store keeps them; empty,
+    /// and omitted, when it names none (zerus-63rru.199 B3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub writes: Vec<String>,
+    /// The row's dependencies or write paths could not all be read, so the
+    /// window never sends a placement that would replace them (B3).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fields_incomplete: bool,
     /// The task's board rank: the queue's order.
     pub rank: String,
     pub round: u64,
@@ -595,6 +608,10 @@ pub struct TeamBar {
     pub base_commit: String,
     pub revision: u64,
     pub counts: TeamCounts,
+    /// The computer the team lives on, from its status; omitted when the
+    /// reply names none (zerus-63rru.199 C10).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub home: String,
 }
 
 /// A role and pipeline from this team's pinned bundle.

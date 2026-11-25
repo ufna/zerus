@@ -58,6 +58,7 @@ import type { ClearControl, SessionRef } from "../../types";
 import { motionReduced } from "../motion";
 import { composer } from "../../store/composer";
 import { composerClearControl } from "../../bridge";
+import { flag } from "../../store/settings";
 import { bulkSelect, clearMulti, multiCount, rangeStep, setAnchor, type RangeKey, dragItem, setDragItem, drop, setDrop, endDrag, placement, applyDrop, SESSION_MIME, type DragItem, type Drop } from "./organize";
 import { POINTER_DRAG, pointerDrag } from "../lib/pointerDrag";
 import { listReveal, setListReveal, listRevealPulse, setListRevealPulse, listRevealNotice, setListRevealNotice } from "../../store/listReveal";
@@ -658,13 +659,16 @@ export function SessionList() {
 
   // Hover expand: opens after 150 ms of rest on the strip; closes once the
   // pointer has been outside for 350 ms. Menus and an active search keep it open.
+  // Only with workspace/expandSessionsOnHover on; turning it off during the
+  // delay cancels the open (Qt's SessionPanelDock::setHoverExpands).
   let enterTimer: number | undefined, leaveTimer: number | undefined;
   let hoverOpened = false;
+  const hoverExpands = () => flag("workspace/expandSessionsOnHover");
   const keepOpen = () => !!menu() || searchFocused() || search().length > 0 || datePanelOpen();
   const onStripEnter = () => {
     clearTimeout(leaveTimer);
-    if (!stripMode() || peek()) return;
-    enterTimer = window.setTimeout(() => { if (stripMode() && !peek()) { hoverOpened = true; setPeek(true); } }, 150);
+    if (!stripMode() || peek() || !hoverExpands()) return;
+    enterTimer = window.setTimeout(() => { if (stripMode() && !peek() && hoverExpands()) { hoverOpened = true; setPeek(true); } }, 150);
   };
   const onSectionEnter = () => clearTimeout(leaveTimer);
   const onSectionLeave = () => {

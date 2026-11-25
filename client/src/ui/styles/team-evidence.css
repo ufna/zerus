@@ -1,0 +1,13 @@
+/* The evidence beside a task's decision (zerus-5gcbh): the report and each
+   stage's verdict, above the inspector's decisions. */
+@layer components {
+  .team-evidence { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--z-color-divider); min-width: 0; }
+  .team-evidence > h4 { font-size: var(--fs-sm); margin: 0; }
+  .team-evidence-item { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--z-color-divider); border-radius: var(--z-radius-sm); padding: 8px; min-width: 0; }
+  .team-evidence-item > header, .team-evidence-error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .team-evidence-verdict { font-size: var(--fs-xs); font-weight: 600; color: var(--z-color-muted); }
+  .team-evidence-verdict[data-pass="true"] { color: var(--z-color-status-ready); }
+  .team-evidence-verdict[data-pass="false"] { color: var(--z-color-warn); }
+  /* Evidence of another revision than the decision shown, read again (review of #2531). */
+  .team-evidence-updating .team-evidence-item { opacity: .6; }
+}

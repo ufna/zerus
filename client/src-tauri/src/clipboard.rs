@@ -127,9 +127,77 @@ pub fn clipboard_files() -> Option<Vec<String>> {
     })
 }
 
+/// How long Paste in the composer waits for the clipboard's image.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const IMAGE_BUDGET: Duration = Duration::from_secs(2);
+/// The largest image read from the clipboard; the composer applies its own
+/// attachment limits after that, with its notice.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// An image read still blocked: the next paste does not start another.
+static READING_IMAGE: AtomicBool = AtomicBool::new(false);
+
+/// The answer to one clipboard image read. Sending it, or dropping it
+/// unanswered, ends that read.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct ImageReply(Option<mpsc::Sender<Option<Vec<u8>>>>);
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl ImageReply {
+    pub(crate) fn send(mut self, png: Option<Vec<u8>>) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(png);
+        }
+    }
+}
+impl Drop for ImageReply {
+    fn drop(&mut self) {
+        READING_IMAGE.store(false, Ordering::Release);
+    }
+}
+
+/// The read, with the clipboard call and the budget given (tests answer it).
+/// `start` hands the reply to the reader and says whether it started.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn image_with(budget: Duration, start: impl FnOnce(ImageReply) -> bool) -> Option<Vec<u8>> {
+    if READING_IMAGE.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    if !start(ImageReply(Some(sender))) {
+        return None;
+    }
+    receiver
+        .recv_timeout(budget)
+        .ok()
+        .flatten()
+        .filter(|png| !png.is_empty() && png.len() <= IMAGE_BYTES)
+}
+
+/// Paste in the composer on Linux (Qt's `insertFromMimeData`, which read
+/// `QClipboard::image`): WebKitGTK's paste event carries no clipboard image,
+/// so the composer asks for it here when the event carries nothing. The PNG
+/// bytes as a raw body, empty when the clipboard holds no image, cannot answer
+/// within [`IMAGE_BUDGET`] or an earlier read is still blocked. Async, so the
+/// wait never runs on GTK's thread.
+#[tauri::command(async)]
+pub fn clipboard_image(app: AppHandle) -> tauri::ipc::Response {
+    #[cfg(target_os = "linux")]
+    let png = image_with(IMAGE_BUDGET, |reply| linux::image(&app, reply));
+    // WebKit on macOS and WebView2 put a pasted image in the event itself.
+    #[cfg(not(target_os = "linux"))]
+    let png: Option<Vec<u8>> = {
+        drop(app);
+        None
+    };
+    tauri::ipc::Response::new(png.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{attachable, copied_files_with, copyable, verbatim, FILES_BUDGET};
+    use super::{
+        attachable, copied_files_with, copyable, image_with, verbatim, FILES_BUDGET, IMAGE_BUDGET,
+        IMAGE_BYTES,
+    };
     use std::path::PathBuf;
     use std::sync::{mpsc, Mutex};
     use std::time::Duration;
@@ -224,6 +292,98 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
         assert_eq!(again, vec![file.to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn an_image_read_answers_its_png_within_bounds() {
+        let _turn = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let png = vec![0x89, b'P', b'N', b'G'];
+        let sent = png.clone();
+        assert_eq!(
+            image_with(IMAGE_BUDGET, move |reply| {
+                reply.send(Some(sent));
+                true
+            }),
+            Some(png)
+        );
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                reply.send(None);
+                true
+            }),
+            None,
+            "no image"
+        );
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                reply.send(Some(Vec::new()));
+                true
+            }),
+            None,
+            "empty"
+        );
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                reply.send(Some(vec![0; IMAGE_BYTES + 1]));
+                true
+            }),
+            None,
+            "too large for the IPC"
+        );
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                drop(reply);
+                false
+            }),
+            None,
+            "the reader could not start"
+        );
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                reply.send(Some(vec![1]));
+                true
+            }),
+            Some(vec![1]),
+            "a refused start ends its read"
+        );
+    }
+
+    #[test]
+    fn a_blocked_image_read_answers_none_and_starts_no_second_read_until_it_answers() {
+        let _turn = SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (hand, held) = mpsc::channel();
+        assert_eq!(
+            image_with(Duration::from_millis(20), move |reply| {
+                hand.send(reply).unwrap();
+                true
+            }),
+            None
+        );
+        let reply = held.recv().unwrap();
+        let mut started = false;
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |_| {
+                started = true;
+                true
+            }),
+            None
+        );
+        assert!(
+            !started,
+            "a second paste starts nothing while the first read is blocked"
+        );
+        reply.send(Some(vec![1]));
+        assert_eq!(
+            image_with(IMAGE_BUDGET, |reply| {
+                reply.send(Some(vec![2]));
+                true
+            }),
+            Some(vec![2])
+        );
     }
 
     #[test]

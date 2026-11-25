@@ -18,8 +18,10 @@ export function memberAccounts(view: AccountsView, agent: string) {
 export function swapBlocked(member: TeamMember): string | undefined {
   if (member.state === "removed") return tr("This member was removed.");
   if (member.open_work === undefined || member.open_work === null) return tr("Refresh the team to check this member's open work.");
-  if (member.state !== "paused" || !member.person_stopped || member.open_work !== 0)
-    return tr("Stop the member first; open work: %1", member.open_work);
+  // A member the person stopped keeps its assigned work: Swap waits for that
+  // work to move, and asking to stop it again would be wrong (review of #2535).
+  if (member.state !== "paused" || !member.person_stopped) return tr("Stop the member first; open work: %1", member.open_work);
+  if (member.open_work !== 0) return tr("Move this member's open work to another member first; open work: %1", member.open_work);
   if (!member.session) return tr("This member has no confirmed session to replace.");
   return undefined;
 }

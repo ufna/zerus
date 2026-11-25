@@ -70,6 +70,15 @@ pub enum Source {
     Drafts(draft_report::Binding),
 }
 impl Source {
+    /// Compare a source loaded from the journal with the freshly verified
+    /// source. Journal transitions and live publication rechecks use equality.
+    pub fn matches_persisted(&self, current: &Self) -> bool {
+        match (self, current) {
+            (Self::Preload(saved), Self::Preload(actual)) => saved.matches_persisted(actual),
+            _ => self == current,
+        }
+    }
+
     pub fn capture_id(&self) -> &str {
         match self {
             Self::Preload(reference) => reference.capture_id(),

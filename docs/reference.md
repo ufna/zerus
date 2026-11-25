@@ -1443,11 +1443,20 @@ hgs resume codex/my-project/review --archive ID -d
 hgs kill codex/my-project/review --archive ID        # forget only this binding
 ```
 
-Archives live in `archives/`, each with an independent ID. A new launch with the
+Terminal archives live in `archives/`, each with an independent ID. A new launch with the
 same name preserves the archive. Restore refuses an occupied live or Saved name
 and removes an archive binding only after the native agent confirms the expected
 conversation. Failed restore keeps it. **Forget archive** preserves native history;
 `resume --all` excludes archives.
+
+For native DeepSeek sessions, `terminate` stops the selected session on its
+resident host and archives it. `archive` requires a stopped or paused session.
+DeepSeek archives use a separate local store so earlier CLIs can still use
+terminal archives after a rollback.
+Retirement requires the resident host to confirm the session is stopped. Restore
+resumes the archived conversation on that host. When the first restore result is
+unclear, Restore checks the original outcome without sending a second resume.
+Other sessions on the host stay available throughout.
 
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
@@ -3096,6 +3105,10 @@ only while Terminal shows exactly that chooser, using its number key and, for
 Revise, pasting the feedback before Enter; Kimi's recorded decision, including
 the exact feedback, confirms delivery. A clipped or different chooser, or one
 already in Revise feedback mode, stays read-only with **Open Terminal**.
+Kimi Code 2.6.3 hands the agent an approved plan's ExitPlanMode result marked as
+a tool error ("ERROR: Tool execution failed." before its "Exited plan mode." text
+and the approved plan), whoever approved it, in Terminal or in Activity; plan mode
+does end, and Kimi records the decision as approved.
 
 Kimi CreateGoal approval shows the full objective and completion criterion literally,
 with Kimi's own mode choices for Always Ask or Ask When Needed. **Switch to Never
@@ -6105,6 +6118,7 @@ hgs team waiting [--limit 1..200] [--after CURSOR]
 hgs team status [--team TEAM] [--bundle]
 hgs team inbox|queue|cards|journal [--team TEAM] [--limit 1..200] [--after CURSOR]
 hgs team journal [--team TEAM] [--limit 1..200] [--after CURSOR] --recorded-timings
+hgs team evidence [--team TEAM] --node N
 hgs team current
 hgs team settings|pause|resume|stop|archive|decide < request.json
 hgs team admit|route|accept|return|reassign|hold|release|cancel|reply < request.json
@@ -6112,6 +6126,19 @@ hgs team pause-member|resume-member|stop-member|archive-member < request.json
 hgs team add-member|swap-member|rename-team|set-goal < request.json
 hgs team ask|verdict < request.json
 ```
+
+`evidence --node N` reads the evidence beside one task's decision: the task's
+latest report (`generation`; as `member`, the member that generation was handed
+to, which a later Reassign does not change, or `null` when that hand-out is
+gone; `commit`, `text` and the service's `notes`) and its stages, newest first,
+each with its
+`kind` and `round` from the team's pinned bundle, its stored `state` and its
+latest `verdict` (`generation`, the stage holder as `member`, `pass`, the
+findings as `text`), or `null` when there is none. At most 24 stages are
+returned; `more_stages` says whether older ones exist. `revision` is the
+team's revision in the same read as the evidence. A stage node is refused
+with `invalid_state` (its verdict is read with its task) and an unknown task
+with `not_found`. The desktop's task inspector reads it for the task it shows.
 
 The optional `journal --recorded-timings` read joins only the effect and stage
 records referenced by that page, using indexed point lookups in the same
@@ -6200,6 +6227,7 @@ its operation: `op`, `actor` and any other foreign field are refused.
 | `waiting` | yes | | | none |
 | `status` | yes | yes | yes | none |
 | `inbox`, `queue`, `cards`, `journal` | yes | yes | | none |
+| `evidence --node N` | yes | yes | | none |
 | `phases`, `phase --phase N` | yes | yes | | none |
 | `submit-draft-phase` | yes | yes | | `phase`, `draft` |
 | `edit-draft-phase` | yes | yes | | `phase`, `generation`, `draft` |
@@ -6496,6 +6524,8 @@ carry `stop_outcome: {code, reason?}` for its current recorded stop. Codes are
 `cancelled`, `released`, `cancel_refused`, `key_cleared`, `key_clear_refused`,
 `pending` and `unchanged`; refusal reasons are data, not a code inferred from
 text. An older stop without a recorded stop identity carries no such field.
+A stage's row also carries `earlier_implementers`: the members who implemented
+any round of its target, whom the stage's Reassign and hand-out refuse.
 
 Report, inbox and waiting-card reads keep member `text` separate from the
 service's additive `notes: [{code, text?}]`. Known codes are `text_shortened`
@@ -8836,9 +8866,11 @@ Ordinary listing automatically initializes its internal display cache on qualifi
 Linux computers with no existing policy. No cache switch is needed for normal
 use. `hgs listing-index disable --json` remains an explicit kill switch;
 `enable --json` and `status --json` remain available for diagnostics. Existing
-disabled, malformed or unreadable policy is preserved. Initialization/enable
-reports or temporarily refuses as `building`; a coalesced background worker establishes coverage
-independently of automatic recovery policy. Status distinguishes disabled,
+disabled, malformed or unreadable policy is preserved. A coalesced background
+worker establishes coverage independently of automatic recovery policy. Ordinary
+unpaged listing retries publication races for up to two seconds, including first
+use. Each attempt observes the terminal and index again. Opening the index allows
+up to 100 ms for SQLite contention. Status distinguishes disabled,
 building, ready and unavailable. macOS/Windows activation and desktop watch
 consumption are separate follow-ups; their existing paths remain in use.
 
@@ -8846,9 +8878,11 @@ When explicitly disabled or policy is unavailable, ordinary Linux `ls` accepts o
 small inventory: at most 256 directory entries and 16 MiB of canonical record
 bodies, with 250-ms preflight/verification checks. Larger, changing or unsupported
 input refuses with a nonzero exit and no partial JSON. With the cache active, an
-unready, stale or corrupt index also refuses; it never rescues a request by
-scanning full canonical records. Stable pages use the exact generation's native
-row versions and a separate read-only SQLite transaction. The legacy JSON body
+unready or stale index at the end of the wait refuses a body, as does a corrupt
+index. Stable pages use the exact generation's native row versions, a separate
+read-only SQLite transaction and a small coverage witness outside the replaceable
+cache. A mismatched witness sends the background worker through a new census.
+The legacy JSON body
 is complete or refused (64 MiB/10-second cooperative response bound).
 
 `hgs ls --json --local --paged --page-size 64` returns at most 128 rows and a

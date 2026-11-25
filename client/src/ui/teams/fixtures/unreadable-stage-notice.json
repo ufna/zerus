@@ -1,0 +1,17 @@
+{
+  "seq": 1,
+  "kind": "unstaffed:16",
+  "by": "local",
+  "by_kind": "service",
+  "subject_node": null,
+  "subject_member": null,
+  "text": "Pipeline stage 2 is ready. The service cannot read any eligible member (m3). It will check again.",
+  "text_truncated": false,
+  "at_ms": 1234,
+  "node": 2,
+  "generation": 1,
+  "state": "open",
+  "reply": null,
+  "notes": [],
+  "card": null
+}

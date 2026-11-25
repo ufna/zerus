@@ -1698,3 +1698,125 @@ fn advance_base_requires_confirmation_and_keeps_revision_and_identity() {
         assert!(prepare(&call).is_err());
     }
 }
+
+/// Every confirmation the core asks for, with the call it was asked for
+/// (`fixtures/confirmations.json`, which the window's dialog test reads to
+/// check that its localized words are the core's in English). zerus-63rru.197.
+fn confirmations() -> Vec<Value> {
+    let samples = [
+        TeamAction::AdvanceBase {
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        },
+        TeamAction::SwapMember {
+            member: "m2".into(),
+            agent: "codex".into(),
+            model: "".into(),
+            effort: "".into(),
+            account: Default::default(),
+        },
+        TeamAction::Stop {},
+        TeamAction::Archive {},
+        TeamAction::StopMember {
+            member: "m2".into(),
+        },
+        TeamAction::ArchiveMember {
+            member: "m2".into(),
+        },
+        TeamAction::Cancel {
+            node: 7,
+            reason: "No longer needed".into(),
+        },
+    ];
+    let mut rows = Vec::new();
+    for team_name in ["Fixes", ""] {
+        for action in &samples {
+            let mut call = a_call(TEAM, 7, action.clone());
+            call.team_name = team_name.into();
+            let asked = action
+                .confirmation(&call.team_name)
+                .expect("a destructive action asks first");
+            rows.push(json!({ "call": call, "confirmation": asked }));
+        }
+    }
+    rows
+}
+
+#[test]
+#[ignore = "writes the shared confirmation fixture from the core's own confirmations"]
+fn regenerate_confirmations() {
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/teams/fixtures/confirmations.json"),
+        serde_json::to_string_pretty(&confirmations()).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_confirmations_are_the_shared_fixture() {
+    let shared: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/confirmations.json")).unwrap();
+    assert_eq!(confirmations(), shared);
+}
+
+/// zerus-63rru.197 (C1, A3): each one-way step says so before it is sent,
+/// and Stop names the step that can be undone.
+#[test]
+fn one_way_confirmations_say_they_cannot_be_undone() {
+    let text = |action: TeamAction| action.confirmation("Fixes").unwrap().text;
+    let stop = text(TeamAction::Stop {});
+    assert!(
+        stop.contains("A stopped team cannot be started again"),
+        "{stop}"
+    );
+    assert!(stop.contains("Pause"), "{stop}");
+    let archive = text(TeamAction::Archive {});
+    assert!(archive.contains("cannot be undone"), "{archive}");
+    assert!(!archive.contains("leaves the list of teams"), "{archive}");
+    let remove = text(TeamAction::ArchiveMember {
+        member: "m2".into(),
+    });
+    assert!(remove.contains("cannot be undone"), "{remove}");
+}
+
+/// zerus-3u5yu (6, mutant rs5 of the #2527 review): a window Route that keeps
+/// the task's fields names none of them itself; the service binds them.
+#[test]
+fn a_route_that_keeps_the_task_fields_names_none_of_them() {
+    let route = |deps: Vec<zerus_team_plan::model::Dep>,
+                 writes: Vec<String>,
+                 assignee: Option<String>| TeamAction::Route {
+        node: 2,
+        role: "developer".into(),
+        pipeline: "reviewed".into(),
+        keep_task_fields: true,
+        deps,
+        writes,
+        assignee,
+    };
+    assert_eq!(route(Vec::new(), Vec::new(), None).check(), Ok(()));
+    let refusal = Err(
+        "A placement edit cannot also change the task's dependencies, write paths or assignee."
+            .to_owned(),
+    );
+    assert_eq!(
+        route(
+            vec![zerus_team_plan::model::Dep {
+                node: 1,
+                kind: zerus_team_plan::model::DepKind::Soft
+            }],
+            Vec::new(),
+            None
+        )
+        .check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), vec!["src/example.rs".into()], None).check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), Vec::new(), Some("m1".into())).check(),
+        refusal
+    );
+}

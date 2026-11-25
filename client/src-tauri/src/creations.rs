@@ -3605,6 +3605,54 @@ mod tests {
     }
 
     #[test]
+    fn creation_submit_is_admitted_after_a_preload_device_number_change() {
+        use zerus_client_core::migration::preload::{Capture, Prepared};
+
+        let fake = Fake::new();
+        let (_, original) = saved_creation(&fake);
+        let data = fake.dir.canonicalize().unwrap();
+        let Prepared::Snapshot(first) = Capture::new(data.clone()).prepare().unwrap() else {
+            panic!("missing original");
+        };
+        assert_eq!(first.bytes().unwrap(), original);
+        let archive = data.join("creation-preload-v1");
+        let receipt_path = archive.join("receipt.json");
+        let mut receipt: Value =
+            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
+        for device in ["/snapshot/object/0", "/plan/source/object/0"] {
+            let field = receipt.pointer_mut(device).unwrap();
+            *field = json!(field.as_u64().unwrap() ^ 1);
+        }
+        let plan_bytes = serde_json::to_vec(&receipt["plan"]).unwrap();
+        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+        std::fs::write(archive.join("source.json"), &plan_bytes).unwrap();
+        std::fs::write(&receipt_path, &receipt_bytes).unwrap();
+
+        let capture = Capture::new(data.clone());
+        let mut services = fake.services();
+        services.spawn = Arc::new(|_| {});
+        let host = CreationHost::new_with_capture(
+            data.join("creations.json"),
+            services,
+            Some(capture.clone()),
+        );
+        assert!(host.flush_journal_for_test());
+        let id = admitted(&host, plan());
+        state(&host, &id, "checking");
+        let Prepared::Snapshot(reopened) = capture.retained().unwrap() else {
+            panic!("missing retained original");
+        };
+        assert_eq!(reopened.capture_id(), first.capture_id());
+        assert_eq!(reopened.bytes().unwrap(), original);
+        assert_eq!(std::fs::read(receipt_path).unwrap(), receipt_bytes);
+        assert_eq!(
+            std::fs::read(archive.join("source.json")).unwrap(),
+            plan_bytes
+        );
+        fake.stop(host);
+    }
+
+    #[test]
     fn failed_original_capture_fences_all_mutating_inputs_and_retry_keeps_its_identity() {
         use std::os::unix::fs::PermissionsExt;
         let fake = Fake::new();

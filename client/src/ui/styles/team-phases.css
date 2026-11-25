@@ -1,6 +1,10 @@
 .phase-pane { padding: 14px; min-width: 0; }
 .phase-toolbar, .phase-header, .phase-tabs, .phase-dependency { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .phase-toolbar h2, .phase-header h3 { margin: 0; }
+/* The header's state, mode and metric tags are chips of their own, not one
+   run of words (zerus-uiy9p G14). */
+.phase-header .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-width: 1px; border-style: solid; border-color: var(--z-color-border); border-radius: var(--z-radius-sm);
+  background: var(--z-color-hover); color: var(--z-color-text-2); font-size: var(--fs-xs); line-height: 1; white-space: nowrap; }
 .phase-tabs { margin: 12px 0; }
 .phase-layers { display: flex; gap: 12px; overflow-x: auto; padding: 12px 0; }
 .phase-layer { flex: 0 0 240px; min-width: 0; }

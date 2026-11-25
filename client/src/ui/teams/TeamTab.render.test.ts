@@ -62,7 +62,9 @@ it("a selected card shows its facts and decisions, sending by node", () => {
   (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
   const detail = host.querySelector("[data-team-detail]")?.textContent ?? "";
   expect(detail).toContain("example-project");
-  expect(detail).toContain("00000000-0000-4000-8000-000000000002");
+  // zerus-uiy9p G15: the UUID is in the task row's tooltip, not its text.
+  expect(detail).not.toContain("00000000-0000-4000-8000-000000000002");
+  expect(host.querySelector("[data-team-detail] [data-task-ref]")?.getAttribute("title")).toContain("00000000-0000-4000-8000-000000000002");
   expect(detail).toContain("m1");
   (host.querySelector('[data-task-action="accept"]') as HTMLButtonElement).click();
   expect(actions.at(-1)).toEqual(["accept", { node: 2 }]);
@@ -83,13 +85,14 @@ it("a task with no action shows neither the actions' divider nor an empty row", 
 it("a task whose decision has not settled shows its blocked actions with the reason, and a refusal that comes anyway", () => {
   const pending = { ...teamView.groups[4].cards[0], node: 2, holder: "m1", pending_decision: "accept" };
   const view = { ...teamView, groups: teamView.groups.map((group) => group.state === "reported" ? { ...group, cards: [pending] } : group) };
-  const { host } = setup({ view, actionFailure: "The previous decision has not settled." });
+  const { host } = setup({ view, actionFailure: { key: "action", code: "invalid_state", message: "The previous decision has not settled.", source: "team-tab", action: "accept" } });
   (host.querySelector('.team-task-card[data-node="2"]') as HTMLButtonElement).click();
   const looks = [...host.querySelectorAll<HTMLButtonElement>("[data-team-detail] [data-task-action]")].map((button) => [button.dataset.taskAction, button.disabled]);
   expect(looks).toEqual([["accept", true], ["return", true], ["hold", false], ["cancel", true], ["reassign", true], ["route", true]]);
   expect(host.querySelector("[data-team-detail] [data-task-action='accept']")?.getAttribute("title")).toBe("The task's previous decision has not settled yet.");
   expect(host.querySelector("[data-team-detail] [data-action-why]")?.textContent).toBe("The task's previous decision has not settled yet.");
-  expect(host.querySelector("[data-team-action-failure]")?.textContent, "the store's refusal is still shown").toContain("The previous decision has not settled.");
+  expect(host.querySelector("[data-team-action-failure-message]")?.textContent, "the store's refusal is still shown").toBe("The previous decision has not settled.");
+  expect(host.querySelector("[data-team-action-failure-action]")?.textContent, "it names the refused action (G10)").toBe("Accept");
 });
 
 it("each pending case of the core's board view offers what the store takes (zerus-63rru.43)", () => {

@@ -23,6 +23,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -498,6 +499,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -994,6 +996,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -1389,6 +1392,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -1820,6 +1824,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -1865,7 +1870,10 @@
                 "project": "example-project",
                 "uuid": "849e16f0-12fd-841c-949e-5191c3fa89e5"
               },
-              "title": "Task 1"
+              "title": "Task 1",
+              "writes": [
+                "src/part1.rs"
+              ]
             },
             {
               "admitted": true,
@@ -1898,7 +1906,10 @@
                 "project": "example-project",
                 "uuid": "bab330bc-4311-8ace-99b4-3faa11d38773"
               },
-              "title": "Task 2"
+              "title": "Task 2",
+              "writes": [
+                "src/part2.rs"
+              ]
             }
           ],
           "state": "pending"
@@ -2356,6 +2367,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -2787,6 +2799,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",
@@ -3165,6 +3178,7 @@
           }
         },
         "goal": "Deliver the reviewed foundation.",
+        "home": "00000000-0000-4000-8000-0000000000aa",
         "id": "00000000-0000-4000-8000-00000000beef",
         "integration_branch": "zerus/team/fixes",
         "lead": "lead",

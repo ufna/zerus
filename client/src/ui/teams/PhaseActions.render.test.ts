@@ -124,3 +124,15 @@ it("uses supplied live layers, shared toolbar filters and the ordinary task link
   button(node, '[data-plan-filter="active"]').click(); expect(node.querySelectorAll("[data-phase-node]")).toHaveLength(0);
   expect(node.textContent).toContain("filters hide every task"); expect(live.nodes).toHaveLength(2);
 });
+
+it("on the team page, the layers' Open task switches to the Sessions Task View (zerus-63rru.198)", async () => {
+  const { page, setPage, detailTab } = await import("../../store/ui");
+  const { selectedTask } = await import("../../store/taskNavigation");
+  const view = stage("published"), draft = view.plan!.draft!, live = draft.live!;
+  setPage("team");
+  const node = host(); disposers.push(render(() => createComponent(PhaseLiveLayers, { team: view.bar.id, draft, live }), node));
+  const article = node.querySelector<HTMLElement>('[data-phase-node="1"]')!;
+  button(article, ".phase-node-title").click(); button(article, ".btn").click();
+  expect(page()).toBe("sessions"); expect(detailTab()).toBe("taskview"); expect(openTask).not.toHaveBeenCalled();
+  expect(selectedTask()).toEqual({ project: live.nodes[0].task!.project, uuid: live.nodes[0].task!.uuid });
+});

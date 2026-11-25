@@ -25,6 +25,9 @@ export function PhasePane(props: {
   const [selected, setSelected] = createSignal<number | null>(null);
   const [editor, setEditor] = createSignal<DraftSnapshot | null>(null);
   const [pageError, setPageError] = createSignal("");
+  /** The list shows a later page after More phases (zerus-63rru.199 C7); the
+   * phase list names no cursor of its own, so the pane remembers it paged. */
+  const [paged, setPaged] = createSignal(false);
   const pane = createMemo(() => props.view.bar.id === team.id && props.view.plan?.epoch === follower.epoch() ? props.view.plan : undefined);
   const list = () => pane()?.list;
   const failed = () => follower.error() || pane()?.list_failure?.message || pane()?.draft_failure?.message || pageError();
@@ -59,11 +62,11 @@ export function PhasePane(props: {
     if (result.outcome === "done") choose(snapshot.phase);
     return result;
   };
-  const next = async () => {
-    const cursor = list()?.next; if (!cursor) return;
-    try { await invoke("teams_page", { key: `phases:${team.id}`, cursor }); setPageError(""); }
+  const page = async (cursor: string | null) => {
+    try { await invoke("teams_page", { key: `phases:${team.id}`, cursor }); setPageError(""); setPaged(cursor !== null); }
     catch (cause) { setPageError(String(cause)); }
   };
+  const next = async () => { const cursor = list()?.next; if (cursor) await page(cursor); };
   return <section class="phase-pane" data-phase-pane>
     <PlanningNotice status={props.view.bar.status} goal={props.view.bar.goal} planning={props.view.planning} />
     <header class="phase-toolbar"><h2>{tr("Planned phases")}</h2><span class="grow" />
@@ -73,6 +76,7 @@ export function PhasePane(props: {
     <Show when={failed()}>{(message) => <div class="notice danger" role="status"><p>{tr("Planned phases are unavailable or could not be read.")}</p><details><summary>{tr("Details")}</summary><pre>{message()}</pre></details></div>}</Show>
     <Show when={list()} fallback={<p class="dim" role="status">{failed() ? "" : tr("Reading planned phases…")}</p>}>{(metadata) => <>
       <nav class="phase-tabs" aria-label={tr("Phases")}><For each={[...metadata().rows].sort((a, b) => (a.order || a.n) - (b.order || b.n) || a.n - b.n)}>{(p) => <button type="button" class="btn small" aria-pressed={selected() === p.n} onClick={() => choose(p.n)}>{phaseHeader(p).title}</button>}</For></nav>
+      <Show when={paged()}><button type="button" class="btn small" data-phase-first-page onClick={() => void page(null)}>{tr("First page")}</button></Show>
       <Show when={metadata().next}><button type="button" class="btn small" onClick={() => void next()}>{tr("More phases")}</button></Show>
       <Show when={!metadata().rows.some((p) => p.kind === "plan")}><p class="dim">{tr("No planned phases yet. Create a draft or ask the lead to submit one.")}</p></Show>
       <Show when={draft()}>{(d) => <>

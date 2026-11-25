@@ -354,6 +354,8 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
                   <ul class="nt-list"><For each={pipelineLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
                 </section>
               </div>
+              {/* A team keeps the roles and pipelines it was created with (zerus-63rru.199 B7). */}
+              <p class="dim" data-new-team-fixed>{tr("The roles and pipelines are fixed when the team is created. To change them, edit the template first.")}</p>
               <dl class="nt-caps"><For each={settingLines(chosen())}>{([label, value]) => <><dt>{label}</dt><dd>{value}</dd></>}</For></dl>
               <Show when={Object.keys(delegations()).length}>
                 <fieldset class="nt-permissions" data-permissions>
@@ -380,10 +382,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
           <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} disabled={locked()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
           <button type="button" class="btn" data-check-folder disabled={checking() || locked() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
+        {/* The newest answer decides the line: a check of the same path again
+            replaces it, also from refused to passed and back (G11). */}
         <Show when={checkedFolder()}>
-          {(checked) => checked().git
-            ? <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
-            : <span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
+          {(checked) => <Show when={checked().git}
+            fallback={<span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}>
+            <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
+          </Show>}
         </Show>
         <label class="nt-field">{tr("Integration branch")}
           <TextInput class="field mono" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
@@ -393,7 +398,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       <Show when={changed()}>
         <div class="notice warn nt-error" role="status" data-template-changed><Icon name="triangle-alert" size={16} /><span>{tr("The template changed since you saw it, and nothing was created: review it as it is now, then create the team again.")}</span></div>
       </Show>
-      <Show when={shownError()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{shownError()}</span></div></Show>
+      {/* A refusal is said once, in the footer beside Create team (G10). */}
       <Show when={sendingCreate() && !intentCall()}>
         <div class="notice nt-note" role="status" data-create-sending><Icon name="loader-circle" size={16} /><span>{tr("The team is being created.")}</span></div>
       </Show>

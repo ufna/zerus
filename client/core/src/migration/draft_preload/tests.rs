@@ -58,6 +58,33 @@ fn draft(root: &Path, key: &str, text: &str, blob: &[u8], snapshot: bool) -> Pat
     folder
 }
 
+#[cfg(unix)]
+#[test]
+fn preload_drafts_reopen_and_recheck_after_a_device_number_change() {
+    let s = Scratch::new();
+    draft(&s.next(), "codex/sample/a", "next text", b"abc", true);
+    let capture = s.capture();
+    assert!(capture.prepare().import);
+    let original = capture.committed().unwrap();
+    let path = s.slot().join("receipt.json");
+    let mut receipt: Receipt = serde_json::from_slice(original.receipt()).unwrap();
+    receipt.index.change_device_for_test();
+    receipt.container.as_mut().unwrap().change_device_for_test();
+    let old = serde_json::to_vec(&receipt).unwrap();
+    fs::write(&path, &old).unwrap();
+
+    let restarted = s.capture();
+    assert!(restarted.prepare().import);
+    let committed = restarted.committed().unwrap();
+    assert!(committed.unchanged());
+    let entry = &committed.snapshot.index.entries[0];
+    assert_eq!(
+        committed.snapshot.bytes(entry),
+        original.snapshot.bytes(&original.snapshot.index.entries[0])
+    );
+    assert_eq!(fs::read(path).unwrap(), old);
+}
+
 #[test]
 fn every_store_is_captured_once_and_reopens_after_restart_unchanged() {
     let s = Scratch::new();

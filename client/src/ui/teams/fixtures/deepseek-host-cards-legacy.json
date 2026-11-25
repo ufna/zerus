@@ -1,0 +1,50 @@
+{
+  "member": {
+    "by": "local",
+    "card": 1,
+    "created_ms": 1234,
+    "decisions": [
+      "acknowledged"
+    ],
+    "id": "00000000-0000-4000-8000-00000000beef:1",
+    "kind": "launch_blocked",
+    "node": null,
+    "parameters": [
+      [
+        "member",
+        "m4"
+      ],
+      [
+        "code",
+        "invalid_state"
+      ]
+    ],
+    "state": "open",
+    "team": "00000000-0000-4000-8000-00000000beef",
+    "text": "Member m4: invalid_state. The DeepSeek host that serves /work/example/.dsh lacks the caller, task-input or lifecycle capabilities required by Agent Teams. They become available after its next own start, which Zerus never forces. /work/example/.dsh"
+  },
+  "lead": {
+    "by": "local",
+    "card": 1,
+    "created_ms": 1234,
+    "decisions": [
+      "acknowledged"
+    ],
+    "id": "00000000-0000-4000-8000-00000000beef:1",
+    "kind": "launch_blocked",
+    "node": null,
+    "parameters": [
+      [
+        "member",
+        "lead"
+      ],
+      [
+        "code",
+        "invalid_state"
+      ]
+    ],
+    "state": "open",
+    "team": "00000000-0000-4000-8000-00000000beef",
+    "text": "Member lead: invalid_state. The DeepSeek host that serves /work/example/.dsh lacks the caller, task-input or lifecycle capabilities required by Agent Teams. They become available after its next own start, which Zerus never forces. /work/example/.dsh"
+  }
+}

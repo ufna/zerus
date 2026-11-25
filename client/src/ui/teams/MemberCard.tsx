@@ -63,7 +63,11 @@ export function MemberCard(props: { member: MemberView; teamStatus: string; card
           session={session()} onOpenSession={openSession} />
       </div>
       {/* A member who is not active shows its state chip alone; a line under
-          the name that repeated the chip said nothing more. */}
+          the name that repeated the chip said nothing more. A member that was
+          never started says how it starts (zerus-63rru.197 A3). */}
+      <Show when={props.member.state === "not_created" && ["running", "paused"].includes(props.teamStatus)}>
+        <p class="team-member-start dim" data-member-start>{tr("Zerus starts this member when there is room. If its start failed, Retry on its card in Cards starts it again.")}</p>
+      </Show>
       <Show when={props.member.state === "active" ? current() : undefined} fallback={<Show when={props.member.state === "active"}><p class="team-member-idle">{tr("No current assignment on this page.")}</p></Show>}>
         {(item) => <div class="team-member-activity">
           <Show when={props.onSelect} fallback={<div class="team-member-work-copy">{assignment(item()!)}</div>}><button type="button" class="team-member-work-copy" onClick={() => props.onSelect?.(item()!.card.node)}>{assignment(item()!)}</button></Show>

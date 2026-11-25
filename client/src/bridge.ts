@@ -494,6 +494,13 @@ export async function copyVerbatim(text: string): Promise<void> {
 
 /** The files copied in a file manager, for a paste into the composer: null when the clipboard holds none (clipboard.rs `clipboard_files`). */
 export const clipboardFiles = (): Promise<string[] | null> => inTauri() ? invoke<string[] | null>("clipboard_files") : Promise.resolve(null);
+/** The clipboard's image as a PNG, for a paste whose WebKitGTK event carried nothing: null without one (clipboard.rs `clipboard_image`). */
+export async function clipboardImage(): Promise<File | null> {
+  if (!inTauri()) return null;
+  const reply = await invoke<ArrayBuffer | number[]>("clipboard_image");
+  const bytes = reply instanceof ArrayBuffer ? reply : Uint8Array.from(reply).buffer;
+  return bytes.byteLength ? new File([bytes], "pasted-image.png", { type: "image/png" }) : null;
+}
 
 /** The clipboard's text for a paste into Terminal: from Rust in the app, the page's clipboard in a browser. */
 export async function pasteText(): Promise<string> {

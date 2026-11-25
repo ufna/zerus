@@ -9,6 +9,8 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { TeamFeed } from "./TeamDrawers";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import providerStop from "../../../core/src/teams/fixtures/provider-stop-feed.json";
+import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import type { DrawerPage, DrawerRow } from "../../store/teamDrawers";
 
 let dispose: (() => void) | undefined;
@@ -68,4 +70,25 @@ it("keeps what the journal's text adds in visible text, not only in a hover titl
   expect(read(shapes, 93).detail).toBe("decision 3 (reassign) superseded by decision 4 (return)");
   expect(read(shapes, 94)).toMatchObject({ sentence: "You changed the task outside the team", detail: "Task 2 left the team." });
   expect(read(shapes, 95).detail).toBe("The member's session is ready again.");
+});
+
+it("keeps the English skip detail for the task named by the writer", () => {
+  const host = show([land.report, land.verdict]);
+  for (const row of [land.report, land.verdict]) {
+    expect(read(host, row.seq)).toMatchObject({
+      detail: "Land stages skipped for task #1 because landing is disabled in Team settings.",
+      title: row.text,
+    });
+  }
+});
+
+it("shows the confirmation sentence on a provider-stop release", () => {
+  const host = show([providerStop]);
+  expect(read(host, providerStop.seq)).toMatchObject({
+    sentence: "Task of a member stopped by its provider returned",
+    detail: "The service confirmed that the member stopped after a provider error.",
+    task: "#21",
+    member: "m3",
+    title: providerStop.text,
+  });
 });

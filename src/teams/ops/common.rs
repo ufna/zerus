@@ -14,6 +14,7 @@ pub(super) struct Context<'a> {
     pub now: i64,
     pub reply: Reply,
     pub event: Option<&'static str>,
+    pub land_skipped_for: Option<u32>,
     /// The earlier decision this operation's decision replaced, for the
     /// journal.
     pub superseded: Option<u64>,

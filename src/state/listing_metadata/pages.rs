@@ -1,6 +1,7 @@
 //! Immutable observed generations with a separate read-only listing view.
 use super::*;
 use serde::{Deserialize, Serialize};
+use zerus_client_core::source;
 pub(super) const TERMINAL_CANDIDATES: &str = "SELECT substr(s.source,1,257),CASE WHEN length(CAST(s.seed AS BLOB))<=262144 THEN s.seed ELSE NULL END,substr(s.stamp,1,1025) FROM sources AS locator INDEXED BY sources_name CROSS JOIN snapshots AS s WHERE locator.tombstone=0 AND json_extract(locator.seed,'$.record.name')=?1 AND s.generation=?2 AND s.source=locator.source LIMIT 3";
 const ROWS: usize = 128;
 const BYTES: usize = 512 << 10;
@@ -30,7 +31,9 @@ impl Store {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
         let generation = cursor.map_or(active, |c| c.generation);
-        anyhow::ensure!(generation > 0, "Listing metadata is still rebuilding");
+        if generation <= 0 {
+            return Err(PublicationPending("Listing metadata is still rebuilding").into());
+        }
         if let Some(c) = cursor {
             anyhow::ensure!(
                 c.epoch == epoch && c.after.len() <= 256,
@@ -106,14 +109,17 @@ impl Reader {
     pub fn verify_source(&self, source: &str, stamp: &str) -> anyhow::Result<()> {
         let key = Key(source.into());
         key.validate()?;
-        anyhow::ensure!(
-            stamp.len() <= 1024 && self.0.source_stamp(&key)?.as_deref() == Some(stamp),
-            "Public listing source changed before publication"
-        );
+        if stamp.len() > 1024 || self.0.source_stamp(&key)?.as_deref() != Some(stamp) {
+            return Err(PublicationPending(source!("Public listing source changed before publication")).into());
+        }
         Ok(())
     }
+    pub fn open_index(root: &Path, index: store::Index) -> anyhow::Result<Self> {
+        Ok(Self(Store::read_listing(root, index)?, std::cell::Cell::new(BYTES)))
+    }
+    #[cfg(test)]
     pub fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Store::read(root)?, std::cell::Cell::new(BYTES)))
+        Self::open_index(root, store::Index::Shared)
     }
     pub fn page(&self, cursor: Option<&Cursor>) -> anyhow::Result<Page> {
         self.page_limit(cursor, ROWS)
@@ -128,14 +134,16 @@ impl Reader {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
-            let current = Store::read(&self.0.root.path)?;
+            let current = Store::read_index(&self.0.root.path, self.0.index)?;
             let (epoch, generation, writes, ready): (String, i64, i64, bool) =
                 current.db.query_row(
                     "SELECT epoch,generation,writes,ready FROM meta WHERE id=1",
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )?;
-            Ok(ready && pinned == (epoch, generation, writes))
+            Ok(ready
+                && pinned == (epoch, generation, writes)
+                && current.active_cut()?.is_some_and(|cut| current.covers(&cut)))
         };
         page.fresh &= check().unwrap_or(false);
         Ok(page)
@@ -143,6 +151,20 @@ impl Reader {
 }
 
 impl Reader {
+    /// Only for archive display. The caller still verifies the complete
+    /// generation before publishing its listing.
+    pub fn has_label(&self, name: &str) -> anyhow::Result<bool> {
+        let mut query = self.0.db.prepare_cached(
+            "SELECT EXISTS(
+                SELECT 1 FROM sources AS locator INDEXED BY sources_name
+                CROSS JOIN snapshots AS s
+                WHERE locator.tombstone=0 AND json_extract(locator.seed,'$.record.name')=?1
+                  AND s.generation=?2 AND s.source=locator.source
+            )",
+        )?;
+        Ok(query.query_row(params![name, self.generation()?], |row| row.get(0))?)
+    }
+
     pub fn parent(&self, link: &Value) -> anyhow::Result<Option<(String, Value)>> {
         let generation: i64 =
             self.0

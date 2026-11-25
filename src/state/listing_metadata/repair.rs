@@ -8,7 +8,8 @@ const STEP_ROWS: usize = 128;
 const CONTROL_DIRS: [&str; 3] = ["renames", "name_routes", "labels"];
 pub(in crate::state) struct Background {
     root: PathBuf,
-    epoch: Option<String>,
+    storage: store::Index,
+    index: Option<(String, (u64, u64))>,
     iterator: Option<(i64, i64, fs::ReadDir)>,
     changes: Option<changes::Changes>,
     covered: bool,
@@ -40,11 +41,15 @@ fn scan(db: &Connection) -> anyhow::Result<Option<Scan>> {
 }
 // Fixed seven directory witnesses, never a full directory inventory here.
 pub(super) fn directories(store: &Store) -> anyhow::Result<String> {
-    let stamps = directories_at(&store.root)?;
+    let stamps = directory_stamps(&store.root, store.index == store::Index::Certified)?;
     store.verify()?;
     Ok(stamps)
 }
 pub(super) fn directories_at(root: &Directory) -> anyhow::Result<String> {
+    directory_stamps(root, false)
+}
+
+fn directory_stamps(root: &Directory, include_change_time: bool) -> anyhow::Result<String> {
     let mut stamps = Vec::new();
     for folder in storage::BINDING_DIRS.into_iter().chain(CONTROL_DIRS) {
         let mut parent = checked(Directory::open(&root.path))?;
@@ -72,13 +77,24 @@ pub(super) fn directories_at(root: &Directory) -> anyhow::Result<String> {
         } else {
             let (id, m) = crate::platform::FileIdentity::at(&parent.path)?;
             checked(parent.verify())?;
-            stamps.push(json!([
-                id.device,
-                id.inode,
-                id.modified,
-                id.modified_nanos,
-                m.len()
-            ]));
+            let mut stamp = vec![
+                json!(id.device),
+                json!(id.inode),
+                json!(id.modified),
+                json!(id.modified_nanos),
+                json!(m.len()),
+            ];
+            if include_change_time {
+                #[cfg(unix)]
+                let changed = {
+                    use std::os::unix::fs::MetadataExt;
+                    (m.ctime(), m.ctime_nsec())
+                };
+                #[cfg(not(unix))]
+                let changed = (0, 0);
+                stamp.push(json!(changed));
+            }
+            stamps.push(Value::Array(stamp));
         }
     }
     checked(root.verify())?;
@@ -86,11 +102,20 @@ pub(super) fn directories_at(root: &Directory) -> anyhow::Result<String> {
 }
 pub(super) fn gap_stamp(store: &Store) -> anyhow::Result<String> {
     let parent = checked(store.root.child("listing-metadata"))?;
-    Ok(checked(parent.read_private_optional("coverage-lost.json"))?
-        .as_ref()
-        .map(store::version)
-        .transpose()?
-        .unwrap_or_default())
+    let stamp = |directory: &Directory| -> anyhow::Result<_> {
+        Ok(checked(directory.read_private_optional("coverage-lost.json"))?
+            .as_ref()
+            .map(store::version)
+            .transpose()?
+            .unwrap_or_default())
+    };
+    let shared = stamp(&parent)?;
+    match store.index {
+        store::Index::Shared => Ok(shared),
+        store::Index::Certified => {
+            Ok(serde_json::to_string(&[shared, stamp(&store.index.directory(parent)?)?])?)
+        }
+    }
 }
 fn begin(store: &Store, base: i64) -> anyhow::Result<Scan> {
     let dirs = directories(store)?;
@@ -352,7 +377,7 @@ impl Background {
         self.iterator = None;
         self.changes = None;
         self.covered = false;
-        self.epoch = None;
+        self.index = None;
     }
     fn hints(
         &mut self,
@@ -380,7 +405,7 @@ impl Background {
         Ok((batch.caught_up, false))
     }
     fn step(&mut self) -> anyhow::Result<Stats> {
-        let store = match Store::open(&self.root) {
+        let store = match Store::open_index(&self.root, self.storage) {
             Ok(store) => store,
             // No event has been consumed. Dropping this stream on ordinary
             // publisher contention would restart discovery at the prefix.
@@ -388,17 +413,33 @@ impl Background {
             Err(error) => return Err(error),
         };
         store.verify()?;
-        let epoch: String = store
+        // Initialize the separate directory before capturing the root's
+        // membership stamp. Subsequent certificates only change that child.
+        let coverage = store.coverage_directory()?;
+        let mut epoch: String = store
             .db
             .query_row("SELECT epoch FROM meta WHERE id=1", [], |r| r.get(0))?;
-        if self.epoch.as_deref() != Some(epoch.as_str()) {
-            self.iterator = None;
-            self.covered = false;
+        if store.active_cut()?.is_some_and(|cut| !store.matches_certificate(&cut)) {
+            // An unverified base must never be cloned or re-certified using
+            // events already consumed by a resident feed. Change the cursor
+            // epoch before any generation number can be reused.
+            epoch = uuid::Uuid::new_v4().to_string();
+            let reset = store.db.unchecked_transaction()?;
+            reset.execute(
+                "UPDATE meta SET epoch=?1,generation=0,ready=0 WHERE id=1",
+                [&epoch],
+            )?;
+            reset.execute("DELETE FROM scan", [])?;
+            reset.commit()?;
+        }
+        let index = (epoch, store.object()?);
+        if self.index.as_ref() != Some(&index) {
+            self.reset_feed();
             self.changes = match changes::Changes::new(&store.root.path) {
                 Ok(changes) => changes,
                 Err(error) => {
                     store.db.execute("UPDATE meta SET ready=0 WHERE id=1", [])?;
-                    gap(&store.root.path);
+                    gap_at(&store.root.path, self.storage);
                     return Err(error);
                 }
             };
@@ -407,7 +448,7 @@ impl Background {
                 // Restart discovery, retaining only version-checked sources.
                 store.db.execute_batch("BEGIN IMMEDIATE; UPDATE meta SET ready=0 WHERE id=1; DELETE FROM scan; COMMIT;")?;
             }
-            self.epoch = Some(epoch);
+            self.index = Some(index);
         }
         // A resident feed can remain idle without copying every snapshot on
         // each pulse. No directory enumeration or canonical body read here.
@@ -426,6 +467,8 @@ impl Background {
             let current:Option<(bool,String,String)>=store.db.query_row("SELECT m.ready,g.dirs,g.gap FROM meta m JOIN generations g ON g.generation=m.generation AND complete=1 WHERE m.id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
             if batch.caught_up
                 && batch.keys.is_empty()
+                && (self.storage == store::Index::Shared
+                    || store.active_cut()?.is_some_and(|cut| store.covers(&cut)))
                 && current.as_ref().is_some_and(|(ready, dirs, gap)| {
                     *ready
                         && directories(&store).ok().as_ref() == Some(dirs)
@@ -707,9 +750,11 @@ impl Background {
                             [],
                             |r| r.get(0),
                         )?;
+                        let canonical = store.canonical_writes()?;
                         stats.complete = s.problems == 0
                             && !issues
                             && !pending
+                            && canonical.as_ref().is_none_or(|state| !state.pending)
                             && (native || (writes == s.writes && dirs == s.dirs && gap == s.gap));
                         store.db.execute(
                             "UPDATE generations SET complete=?2,dirs=?3,gap=?4,high_water=(SELECT revision FROM meta WHERE id=1) WHERE generation=?1",
@@ -720,6 +765,10 @@ impl Background {
                                 "UPDATE meta SET generation=?1,ready=1 WHERE id=1",
                                 [s.generation],
                             )?;
+                            // Under the publisher gate, certify before COMMIT.
+                            // A failed commit leaves a mismatch and forces a
+                            // new census before any reader can return a body.
+                            store.certify(&coverage, canonical)?;
                         }
                         store.db.execute("DELETE FROM scan WHERE id=1", [])?;
                         stats.done = true;
@@ -754,15 +803,24 @@ pub(in crate::state) fn background_at(
     root: &Path,
     state: &mut Option<Background>,
 ) -> anyhow::Result<Stats> {
+    background_for(root, store::Index::Shared, state)
+}
+
+pub(super) fn background_for(
+    root: &Path,
+    storage: store::Index,
+    state: &mut Option<Background>,
+) -> anyhow::Result<Stats> {
     if !enabled(root) {
         *state = None;
         return Ok(Stats::default());
     }
     let canonical = crate::platform::canonical(root)?;
-    if state.as_ref().is_none_or(|work| work.root != canonical) {
+    if state.as_ref().is_none_or(|work| work.root != canonical || work.storage != storage) {
         *state = Some(Background {
             root: canonical,
-            epoch: None,
+            storage,
+            index: None,
             iterator: None,
             changes: None,
             covered: false,
@@ -775,7 +833,7 @@ pub(in crate::state) fn background_at(
         // before fallible recovery too: callers other than worker::entry retain
         // their slot on Err. Only typed pre-consumption contention returned Ok.
         *state = None;
-        if Store::recover(&selected, error)? {
+        if Store::recover(&selected, storage, error)? {
             result = Ok(Stats::default());
         }
     }

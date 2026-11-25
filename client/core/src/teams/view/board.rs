@@ -103,6 +103,10 @@ fn card(node: &Value) -> QueueCard {
         pipeline: name(node, "pipeline"),
         assignee: name(node, "assignee"),
         implementer: name(node, "implementer"),
+        earlier_implementers: earlier_implementers(node),
+        writes: writes(node).unwrap_or_default(),
+        fields_incomplete: writes(node).is_none()
+            || graph::dependencies(node).len() != super::array(node, "deps").len(),
         rank: name(node, "rank"),
         round: count(node, "round"),
         kind: row_kind(node),
@@ -122,6 +126,44 @@ fn card(node: &Value) -> QueueCard {
             }
         }),
     }
+}
+
+/// A stage row's earlier implementers of its target: valid member names
+/// only, at most 200 (zerus-3u5yu).
+/// The row's write paths when every one is a plain path within the store's
+/// own bounds (200 paths of at most 4096 bytes); None when any is not, so the
+/// card says its fields are incomplete instead of dropping one (B3).
+fn writes(node: &Value) -> Option<Vec<String>> {
+    let list = super::array(node, "writes");
+    if list.len() > 200 {
+        return None;
+    }
+    list.iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|path| {
+                    !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
+                })
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn earlier_implementers(node: &Value) -> Vec<String> {
+    node.get("earlier_implementers")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| {
+                    !id.is_empty() && id.chars().take(NAME_CHARS + 1).count() <= NAME_CHARS
+                })
+                .take(200)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Folds the stage rows into the card they check, keeping every group in
@@ -222,6 +264,7 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
             base_commit: name(team, "base_commit"),
             revision,
             counts: team_counts(&status["counts"]),
+            home: name(team, "home"),
         },
         settings: crate::teams::settings::complete(&team["settings"]),
         members: member_cards(status),

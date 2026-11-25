@@ -86,7 +86,7 @@ def listed_sessions(cli, env, timeout=20):
     """Wait for one whole private listing under a single bootstrap deadline.
 
     The first supported Linux listing starts its metadata worker. Its initial
-    database may not exist yet, or its immutable cut may still be building.
+    database may be absent, may be busy, or may still be building its first cut.
     Only these closed, zero-output refusals may be read again; other errors
     and any partial output remain failures of the installed package.
     """
@@ -94,6 +94,9 @@ def listed_sessions(cli, env, timeout=20):
         "hgs: Missing private file",
         "hgs: Session listing is building, stale or unavailable; no complete body returned",
         "hgs: Session listing changed before publication; no complete body returned",
+        "hgs: The session listing index is still being built. Try again shortly.",
+        "hgs: Listing metadata is still rebuilding",
+        "hgs: The session listing is busy. Try again shortly.",
     }
     deadline = time.monotonic() + timeout
     args = [cli, "ls", "--local", "--json"]

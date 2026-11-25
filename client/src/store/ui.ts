@@ -17,18 +17,19 @@ export const teamPlanPreferences = createTeamPlanPreferences();
 // menus and toasts. Data lives in store/catalog.ts and store/activity.ts.
 
 export type MenuEntry =
-  | { label: string; icon?: string; agent?: string; kbd?: string; danger?: boolean; disabled?: boolean; hint?: string; checked?: boolean | "mixed"; action?: () => void }
+  /** `note` is a visible line under the item (why it is closed); `hint` only its hover title. */
+  | { label: string; icon?: string; agent?: string; kbd?: string; danger?: boolean; disabled?: boolean; hint?: string; note?: string; checked?: boolean | "mixed"; action?: () => void }
   | { separator: true }
   | { heading: string };
 
-export type Page = "dashboard" | "sessions" | "projects" | "machines" | "accounts" | "teams" | "team-catalog" | "waiting" | "settings";
+export type Page = "dashboard" | "sessions" | "projects" | "machines" | "accounts" | "teams" | "team" | "team-catalog" | "waiting" | "settings";
 export type StateFilter = "all" | "attention" | "active" | "paused" | "archived";
 /** The Zerus mark's motion; the owner chose the two-turn spin-up (2026-10-27). */
 export type LogoMotion = "spin";
 
 const params = new URLSearchParams(location.search);
 
-const PAGES: Page[] = ["dashboard", "sessions", "projects", "machines", "accounts", "teams", "team-catalog", "waiting", "settings"];
+const PAGES: Page[] = ["dashboard", "sessions", "projects", "machines", "accounts", "teams", "team", "team-catalog", "waiting", "settings"];
 // `?page=settings` opens a screen (headless screenshots), as in the mockup.
 export const [page, setPage] = createSignal<Page>(PAGES.find((p) => p === params.get("page")) ?? "sessions");
 const [selectedKey, setSelectedKeyRaw] = createSignal<string | undefined>();

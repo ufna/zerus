@@ -1,0 +1,129 @@
+[
+  {
+    "call": {
+      "action": {
+        "kind": "stop"
+      },
+      "team_name": "Orchard"
+    },
+    "confirmation": {
+      "action": "Stop team",
+      "message": {
+        "args": [
+          {
+            "kind": "verbatim",
+            "value": "Orchard"
+          }
+        ],
+        "source": "Stop %1? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while."
+      },
+      "name": "teamStopConfirm",
+      "text": "Stop Orchard? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "title": "Stop team?"
+    },
+    "from": "native prompt",
+    "rendered": {
+      "en": "Stop Orchard? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "ru": "Остановить команду Orchard? Все открытые задачи будут отменены, и новые задачи больше не будут выдаваться. Сессии участников продолжат работать; их текущие ходы завершатся. Остановленную команду нельзя запустить снова; чтобы остановить её на время, используйте «Приостановить»."
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive"
+      },
+      "team_name": "Orchard"
+    },
+    "confirmation": {
+      "action": "Archive",
+      "message": {
+        "args": [
+          {
+            "kind": "verbatim",
+            "value": "Orchard"
+          }
+        ],
+        "source": "Archive %1? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone."
+      },
+      "name": "teamArchiveConfirm",
+      "text": "Archive Orchard? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone.",
+      "title": "Archive team?"
+    },
+    "from": "native prompt",
+    "rendered": {
+      "en": "Archive Orchard? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone.",
+      "ru": "Архивировать команду Orchard? Её история, задачи и отчёты сохранятся. В списке команд она будет видна по кнопке «Показать архивные». Архивирование нельзя отменить."
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive_member",
+        "member": "m2"
+      },
+      "team_name": "Orchard"
+    },
+    "confirmation": {
+      "action": "Remove member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "verbatim",
+            "value": "Orchard"
+          }
+        ],
+        "source": "Remove %1 from %2? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place."
+      },
+      "name": "teamArchiveMemberConfirm",
+      "text": "Remove m2 from Orchard? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place.",
+      "title": "Remove member?"
+    },
+    "from": "native prompt",
+    "rendered": {
+      "en": "Remove m2 from Orchard? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place.",
+      "ru": "Удалить m2 из команды Orchard? Его история и отчёты сохранятся. Удаление участника нельзя отменить; чтобы занять его место, добавьте нового участника."
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "stop"
+      },
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Stop team",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Stop %1? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while."
+      },
+      "name": "teamStopConfirm",
+      "text": "Stop this team? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "title": "Stop team?"
+    },
+    "from": "window message",
+    "rendered": {
+      "en": "Stop this team? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "ru": "Остановить команду (без названия)? Все открытые задачи будут отменены, и новые задачи больше не будут выдаваться. Сессии участников продолжат работать; их текущие ходы завершатся. Остановленную команду нельзя запустить снова; чтобы остановить её на время, используйте «Приостановить»."
+    }
+  }
+]

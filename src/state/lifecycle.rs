@@ -1088,6 +1088,9 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     // A restore never creates the ID layout in P3a: it is written at its
     // label's path and needs a free label, whatever its archive says.
     let mut archived = archive::read_archive(name, id)?;
+    if archived["backend"] == "dsh" {
+        return dsh::retirement::restore(&archived, dry, scope);
+    }
     let source = archive_source::Source::capture(&archived);
     if let Some(fields) = archived.as_object_mut() {
         fields.remove("layout");
@@ -1649,7 +1652,7 @@ mod fresh_pause_tests {
         assert!(pausable(&record, || false));
         pause_recipe(&record).unwrap();
         assert!(record["conversation_id"].is_null());
-        let allowed = session_action::summary(&record, true, &None);
+        let allowed = session_action::summary(&record, true, &None, None);
         assert!(allowed["allowed_actions"]
             .as_array()
             .unwrap()

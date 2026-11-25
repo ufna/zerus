@@ -1,0 +1,538 @@
+[
+  {
+    "call": {
+      "action": {
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "advance_base"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Advance base",
+      "message": {
+        "args": [
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          },
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "0123456789abcdef0123456789abcdef01234567"
+                }
+              ],
+              "source": "%1"
+            }
+          }
+        ],
+        "source": "Advance the base of %1 to %2? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged."
+      },
+      "name": "teamAdvanceBaseConfirm",
+      "text": "Advance the base of Fixes to 0123456789abcdef0123456789abcdef01234567? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged.",
+      "title": "Advance base?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "codex",
+        "effort": "",
+        "kind": "swap_member",
+        "member": "m2",
+        "model": ""
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Swap member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Replace the agent for %1 of %2? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped."
+      },
+      "name": "teamSwapMemberConfirm",
+      "text": "Replace the agent for m2 of Fixes? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped.",
+      "title": "Swap member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "stop"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Stop team",
+      "message": {
+        "args": [
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Stop %1? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while."
+      },
+      "name": "teamStopConfirm",
+      "text": "Stop Fixes? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "title": "Stop team?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Archive",
+      "message": {
+        "args": [
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Archive %1? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone."
+      },
+      "name": "teamArchiveConfirm",
+      "text": "Archive Fixes? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone.",
+      "title": "Archive team?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "stop_member",
+        "member": "m2"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Stop member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Stop %1 of %2? Its current turn finishes and it takes no new task."
+      },
+      "name": "teamStopMemberConfirm",
+      "text": "Stop m2 of Fixes? Its current turn finishes and it takes no new task.",
+      "title": "Stop member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive_member",
+        "member": "m2"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Remove member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Remove %1 from %2? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place."
+      },
+      "name": "teamArchiveMemberConfirm",
+      "text": "Remove m2 from Fixes? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place.",
+      "title": "Remove member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "cancel",
+        "node": 7,
+        "reason": "No longer needed"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": "Fixes"
+    },
+    "confirmation": {
+      "action": "Cancel task",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "7"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "verbatim",
+            "value": "Fixes"
+          }
+        ],
+        "source": "Cancel task #%1 of %2? Its work stops and its result is not accepted."
+      },
+      "name": "teamCancelConfirm",
+      "text": "Cancel task #7 of Fixes? Its work stops and its result is not accepted.",
+      "title": "Cancel task?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "advance_base"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Advance base",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          },
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "0123456789abcdef0123456789abcdef01234567"
+                }
+              ],
+              "source": "%1"
+            }
+          }
+        ],
+        "source": "Advance the base of %1 to %2? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged."
+      },
+      "name": "teamAdvanceBaseConfirm",
+      "text": "Advance the base of this team to 0123456789abcdef0123456789abcdef01234567? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged.",
+      "title": "Advance base?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "account": {
+          "mode": "freest"
+        },
+        "agent": "codex",
+        "effort": "",
+        "kind": "swap_member",
+        "member": "m2",
+        "model": ""
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Swap member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Replace the agent for %1 of %2? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped."
+      },
+      "name": "teamSwapMemberConfirm",
+      "text": "Replace the agent for m2 of this team? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped.",
+      "title": "Swap member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "stop"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Stop team",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Stop %1? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while."
+      },
+      "name": "teamStopConfirm",
+      "text": "Stop this team? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+      "title": "Stop team?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Archive",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Archive %1? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone."
+      },
+      "name": "teamArchiveConfirm",
+      "text": "Archive this team? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone.",
+      "title": "Archive team?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "stop_member",
+        "member": "m2"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Stop member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Stop %1 of %2? Its current turn finishes and it takes no new task."
+      },
+      "name": "teamStopMemberConfirm",
+      "text": "Stop m2 of this team? Its current turn finishes and it takes no new task.",
+      "title": "Stop member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "archive_member",
+        "member": "m2"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Remove member",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "m2"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Remove %1 from %2? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place."
+      },
+      "name": "teamArchiveMemberConfirm",
+      "text": "Remove m2 from this team? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place.",
+      "title": "Remove member?"
+    }
+  },
+  {
+    "call": {
+      "action": {
+        "kind": "cancel",
+        "node": 7,
+        "reason": "No longer needed"
+      },
+      "confirmed": false,
+      "expected_revision": 7,
+      "request_id": "11111111-2222-4333-8444-555555555555",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "team_name": ""
+    },
+    "confirmation": {
+      "action": "Cancel task",
+      "message": {
+        "args": [
+          {
+            "kind": "text",
+            "value": {
+              "args": [
+                {
+                  "kind": "verbatim",
+                  "value": "7"
+                }
+              ],
+              "source": "%1"
+            }
+          },
+          {
+            "kind": "text",
+            "value": {
+              "source": "this team"
+            }
+          }
+        ],
+        "source": "Cancel task #%1 of %2? Its work stops and its result is not accepted."
+      },
+      "name": "teamCancelConfirm",
+      "text": "Cancel task #7 of this team? Its work stops and its result is not accepted.",
+      "title": "Cancel task?"
+    }
+  }
+]
