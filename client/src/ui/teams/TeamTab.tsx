@@ -92,6 +92,7 @@ export function TeamWorkspace(props: {
   const [drawer, setDrawer] = createSignal<TeamDrawer | null>(null);
   /** The member whose start card Launch again looks for in Cards (review of #2558). */
   const [launchMember, setLaunchMember] = createSignal<string>();
+  const [launchRequest, setLaunchRequest] = createSignal(0);
   createEffect(on(drawer, (kind) => { if (kind !== "cards") setLaunchMember(undefined); }, { defer: true }));
   const [advance, setAdvance] = createSignal(false);
   const [narrow, setNarrow] = createSignal(false);
@@ -237,7 +238,7 @@ export function TeamWorkspace(props: {
       <Show when={advance()}><TeamAdvanceBase team={props.view.bar.id} busy={props.busy}
         onCancel={() => setAdvance(false)} onAdvance={(commit, revision) => { props.onAction("advance_base", { commit }, revision); setAdvance(false); }} /></Show>
       <Show when={drawer()} keyed>{(kind) => <TeamDrawers kind={kind} view={props.view} busy={props.busy} onAction={props.onAction} onClose={() => setDrawer(null)}
-        focusMember={kind === "cards" ? launchMember() : undefined} />}</Show>
+        focusMember={kind === "cards" ? launchMember() : undefined} focusRequest={launchRequest()} />}</Show>
       <TeamEditButtons view={props.view} busy={props.busy} open={editors.open} />
       {editors.dialogs()}
       <Show when={openNotice()}>{(text) => <div class="notice team-notice" role="status" data-team-open-notice><Icon name="info" size={16} /><span>{text()}</span></div>}</Show>
@@ -374,7 +375,7 @@ export function TeamWorkspace(props: {
               <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span><span class="grow" /><button type="button" class="icon-btn team-members-close" data-team-members-close aria-label={tr("Close")} title={tr("Close")} onClick={dismissPreview}><Icon name="x" size={16} /></button></header>
               <For each={props.view.members}>
                 {(member) => <MemberCard member={member} teamStatus={props.view.bar.status} cards={all()} busy={props.busy} onSelect={select}
-                  session={memberRows().get(member.id)} onAction={(kind, id) => { if (WINDOW_ONLY_MEMBER_ACTIONS.has(kind)) { setLaunchMember(id); setDrawer("cards"); } else send(kind, { member: id }); }} />}
+                  session={memberRows().get(member.id)} onAction={(kind, id) => { if (WINDOW_ONLY_MEMBER_ACTIONS.has(kind)) { batch(() => { setLaunchMember(id); setLaunchRequest((n) => n + 1); setDrawer("cards"); }); } else send(kind, { member: id }); }} />}
               </For>
             </section>
         </aside>

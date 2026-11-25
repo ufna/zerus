@@ -1,6 +1,6 @@
 // Adapted from WhiteWh's TeamDrawers: the feed/inbox rows and drawer header.
 // Our store returns one ascending snapshot page, not the fork's event cache.
-import { For, Show, Switch, Match, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup } from "solid-js";
+import { For, Show, Switch, Match, Suspense, batch, createEffect, createMemo, createSignal, lazy, on, onCleanup } from "solid-js";
 import { tr } from "../../i18n";
 import { teams } from "../../store/teams";
 import { RecordedPageExport, exportRecordedPage, type PageExportPort } from "../../store/teamProfileExport";
@@ -78,6 +78,7 @@ export function TeamInbox(props: { rows: DrawerRow[] } & InboxProps) {
 const START_KINDS = new Set(["launch_blocked", "launch_uncertain"]);
 /** Cards pages Launch again reads before it says the card was not found. */
 export const START_CARD_PAGES = 4;
+export const START_CARD_ROWS = 200;
 
 /** The member a start card names: the writer's member parameter, else the
  * older writer's text prefix ("Member m2: ..."). */
@@ -87,11 +88,14 @@ function startMember(card: NonNullable<DrawerRow["card"]>): string | undefined {
   return /^Member (lead|m[1-9][0-9]{0,9}):/.exec(card.text)?.[1];
 }
 
-type StartFocus = { state: "seeking"; pages: number } | { state: "found"; card: number; retry: boolean } | { state: "none"; searched: boolean };
+type StartFocus = { state: "seeking"; pages: number; rows: number } | { state: "found"; card: number; retry: boolean } | { state: "none"; searched: boolean };
 
 export function TeamDrawers(props: { kind: TeamDrawer; view: TeamView; busy: boolean; onAction: DrawerAction; onClose: () => void; port?: DrawerPort; visible?: boolean; exportPort?: PageExportPort;
   /** Launch again: the member whose own start card Cards looks for (review of #2558). */
-  focusMember?: string }) {
+  focusMember?: string;
+  /** Each explicit Launch again, including another request for the same member. */
+  focusRequest?: number }) {
+  let panel!: HTMLElement;
   const [tick, setTick] = createSignal(0);
   const [readRevision, setReadRevision] = createSignal<number>();
   const model = new TeamDrawerRead(props.port ?? readTeamDrawer, () => setTick((n) => n + 1));
@@ -100,37 +104,67 @@ export function TeamDrawers(props: { kind: TeamDrawer; view: TeamView; busy: boo
   const exported = () => (tick(), exporter);
   const canExport = () => props.kind === "timeline" && !!read().page?.timeline && !read().loading && !read().error && !exported().busy;
   const active = () => props.kind !== "timeline" || (props.visible ?? teams.visible?.() ?? true);
+  // Every explicit request or refresh owns a fresh generation, including
+  // while an older forward read settles. open() queues page one serially and
+  // prevents the superseded answer from publishing into this lookup.
+  const [focus, setFocus] = createSignal<StartFocus>();
+  let lookupGeneration = 0;
+  const resetFocus = () => {
+    ++lookupGeneration;
+    setFocus(props.focusMember && props.kind === "cards" ? { state: "seeking", pages: 1, rows: 0 } : undefined);
+  };
+  const restartMember = () => batch(() => {
+    resetFocus(); setReadRevision(props.view.revision);
+    model.open(props.view.bar.id, "cards");
+  });
+  const refresh = () => {
+    if (props.kind === "cards" && props.focusMember) restartMember();
+    else model.refresh();
+  };
+  const browse = (direction: "first" | "next") => batch(() => {
+    ++lookupGeneration;
+    setFocus(undefined);
+    if (direction === "first") model.first();
+    else model.next();
+  });
   const target = createMemo(() => JSON.stringify([props.view.bar.id, props.kind, active()]));
-  createEffect(on(target, () => {
-    setReadRevision(props.view.revision);
-    exporter.retire();
+  createEffect(on(target, () => batch(() => {
+    setReadRevision(props.view.revision); resetFocus(); exporter.retire();
     if (!active() || props.kind === "chat") model.close();
     else model.open(props.view.bar.id, props.kind === "timeline" ? "feed" : props.kind === "reports" ? "inbox" : props.kind as DrawerKind);
-  }));
-  createEffect(on(() => props.view.revision, (revision) => { setReadRevision(revision); if (active() && props.kind !== "timeline") model.refresh(); }, { defer: true }));
-  onCleanup(() => { model.close(); exporter.retire(); });
-  // Launch again leads to the member's own start card: a bounded lookup from
-  // the first Cards page, then its Retry is focused, or one sentence says why
-  // there is none. It decides nothing itself (review of #2558).
-  const [focus, setFocus] = createSignal<StartFocus>();
-  createEffect(on(() => props.focusMember, (member) => {
-    setFocus(member && props.kind === "cards" ? { state: "seeking", pages: 1 } : undefined);
-    if (member && props.kind === "cards" && read().page?.after) model.first();
-  }));
+  })));
+  createEffect(on(() => props.view.revision, (revision) => {
+    setReadRevision(revision);
+    if (active() && props.kind !== "timeline") refresh();
+  }, { defer: true }));
+  createEffect(on(() => [props.focusMember, props.focusRequest] as const, () => {
+    if (props.kind === "cards" && props.focusMember) restartMember();
+    else resetFocus();
+  }, { defer: true }));
+  onCleanup(() => { ++lookupGeneration; model.close(); exporter.retire(); });
   createEffect(() => {
     const seeking = focus(), member = props.focusMember, state = read();
     if (seeking?.state !== "seeking" || !member || state.loading || state.error || !state.page) return;
-    const row = state.page.rows.find((candidate) => candidate.card && candidate.card.state === "open" && START_KINDS.has(candidate.card.kind) && startMember(candidate.card) === member);
+    const rows = state.page.rows.slice(0, START_CARD_ROWS - seeking.rows);
+    const seen = seeking.rows + rows.length;
+    const row = rows.find((candidate) => candidate.card && candidate.card.state === "open" && START_KINDS.has(candidate.card.kind) && startMember(candidate.card) === member);
     if (row?.card) {
       const retry = (row.card.decisions ?? []).includes("retry");
       setFocus({ state: "found", card: row.card.card, retry });
-      if (retry) queueMicrotask(() => document.querySelector<HTMLButtonElement>(`[data-proposal="${row.card!.card}"] [data-card-decision="retry"]`)?.focus());
+      const generation = lookupGeneration;
+      if (retry) queueMicrotask(() => {
+        const current = focus();
+        if (generation !== lookupGeneration || props.focusMember !== member || read().loading || read().error
+          || readRevision() !== props.view.revision || current?.state !== "found" || current.card !== row.card!.card) return;
+        panel.querySelector<HTMLButtonElement>(`[data-proposal="${row.card!.card}"] [data-card-decision="retry"]`)?.focus();
+      });
       return;
     }
-    if (state.page.next && seeking.pages < START_CARD_PAGES) { setFocus({ state: "seeking", pages: seeking.pages + 1 }); model.next(); return; }
-    setFocus({ state: "none", searched: !!state.page.next });
+    if (state.page.next && seeking.pages < START_CARD_PAGES && seen < START_CARD_ROWS) { setFocus({ state: "seeking", pages: seeking.pages + 1, rows: seen }); model.next(); return; }
+    setFocus({ state: "none", searched: !!state.page.next || state.page.rows.length > rows.length });
   });
   const focusLine = () => {
+    if (read().loading || read().error || !read().page || readRevision() !== props.view.revision) return undefined;
     const shown = focus(), member = props.focusMember ?? "";
     if (shown?.state === "found") return shown.retry ? tr("Retry on %1's start card starts it again.", member) : tr("%1's start card offers no Retry now; the card says why.", member);
     if (shown?.state === "none") return shown.searched ? tr("%1's start card is not on the Cards pages that were read.", member) : tr("%1 has no open start card. Zerus starts the member when there is room.", member);
@@ -138,13 +172,13 @@ export function TeamDrawers(props: { kind: TeamDrawer; view: TeamView; busy: boo
   };
   const busy = () => props.busy || read().loading || !!read().error || readRevision() !== props.view.revision;
   const act: DrawerAction = (kind, fields) => { if (!busy()) props.onAction(kind, fields); };
-  return <section class="team-drawer" aria-label={drawerLabel(props.kind)} data-team-drawer-panel={props.kind}>
+  return <section ref={panel} class="team-drawer" aria-label={drawerLabel(props.kind)} data-team-drawer-panel={props.kind}>
     <header class="team-drawer-head"><b>{drawerLabel(props.kind)}</b><span class="grow" />
       <Show when={props.kind === "timeline"}>
         <button type="button" class="btn small" data-timeline-timings disabled={read().loading || !read().page || exported().busy} onClick={() => model.timings(!model.timingsRequested())}>{read().timingsRequested() ? tr("Events only") : tr("Read recorded timings")}</button>
         <button type="button" class="btn small" data-timeline-export disabled={!canExport()} onClick={() => { const page = model.page; if (canExport() && page) void exporter.save(page); }}>{tr("Export page…")}</button>
       </Show>
-      <Show when={props.kind !== "chat"}><button type="button" class="btn small" disabled={read().loading} data-drawer-refresh onClick={() => model.refresh()}>{tr("Refresh")}</button></Show>
+      <Show when={props.kind !== "chat"}><button type="button" class="btn small" disabled={read().loading} data-drawer-refresh onClick={refresh}>{tr("Refresh")}</button></Show>
       <button type="button" class="icon-btn small" aria-label={tr("Close")} onClick={props.onClose}><Icon name="x" size={14} /></button>
     </header>
     <Show when={exported().outcome === "saved"}><p role="status">{tr("Page exported.")}</p></Show>
@@ -161,11 +195,13 @@ export function TeamDrawers(props: { kind: TeamDrawer; view: TeamView; busy: boo
         <Match when={props.kind === "inbox"}><TeamInbox rows={page().rows} busy={busy()} onAction={act} status={props.view.bar.status} team={props.view.bar.id} onOpenNode={props.onClose} /></Match>
         <Match when={props.kind === "reports"}><TeamReports rows={page().rows} busy={busy()} onAction={act} team={props.view.bar.id} onOpenNode={props.onClose} /></Match>
         <Match when={props.kind === "cards"}><ProposalCards rows={page().rows} busy={busy()} onAction={act} team={props.view.bar.id} onOpenNode={props.onClose}
-          focusCard={(() => { const shown = focus(); return shown?.state === "found" ? shown.card : undefined; })()} /></Match>
+          focusCard={(() => { const shown = focus(); return shown?.state === "found" && !busy() ? shown.card : undefined; })()} /></Match>
       </Switch>
-      <footer class="team-drawer-actions"><span class="dim">{tr("One page is shown. Refresh reads this page again.")}</span><span class="grow" />
-        <Show when={page().after}><button type="button" class="btn small" disabled={read().loading} data-drawer-first onClick={() => model.first()}>{tr("First page")}</button></Show>
-        <Show when={page().next}><button type="button" class="btn small" disabled={read().loading} data-drawer-next onClick={() => model.next()}>{tr("Next page")}</button></Show>
+      <footer class="team-drawer-actions">
+        <Show when={props.kind !== "cards" || !props.focusMember}><span class="dim">{tr("One page is shown. Refresh reads this page again.")}</span></Show>
+        <span class="grow" />
+        <Show when={page().after}><button type="button" class="btn small" disabled={read().loading} data-drawer-first onClick={() => browse("first")}>{tr("First page")}</button></Show>
+        <Show when={page().next}><button type="button" class="btn small" disabled={read().loading} data-drawer-next onClick={() => browse("next")}>{tr("Next page")}</button></Show>
       </footer>
     </>}</Show>
   </section>;

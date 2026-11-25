@@ -1,0 +1,90 @@
+{
+  "team": "00000000-0000-4000-8000-00000000beef",
+  "kind": "cards",
+  "rows": [
+    {
+      "seq": 1,
+      "kind": "launch_blocked",
+      "by": "local",
+      "by_kind": "service",
+      "subject_node": null,
+      "subject_member": null,
+      "text": "Member m3: account_inspection_failed.",
+      "text_truncated": false,
+      "at_ms": 1234,
+      "node": null,
+      "generation": null,
+      "state": "open",
+      "reply": null,
+      "notes": [],
+      "card": {
+        "id": "00000000-0000-4000-8000-00000000beef:1",
+        "team": "00000000-0000-4000-8000-00000000beef",
+        "card": 1,
+        "kind": "launch_blocked",
+        "node": null,
+        "text": "Member m3: account_inspection_failed.",
+        "state": "open",
+        "by": "local",
+        "created_ms": 1234,
+        "decisions": [
+          "retry",
+          "acknowledged"
+        ],
+        "parameters": [
+          [
+            "member",
+            "m3"
+          ],
+          [
+            "code",
+            "account_inspection_failed"
+          ]
+        ]
+      }
+    },
+    {
+      "seq": 2,
+      "kind": "launch_blocked",
+      "by": "local",
+      "by_kind": "service",
+      "subject_node": null,
+      "subject_member": null,
+      "text": "Member m2: account_inspection_failed.",
+      "text_truncated": false,
+      "at_ms": 1234,
+      "node": null,
+      "generation": null,
+      "state": "open",
+      "reply": null,
+      "notes": [],
+      "card": {
+        "id": "00000000-0000-4000-8000-00000000beef:2",
+        "team": "00000000-0000-4000-8000-00000000beef",
+        "card": 2,
+        "kind": "launch_blocked",
+        "node": null,
+        "text": "Member m2: account_inspection_failed.",
+        "state": "open",
+        "by": "local",
+        "created_ms": 1234,
+        "decisions": [
+          "retry",
+          "acknowledged"
+        ],
+        "parameters": [
+          [
+            "member",
+            "m2"
+          ],
+          [
+            "code",
+            "account_inspection_failed"
+          ]
+        ]
+      }
+    }
+  ],
+  "next": null,
+  "after": null
+}
