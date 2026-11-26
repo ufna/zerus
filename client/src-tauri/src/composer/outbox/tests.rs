@@ -176,9 +176,10 @@ fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_o
 
 #[test]
 fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
-    for (agent, mismatch, reason) in [
-        ("claude", false, QUEUE_UNAVAILABLE),
-        ("codex", true, QUEUE_TARGET_CHANGED),
+    for (agent, reason) in [
+        ("dsh", QUEUE_UNAVAILABLE),
+        ("claude", QUEUE_OLD_HOST),
+        ("codex", QUEUE_TARGET_CHANGED),
     ] {
         let root = dir("single-send-unsupported");
         let (c, fake) = send_hub_on(&drafts(&root));
@@ -191,8 +192,11 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
             row.phase = Some("tool".into());
         }
         let mut busy = details(&session, agent, true, Some(false));
-        if mismatch {
+        if reason == QUEUE_TARGET_CHANGED {
             busy["run_id"] = json!("replacement-run");
+        }
+        if reason == QUEUE_OLD_HOST {
+            busy.as_object_mut().unwrap().remove("claude_outbox_supported");
         }
         c.open(Some(session));
         c.observe(&state(busy));
