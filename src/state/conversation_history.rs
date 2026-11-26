@@ -138,9 +138,14 @@ fn validate(r: &Request) -> Result<()> {
 fn record(name: &str, r: &Request) -> Result<Value> {
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label.
-    expect(name, &r.expected_run_id, &r.expected_conversation_id)?;
-    let value = if opencode::exists(name) {
-        if r.archive_id.is_some() {return Err("OpenCode has no archive history".into());} opencode::binding(name)?
+    let open_archive = r.archive_id.as_deref().filter(|_| name.starts_with("opencode/"));
+    if open_archive.is_none() {
+        expect(name, &r.expected_run_id, &r.expected_conversation_id)?;
+    }
+    let value = if let Some(id) = open_archive {
+        archive::read_archive(name, id)?
+    } else if opencode::exists(name) {
+        opencode::binding(name)?
     } else if dsh::exists(name) {
         if r.archive_id.is_some() {
             return Err("DeepSeek has no archive history".into());
@@ -2257,7 +2262,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         .query_row("SELECT EXISTS(SELECT 1 FROM messages)", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let (provider_complete, mut status) = if string(&parent,"agent")=="opencode" {
-        let detail=opencode::inspect(name,request.agent_id.as_deref())?;
+        let detail = if request.archive_id.is_some() {
+            if request.agent_id.is_some() {
+                return Err("OpenCode child session history is unavailable".into());
+            }
+            opencode::archives::inspect(&parent)
+        } else {
+            opencode::inspect(name, request.agent_id.as_deref())?
+        };
         // An unreadable service or an OpenCode 1 binding has no history to index.
         if let Some(reason)=detail["inspection_reason"].as_str() {return Err(reason.into());}
         // A child view carries its exact parent separately from its own ID.

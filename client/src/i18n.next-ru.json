@@ -1396,6 +1396,7 @@
   "OpenCode compaction is unconfirmed. Check this conversation before trying again.": "Сжатие OpenCode не подтверждено. Проверьте этот разговор перед повторной попыткой.",
   "OpenCode permission configuration could not be verified.": "Не удалось проверить настройки разрешений OpenCode.",
   "OpenCode refused this compaction.": "OpenCode отклонил запрос на сжатие.",
+  "OpenCode still has a running child session. End its work in OpenCode before archiving.": "В OpenCode выполняется дочерняя сессия. Завершите её работу в OpenCode, прежде чем отправить сессию в архив.",
   "OpenCode uses custom permission rules.": "OpenCode использует свои правила разрешений.",
   "OpenCode will summarize older messages for the same conversation. The summary may omit details.": "OpenCode кратко изложит ранние сообщения в этом же разговоре. Некоторые детали могут быть опущены.",
   "Opened a terminal: ssh %1": "Открыт терминал: ssh %1",

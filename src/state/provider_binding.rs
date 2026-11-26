@@ -21,6 +21,12 @@ impl Provider {
     pub(super) fn native_caller(self, native: &str, home: &Path) -> Result<Option<Value>> {
         native_identity::find(self, native, home)
     }
+    /// A lifecycle writer already holding this provider's binding lock can
+    /// require complete, bounded identity coverage without changing indexes.
+    pub(super) fn native_identity_locked(self, native: &str, home: &Path) -> Result<Option<Value>> {
+        native_identity::read_locked(self, native, home)
+    }
+
     pub(super) fn named(name: &str) -> Option<Self> {
         match name.split('/').next() {
             Some("dsh") => Some(Self::DeepSeek),

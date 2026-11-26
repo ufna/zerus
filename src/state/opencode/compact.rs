@@ -226,6 +226,15 @@ fn settle_current(native: &dyn Native, record: &mut Value, until: Instant) -> Re
     Ok(settled)
 }
 
+pub(super) fn archive_pending(
+    native: &dyn Native, record: &mut Value, until: Instant, dry: bool,
+) -> Result<bool> {
+    if dry {
+        return Ok(pending(&record[FIELD]));
+    }
+    settle_current(native, record, until).map(|receipt| pending(&receipt))
+}
+
 fn repeat(record: &mut Value, previous: Value) -> Value {
     if pending(&record[FIELD]) && terminal(&previous) && same_attempt(&previous, &record[FIELD]) {
         record[FIELD] = previous.clone();

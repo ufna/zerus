@@ -17,6 +17,15 @@ pub(super) fn read_archive(name: &str, id: &str) -> Result<Value> {
             })
             .map_err(|error| format!("{name}: cannot read archive {id}: {error}"));
     }
+    if name.starts_with("opencode/") {
+        return opencode::archives::STORE.by_id(id)
+            .and_then(|row| {
+                let row = row.filter(|row| row["name"] == name).ok_or("no such OpenCode archive")?;
+                session_id::verify(&row)?;
+                Ok(row)
+            })
+            .map_err(|error| format!("{name}: cannot read archive {id}: {error}"));
+    }
     let record = archive_references::read_metadata(&path(id)?)
         .map_err(|error| format!("{name}: cannot read archive {id}: {error}"))?;
     validated_record(name, id, record)
@@ -475,6 +484,9 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
         return Err(dsh::retirement::RESTORE_PENDING.into());
     }
+    if record["backend"] == "opencode" && opencode::archives::restore_source_held(&record)? {
+        return Err("Finish the original OpenCode restore before forgetting this archive".into());
+    }
     // Do not remove the only recoverable source of a not-yet-confirmed restore.
     if record_path(name).exists() && {
         let active = read(name)?;
@@ -491,6 +503,8 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if let Some(scope)=scope {scope.changing();}
     if record["backend"] == "dsh" {
         dsh::native_archives::remove(&record)?;
+    } else if record["backend"] == "opencode" {
+        opencode::archives::STORE.remove(&record)?;
     } else {
         remove_synced(&path(id)?)?;
     }

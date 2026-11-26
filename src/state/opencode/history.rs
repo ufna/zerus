@@ -154,6 +154,14 @@ pub(super) fn fetch(native: &dyn Native, record: &Value) -> Result<Page> {
         super::binding(string(record, "name")).ok()
     })
 }
+/// Archived activity has no live binding. It can use the conversation's
+/// cache as a read aid but cannot publish, refresh or evict it.
+pub(super) fn fetch_archived(native: &dyn Native, record: &Value) -> Result<Page> {
+    let cached = load_at(&cache_path(record), record);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    scan(native, record, cached.as_ref(), Bounds::default(), deadline).map(|(page, _)| page)
+}
+
 /// `fetch` with a cache path of the caller's own, saved without a binding.
 #[cfg(test)]
 pub(super) fn fetch_at(native: &dyn Native, record: &Value, cache: &Path) -> Result<Page> {

@@ -1122,6 +1122,10 @@ pub(super) fn inspection_with(
         drop(_guard);
         return dsh::retirement::inspect(&record, after);
     }
+    if archive_id.is_some() && record["backend"] == "opencode" {
+        drop(_guard);
+        return Ok(opencode::archives::inspect(&record));
+    }
     if archive_id.is_none() {
         input::acceptance::reconcile_locked(&mut record)?;
     }

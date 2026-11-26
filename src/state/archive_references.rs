@@ -572,7 +572,20 @@ fn read_record(file: &fs::File, id: &str, expected: &Version) -> Result<Value> {
     Metadata::from_record(id, &record)?;
     Ok(record)
 }
-/// Compact terminal references and bounded DeepSeek binding metadata, with
+fn visit_native(
+    until: Instant,
+    rows: usize,
+    bytes: usize,
+    mut visit: impl FnMut(Value) -> Result<()>,
+) -> Result<()> {
+    let (used_rows, used_bytes) =
+        dsh::native_archives::STORE.visit_references(until, rows, bytes, &mut visit)?;
+    opencode::archives::STORE
+        .visit_references(until, rows - used_rows, bytes - used_bytes, visit)
+        .map(|_| ())
+}
+
+/// Compact terminal references and bounded native binding metadata, with
 /// complete archive coverage. No conversation journal is opened by review.
 pub(super) fn visit_metadata(
     until: Instant,
@@ -584,7 +597,7 @@ pub(super) fn visit_metadata(
         live(until)?;
         visit(metadata.value())?;
     }
-    super::dsh::native_archives::visit_references(until, remaining, BYTES - snapshot.bytes, visit)
+    visit_native(until, remaining, BYTES - snapshot.bytes, visit)
 }
 /// Select through the folder index, then verify the authoritative relevant
 /// bodies before the first callback. Caller retains repository -> state locks
@@ -618,7 +631,7 @@ pub(super) fn visit_related(
         records.push((id.clone(), expected.clone(), record));
     }
     let mut native = Vec::new();
-    super::dsh::native_archives::visit_references(
+    visit_native(
         until,
         FILES - snapshot.rows.len(),
         BYTES - bytes,
@@ -630,6 +643,9 @@ pub(super) fn visit_related(
                     folder.is_absolute() && folder.starts_with(target)
                 })
             {
+                if record["backend"] == "opencode" {
+                    return Err("An archived OpenCode conversation still needs this folder".into());
+                }
                 native.push(record);
             }
             Ok(())

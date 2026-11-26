@@ -14,6 +14,7 @@ mod service;
 mod compact;
 mod context;
 mod context_hint;
+pub(super) mod archives;
 pub(crate) use context_hint::lookup as hint_context;
 pub(super) fn note_hint(record: &Value) { context_hint::note(record); }
 pub(super) fn forget_hint(record: &Value) { context_hint::forget(record); }
@@ -681,6 +682,9 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
     } else {
         vec!["forget"]
     };
+    if observed.is_some_and(|observation| archives::offers(record, observation)) {
+        allowed.push("archive");
+    }
     if !active
         && queued
             .iter()
@@ -736,7 +740,7 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         "clear_context_supported":false,"clear_context_reason":"OpenCode cannot reset this conversation. Start a new session to begin with empty context.",
         "compact_context_supported":false,"compact_context_reason":"Manual compaction is unavailable on this OpenCode service.",
         "allowed_actions":allowed,"action_reasons":{"pause":"OpenCode sessions have no separate process to pause","resume":"OpenCode sessions have no separate process to pause",
-            "archive":"OpenCode archives are not supported","restore":"OpenCode archives are not supported","fork":"OpenCode fork arrives in a later update","terminate":"Use Stop for this OpenCode session"},
+            "archive":archives::NOT_IDLE,"fork":"OpenCode fork arrives in a later update","terminate":"Use Stop for this OpenCode session"},
         "pending_questions":pending,"events":events,"replace_events":true,"cursor":0,"history_truncated":observed.is_some_and(|o| o.page.truncated)});
     for (key, item) in controls.as_object().into_iter().flatten() {
         value[key] = item.clone();
@@ -915,6 +919,8 @@ enum Detail {
     Listing,
     /// The session's own state for an action.
     Own,
+    /// A delayed action needs exact admission metadata without transcript reads.
+    Metadata,
     /// `hgs inspect`: also the model options for its folder.
     Full,
 }
@@ -931,7 +937,13 @@ fn parent_view(
         service,
         record,
         active,
-        || history::fetch(service, record),
+        || {
+            if detail == Detail::Metadata {
+                Ok(history::Page { messages: Vec::new(), truncated: false })
+            } else {
+                history::fetch(service, record)
+            }
+        },
         detail == Detail::Full,
     )?;
     let (attempt, boundary) = if detail == Detail::Full {
@@ -955,6 +967,9 @@ fn parent_view(
         (Value::Null, None)
     };
     let mut result = normalize(record, Some(&observed));
+    if detail == Detail::Metadata {
+        return Ok(result);
+    }
     if detail == Detail::Full {
         history::decorate_live_shell(
             service,
@@ -963,7 +978,7 @@ fn parent_view(
             &mut result["events"],
         );
     }
-    if detail != Detail::Listing {
+    if matches!(detail, Detail::Own | Detail::Full) {
         attachments::decorate(record, "", &mut result);
         result["voice_messages"] =
             conversation_history::inspected_voice_messages(record, &result, None);
@@ -1100,6 +1115,7 @@ struct Inspector {
     /// Named only when a reason needs it.
     computer: Option<String>,
     active: Option<Result<Value>>,
+    archive_ancestors: Option<Result<std::collections::HashSet<String>>>,
     migration: Option<Reply>,
     verdicts: Option<Vec<String>>,
     verdicts_changed: bool,
@@ -1115,6 +1131,7 @@ impl Inspector {
             service: service::connect(),
             computer: None,
             active: None,
+            archive_ancestors: None,
             migration: None,
             verdicts: None,
             verdicts_changed: false,
@@ -1135,6 +1152,7 @@ impl Inspector {
             service: Err(service::Unavailable::NotRunning),
             computer: None,
             active: None,
+            archive_ancestors: None,
             migration: None,
             verdicts: None,
             verdicts_changed: false,
@@ -1213,7 +1231,13 @@ impl Inspector {
             Ok(active) => active,
             Err(reason) => return failed(reason.clone()),
         };
-        parent_view(native, &current, active, detail).unwrap_or_else(failed)
+        let mut row = parent_view(native, &current, active, detail).unwrap_or_else(failed);
+        let archive_native = Bounded {
+            service,
+            deadline: bounded.deadline.min(Instant::now() + Duration::from_secs(3)),
+        };
+        archives::decorate(&mut row, &current, &archive_native, active, &mut self.archive_ancestors);
+        row
     }
     fn finish(self) {
         if self.verdicts_changed {
@@ -2258,6 +2282,9 @@ fn action_in<N: Native>(
     if let Some(scope) = scope {
         scope.check(record)?;
     }
+    if archives::pending_restore(record) || archives::STORE.has_original(record)? {
+        return Err("Finish the original OpenCode Archive or Restore before changing this binding".into());
+    }
     let current = own_state(string(record, "name"))?;
     if !current["allowed_actions"]
         .as_array()
@@ -2345,6 +2372,12 @@ pub(super) fn session_action(
 }
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     let name = args.first().ok_or("Choose an OpenCode session")?;
+    if command == "archive" {
+        if args.len() != 1 && !(args.len() == 2 && args[1] == "--dry-run") {
+            return Err("usage: hgs archive <OpenCode session> [--dry-run]".into());
+        }
+        return archives::archive(name, args.len() == 2, None);
+    }
     let mut guard = if command != "inspect" && command != "exists" {
         let renames = dispatch_renames_owner(command, name, args)?;
         Some(lock_action(
@@ -2370,7 +2403,13 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 ),
                 None => None,
             };
-            let mut value = inspect(name, agent)?;
+            let metadata = args.windows(2).any(|pair| pair[0] == "--after" && pair[1] == "9223372036854775807");
+            let mut value = if metadata && agent.is_none() {
+                let mut inspector = Inspector::listing(Instant::now() + Duration::from_secs(3));
+                inspector.row(&record, Detail::Metadata)
+            } else {
+                inspect(name, agent)?
+            };
             // Only a main inspection names what a read mark may acknowledge.
             if agent.is_none() && args.iter().any(|v| v == "--current-read") {
                 if let Some(current) = current_read_of(name, &value) {
@@ -4997,6 +5036,7 @@ mod tests {
             service,
             computer: Some("build-01".into()),
             active,
+            archive_ancestors: None,
             migration,
             verdicts: Some(Vec::new()),
             verdicts_changed: false,
