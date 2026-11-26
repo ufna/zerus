@@ -3,6 +3,7 @@
 use super::send::{Context, SendReply, exact_input_details};
 use super::{Composer, Composers, Hub, MAX_TEXT_BYTES};
 use serde::Serialize;
+use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use tauri::State as TauriState;
 use tokio::sync::oneshot;
@@ -90,15 +91,37 @@ fn target(ctx: &super::send::Context) -> Target {
     }
 }
 
-fn queue_target(ctx: &super::send::Context) -> bool {
-    ctx.online
-        && ctx.session.subagent.is_none()
-        && !ctx.session.archived()
-        && matches!(ctx.row.agent.as_str(), "codex" | "kimi")
-        && ctx.row.process_state == "running"
+impl Context {
+    pub(super) fn outbox_candidate(&self) -> bool {
+        self.session.subagent.is_none()
+            && !self.session.archived()
+            && matches!(self.row.agent.as_str(), "codex" | "kimi")
+    }
+
+    fn exact_outbox_details(&self, details: &Value) -> bool {
+        self.row.name == self.session.name
+            && exact_input_details(
+                &self.row,
+                (
+                    self.row.run_id.as_deref().unwrap_or_default(),
+                    self.row.conversation_id.as_deref().unwrap_or_default(),
+                ),
+                details,
+            )
+    }
 }
 
 impl Composers {
+    pub(super) fn observe_outbox_details(&self, hub: &mut Hub, details: &Value) {
+        if hub.followed.awaiting_outbox_details
+            && self
+                .context(hub)
+                .is_some_and(|ctx| !ctx.outbox_candidate() || ctx.exact_outbox_details(details))
+        {
+            hub.followed.awaiting_outbox_details = false;
+        }
+    }
+
     pub(super) fn manual_send(&self, hub: &Hub, ctx: &Context, c: &Composer) -> ManualSend {
         if ctx.session.subagent.is_some() || ctx.session.archived() {
             return ManualSend::Direct;
@@ -110,13 +133,16 @@ impl Composers {
                 Some("tool" | "working" | "compacting")
             )
             || details["input_queue"].is_object();
-        let supported = queue_target(ctx);
+        let supported = ctx.outbox_candidate() && ctx.online && ctx.row.process_state == "running";
+        if supported && ctx.awaiting_outbox_details {
+            return ManualSend::Blocked(
+                ctx.reason()
+                    .unwrap_or_else(|| "Checking the session…".into()),
+            );
+        }
         let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
         let target = target(ctx);
-        let exact = ctx.row.name == target.name
-            && ctx.row.run_id.as_deref() == Some(&target.run_id)
-            && ctx.row.conversation_id.as_deref() == Some(&target.conversation_id)
-            && exact_input_details(&ctx.row, (&target.run_id, &target.conversation_id), details);
+        let exact = ctx.exact_outbox_details(details);
         if waiting {
             if let Some(reason) = ctx.reason() {
                 return ManualSend::Blocked(reason);
@@ -230,6 +256,7 @@ impl Composers {
             .expect("checked above")
             .queue_editing = true;
         let (done, accepted) = oneshot::channel();
+        let route_revision = hub.outbox_route_revision;
         let me = self.clone();
         self.0.store.enqueue_outbox(&key, before, stored.clone(), {
             let key = key.clone();
@@ -271,7 +298,9 @@ impl Composers {
                 let _ = done.send(view);
                 if let Some(details) = ready.filter(|_| dispatch) {
                     let work = me.clone();
-                    (me.0.deps.spawn)(Box::new(move || work.dispatch_head(key, entry, &details)));
+                    (me.0.deps.spawn)(Box::new(move || {
+                        work.dispatch_head(key, entry, &details, route_revision);
+                    }));
                 }
             }
         });
@@ -312,12 +341,16 @@ impl Composers {
         let key = key.clone();
         let entry = c.outbox[0].clone();
         hub.outbox_probe = true;
+        let route_revision = hub.outbox_route_revision;
         drop(hub);
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
             let result = catch_unwind(AssertUnwindSafe(|| me.check_outbox(&entry)));
             let mut hub = me.lock();
             hub.outbox_probe = false;
+            if hub.outbox_route_revision != route_revision {
+                return;
+            }
             if let Ok(Some(details)) = result {
                 me.reserve_head(&mut hub, key, entry, details);
             }
@@ -400,6 +433,7 @@ impl Composers {
         }
         c.queue_writing = true;
         c.outbox[0].state = State::Reserved;
+        let route_revision = hub.outbox_route_revision;
         let me = self.clone();
         self.0.store.save_outbox(&key, c.outbox.clone(), {
             let key = key.clone();
@@ -422,12 +456,20 @@ impl Composers {
                 drop(hub);
                 me.changed();
                 let work = me.clone();
-                (me.0.deps.spawn)(Box::new(move || work.dispatch_head(key, entry, &details)));
+                (me.0.deps.spawn)(Box::new(move || {
+                    work.dispatch_head(key, entry, &details, route_revision);
+                }));
             }
         });
     }
 
-    fn dispatch_head(&self, key: String, entry: Entry, details: &serde_json::Value) {
+    fn dispatch_head(
+        &self,
+        key: String,
+        entry: Entry,
+        details: &serde_json::Value,
+        route_revision: u64,
+    ) {
         // Once this reservation has answered, there is only one attempt.
         // With no matching receipt, the queue stops at the original message.
         let ready = {
@@ -442,8 +484,14 @@ impl Composers {
         if !ready {
             return;
         }
+        if self.lock().outbox_route_revision != route_revision {
+            self.settle_head(key, entry, None);
+            return;
+        }
         let outcome = if let Some(row) = self.outbox_row(&entry) {
-            if !self.idle_details(&row, &entry.target, details) {
+            if !self.idle_details(&row, &entry.target, details)
+                || self.lock().outbox_route_revision != route_revision
+            {
                 self.settle_head(key, entry, None);
                 return;
             }

@@ -258,6 +258,7 @@ pub(crate) struct Context {
     pub(crate) row: ViewRow,
     pub(crate) online: bool,
     pub(crate) details: Option<Arc<Value>>,
+    pub(super) awaiting_outbox_details: bool,
     pub(crate) facts: BlockFacts,
     verified_send: Option<VerifiedTarget>,
 }
@@ -484,6 +485,7 @@ impl Composers {
             row,
             online,
             details,
+            awaiting_outbox_details: followed && hub.followed.awaiting_outbox_details,
             facts,
             verified_send,
         })
@@ -670,6 +672,7 @@ impl Composers {
                         let verified = verify_hold
                             && me.verify_earlier_input(&mut hub, number, &target, &details);
                         if !verification_only || verified {
+                            me.observe_outbox_details(&mut hub, &details);
                             accepted_details = true;
                             hub.followed.inspect_error = None;
                             hub.followed.details = Some(details);
@@ -2650,6 +2653,7 @@ impl Composers {
             row,
             online,
             details: Some(Arc::new(details)),
+            awaiting_outbox_details: false,
             facts,
             verified_send: None,
         };

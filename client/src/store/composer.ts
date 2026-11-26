@@ -45,12 +45,16 @@ export const TOO_LONG = trNoop("Message exceeds 64 KiB.");
 export const DRAFTS_NOT_RECORDED = trNoop("Drafts are not being saved: their earlier versions could not be recorded. Check access to the Zerus data folder, then use Retry in Saved drafts.");
 const QUEUE_SAVE_REFUSED = trNoop("The draft could not be queued. Its text is still in the editor.");
 const QUEUE_FULL = trNoop("The local message queue is full. The draft is still in the editor.");
-const coreText = (text: string) => {
-  if (text === DRAFTS_NOT_RECORDED) return tr(DRAFTS_NOT_RECORDED);
-  if (text === QUEUE_SAVE_REFUSED) return tr(QUEUE_SAVE_REFUSED);
-  if (text === QUEUE_FULL) return tr(QUEUE_FULL);
-  return sendErrorText(text);
-};
+const COMPOSER_STATUS_SOURCES: readonly string[] = [
+  DRAFTS_NOT_RECORDED,
+  QUEUE_SAVE_REFUSED,
+  QUEUE_FULL,
+  trNoop("Checking the session…"),
+  trNoop("This session cannot queue messages in Zerus. Wait for the agent to become ready."),
+  trNoop("The original session changed. The draft is still in the editor."),
+  trNoop("Update hgs on this computer to queue messages. The draft stays in the editor."),
+];
+const coreText = (text: string) => COMPOSER_STATUS_SOURCES.includes(text) ? tr(text) : sendErrorText(text);
 const TOO_LARGE = trNoop("Image is too large. Use an image below 32 megapixels.");
 const UNREADABLE = trNoop("Could not read the pasted image.");
 /** How long the disabled Send's hint shows (Qt's QToolTip, MessageComposer.cpp:817). */
@@ -377,7 +381,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
    */
   function reply(r: SendReply, h: number, at: number, refused: boolean) {
     if (h !== handle()) {
-      if (r.kind === "notice") notices(r.error ? "error" : "info", r.text, r.error);
+      if (r.kind === "notice") notices(r.error ? "error" : "info", coreText(r.text), r.error);
       else if (r.kind === "cold" || r.kind === "start") void port.answer(r.token, { kind: "cancel" }).catch(() => {});
       return;
     }
@@ -399,7 +403,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       case "start": setDialog({ kind: "start", token: r.token, question: r.question }); break;
       case "clear_context": openClear(); break;
       // Qt's showNotice(text, error): an error stays until dismissed, a plain notice goes (SessionsWindow.cpp:5210).
-      case "notice": notices(r.error ? "error" : "info", r.text, r.error); break;
+      case "notice": notices(r.error ? "error" : "info", coreText(r.text), r.error); break;
     }
   }
 

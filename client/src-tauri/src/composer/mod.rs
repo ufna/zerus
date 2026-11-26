@@ -635,6 +635,9 @@ pub(crate) struct Followed {
     /// A state frame of this follow arrived: the stream keeps the details
     /// current, and Qt's `inspect()` reads nothing more while it does.
     pub(crate) streamed: bool,
+    /// A new catalog can arrive before the replacement Activity. The old
+    /// details remain visible but cannot select the ordinary Send route.
+    pub(crate) awaiting_outbox_details: bool,
     /// The row's run, conversation and state when the last inspect started.
     pub(crate) inspected: Option<send::Basis>,
     /// Its last 500 Activity events (Qt's `m_events`), for the local rows'
@@ -701,6 +704,8 @@ pub(crate) struct Hub {
     pub(crate) poll: Option<f64>,
     pub(crate) queue: queue::Queue,
     outbox_probe: bool,
+    /// Invalidates in-flight outbox reads and offers before native dispatch.
+    outbox_route_revision: u64,
     /// The one OpenCode inbox removal that runs (zerus-5wmh.13.6).
     pub(crate) inbox: inbox::Inbox,
     /// Events for the next batch (`composer_events`), at most 16.
@@ -1619,6 +1624,15 @@ impl Composers {
         };
         // The followed session's last state (or end) in this batch, and its
         // events in order: "replace" starts the window anew.
+        let unavailable = |out: &zerus_client_core::ComputerOut| {
+            !matches!(out.status.as_str(), "live" | "polled")
+        };
+        let route_changed = batch.activity.iter().any(|out| out.kind == "connection")
+            || batch.computers.iter().any(unavailable);
+        let mut connection_changed = batch
+            .computers
+            .iter()
+            .any(|out| out.computer.0 == computer && unavailable(out));
         let mut last = None;
         let mut replaced = false;
         let mut events: Vec<&Value> = Vec::new();
@@ -1630,6 +1644,10 @@ impl Composers {
             match out.kind.as_str() {
                 "state" => last = Some(Some(&out.payload["value"])),
                 "ended" => last = Some(None),
+                "connection" => {
+                    connection_changed = true;
+                    last = None;
+                }
                 kind @ ("events" | "replace") => {
                     if kind == "replace" {
                         replaced = true;
@@ -1663,7 +1681,19 @@ impl Composers {
                 hub.local.forget(&gone);
             }
         }
+        if route_changed {
+            hub.outbox_route_revision += 1;
+        }
         let followed = hub.followed.computer == computer && hub.followed.key == key;
+        let lost = followed
+            && connection_changed
+            && self.context(&hub).is_none_or(|ctx| ctx.outbox_candidate());
+        if lost {
+            hub.followed.awaiting_outbox_details = true;
+            hub.followed.streamed = false;
+            hub.followed.inspected = None;
+            hub.followed.inspecting = None;
+        }
         let child = hub.open.as_ref().and_then(|open| open.subagent.clone());
         let allowed = |details: &Value| {
             child.as_ref().is_none_or(|child| {
@@ -1686,10 +1716,11 @@ impl Composers {
             followed && matches!(update, Some(Some((ref details, _))) if allowed(details));
         let state_changed = match update.filter(|_| followed) {
             Some(Some((details, expiry))) if allowed(&details) => {
+                self.observe_outbox_details(&mut hub, &details);
                 hub.followed.details = Some(details);
                 hub.followed.expiry = expiry;
                 hub.followed.inspect_error = None;
-                hub.followed.streamed = true;
+                hub.followed.streamed = !hub.followed.awaiting_outbox_details;
                 true
             }
             Some(Some(_)) => false,
@@ -1717,10 +1748,10 @@ impl Composers {
             self.after_observe(accepted_details);
         } else if new_events {
             // An uncertain draft's advisory can change without a local row.
-            if self.reconcile() || touched || history_hint {
+            if self.reconcile() || touched || history_hint || lost {
                 self.changed();
             }
-        } else if touched {
+        } else if touched || lost {
             self.changed();
         }
     }

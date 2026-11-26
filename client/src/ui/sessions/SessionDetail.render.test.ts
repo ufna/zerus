@@ -432,6 +432,21 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   const draftSend = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
   const labels = queueDraftLabels[lang];
   await vi.waitFor(() => expect(editor().readOnly).toBe(false));
+  const oldHost = "Update hgs on this computer to queue messages. The draft stays in the editor.";
+  const oldHostLabel = lang === "ru"
+    ? "Обновите hgs на этом компьютере, чтобы ставить сообщения в очередь. Черновик остался в редакторе."
+    : oldHost;
+  receive({ ...emptyBatch(), composer: { ...initial, offers_outbox: false, ordinary_send_block: oldHost } });
+  editor().value = "kept on the older host";
+  editor().dispatchEvent(new Event("input", { bubbles: true }));
+  expect(draftSend().disabled).toBe(true);
+  expect(draftSend().title).toBe(oldHostLabel);
+  expect(host.querySelector(".cmp-status")?.textContent).toBe(oldHostLabel);
+  editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flush();
+  expect(commands.filter(name => name === "send_message")).toHaveLength(0);
+  expect(editor().value).toBe("kept on the older host");
+  receive({ ...emptyBatch(), composer: initial });
   for (const [index, text] of ["same", "same", "third"].entries()) {
     editor().value = text;
     editor().dispatchEvent(new Event("input", { bubbles: true }));

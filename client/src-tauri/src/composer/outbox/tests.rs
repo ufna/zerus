@@ -247,6 +247,144 @@ fn ordinary_send_keeps_the_older_hosts_ready_route_and_preserves_its_busy_draft(
     assert!(c.current().unwrap().waiting_in_zerus.is_empty());
 }
 
+fn watch_reconnecting() -> zerus_client_core::Batch {
+    let mut batch = state(Value::Null);
+    batch.activity[0].kind = "connection".into();
+    batch.activity[0].payload = json!({
+        "ready": false, "pending": true, "code": "watch_reconnecting"
+    });
+    batch
+}
+
+#[test]
+fn same_key_watch_recovery_needs_a_new_exact_owning_host_read() {
+    for use_stream in [true, false] {
+        let root = dir("single-send-watch-replaced");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_on(&store);
+        let session = target_session("codex");
+        let view = present(&c, &fake, &session, "codex");
+        let idle = details(&session, "codex", false, Some(false));
+        lock(&fake.row).phase = Some("idle".into());
+        c.observe(&state(idle.clone()));
+
+        // The successor catalog has caught up for this same run before
+        // its first Activity update. An old-positive read never crosses loss.
+        c.observe(&watch_reconnecting());
+        let mut wrong = idle.clone();
+        wrong["conversation_id"] = json!("other-conversation");
+        let check_block = || {
+            let current = c.current().unwrap();
+            let blocked = c.send_message(
+                current.handle,
+                current.rev + 1,
+                current.text_epoch,
+                "draft across reconnect".into(),
+                0,
+                0,
+            );
+            assert!(matches!(blocked, SendReply::Notice { .. }));
+            let kept = c.current().unwrap();
+            assert_eq!(kept.handle, view.handle);
+            assert_eq!(kept.text, "draft across reconnect");
+            assert!(kept.waiting_in_zerus.is_empty());
+            assert!(lock(&fake.calls).is_empty());
+        };
+        check_block();
+        c.observe(&state(wrong));
+        check_block();
+
+        let mut older = idle;
+        older.as_object_mut().unwrap().remove("guarded_idle_send");
+        if use_stream {
+            c.observe(&state(older));
+        } else {
+            *lock(&fake.inspected) = Some(older);
+            c.refresh_details();
+        }
+        let kept = until(&c, |v| v.ordinary_send_block.is_none() && v.can_send);
+        assert_eq!(
+            c.send_message(kept.handle, kept.rev + 1, kept.text_epoch, kept.text, 0, 0),
+            SendReply::Sending
+        );
+        until(&c, |v| !v.sending);
+        assert!(matches!(
+            &lock(&fake.calls).as_slice(),
+            [(_, Action::Send { .. }, _)]
+        ));
+        assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+    }
+}
+
+#[test]
+fn a_route_loss_before_the_guarded_offer_keeps_the_same_head_waiting() {
+    for immediate in [true, false] {
+        let root = dir("single-send-route-while-reserved");
+        let store = drafts(&root);
+        let jobs = std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::<Job>::new(),
+        ));
+        let paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (c, fake) = send_hub_with(
+            &store,
+            std::sync::Arc::new({
+                let (jobs, paused) = (jobs.clone(), paused.clone());
+                move |job| {
+                    if paused.load(std::sync::atomic::Ordering::SeqCst) {
+                        lock(&jobs).push_back(job);
+                    } else {
+                        job();
+                    }
+                }
+            }),
+        );
+        let session = target_session("codex");
+        let view = present(&c, &fake, &session, "codex");
+        let head = if immediate {
+            None
+        } else {
+            Some(enqueue(&c, "original").waiting_in_zerus[0].clone())
+        };
+        let idle = details(&session, "codex", false, Some(false));
+        lock(&fake.row).phase = Some("idle".into());
+        c.observe(&state(idle.clone()));
+        paused.store(true, std::sync::atomic::Ordering::SeqCst);
+        if immediate {
+            assert!(matches!(
+                c.send_message(
+                    view.handle,
+                    view.rev + 1,
+                    view.text_epoch,
+                    "original".into(),
+                    0,
+                    0
+                ),
+                SendReply::Accepted { waiting: false, .. }
+            ));
+        } else {
+            *lock(&fake.inspected) = Some(idle);
+            c.tick_outbox(1_793_000_104.0);
+            let inspect = lock(&jobs).pop_front().unwrap();
+            inspect();
+        }
+        store.flush();
+        let reserved = c.current().unwrap().waiting_in_zerus[0].clone();
+        assert_eq!(reserved.state, State::Reserved);
+        if let Some(head) = head {
+            assert_eq!(reserved.request_id, head.request_id);
+        }
+        c.observe(&watch_reconnecting());
+        let offer = lock(&jobs).pop_front().unwrap();
+        offer();
+        store.flush();
+        let waiting = c.current().unwrap().waiting_in_zerus[0].clone();
+        assert_eq!(waiting.state, State::Waiting);
+        assert_eq!(waiting.request_id, reserved.request_id);
+        assert_eq!(waiting.queued_at, reserved.queued_at);
+        assert!(lock(&fake.calls).is_empty());
+    }
+}
+
 #[test]
 fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen_run() {
     for agent in ["codex", "kimi"] {
