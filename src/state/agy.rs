@@ -175,6 +175,7 @@ fn start(mut record: Value) -> Result<Value> {
     record["phase"] = json!("starting");
     record["activity"] = json!("unknown");
     record["auth_required"] = json!(false);
+    record["agy_startup_refused"] = json!(false);
     record["error"] = Value::Null;
     record["turn_started"] = json!(0);
     write(&mut record)?;
@@ -263,6 +264,15 @@ pub(crate) fn launch(
     spawn_worker(&record)
 }
 
+// Only an exact first session/new authentication refusal, followed by a
+// reaped original child, licenses another session/new after manual sign-in.
+fn startup_refused(record: &Value) -> bool {
+    record["agy_startup_refused"] == true
+        && record["auth_required"] == true
+        && record["state"] == "stopped"
+        && record["conversation_id"] == ""
+}
+
 fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
     let record = {
         let _guard = state_guard()?;
@@ -273,9 +283,9 @@ fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
                 "Antigravity's original worker is still running or startup is unconfirmed".into(),
             );
         }
-        if !session_id::canonical(string(&record, "conversation_id")) {
+        if !session_id::canonical(string(&record, "conversation_id")) && !startup_refused(&record) {
             return Err(
-                "This Antigravity session has no exact native conversation to resume".into(),
+                "This Antigravity session has no exact native conversation or confirmed sign-in refusal".into(),
             );
         }
         scope.changing();
@@ -488,8 +498,11 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
     let state = string(record, "state");
     let has_conversation = session_id::canonical(string(record, "conversation_id"));
     let exited = original_exited(record);
-    let can_resume = has_conversation && state != "starting" && exited;
-    let ready = live && record["phase"] == "idle" && !auth;
+    let may_resume = (has_conversation || startup_refused(record)) && state != "starting" && exited;
+    let locations_valid = (live || may_resume) && locations(record).is_ok();
+    let can_resume = may_resume && locations_valid;
+    let idle = live && record["phase"] == "idle" && !auth;
+    let ready = idle && locations_valid;
     let busy = live && record["phase"] == "working";
     let phase = if auth {
         "input"
@@ -513,14 +526,16 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
         "phase":phase,
     });
     let controls = json!({
-        "activity_summary":if auth {"Sign in required"} else if busy {"Working"} else if ready {"Ready"} else if exited {"Stopped"} else {"Process state unverified"},
+        "activity_summary":if auth {"Sign in required"} else if busy {"Working"} else if ready {"Ready"}
+            else if idle {"Account home or workspace changed"} else if exited {"Stopped"} else {"Process state unverified"},
         "activity_detail":record["error"],"turn_started":record["turn_started"],"interrupt_supported":busy,
         "reply_id":record["reply_id"],"reply_at":record["reply_at"],
-        "send_supported":live && !auth,"send_available":ready,"terminal_supported":false,
+        "startup_retry_available":can_resume && startup_refused(record),
+        "send_supported":live && !auth && locations_valid,"send_available":ready,"terminal_supported":false,
         "terminal_attach_supported":false,"native_ui_available":false,"attachments_supported":false,
         "bulk_lifecycle_supported":false,"settings_change_supported":false,"clear_context_supported":false,
         "compact_context_supported":false,"fork_supported":false,
-        "allowed_actions":if can_resume {vec!["resume"]} else if ready {vec!["pause"]} else {Vec::new()},
+        "allowed_actions":if can_resume {vec!["resume"]} else if idle {vec!["pause"]} else {Vec::new()},
         "action_reasons":{"archive":"Antigravity archives are unavailable","terminate":"Use Stop session to preserve the native conversation"}
     });
     row.as_object_mut()

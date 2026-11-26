@@ -31,8 +31,8 @@ fn disposition(status: &str, error: &str) -> Value {
 fn result(reply: Reply) -> Result<Value> {
     match reply {
         Reply::Result(value) => Ok(value),
-        Reply::Refusal(-32000) => Err("Antigravity sign-in required; sign in from Terminal".into()),
-        Reply::Refusal(_) => Err("Antigravity refused the native operation".into()),
+        Reply::AuthRequired => Err("Antigravity sign-in required; sign in from Terminal".into()),
+        Reply::Refusal => Err("Antigravity refused the native operation".into()),
     }
 }
 
@@ -124,30 +124,33 @@ impl Owner {
             || !hash.bytes().all(|b| b.is_ascii_hexdigit())
             || !ordinary_text(text)
         {
-            return respond(
+            let _ = respond(
                 &mut stream,
                 &disposition("refused", "Invalid Antigravity input"),
             );
+            return Ok(());
         }
         let mut answer = json!({"request_id":req,"digest":hash,"name":self.record["name"],
             "run_id":self.record["run_id"],"conversation_id":self.record["conversation_id"],
             "session_id":self.record["session_id"],"status":"in_progress","transport":"agy_acp"});
         let id = {
-            let _guard = state_guard()?;
-            if let Some(previous) = receipt(req, &self.record, hash)? {
-                return respond(&mut stream, &previous);
-            }
-            if self.turn.is_some() || self.record["phase"] != "idle" {
-                return respond(
-                    &mut stream,
-                    &disposition("refused", "Antigravity already has a turn in progress"),
-                );
-            }
-            let current = binding(string(&self.record, "name"))?;
-            verify(&current, &self.record)?;
-            locations(&current)?;
-            if current["agy_worker"] != self.record["agy_worker"] {
-                return Err("Antigravity worker changed before submission".into());
+            let _guard = match state_guard() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    let _ = respond(&mut stream, &disposition("refused", &error));
+                    return Ok(());
+                }
+            };
+            match self.check_offer(req, hash) {
+                Ok(None) => {}
+                Ok(Some(previous)) => {
+                    let _ = respond(&mut stream, &previous);
+                    return Ok(());
+                }
+                Err(error) => {
+                    let _ = respond(&mut stream, &disposition("refused", &error));
+                    return Ok(());
+                }
             }
             save_receipt(&answer)?;
             edit_locked(&mut self.record, |record| {
@@ -187,6 +190,24 @@ impl Owner {
                 Err(error)
             }
         }
+    }
+
+    // The original worker and state writer remain selected through the offer.
+    // Refusals here precede both receipt reservation and provider input.
+    fn check_offer(&self, request: &str, hash: &str) -> Result<Option<Value>> {
+        if let Some(previous) = receipt(request, &self.record, hash)? {
+            return Ok(Some(previous));
+        }
+        if self.turn.is_some() || self.record["phase"] != "idle" {
+            return Err("Antigravity already has a turn in progress".into());
+        }
+        let current = binding(string(&self.record, "name"))?;
+        verify(&current, &self.record)?;
+        locations(&current)?;
+        if current["agy_worker"] != self.record["agy_worker"] {
+            return Err("Antigravity worker changed before submission".into());
+        }
+        Ok(None)
     }
 
     fn confirmed(turn: &mut Turn) -> Result<()> {
@@ -232,7 +253,7 @@ impl Owner {
                     reason == "cancelled",
                 )
             }
-            Reply::Refusal(_) => (false, false),
+            Reply::Refusal | Reply::AuthRequired => (false, false),
         };
         if settled {
             Self::confirmed(&mut turn)?;
@@ -330,7 +351,7 @@ impl Owner {
                     json!({"sessionId":self.record["conversation_id"]}),
                     until,
                 )?;
-                if let Reply::Refusal(_) = closed {
+                if !matches!(closed, Reply::Result(_)) {
                     let _ = respond(
                         &mut stream,
                         &disposition("refused", "Antigravity refused to close this session"),
@@ -424,9 +445,32 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
         locations(&record)?;
         let cwd = PathBuf::from(string(&record, "cwd"));
         let binary = executable().ok_or("Antigravity CLI is unavailable")?;
-        let mut native = Client::start(&binary, &cwd)?;
-        let provider = process_pin(native.pid())?;
-        edit(&mut record, |r| r["agy_provider"] = provider)?;
+        // Publish the fence before spawn. If child identity cannot be
+        // published, the original worker's exit alone proves nothing about
+        // the provider, including a child that ignores stdin closure.
+        edit(&mut record, |r| {
+            r["agy_provider"] = json!({"spawn_unconfirmed":true})
+        })?;
+        let mut native = match Client::start(&binary, &cwd) {
+            Ok(child) => child,
+            Err(error) => {
+                edit(&mut record, |r| r["agy_provider"] = Value::Null)?;
+                return Err(error);
+            }
+        };
+        let adopted = process_pin(native.pid())
+            .and_then(|provider| edit(&mut record, |r| r["agy_provider"] = provider));
+        if let Err(error) = adopted {
+            // Only the original child handle can clear unpinned custody here.
+            if native
+                .finish(Instant::now() + Duration::from_millis(250))
+                .is_ok()
+            {
+                let _ = edit(&mut record, |r| r["agy_provider"] = Value::Null);
+            }
+            return Err(error);
+        }
+        native.prepare_input()?;
         let until = Instant::now() + Duration::from_secs(6);
         let initialized = result(native.call(
             "initialize",
@@ -451,13 +495,15 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
             )
         };
         let proof = native.call(method, params, until)?;
-        if matches!(proof, Reply::Refusal(-32000)) {
-            let _ = native.finish(until);
+        if matches!(proof, Reply::AuthRequired) {
+            native.finish(until)?;
             edit(&mut record, |r| {
                 r["agy_worker"] = Value::Null;
+                r["agy_provider"] = Value::Null;
                 r["agy_socket"] = Value::Null;
                 r["state"] = json!("stopped");
                 r["auth_required"] = json!(true);
+                r["agy_startup_refused"] = json!(conversation.is_empty());
                 r["phase"] = json!("input");
             })?;
             return Ok(None);

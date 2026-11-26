@@ -82,7 +82,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn agy_interrupt(name: &str, request: &Request, id: uuid::Uuid) -> Result<i32> {
     let (record, path) = {
-        let _guard = lock(None)?;
+        let _guard = agy::state_guard()?;
         let record = agy::inspect(name)?;
         if record["run_id"] != request.expected_run_id || record["conversation_id"] != request.expected_conversation_id
             || record["turn_started"].as_f64() != Some(request.expected_turn_started)
@@ -99,8 +99,9 @@ fn agy_interrupt(name: &str, request: &Request, id: uuid::Uuid) -> Result<i32> {
     agy::interrupt(&record, request.expected_turn_started)?;
     let receipt = json!({"status":"submitted","confirmed":true,"request_id":id,
         "name":name,"run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id});
-    let _guard = lock(None)?;
-    atomic(&path, &receipt.to_string())?;
+    agy::state_guard()
+        .and_then(|_guard| atomic(&path, &receipt.to_string()))
+        .map_err(|_| "Antigravity confirmed cancellation, but its receipt did not settle; inspect the original session")?;
     println!("{receipt}");
     Ok(0)
 }

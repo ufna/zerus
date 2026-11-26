@@ -1,7 +1,7 @@
 //! One original Antigravity ACP v1 child. The client offers no file, terminal,
 //! permission, or authentication capability.
 use super::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::fd::AsRawFd,
@@ -14,7 +14,8 @@ const MAX_FRAME: usize = 512 << 10;
 
 pub(super) enum Reply {
     Result(Value),
-    Refusal(i64),
+    AuthRequired,
+    Refusal,
 }
 
 pub(super) struct Client {
@@ -58,18 +59,21 @@ impl Client {
             }
         });
         let input = child.stdin.take().expect("ACP stdin is piped");
-        let client = Self {
+        Ok(Self {
             child,
             input: Some(input),
             frames,
             request: 0,
-        };
-        let fd = client.input.as_ref().expect("ACP input exists").as_raw_fd();
+        })
+    }
+
+    pub(super) fn prepare_input(&self) -> Result<()> {
+        let fd = self.input.as_ref().expect("ACP input exists").as_raw_fd();
         // This is our private pipe; another ACP process never shares this end.
         if unsafe { libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
             return Err("Could not bound Antigravity ACP writes".into());
         }
-        Ok(client)
+        Ok(())
     }
 
     fn write(&mut self, frame: Value) -> Result<()> {
@@ -136,10 +140,13 @@ impl Client {
         }
         match (frame.get("result"), frame.get("error")) {
             (Some(value), None) => Ok(Some(Reply::Result(value.clone()))),
-            (None, Some(error)) => error["code"]
-                .as_i64()
-                .map(|code| Some(Reply::Refusal(code)))
-                .ok_or_else(|| "Invalid Antigravity refusal".into()),
+            (None, Some(error)) => match error["code"].as_i64() {
+                Some(-32000) if error["message"] == "Authentication required" => {
+                    Ok(Some(Reply::AuthRequired))
+                }
+                Some(_) => Ok(Some(Reply::Refusal)),
+                None => Err("Invalid Antigravity refusal".into()),
+            },
             _ => Err("Invalid Antigravity ACP response".into()),
         }
     }

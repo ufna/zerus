@@ -1,11 +1,14 @@
 """Run the real Antigravity CLI against a disposable, loopback model endpoint."""
 from contextlib import contextmanager
+import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import hashlib
 import json
 import os
 from pathlib import Path
 from queue import Queue
 import shutil
+import socket
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -113,6 +116,29 @@ class AntigravityNative(unittest.TestCase):
         return self.cli("session-action", row["name"], "--json",
                         payload=self.identity_request(row, action=action), check=check)
 
+    def record(self, name):
+        records = (self.root / "state").glob("*.json")
+        return next(record for path in records if (record := json.loads(path.read_bytes())).get("name") == name)
+
+    def offer(self, row, request):
+        # The exact control frames of two callers that already passed the public
+        # receipt lookup, with the second scheduled after the first native offer.
+        record = self.record(row["name"])
+        control = {key: record[key] for key in ("name", "session_id", "run_id", "conversation_id")}
+        control.update(action="send", request_id=request["request_id"], text=request["text"],
+                       digest=hashlib.sha256(json.dumps(request).encode()).hexdigest())
+        stream = socket.socket(socket.AF_UNIX)
+        self.addCleanup(stream.close)
+        stream.settimeout(10)
+        stream.connect(record["agy_socket"])
+        stream.sendall(json.dumps(control).encode())
+        stream.shutdown(socket.SHUT_WR)
+        return stream
+
+    def read_offer(self, stream):
+        with stream.makefile("rb") as reply:
+            return json.load(reply)
+
     def wait_for(self, predicate, seconds=8):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -131,7 +157,7 @@ class AntigravityNative(unittest.TestCase):
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             settings = self.home / ".gemini/antigravity-cli/settings.json"
-            settings.parent.mkdir(parents=True)
+            settings.parent.mkdir(parents=True, exist_ok=True)
             settings.write_text('{"modelProvider":"gemini"}')
             self.env.update(GOOGLE_GEMINI_BASE_URL=f"http://127.0.0.1:{server.server_port}",
                             GEMINI_API_KEY="loopback-test-not-a-google-key")
@@ -156,12 +182,94 @@ class AntigravityNative(unittest.TestCase):
                 self.action(row, "pause")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fresh keyring-isolated auth control")
-    def test_missing_auth_refuses_send(self):
+    def test_missing_auth_disables_send(self):
         row = self.launch("no-account")
         self.assertTrue(row["auth_required"])
         self.assertFalse(row["send_available"])
         self.assertFalse(row["conversation_id"])
-        self.assertFalse(row["resumable"])
+        self.assertTrue(row["startup_retry_available"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fresh keyring-isolated auth control")
+    def test_guarded_retry_after_proven_sign_in_refusal(self):
+        row = self.launch("retry-sign-in")
+        self.assertTrue(row["auth_required"])
+        self.assertFalse(row["conversation_id"])
+        with self.model():
+            wrong_run = self.identity_request(row, action="resume", expected_run_id=str(uuid.uuid4()))
+            refused = self.cli("session-action", row["name"], "--json", payload=wrong_run)
+            self.assertEqual(json.loads(refused.stdout)["status"], "failed")
+            self.assertEqual(self.inspect(row["name"])["run_id"], row["run_id"])
+            receipt = json.loads(self.action(row, "resume").stdout)
+            self.assertEqual(receipt["status"], "completed")
+            new = self.inspect(row["name"])
+            self.assertEqual(receipt["result_target"]["conversation_id"], new["conversation_id"])
+            self.assertNotEqual(row["run_id"], new["run_id"])
+            self.assertEqual(row["session_id"], new["session_id"])
+            self.assertEqual(row["launch_id"], new["launch_id"])
+            self.assertTrue(new["send_available"])
+
+    def test_late_conflicting_send_keeps_original_turn(self):
+        with self.model() as model:
+            row = self.launch("conflict")
+            first = self.identity_request(row, text="HOLD-NATIVE-TEST")
+            original = self.offer(row, first)
+            self.assertTrue(model.entered.get(timeout=5))
+            conflict = self.offer(row, {**first, "text": "Conflicting payload"})
+            try:
+                refused = self.read_offer(conflict)
+                self.assertEqual(refused["status"], "refused")
+            finally:
+                model.release.set()
+            self.assertEqual(self.read_offer(original)["status"], "submitted")
+            self.assertTrue(self.wait_for(lambda: self.inspect(row["name"])["send_available"]))
+            self.assertFalse(any(b"Conflicting payload" in body for body in model.offers))
+
+    def test_replaced_workspace_refuses_without_exiting(self):
+        with self.model() as model:
+            row = self.launch("replaced-workspace")
+            saved = self.project.with_name("original-project")
+            self.project.rename(saved)
+            self.project.mkdir()
+            try:
+                replaced = self.inspect(row["name"])
+                refused = self.cli("send", row["name"], "--json",
+                                   payload=self.identity_request(row, text="Must never be offered"), check=False)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertFalse(replaced["send_available"])
+                self.assertEqual(self.inspect(row["name"])["process_state"], "running")
+            finally:
+                self.project.rmdir()
+                saved.rename(self.project)
+            self.assertTrue(self.inspect(row["name"])["send_available"])
+            self.assertEqual(model.offers, [])
+
+    def test_interrupt_reservation_has_bounded_writer_admission(self):
+        with self.model() as model:
+            row = self.launch("interrupt-writer")
+            original = self.offer(row, self.identity_request(row, text="HOLD-NATIVE-TEST"))
+            self.assertTrue(model.entered.get(timeout=5))
+            working = self.inspect(row["name"])
+            request = self.identity_request(working, expected_turn_started=working["turn_started"])
+            args = [HGS, "interrupt", row["name"], "--json"]
+            with (self.root / "state" / ".lock").open("rb") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                with subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, cwd=self.project,
+                                      env=self.env) as attempt:
+                    try:
+                        _, error = attempt.communicate(json.dumps(request), timeout=3.5)
+                    except subprocess.TimeoutExpired:
+                        attempt.kill()
+                        attempt.communicate(timeout=2)
+                        self.fail("Interrupt did not return while the state writer was held")
+                self.assertEqual(attempt.returncode, 1)
+                self.assertIn("state is busy", error)
+                receipt = self.root / "state" / "interrupt_receipts" / f"{request['request_id']}.json"
+                self.assertFalse(receipt.exists())
+            exact = self.cli(*args[1:], payload=request)
+            self.assertTrue(json.loads(exact.stdout)["confirmed"])
+            self.assertEqual(self.read_offer(original)["status"], "submitted")
+            model.release.set()
 
     def test_exact_send_resume_cancel_stop_and_no_replay(self):
         profiles = json.loads(self.cli("account", "ls", "--provider", "agy", "--json").stdout)["profiles"]
