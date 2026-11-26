@@ -1754,7 +1754,12 @@ fn classify_send(
         Exit::Abnormal { stderr } => uncertain(detail(&stderr, -1)),
         Exit::Code { code, stderr, .. } if code != 0 => {
             let text = detail(&stderr, code);
-            if code != 1 || stderr.to_lowercase().contains("delivery uncertain") {
+            // ACP can lose the reply after the provider has taken input.
+            // This adapter has no private structured pre-offer witness.
+            if target.name.starts_with("agy/")
+                || code != 1
+                || stderr.to_lowercase().contains("delivery uncertain")
+            {
                 uncertain(text)
             } else {
                 failed(text)
@@ -3170,6 +3175,37 @@ mod tests {
             reply["conversation_id"] = json!("different");
             assert!(matches!(result(&reply), Outcome::Failed { .. }));
         }
+    }
+
+    #[test]
+    fn antigravity_does_not_expose_regular_retry_after_possible_delivery() {
+        let t = Target { name: "agy/project/session".into(), ..target("mac") };
+        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
+        let action = Action::Send {
+            text: "Private fixture".into(), attachments: vec![],
+            agent_id: None, expected_compaction_id: None,
+        };
+        let inv = invocation(&t, &action, id).unwrap();
+        let receipt = |status| serde_json::to_vec(&json!({
+            "request_id": id, "name": t.name, "run_id": t.run_id,
+            "conversation_id": t.conversation_id, "status": status
+        })).unwrap();
+        for failure in [
+            exit(1, &receipt("uncertain"), ""),
+            exit(1, b"", "hgs: Antigravity control reply is unavailable"),
+            exit(1, b"", "hgs: Antigravity control delivery is unconfirmed"),
+            Exit::TimedOut,
+        ] {
+            let outcome = classify(&t, &action, &inv, failure);
+            assert!(matches!(outcome, Outcome::Uncertain { .. }));
+            let key = "draft";
+            let mut messages = crate::local_messages::LocalMessages::default();
+            messages.sending(key, id, None, "Private fixture", &[], &t.run_id, &t.conversation_id, 1.0);
+            messages.finished(key, id, &outcome);
+            assert!(messages.retryable(key, id, &t.run_id, &t.conversation_id).is_none());
+        }
+        assert!(matches!(classify(&t, &action, &inv, exit(0, &receipt("submitted"), "")), Outcome::Done { .. }));
+        assert!(matches!(classify(&t, &action, &inv, Exit::StartFailed("no executable".into())), Outcome::Failed { .. }));
     }
 
     #[test]

@@ -744,6 +744,9 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
 
 it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle through the ordinary menu in %s", async (lang) => {
   transport.language = lang;
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
   const labels = lang === "ru"
     ? { menu: "Действия сессии", stop: "Остановить сессию…", confirm: "Остановить сессию", resume: "Возобновить сессию", retry: "Повторить запуск", cancel: "Отмена" }
     : { menu: "Session actions", stop: "Stop session…", confirm: "Stop session", resume: "Resume session", retry: "Retry start", cancel: "Cancel" };
@@ -764,8 +767,12 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   };
   vi.mocked(bridge.composerOpen).mockImplementation(async s => s?.name === row.name ? view : null);
   const key = (await open(row)).slice(1);
-  const lifecycle: unknown[] = [], sendCalls: unknown[] = [];
+  const lifecycle: unknown[] = [], sendCalls: unknown[] = [], inspections: unknown[] = [];
   transport.composer = (command, args) => {
+    if (command === "local_inspect") {
+      inspections.push(args);
+      return { kind: "refresh", notice: "Refreshing Activity. Check the recorded messages before retrying." };
+    }
     if (command === "send_message") {
       sendCalls.push(args);
       return { kind: "sending" };
@@ -812,6 +819,25 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
   receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [reply], cursor: 2 } }] });
   expect(activity.events()).toEqual([reply]);
+  const unknownId = uuid(99801);
+  const unknown: LocalMessage = {
+    id: unknownId, text: view.text, status: "error", attachments: [], run_id: row.run_id ?? "",
+    conversation_id: row.conversation_id ?? "", submitted_at: 1, error: "Delivery is not confirmed. Review Activity before retrying.",
+    uncertain: true, message_id: null, submitted_text: null, source: null, voice: null,
+  };
+  receive({ ...emptyBatch(), composer: { ...view, rev: 2, available: true, uncertain: true, local: [unknown],
+    status: unknown.error, status_error: true } });
+  const localButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".act-local-actions button")];
+  const checkLabel = lang === "ru" ? "Проверить активность" : "Check Activity";
+  await vi.waitFor(() => expect(localButtons().map(button => button.textContent)).toContain(checkLabel));
+  expect(localButtons()).toHaveLength(2); // Inspect and Delete, with no ordinary Retry
+  expect(sendDraft().disabled).toBe(true);
+  sendDraft().click();
+  expect(sendCalls).toHaveLength(1);
+  localButtons().find(button => button.textContent === checkLabel)!.click();
+  await vi.waitFor(() => expect(inspections).toEqual([{ handle: view.handle, id: unknownId }]));
+  expect(detailTab()).toBe("activity");
+  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
   const stop = await openMenu(labels.stop);
   expect(stop?.getAttribute("aria-disabled")).toBe("false");
   stop!.click();

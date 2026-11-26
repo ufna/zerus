@@ -307,7 +307,8 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
     error: failed ? row.error : "",
     uncertain: failed && row.uncertain,
     actions,
-    inspectLabel: summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
+    inspectLabel: summary?.backend === "agy" ? tr("Check Activity")
+      : summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
     available: row.attachments.map(localFileAvailable),
   };
 }

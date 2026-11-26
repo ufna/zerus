@@ -195,7 +195,11 @@ export function bridgeOf(world: World): NewSessionBridge {
       world.onStart?.(world.count("newSessionStart"));
       return answer;
     },
-    newSessionPlan: async (input, choices) => { record("newSessionPlan", input, choices); return { cmd: choices.agent, tag: input.form.name } as never; },
+    newSessionPlan: async (input, choices) => {
+      record("newSessionPlan", input, choices);
+      await world.wait("creation-plan");
+      return { cmd: choices.agent, tag: input.form.name } as never;
+    },
     launchWarning: async (local, computer) => { record("launchWarning", local, computer); return world.warning; },
     repositoryFields: async (url, destination, style, custom, fresh = null) => {
       record("repositoryFields", url, destination, style, custom, fresh);

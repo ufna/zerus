@@ -1751,7 +1751,12 @@ impl Composers {
                     outcome,
                 );
             }
-            if service {
+            if delivery.session.name.starts_with("agy/") && matches!(outcome, Outcome::Uncertain { .. }) {
+                let activity = Outcome::Uncertain {
+                    detail: zerus_client_core::source!("Delivery is not confirmed. Review Activity before retrying.").into(),
+                };
+                hub.local.finished_as_is(key, request_id, &activity)
+            } else if service {
                 hub.local.finished_as_is(key, request_id, outcome)
             } else {
                 hub.local.finished(key, request_id, outcome)
@@ -5968,6 +5973,39 @@ pub(crate) mod tests {
         assert_eq!((target.computer.as_str(), target.name.as_str(), target.run_id.as_str(), target.conversation_id.as_str()),
             ("studio", name, "run-1", "conv-1"));
         assert!(matches!(action, Action::Send { text, attachments, .. } if text == draft && attachments.is_empty()));
+    }
+
+    #[test]
+    fn antigravity_unconfirmed_send_keeps_the_original_request_and_draft() {
+        let root = dir("agy-uncertain-send");
+        let (c, fake) = send_hub(&root);
+        let name = "agy/sample-project/uncertain";
+        let mut session = session();
+        session.name = name.into();
+        *lock(&fake.row) = ViewRow { agent: "agy".into(), ..row(name) };
+        *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "Private interrupted response".into() });
+        c.open(Some(session));
+        let mut details = ready();
+        details["name"] = json!(name);
+        details["send_supported"] = json!(true);
+        details["send_available"] = json!(true);
+        *lock(&fake.inspected) = Some(details.clone());
+        c.observe(&state(details));
+        let v = until(&c, |v| v.loaded && v.available);
+        let draft = "Private draft after an unconfirmed send";
+        assert_eq!(c.send_message(v.handle, 1, v.text_epoch, draft.into(), 0, 0), SendReply::Sending);
+        let v = until(&c, |v| !v.sending && v.uncertain);
+        assert_eq!(v.text, draft);
+        assert!(!v.can_send);
+        let local = &v.local[0];
+        assert!(local.uncertain);
+        let calls = sent(&fake);
+        assert_eq!(local.id, calls[0].2);
+        assert_eq!(local.error, "Delivery is not confirmed. Review Activity before retrying.");
+        assert!(matches!(c.inspect_local(v.handle, &local.id), Some(Inspect::Refresh { .. })));
+        assert_eq!(c.retry(v.handle, &local.id), SendReply::Busy);
+        assert_eq!(c.send_message(v.handle, 2, v.text_epoch, draft.into(), 0, 0), SendReply::Busy);
+        assert_eq!(sent(&fake).len(), 1);
     }
 
     #[test]
