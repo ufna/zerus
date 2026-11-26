@@ -66,6 +66,33 @@ pub fn run_with_env(hgs: &Path, inv: &Invocation, parent_env: &[(&str, &str)]) -
     }
 }
 
+type StartChild<'a> = Box<dyn FnOnce() -> std::io::Result<Child> + 'a>;
+
+/// Runs the ordinary invocation with an admission check at the original
+/// child spawn, preserving the usual environment, pipes and platform setup.
+#[doc(hidden)]
+pub fn run_with_admission(
+    hgs: &Path,
+    inv: &Invocation,
+    admit: impl for<'a> FnOnce(StartChild<'a>) -> std::io::Result<Child> + Send + 'static,
+) -> Exit {
+    match limited(
+        hgs,
+        inv,
+        &[],
+        usize::MAX,
+        Pipes {
+            spawn: Some(Box::new(move |command, input| {
+                admit(Box::new(move || spawn_helper(command, input)))
+            })),
+            ..Pipes::default()
+        },
+    ) {
+        Ok(exit) => exit,
+        Err(TooLarge { stderr, .. }) => Exit::Abnormal { stderr },
+    }
+}
+
 /// Standard output passed the cap of a [`run_limited`] call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TooLarge {

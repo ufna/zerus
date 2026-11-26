@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { composer } from "../../store/composer";
+import { setDetailTab } from "../../store/ui";
 import type { WaitingMessage } from "../../types";
 import { askedTimeOf, zonedTimeOf } from "../lib/dates";
 
@@ -38,6 +39,13 @@ export function WaitingMessages() {
               <div><time dateTime={at().toISOString()} title={zonedTimeOf(at())}>{tr("Queued in Zerus at %1", askedTimeOf(at()))}</time></div>
             }</Show>
             <div role="status">{stateText(row)}</div>
+            <Show when={row.can_check_terminal}>
+              <button type="button" class="btn ghost" onClick={() => {
+                if (rows().some(current => current.request_id === row.request_id && current.can_check_terminal)) {
+                  setDetailTab("terminal");
+                }
+              }}>{tr("Check Terminal")}</button>
+            </Show>
             <button type="button" class="btn ghost" disabled={composer.operationLocked() || rows()[0]?.state === "reserved"}
               onClick={() => setReview({ handle: composer.view()!.handle, requestId: row.request_id })}>
               {tr("Remove from Zerus queue…")}

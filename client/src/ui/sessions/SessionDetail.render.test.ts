@@ -134,14 +134,14 @@ async function open(row: ViewRow, tab: "activity" | "processes" | "terminal" = "
   return key;
 }
 const queueDraftLabels = {
-  en: { send: "Send draft", queue: "Send queued messages now", retry: "Retry this message", notSent: "Not sent",
+  en: { send: "Send", queue: "Send queued messages now", retry: "Retry this message", notSent: "Not sent",
     check: "Check Terminal", allow: "Allow retry", notConfirmed: "Delivery not confirmed",
     wait: "Your draft is kept. Wait for the agent to accept the earlier message, or check Terminal.",
     cleared: "The earlier input is no longer pending. Your draft is kept.",
     unobserved: "Your draft is kept. Check Terminal. Send and Retry stay paused until this host confirms the earlier input cleared. Update hgs on older hosts.",
     confirmSend: "Send anyway", confirmCompact: "Compact and send",
     origin: "Sender shown by agent: kimi/example/helper on fixture" },
-  ru: { send: "Отправить черновик", queue: "Отправить сообщения из очереди сейчас",
+  ru: { send: "Отправить", queue: "Отправить сообщения из очереди сейчас",
     retry: "Повторить отправку сообщения", notSent: "Не отправлено", check: "Проверить терминал",
     allow: "Разрешить повторную попытку", notConfirmed: "Доставка не подтверждена",
     wait: "Черновик сохранён. Дождитесь, пока агент примет предыдущее сообщение, или проверьте терминал.",
@@ -399,6 +399,81 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   showState(7);
   put(selectedRow);
   publish({ ...refusal, previous_message_pending: true });
+});
+
+it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in %s", async (lang) => {
+  transport.language = lang;
+  const row = { ...fixtureRow("Busy fixture"), status: "working", caption: "Busy" };
+  const key = draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name,
+    session_id: row.session_id, archive_id: null });
+  const initial: ComposerView = {
+    handle: 219, key, loaded: true, rev: 0, text_epoch: 1, text: "", position: 0, anchor: 0, attachments: [], removed: null,
+    attaching: false, sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: false,
+    send_label: { source: "Send" }, available: true, unavailable_reason: "", block_reason: null, attachments_available: true,
+    attachments_reason: "", session_status: "", session_status_error: false, session_blocks_input: false, inspect_error: false,
+    cache: { visible: false, tone: "quiet", label: "", short_label: "" }, cache_warning: "", cache_details: "",
+    context: { visible: false, text: "", tooltip: "", warning: false, tone: "quiet", percent: null, accessible_name: "" },
+    local: [], compacting: false, cancel_send: false, input_visible: true, question: null, queue: null,
+    clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "",
+      cache_enabled: false, running: false, reason: "", cache_reason: "" },
+    offers_outbox: true, previous_message_pending: true,
+  };
+  vi.mocked(bridge.composerOpen).mockImplementation(async (s) => s?.key === `run:${row.run_id}` ? initial : null);
+  const commands: string[] = [];
+  const localQueue: NonNullable<ComposerView["waiting_in_zerus"]> = [];
+  transport.composer = (name, args) => {
+    commands.push(name);
+    if (name !== "send_message") return undefined;
+    localQueue.push({ request_id: uuid(99000 + localQueue.length), preview: String(args?.text), state: "waiting" });
+    return { kind: "accepted", waiting: true, view: { ...initial,
+      rev: Number(args?.rev), text_epoch: Number(args?.epoch) + 1, waiting_in_zerus: [...localQueue] } };
+  };
+  await open(row);
+  const editor = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
+  const draftSend = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
+  const labels = queueDraftLabels[lang];
+  await vi.waitFor(() => expect(editor().readOnly).toBe(false));
+  const oldHost = "Update hgs on this computer to queue messages. The draft stays in the editor.";
+  const oldHostLabel = lang === "ru"
+    ? "Обновите hgs на этом компьютере, чтобы ставить сообщения в очередь. Черновик остался в редакторе."
+    : oldHost;
+  receive({ ...emptyBatch(), composer: { ...initial, offers_outbox: false, ordinary_send_block: oldHost } });
+  editor().value = "kept on the older host";
+  editor().dispatchEvent(new Event("input", { bubbles: true }));
+  expect(draftSend().disabled).toBe(true);
+  expect(draftSend().title).toBe(oldHostLabel);
+  expect(host.querySelector(".cmp-status")?.textContent).toBe(oldHostLabel);
+  editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flush();
+  expect(commands.filter(name => name === "send_message")).toHaveLength(0);
+  expect(editor().value).toBe("kept on the older host");
+  receive({ ...emptyBatch(), composer: initial });
+  for (const [index, text] of ["same", "same", "third"].entries()) {
+    editor().value = text;
+    editor().dispatchEvent(new Event("input", { bubbles: true }));
+    expect(draftSend().textContent).toBe(labels.send);
+    expect(draftSend().disabled).toBe(false);
+    expect(host.querySelectorAll(".cmp-actions .primary")).toHaveLength(1);
+    expect([...host.querySelectorAll("button")].some(button => /Queue draft|Поставить черновик в очередь/.test(button.textContent ?? ""))).toBe(false);
+    if (index === 1) editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    else draftSend().click();
+    await vi.waitFor(() => expect(editor().value).toBe(""));
+  }
+  expect(localQueue.map(entry => entry.preview)).toEqual(["same", "same", "third"]);
+  expect(commands.filter(name => name === "send_message")).toHaveLength(3);
+  expect(commands).not.toContain("composer_enqueue");
+  expect(commands).not.toContain("queue_send_now");
+  expect(host.querySelector(".cmp-draft-status summary")?.textContent).toBe(lang === "ru" ? "Ждут отправки в Zerus (3)" : "Waiting in Zerus (3)");
+  expect(host.querySelector(".cmp-hint")?.textContent).toBe(lang === "ru" ? "Поставлено в очередь Zerus." : "Queued in Zerus.");
+  receive({ ...emptyBatch(), composer: { ...initial, text_epoch: 5, waiting_in_zerus: [
+    { ...localQueue[0], state: "unknown", can_check_terminal: true }, ...localQueue.slice(1),
+  ] } });
+  host.querySelector<HTMLDetailsElement>(".cmp-draft-status")!.open = true;
+  const check = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === labels.check);
+  expect(check).toBeDefined();
+  check!.click();
+  await vi.waitFor(() => expect(detailTab()).toBe("terminal"));
+  expect(commands.filter(name => name === "send_message")).toHaveLength(3);
 });
 
 const submissionLifecycleCases = [

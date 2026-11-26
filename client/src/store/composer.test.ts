@@ -44,7 +44,6 @@ function fakes(reply: SendReply = { kind: "sending" }, opened: ComposerView | nu
     attach: async (_h, paths, start, end) => { calls.push(`attach ${paths.join(",")} ${start}-${end}`); },
     pasteImage: async (_h, bytes) => { calls.push(`paste ${bytes.length}`); },
     send: async (_h, rev, _epoch, text) => { calls.push(`send ${rev} ${text}`); return reply; },
-    enqueue: async () => { throw new Error("unexpected enqueue"); },
     removeWaiting: async () => { throw new Error("unexpected remove"); },
     push: async (_h, rev, _epoch, text, position, anchor) => { calls.push(`push ${rev} ${text} ${position} ${anchor}`); return reply; },
     sendNow: async (id) => { calls.push(`send-now ${id}`); return true; },
@@ -1415,9 +1414,10 @@ describe("the Composer's Zerus queue", () => {
     let waiting: NonNullable<ComposerView["waiting_in_zerus"]> = [];
     const port: ComposerPort = {
       ...f.port,
-      enqueue: async (_h, rev, epoch, text) => {
+      send: async (_h, rev, epoch, text) => {
+        f.calls.push(`send ${rev} ${text}`);
         waiting = [...waiting, { request_id: String(rev), preview: text, state: "waiting" }];
-        return { ...initial, rev, text_epoch: epoch + 1, text: "", waiting_in_zerus: waiting };
+        return { kind: "accepted", waiting: true, view: { ...initial, rev, text_epoch: epoch + 1, text: "", waiting_in_zerus: waiting } };
       },
     };
     await createRoot(async () => {
@@ -1425,29 +1425,28 @@ describe("the Composer's Zerus queue", () => {
       await c.open(SESSION);
       for (const text of ["same", "same", "third"]) {
         c.input(text, text.length, text.length);
-        expect(c.canQueueDraft()).toBe(true);
+        expect(c.sendEnabled()).toBe(true);
         await c.send();
         expect(c.text()).toBe("");
       }
       expect(c.waitingMessages().map(item => item.preview)).toEqual(["same", "same", "third"]);
       expect(new Set(c.waitingMessages().map(item => item.request_id)).size).toBe(3);
-      expect(f.calls.filter(call => call.startsWith("send") || call.startsWith("push"))).toEqual([]);
+      expect(f.calls.filter(call => call.startsWith("send ")).map(call => call.split(" ").at(-1))).toEqual(["same", "same", "third"]);
       c.input("later draft", 11, 11);
       expect(c.text()).toBe("later draft");
-      expect(c.sendEnabled()).toBe(false);
+      expect(c.sendEnabled()).toBe(true);
       expect(await c.sendNow("native-queue")).toBe(true);
       expect(f.calls.at(-1)).toBe("send-now native-queue");
     });
   });
 
-  it("keeps the ordinary Send route when a busy session can still accept native input", async () => {
+  it("uses the ordinary Send bridge for a ready session", async () => {
     const f = fakes({ kind: "sending" }, { ...view(), offers_outbox: true });
     await createRoot(async () => {
       const c = createComposer(f.port, f.timers);
       await c.open(SESSION);
       c.input("native", 6, 6);
-      expect(c.canQueueDraft()).toBe(true);
-      expect(c.queueDraft()).toBe(false);
+      expect(c.sendEnabled()).toBe(true);
       await c.send();
       expect(f.calls).toContain("send 1 native");
     });
@@ -1457,11 +1456,11 @@ describe("the Composer's Zerus queue", () => {
     const first = { ...view(), offers_outbox: true, previous_message_pending: true };
     const second = { ...view(), handle: first.handle + 1, key: "new", text: "second draft" };
     const f = fakes();
-    const transfer = held<ComposerView>();
+    const transfer = held<SendReply>();
     const port: ComposerPort = {
       ...f.port,
       open: async (s) => s?.name === SESSION.name ? first : second,
-      enqueue: () => transfer.call(),
+      send: () => transfer.call(),
     };
     await createRoot(async () => {
       const c = createComposer(port, f.timers);
@@ -1471,7 +1470,7 @@ describe("the Composer's Zerus queue", () => {
       await tick();
       expect(transfer.count()).toBe(1);
       await c.open({ ...SESSION, name: "other" });
-      transfer.answer({ ...first, text: "", text_epoch: first.text_epoch + 1 });
+      transfer.answer({ kind: "accepted", waiting: true, view: { ...first, text: "", text_epoch: first.text_epoch + 1 } });
       await submitting;
       expect(c.text()).toBe("second draft");
       expect(c.waitingMessages()).toEqual([]);

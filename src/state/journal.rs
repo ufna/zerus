@@ -1145,6 +1145,9 @@ pub(super) fn inspection_with(
         && !pause_active(&record)
     {
         output["previous_message_pending"] = json!(input::previous_message_pending(&record));
+        // This owning host can return the exact pre-input refusal required
+        // by the desktop FIFO. Older inspections leave the field absent.
+        output["guarded_idle_send"] = json!(true);
     }
     #[cfg(target_os = "linux")]
     if archive_id.is_none()

@@ -1440,6 +1440,58 @@ pub async fn dispatch_as(
     .await
 }
 
+/// A Composer FIFO offer may still be invalidated while the selector
+/// capability is read. The false-admission result is local to the original
+/// spawn hook. A child's failure or output can never imitate it.
+pub(crate) async fn dispatch_outbox_as(
+    state: &Actions,
+    target: Target,
+    action: Action,
+    request_id: String,
+    admission: crate::composer::OutboxAdmission,
+) -> Result<Option<Outcome>, String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    if blocked() {
+        return Ok(Some(failed(REPLAY_NEEDS_HGS)));
+    }
+    if !matches!(action, Action::SendWhenIdle { .. }) {
+        return Err("Expected a guarded Send.".into());
+    }
+    let probe = session_selector::probe(&target.computer);
+    let request = request_id.clone();
+    let unoffered = Arc::new(AtomicBool::new(false));
+    let was_unoffered = Arc::clone(&unoffered);
+    let outcome = dispatch_with_plan(
+        state,
+        target,
+        action,
+        request_id,
+        move |hgs, inv, _| {
+            if inv.args == probe.args && inv.request_id.is_none() && inv.stdin.is_none() {
+                return run(hgs, inv);
+            }
+            if inv.request_id.as_deref() != Some(request.as_str()) {
+                return zerus_client_core::Exit::StartFailed("Guarded Send changed.".into());
+            }
+            let admission = admission.clone();
+            let unoffered = Arc::clone(&unoffered);
+            zerus_client_core::run::run_with_admission(hgs, inv, move |start| {
+                match admission.spawn(start) {
+                    Some(started) => started,
+                    None => {
+                        unoffered.store(true, Ordering::Relaxed);
+                        Err(std::io::ErrorKind::Interrupted.into())
+                    }
+                }
+            })
+        },
+        None,
+    )
+    .await?;
+    Ok((!was_unoffered.load(Ordering::Relaxed)).then_some(outcome))
+}
+
 /// The image seam cannot choose an action or runner. It uses ordinary StageFiles
 /// admission/classification, but refuses changed source bytes BEFORE helper start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

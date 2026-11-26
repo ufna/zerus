@@ -11,7 +11,10 @@ vi.mock("../i18n", async (original) => {
 const { statusLine, DRAFTS_NOT_RECORDED } = await import("./composer");
 
 const RUST = import.meta.glob("../../core/src/drafts.rs", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-const view = (status: string) => ({ status, status_error: true, session_status: "", session_status_error: false, unavailable_reason: "", waiting: null }) as unknown as ComposerView;
+const view = (status: string) => ({
+  status, status_error: true, session_status: "", session_status_error: false,
+  unavailable_reason: "", waiting: null, text: "", attachments: [],
+}) as unknown as ComposerView;
 
 describe("the draft store's refused-save error", () => {
   it("is the core constant, word for word", () => {

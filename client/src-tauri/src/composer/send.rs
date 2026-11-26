@@ -258,6 +258,7 @@ pub(crate) struct Context {
     pub(crate) row: ViewRow,
     pub(crate) online: bool,
     pub(crate) details: Option<Arc<Value>>,
+    pub(super) awaiting_outbox_details: bool,
     pub(crate) facts: BlockFacts,
     verified_send: Option<VerifiedTarget>,
 }
@@ -292,26 +293,34 @@ fn previous_message_pending_with_readiness(
     details: &Value,
     verified: bool,
 ) -> Option<bool> {
-    let (run, conversation) = target;
-    if run.is_empty()
-        || conversation.is_empty()
-        || text(details, "run_id") != run
-        || text(details, "conversation_id") != conversation
-        || text(details, "name") != row.name
-        || text(details, "agent") != row.agent
-        || (row.account_binding_reported
-            && (text(details, "account_id") != row.account_id
-                || text(details, "account_home") != row.account_home))
-        || text(details, "runtime_state") != "live"
-        || (!verified && text(details, "process_state") != "running")
-    {
+    if !exact_input_identity(row, target, details) {
         return None;
     }
-    if verified && details["process_state"] != "running" {
+    if details["process_state"] == "running" {
+        details["previous_message_pending"].as_bool()
+    } else if verified {
         details["verified_previous_message_pending"].as_bool()
     } else {
-        details["previous_message_pending"].as_bool()
+        None
     }
+}
+
+pub(super) fn exact_input_details(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
+    exact_input_identity(row, target, details) && text(details, "process_state") == "running"
+}
+
+fn exact_input_identity(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
+    let (run, conversation) = target;
+    !run.is_empty()
+        && !conversation.is_empty()
+        && text(details, "run_id") == run
+        && text(details, "conversation_id") == conversation
+        && text(details, "name") == row.name
+        && text(details, "agent") == row.agent
+        && (!row.account_binding_reported
+            || (text(details, "account_id") == row.account_id
+                && text(details, "account_home") == row.account_home))
+        && text(details, "runtime_state") == "live"
 }
 
 impl Context {
@@ -476,6 +485,7 @@ impl Composers {
             row,
             online,
             details,
+            awaiting_outbox_details: followed && hub.followed.awaiting_outbox_details,
             facts,
             verified_send,
         })
@@ -662,6 +672,7 @@ impl Composers {
                         let verified = verify_hold
                             && me.verify_earlier_input(&mut hub, number, &target, &details);
                         if !verification_only || verified {
+                            me.observe_outbox_details(&mut hub, &details);
                             accepted_details = true;
                             hub.followed.inspect_error = None;
                             hub.followed.details = Some(details);
@@ -995,6 +1006,11 @@ const PROMPTS: u64 = 8;
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SendReply {
+    /// The draft was saved in the outbox, with its original identity.
+    Accepted {
+        view: Box<super::ComposerView>,
+        waiting: bool,
+    },
     /// The delivery started; its end arrives with the composer view.
     Sending,
     /// Nothing happened: another send or question runs, the draft is not
@@ -1301,6 +1317,17 @@ impl Composers {
     ) -> SendReply {
         self.edit(handle, rev, epoch, text.clone(), position, anchor);
         let mut hub = self.lock();
+        match self.offer_manual_send(&mut hub, handle, rev, epoch, &text) {
+            Ok(Some(accepted)) => {
+                drop(hub);
+                return accepted.blocking_recv().unwrap_or(SendReply::Busy);
+            }
+            Err(reply) => {
+                self.hand_back(hub, handle);
+                return reply;
+            }
+            Ok(None) => {}
+        }
         let reply = self.send_held_from(&mut hub, handle, epoch, &text, true);
         if matches!(reply, SendReply::Busy | SendReply::Blocked { .. }) {
             self.hand_back(hub, handle);
@@ -2631,6 +2658,7 @@ impl Composers {
             row,
             online,
             details: Some(Arc::new(details)),
+            awaiting_outbox_details: false,
             facts,
             verified_send: None,
         };

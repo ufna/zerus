@@ -79,6 +79,11 @@ pub type Reconnect = Arc<dyn Fn(&str) + Send + Sync>;
 /// request id the delivery made for it.
 pub type Dispatch = Arc<dyn Fn(Target, Action, String) -> Result<Outcome, String> + Send + Sync>;
 
+pub(crate) type OutboxDispatch = Arc<
+    dyn Fn(Target, Action, String, OutboxAdmission) -> Result<Option<Outcome>, String> + Send + Sync,
+>;
+pub(crate) use outbox::OutboxAdmission;
+
 const COMPOSERS: usize = 64;
 /// Attachment bytes the idle composers in memory may hold; their drafts stay on disk.
 const HELD_BYTES: usize = 128 * 1024 * 1024;
@@ -357,6 +362,8 @@ pub struct ComposerView {
     pub waiting_in_zerus: Vec<outbox::EntryView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordinary_send_block: Option<String>,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
@@ -633,6 +640,9 @@ pub(crate) struct Followed {
     /// A state frame of this follow arrived: the stream keeps the details
     /// current, and Qt's `inspect()` reads nothing more while it does.
     pub(crate) streamed: bool,
+    /// A new catalog can arrive before the replacement Activity. The old
+    /// details remain visible but cannot select the ordinary Send route.
+    pub(crate) awaiting_outbox_details: bool,
     /// The row's run, conversation and state when the last inspect started.
     pub(crate) inspected: Option<send::Basis>,
     /// Its last 500 Activity events (Qt's `m_events`), for the local rows'
@@ -699,6 +709,8 @@ pub(crate) struct Hub {
     pub(crate) poll: Option<f64>,
     pub(crate) queue: queue::Queue,
     outbox_probe: bool,
+    /// Invalidates in-flight outbox reads and offers before native dispatch.
+    outbox_route_revision: u64,
     /// The one OpenCode inbox removal that runs (zerus-5wmh.13.6).
     pub(crate) inbox: inbox::Inbox,
     /// Events for the next batch (`composer_events`), at most 16.
@@ -744,6 +756,7 @@ pub(crate) struct Shared {
     /// The tray reads the same bounded keys as the window, after the hub
     /// lock is released; this callback only wakes its worker.
     pub(crate) draft_listener: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    outbox_dispatch: std::sync::OnceLock<OutboxDispatch>,
     /// Wakes the ticker, which sleeps while no composer is open.
     opened: Condvar,
     /// The selected desktop service's deferred send route, if any.
@@ -810,6 +823,7 @@ impl Composers {
             deps,
             changes: AtomicU64::new(0),
             draft_listener: Default::default(),
+            outbox_dispatch: Default::default(),
             opened: Condvar::new(),
             deferred: Mutex::new(None),
             verified_send: Mutex::new(None),
@@ -1617,6 +1631,15 @@ impl Composers {
         };
         // The followed session's last state (or end) in this batch, and its
         // events in order: "replace" starts the window anew.
+        let unavailable = |out: &zerus_client_core::ComputerOut| {
+            !matches!(out.status.as_str(), "live" | "polled")
+        };
+        let route_changed = batch.activity.iter().any(|out| out.kind == "connection")
+            || batch.computers.iter().any(unavailable);
+        let mut connection_changed = batch
+            .computers
+            .iter()
+            .any(|out| out.computer.0 == computer && unavailable(out));
         let mut last = None;
         let mut replaced = false;
         let mut events: Vec<&Value> = Vec::new();
@@ -1628,6 +1651,10 @@ impl Composers {
             match out.kind.as_str() {
                 "state" => last = Some(Some(&out.payload["value"])),
                 "ended" => last = Some(None),
+                "connection" => {
+                    connection_changed = true;
+                    last = None;
+                }
                 kind @ ("events" | "replace") => {
                     if kind == "replace" {
                         replaced = true;
@@ -1661,7 +1688,19 @@ impl Composers {
                 hub.local.forget(&gone);
             }
         }
+        if route_changed {
+            hub.outbox_route_revision += 1;
+        }
         let followed = hub.followed.computer == computer && hub.followed.key == key;
+        let lost = followed
+            && connection_changed
+            && self.context(&hub).is_none_or(|ctx| ctx.outbox_candidate());
+        if lost {
+            hub.followed.awaiting_outbox_details = true;
+            hub.followed.streamed = false;
+            hub.followed.inspected = None;
+            hub.followed.inspecting = None;
+        }
         let child = hub.open.as_ref().and_then(|open| open.subagent.clone());
         let allowed = |details: &Value| {
             child.as_ref().is_none_or(|child| {
@@ -1684,10 +1723,11 @@ impl Composers {
             followed && matches!(update, Some(Some((ref details, _))) if allowed(details));
         let state_changed = match update.filter(|_| followed) {
             Some(Some((details, expiry))) if allowed(&details) => {
+                self.observe_outbox_details(&mut hub, &details);
                 hub.followed.details = Some(details);
                 hub.followed.expiry = expiry;
                 hub.followed.inspect_error = None;
-                hub.followed.streamed = true;
+                hub.followed.streamed = !hub.followed.awaiting_outbox_details;
                 true
             }
             Some(Some(_)) => false,
@@ -1715,10 +1755,10 @@ impl Composers {
             self.after_observe(accepted_details);
         } else if new_events {
             // An uncertain draft's advisory can change without a local row.
-            if self.reconcile() || touched || history_hint {
+            if self.reconcile() || touched || history_hint || lost {
                 self.changed();
             }
-        } else if touched {
+        } else if touched || lost {
             self.changed();
         }
     }
@@ -1843,6 +1883,8 @@ impl Composers {
     pub(crate) fn view_of(&self, hub: &Hub, key: &str) -> Option<ComposerView> {
         let composer = hub.composers.get(key)?;
         let session = send::session_view(self, hub, composer);
+        let context = self.context(hub).filter(|ctx| ctx.key == key);
+        let manual_send = context.as_ref().map(|ctx| self.manual_send(hub, ctx, composer));
         let (question, question_input) = self.question_part(hub);
         let input_visible = question_input
             && session
@@ -1944,12 +1986,12 @@ impl Composers {
                 && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
-            waiting_in_zerus: outbox::view(
-                &composer.outbox,
-                key,
-                self.context(hub).as_ref().filter(|ctx| ctx.key == key),
-            ),
-            offers_outbox: self.offers_outbox(hub, key),
+            waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
+            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait)),
+            ordinary_send_block: match manual_send {
+                Some(outbox::ManualSend::Blocked(reason)) => Some(reason),
+                _ => None,
+            },
             send_label: if composer.sending {
                 zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {

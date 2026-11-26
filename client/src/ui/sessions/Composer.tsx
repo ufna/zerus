@@ -268,7 +268,6 @@ export function Composer() {
   });
 
   const status = () => composer.status();
-  const sendDraftLabel = () => composer.queue() || status().multiline ? tr("Send draft") : tr("Send");
   const statusDetail = () => {
     const text = status().text, session = v()?.session_status ?? "";
     return session && session !== text ? `${text}\n${session}` : text;
@@ -358,12 +357,9 @@ export function Composer() {
           <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>
         </Show>
-        <Show when={composer.offersQueueDraft() && !composer.queueDraft()}>
-          <button type="button" class="btn" disabled={!composer.canQueueDraft()}
-            onClick={() => { void composer.enqueueDraft(); }}>{tr("Queue draft")}</button>
-        </Show>
-        <button type="button" class="btn primary" aria-label={composer.queueDraft() ? tr("Queue draft") : sendDraftLabel()} disabled={composer.queueDraft() ? !composer.canQueueDraft() : !composer.sendEnabled()} title={v()?.waiting ?? (status().multiline ? status().text : undefined)}
-          onClick={() => { void composer.send(); }}>{v()?.sending || v()?.waiting ? trText(v()!.send_label) : composer.queueDraft() ? tr("Queue draft") : sendDraftLabel()}<Icon name="arrow-up" size={13} /></button>
+        <button type="button" class="btn primary" aria-label={tr("Send")} disabled={!composer.sendEnabled()}
+          title={v()?.waiting ?? (v()?.ordinary_send_block || status().multiline ? status().text : undefined)}
+          onClick={() => { void composer.send(); }}>{v()?.sending || v()?.waiting ? trText(v()!.send_label) : tr("Send")}<Icon name="arrow-up" size={13} /></button>
       </div>
     </div>
   );
