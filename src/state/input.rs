@@ -191,8 +191,13 @@ fn checked_record_gate(
         process,
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
-    if request.only_when_idle && (!idle_reminder_ready(&record) || effort::pending_applies(&record)) {
-        return Err(Gate::Other("The agent is not idle; the team reminder was not sent.".into()));
+    if request.only_when_idle {
+        if !idle_reminder_ready(&record) {
+            return Err(Gate::NotIdle);
+        }
+        if effort::pending_applies(&record) {
+            return Err(Gate::Other("The agent is not idle; the team reminder was not sent.".into()));
+        }
     }
     Ok(record)
 }
@@ -1324,17 +1329,19 @@ pub(crate) enum Gate {
         dialog: Option<Dialog>,
     },
     Other(String),
+    NotIdle,
 }
 impl Gate {
     pub(crate) fn reason(self) -> String {
         match self {
             Gate::Waiting { reason, .. } | Gate::Other(reason) => reason,
+            Gate::NotIdle => "The agent is not idle; the team reminder was not sent.".into(),
         }
     }
     pub(crate) fn dialog(&self) -> Option<Dialog> {
         match self {
             Gate::Waiting { dialog, .. } => *dialog,
-            Gate::Other(_) => None,
+            Gate::Other(_) | Gate::NotIdle => None,
         }
     }
 }
@@ -1587,10 +1594,11 @@ pub(super) fn safe_filename(name: &str, index: usize) -> String {
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let terminal_outcome = args.len() == 3 && args[1] == "--delivery-outcome-v2" && args[2] == "--json";
-    if !terminal_outcome && (args.len() != 2 || args[1] != "--json") {
+    let when_idle = args.len() == 3 && args[1] == "--when-idle" && args[2] == "--json";
+    if !terminal_outcome && !when_idle && (args.len() != 2 || args[1] != "--json") {
         return Err("usage: hgs send <session> --json (JSON from stdin)".into());
     }
-    dispatch_send(&args[0], terminal_outcome, ProcessCheck::Legacy)
+    dispatch_send(&args[0], terminal_outcome, when_idle, ProcessCheck::Legacy)
 }
 
 #[cfg(target_os = "linux")]
@@ -1602,11 +1610,13 @@ pub(super) fn dispatch_verified(
     } else {
         // Selection remains read-only until the ordinary send owns Root.
         super::resolve_label_unrepaired(name)?;
-        dispatch_send(name, false, ProcessCheck::Verify)
+        dispatch_send(name, false, false, ProcessCheck::Verify)
     }
 }
 
-fn dispatch_send(name: &str, terminal_outcome: bool, process: ProcessCheck) -> Result<i32> {
+fn dispatch_send(
+    name: &str, terminal_outcome: bool, when_idle: bool, process: ProcessCheck,
+) -> Result<i32> {
     let mut input = Vec::new();
     io::stdin()
         .take((MAX_JSON + 1) as u64)
@@ -1614,6 +1624,25 @@ fn dispatch_send(name: &str, terminal_outcome: bool, process: ProcessCheck) -> R
         .map_err(|e| e.to_string())?;
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
+    }
+    if when_idle {
+        let request: Request = serde_json::from_slice(&input).map_err(|error| error.to_string())?;
+        if !request.only_when_idle || request.expected_conversation_id.is_empty() {
+            return Err("Automatic Send requires an exact conversation and the idle guard".into());
+        }
+        let receipt = match submit_core(name, &input, Origin::Person, true, false, None, process) {
+            Ok(receipt) => receipt,
+            Err(Failure::NotOffered(witness)) if witness.idle_refusal => json!({
+                "schema": 1, "status": "waiting_for_idle", "proof": "native_input_lock",
+                "request_id": witness.request_id, "name": witness.name, "run_id": witness.run_id,
+                "conversation_id": witness.conversation_id, "input_sha256": witness.digest,
+            }),
+            Err(Failure::NotOffered(witness)) => return Err(witness.reason),
+            Err(Failure::Unknown(error)) => return Err(error),
+            Err(Failure::TerminalRefusal(_)) => return Err("Unexpected Send outcome".into()),
+        };
+        println!("{receipt}");
+        return Ok(0);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if matches!(process, ProcessCheck::Legacy) {
@@ -2004,6 +2033,7 @@ pub(crate) struct NotOffered {
     /// The terminal gate refused because the terminal holds input
     /// (`Gate::Waiting`; zerus-63rru.79).
     pub(crate) waiting: bool,
+    idle_refusal: bool,
     /// Which dialog the waiting terminal shows, when the refusal is a
     /// dialog's and a witness exists for it (zerus-63rru.83). The typed
     /// name, never read from a sentence.
@@ -2254,14 +2284,18 @@ fn submit_core(
         receipts: receipt_path.clone(),
         reason,
         waiting,
+        idle_refusal: false,
         dialog,
     };
     let refused = |typed: bool, reason: String| remember_send_refusal(typed, witness(reason, false, None), retain_refusal, terminal_outcome);
     // The terminal gate's own refusal keeps its cause.
     let gated = |typed: bool, gate: Gate| {
         let waiting = matches!(gate, Gate::Waiting { .. });
+        let idle_refusal = matches!(gate, Gate::NotIdle);
         let dialog = gate.dialog().map(|d| d.name());
-        remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)
+        let mut witness = witness(gate.reason(), waiting, dialog);
+        witness.idle_refusal = idle_refusal;
+        remember_send_refusal(typed, witness, retain_refusal, terminal_outcome)
     };
     #[cfg(target_os = "linux")]
     if matches!(process, ProcessCheck::Verify)
@@ -2964,6 +2998,7 @@ mod tests {
             receipts: PathBuf::from("state/input_receipts/id.json"),
             reason: "refused".into(),
             waiting: false,
+            idle_refusal: false,
             dialog: None,
         };
         assert!(
@@ -2995,7 +3030,7 @@ mod tests {
             let witness = || NotOffered {
                 request_id: "id".into(), name: "n".into(), run_id: "r".into(),
                 conversation_id: "c".into(), digest: "d".into(), receipts: path.clone(),
-                reason: "terminal refused".into(), waiting: dialog.is_some(), dialog,
+                reason: "terminal refused".into(), waiting: dialog.is_some(), idle_refusal: false, dialog,
             };
             fs::write(&path, original.to_string()).unwrap();
             assert!(matches!(before_input(false, witness()), Failure::NotOffered(w)

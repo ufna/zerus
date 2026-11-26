@@ -106,7 +106,7 @@ impl Lane {
         match action {
             Action::MarkRead { .. } => Self::Read,
             Action::Interrupt { .. } => Self::Interrupt,
-            Action::Send { .. } => Self::Send,
+            Action::Send { .. } | Action::SendWhenIdle { .. } => Self::Send,
             Action::StopProcess { .. } => Self::Process,
             Action::SendNow { .. } => Self::Queue,
             Action::RemoveQueued { .. } => Self::Inbox,

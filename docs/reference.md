@@ -2698,7 +2698,29 @@ Delivery verifies the exact run, process, conversation and native input state.
 A busy Claude or Codex session can accept a message through its native queue
 when its empty composer is recognized. An unknown busy layout or a draft refuses
 with `agent busy` before submission; wait or inspect Terminal rather than typing
-through that refusal. Diagnostic screen samples keep only the latest private
+through that refusal.
+
+Desktop Composer offers **Queue draft** while a live Codex or Kimi
+conversation is busy or still holds earlier input. A busy conversation that
+can already accept a native message also keeps **Send**. **Queue draft** saves
+one message, including its attachments, in **Waiting in Zerus** and clears the
+editable draft. The queue shows each message's original local enqueue time.
+The agent receives no input during that save. The desktop
+checks the original run and sends in order when it confirms an idle input
+with no earlier message pending. The host checks idle again under its native
+input lock before offering the message. Previously opened queues can drain while
+another session is selected. After restarting the app, open the session to
+load its saved queue. The queue holds up to 16 messages, 80 KiB of text and
+20 MiB of files per session. The queue saves its messages and files separately
+from the editable draft so an older desktop can edit that draft during rollback.
+
+The native queue shown in Activity has its own **Send now** action. It
+operates only on the native queue already shown there. A refused or unknown
+delivery pauses the Zerus queue at that message. Check the agent's Terminal
+before deciding whether to remove an unknown message from the Zerus queue.
+A new run or a renamed session cannot inherit the earlier run's delivery.
+
+Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.
 Each sample is at most 16 KiB: cursor coordinates, bounded cursor-row text and
 structural metadata for at most eight nearby rows. Text from other rows and the
