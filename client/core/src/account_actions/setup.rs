@@ -2,7 +2,22 @@
 use super::{run_catalog, Binding, CHANGED, MAX_MEMBERS};
 use crate::{actions::Invocation, ComputerId};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{path::Path, time::Duration};
+
+pub const ANTIGRAVITY_LOGIN_MARKER: &str = "antigravity-native-login-v1";
+
+/// Check the local binary that will actually forward the interactive command.
+pub fn antigravity_forwarding_supported(hgs: &Path) -> bool {
+    let call = Invocation {
+        args: vec!["--help".into()],
+        stdin: None,
+        timeout: Duration::from_secs(5),
+        request_id: None,
+    };
+    matches!(crate::run::run_limited(hgs, &call, &[], 64 * 1024),
+        Ok(crate::Exit::Code { code: 0, stdout, .. })
+            if String::from_utf8_lossy(&stdout).lines().any(|line| line.trim() == ANTIGRAVITY_LOGIN_MARKER))
+}
 
 /// The single native Antigravity account advertised by this catalog.
 pub fn antigravity(catalog: &Value) -> Option<&Value> {
@@ -84,6 +99,16 @@ impl Host {
             .filter(|row| row["installed"] == true && row["native_login_supported"] == true)
             .ok_or(CHANGED)?;
         self.terminal_call("login", "native-agy")
+    }
+    pub fn antigravity_terminal(&self, hgs: &Path, catalog: &Value) -> Result<Invocation, String> {
+        let call = self.antigravity_login(catalog)?;
+        if !self.computer.is_local() && !antigravity_forwarding_supported(hgs) {
+            return Err(
+                "Update the local hgs before opening Antigravity sign-in on another computer."
+                    .into(),
+            );
+        }
+        Ok(call)
     }
     pub fn fresh(&self, hgs: &Path) -> Result<Value, String> {
         let catalog = self.read(hgs)?;
@@ -228,6 +253,46 @@ mod tests {
         assert!(!valid_label("bad\nname"));
         assert!(valid_id("codex-example"));
         assert!(!valid_id("--other"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn antigravity_remote_terminal_requires_fresh_local_transport_capability() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().join(format!("agy-origin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let dir = Scratch(path);
+        let hgs = dir.0.join("hgs");
+        let help = |line: &str, status: u8| {
+            crate::test_executable::write_executable(
+                &hgs,
+                format!("#!/bin/sh\n[ \"$*\" = --help ] || exit 9\nprintf '%s\\n' '{line}'\nexit {status}\n"),
+            );
+        };
+        let machine = "11111111-1111-4111-8111-111111111111";
+        let catalog = json!({"revision":"r1","setup_revision":true,"profiles":[{
+            "id":"native-agy","provider":"agy","native":true,"installed":true,"native_login_supported":true
+        }]});
+        let peer =
+            Host::capture(ComputerId("mac-fixture".into()), machine.into(), &catalog).unwrap();
+        assert!(peer.antigravity_login(&catalog).is_ok());
+        help("Account transfer ABI: revision-copy-v1", 0);
+        assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
+        help(ANTIGRAVITY_LOGIN_MARKER, 1);
+        assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
+        help(&format!("missing {ANTIGRAVITY_LOGIN_MARKER}"), 0);
+        assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
+        help(&format!("       {ANTIGRAVITY_LOGIN_MARKER}"), 0);
+        assert!(peer.antigravity_terminal(&hgs, &catalog).is_ok());
+        help("older executable", 0);
+        assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
+        let local = Host::capture(ComputerId::local(), machine.into(), &catalog).unwrap();
+        assert!(local.antigravity_terminal(&hgs, &catalog).is_ok());
     }
 
     #[test]

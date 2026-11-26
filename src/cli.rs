@@ -245,6 +245,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
+       antigravity-native-login-v1
        delivery-receipt-v1
        native-send-outcome-v2
        session-question-routing-v1
@@ -1681,6 +1682,10 @@ pub(crate) fn bounded_archive_script(args: &[String], guarded: bool) -> String {
 /// A POSIX script that runs `hgs ARGS` on the peer only when the installed
 /// CLI's help lists every marker; otherwise it asks for an update.
 pub(crate) fn gated(markers: &[Marker], args: &[String]) -> String {
+    gated_with_message(markers, args, "update the selected computer to select sessions by ID")
+}
+
+fn gated_with_message(markers: &[Marker], args: &[String], message: &str) -> String {
     let probes: Vec<String> = markers
         .iter()
         .map(|marker| match marker {
@@ -1691,7 +1696,7 @@ pub(crate) fn gated(markers: &[Marker], args: &[String]) -> String {
         })
         .collect();
     platform::remote_sh(&format!(
-        "if {}; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to select sessions by ID' >&2; exit 1; fi",
+        "if {}; then exec ~/.local/bin/hgs {}; else echo 'hgs: {message}' >&2; exit 1; fi",
         probes.join(" && "),
         platform::join(args)
     ))
@@ -2468,7 +2473,18 @@ fn remote_via(
         None => remote_args,
     };
     let wrapped_path_info = command == "--expect-machine" && args.get(1).is_some_and(|actual| actual == "path-info");
-    let remote = if let Some(markers) = selector_markers(command, &args)? {
+    use zerus_client_core::account_actions::setup::ANTIGRAVITY_LOGIN_MARKER;
+    let remote = if antigravity_login {
+        let mut markers = vec![Marker::Line(ANTIGRAVITY_LOGIN_MARKER)];
+        if command == "--expect-machine" || machine.is_some() {
+            markers.push(Marker::Text("guarded-create-v1"));
+        }
+        gated_with_message(
+            &markers,
+            &remote_args,
+            "update the selected computer to open Antigravity sign-in",
+        )
+    } else if let Some(markers) = selector_markers(command, &args)? {
         // An older peer would read the flag as a session name; it must
         // advertise the selector, and what the command needs already, first.
         gated(&markers, &remote_args)
@@ -2633,6 +2649,7 @@ fn remote_via(
         {
             markers.push((state::LISTING_METADATA_MARKER, true));
         }
+        if antigravity_login { markers.push((ANTIGRAVITY_LOGIN_MARKER, true)); }
         if machine.is_some() { markers.push(("guarded-create-v1", false)); }
         let mut words = remote_args.clone();
         // A non-POSIX peer runs the words without a shell probe: send --bounded only to one that lists it.

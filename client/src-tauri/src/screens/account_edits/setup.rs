@@ -272,6 +272,14 @@ impl Screens {
             None
         };
         drop(hub);
+        if kind == SetupKind::Add
+            && shown.iter().any(|host| !host.key.is_empty() && host.antigravity_sign_in)
+            && !policy::antigravity_forwarding_supported(&self.0.hgs)
+        {
+            for host in shown.iter_mut().filter(|host| !host.key.is_empty()) {
+                host.antigravity_sign_in = false;
+            }
+        }
         let handle = uuid::Uuid::new_v4().to_string();
         let label = view
             .accounts
@@ -385,7 +393,7 @@ impl Screens {
                     if !request.saved.is_empty() || !request.label.is_empty() || !request.api_key.is_empty() {
                         return Err(account_actions::CHANGED.into());
                     }
-                    let call = host.binding.antigravity_login(&catalog)?;
+                    let call = host.binding.antigravity_terminal(&self.0.hgs, &catalog)?;
                     notices.extend(setup_terminal(dir, &self.0.hgs, &call.args)?);
                 }
                 SetupKind::Add if !request.saved.is_empty() => {
