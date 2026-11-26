@@ -154,6 +154,19 @@ forwarded or manually set link, a resumed or forked history, or a refusal
 predating the verified link does not qualify. The read does not send a
 message, retry, or change providers.
 
+On Linux and macOS, a newly launched Codex child with a verified local
+supervisor can also add one **Child provider refusal** notice to the exact
+parent's Activity. An open Activity stream receives it automatically. In
+`hgs watch --json` and `hgs inspect`, the journal event has
+`source: "zerus_child_policy"`, a stable `message_id` and a
+`child_policy_advisory` object with the child's session, run and conversation
+and the typed native event. The child's request and refusal text are omitted.
+Reconnect reads the original journal row. The notice is informational and
+leaves the parent's native input, the child's refused request, and all waits
+and tasks as recorded. A standalone session adopted after launch still has the
+explicit read above. An Activity notice is evidence of publication and does
+not establish that an unattended agent read or acted on it.
+
 ## Retire finished sub-sessions
 
 Reuse an idle sub-session for its own follow-up. Retire a sub-session you

@@ -492,6 +492,8 @@ fn run_agent<C: supervisor::ChildStatus>(
     }
     let mut spawned = spawn(&base, &name, &token)?;
     let child_id = spawned.child.id();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let policy_activity = parent_link::policy_activity::start(&token, child_id);
     // The same in-memory ticket survives a definite early resume failure. Once
     // a submission is attempted, even a refusal can never authorize a replay.
     let status = if let Some(ticket) = theme.as_mut() {
@@ -499,6 +501,8 @@ fn run_agent<C: supervisor::ChildStatus>(
         } else {
             kimi_launch::wait(&mut spawned.child, &name, &token, launch_prompt.as_mut())?
         };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    drop(policy_activity);
     supervisor::finish(&name, &token, child_id, status)?;
     Ok(ExitInfo::of(status).exit_code())
 }

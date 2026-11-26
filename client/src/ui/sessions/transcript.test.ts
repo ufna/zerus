@@ -3,11 +3,33 @@ import { buildTranscript, createActivityProjections, localFileAvailable, mergeLo
 import type { ActivityEvent, EventAttachment, LocalMessage } from "../../types";
 import type { ActivityItem, MediaMessage } from "./types";
 import { cardTarget, rowScope } from "./attachment-card";
+import { translateWithCatalog } from "../../i18n";
+import catalog from "../../i18n.ru.json";
 
 const local = (status: "sending" | "error" | "sent", uncertain = false, extra: Partial<LocalMessage> = {}): LocalMessage => ({
   id: `l-${status}-${uncertain}`, text: "hello", status, attachments: [], run_id: "r", conversation_id: "c",
   submitted_at: 1_793_000_000, error: status === "error" ? "hgs: refused" : "", uncertain, message_id: null, submitted_text: null, source: null, voice: null,
   ...extra,
+});
+
+it("displays a typed child policy advisory as a system notice", () => {
+  const child = "codex/example/child";
+  const notice: ActivityEvent = {
+    seq: 1, type: "Notification", source: "zerus_child_policy", origin: "task_notification",
+    detail: "The provider blocked a request in " + child + ".", at: 11,
+    child_policy_advisory: {
+      scope: "session", child: { name: child, session_id: "child", run_id: "run", conversation_id: "chat" },
+      event: { kind: "provider_policy", source: "codex_native_transcript", event_id: "refusal", turn_id: "turn", at: 10 },
+    },
+  };
+  expect(buildTranscript([notice])).toMatchObject([
+    { kind: "system", sender: "Child provider refusal", body: "The provider blocked a request in " + child + "." },
+  ]);
+  expect(buildTranscript([{ type: "UserPromptSubmit", detail: notice.detail, at: 11 }]))
+    .toMatchObject([{ kind: "user" }]);
+  expect(translateWithCatalog(catalog, "ru", "Child provider refusal")).toBe("Отказ провайдера дочернего сеанса");
+  expect(translateWithCatalog(catalog, "ru", "The provider blocked a request in %1.", child))
+    .toBe("Провайдер заблокировал запрос в сеансе " + child + ".");
 });
 
 describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-5wmh.13.6)", () => {
