@@ -106,6 +106,39 @@ fn ordinary_send_accepts_a_busy_draft_without_native_input() {
 }
 
 #[test]
+fn deepseek_waits_for_native_idle_and_offers_only_the_exact_original_head() {
+    let root = dir("deepseek-ordinary-queue-drain");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let target = target_session("dsh");
+    present(&c, &fake, &target, "dsh");
+    let original = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
+    enqueue(&c, "second");
+    lock(&fake.row).phase = Some("idle".into());
+    let idle = details(&target, "dsh", false, None);
+    let mut still_queued = idle.clone();
+    still_queued["dsh_outbox_ready"] = json!(false);
+    settle_next(&c, &fake, &store, still_queued);
+    let mut wrong = idle.clone();
+    wrong["conversation_id"] = json!("different-conversation");
+    settle_next(&c, &fake, &store, wrong);
+    assert!(lock(&fake.calls).is_empty());
+
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
+        detail: "Lost acknowledgement".into(),
+    });
+    settle_next(&c, &fake, &store, idle.clone());
+    let held = until(&c, |view| view.waiting_in_zerus[0].state == State::Unknown);
+    assert!(!held.waiting_in_zerus[0].can_check_terminal);
+    assert_eq!(held.waiting_in_zerus[1].state, State::Waiting);
+    settle_next(&c, &fake, &store, idle);
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.name, target.name);
+    assert_eq!(calls[0].2, original);
+}
+
+#[test]
 fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_original() {
     for agent in ["codex", "kimi"] {
         let root = dir("ordinary-send-ready-race");

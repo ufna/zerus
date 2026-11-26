@@ -103,6 +103,7 @@ pub(super) fn view(
                 }),
             can_check_terminal: entry.state == State::Unknown
                 && !opencode_outbox(entry)
+                && !dsh_outbox(entry)
                 && entry.draft_key == key
                 && context.is_some_and(|ctx| {
                     ctx.online
@@ -537,7 +538,7 @@ impl Composers {
                 &BlockFacts {
                     online: true,
                     state: row.state.clone(),
-                    cmd: row.agent.clone(),
+                    cmd: super::send::cmd(row),
                     ..Default::default()
                 },
                 Some(details),
