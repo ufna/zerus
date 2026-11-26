@@ -840,6 +840,38 @@ class TaskDelivery(DeliveryFixture):
         self.assertEqual([e["quick_review"]["disposition"]["kind"] for e in current["log"]
                           if e["kind"] == "quick_review"], ["rework", "parked", "rework", "parked", "rework"])
 
+    def test_quick_review_recovers_unknown_reopen_without_reoffering(self):
+        task = self.reviewed("An uncertain reviewed reopen")
+        request = dict(op="set", history_revision=task["history_revision"],
+                       report_id=task["review_report_id"],
+                       disposition=dict(kind="rework", defect="Show the missing observation."))
+        selected = self.hgs("quick-review", task["ref"], "--json",
+                            text=json.dumps(request))["task"]
+
+        def deliver(identity, *extra, **kwargs):
+            return self.hgs(
+                "message-reviewed", task["ref"], "--mode", "reopen", "--request-id", identity,
+                "--expect-dispatch", selected["dispatch_id"],
+                "--expect-history-revision", selected["history_revision"],
+                "--expect-report-id", selected["review_report_id"], *extra,
+                text=request["disposition"]["defect"], **kwargs)
+
+        identity = str(uuid.uuid4())
+        receipts = self.state / "input_receipts"
+        receipts.chmod(0o500)
+        self.addCleanup(receipts.chmod, 0o700)
+        unknown = deliver(identity)
+        receipts.chmod(0o700)
+        self.assertEqual(unknown["attempt"]["state"], "uncertain")
+        current = self.hgs("get", task["ref"])["task"]
+        self.assertEqual(current["stage"], "review")
+        self.assertEqual(current["quick_review_status"], "unresolved")
+        self.assertNotIn("review_report_id", current)
+        self.assertEqual(deliver(identity, "--recover-only")["attempt"]["state"], "uncertain")
+        self.assertIn("Refresh", deliver(str(uuid.uuid4()), ok=False))
+        self.assertEqual(len(self.notes(task, identity)), 1)
+        self.assertEqual(self.received().count(request["disposition"]["defect"]), 0)
+
     def test_review_queue_classifies_the_exact_existing_report(self):
         join(self.env, "project-1", self.name)
         first, second = [
