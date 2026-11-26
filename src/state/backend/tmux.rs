@@ -720,6 +720,28 @@ impl TerminalBackend for Tmux {
         )?
         .stdout)
     }
+    fn capture_until(
+        &self,
+        pane: &str,
+        mode: super::Capture,
+        until: std::time::Instant,
+        bytes: usize,
+    ) -> Result<Vec<u8>> {
+        if crate::state::effort::picker_entered() {
+            return crate::state::effort::picker_refuse(
+                "Unowned tmux call refused in original Effort keeper".into(),
+            );
+        }
+        let mut command = Command::new("tmux");
+        command.args(["capture-pane", "-p"]);
+        if matches!(mode, super::Capture::Styled) {
+            command.arg("-e");
+        }
+        command.args(["-t", pane]);
+        let (status, stdout, stderr) = platform::run_bounded(&mut command, [bytes, 4096], until, &|| false)
+            .map_err(|error| format!("Terminal capture unavailable: {error:?}"))?;
+        checked(Ok(Output { status, stdout, stderr }), true).map(|output| output.stdout)
+    }
     fn grow_unviewed(&self, pane: &str, rows: u16) -> Result<bool> {
         let size = tmux(
             &owned(&[

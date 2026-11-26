@@ -1274,6 +1274,17 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
     terminal_check(record, empty, false)
 }
 
+/// Use the native queue's bounded screen read for its empty-composer check.
+pub(super) fn checked_queue_terminal(
+    record: &Value,
+    capture: impl Fn(&str) -> Result<Vec<u8>>,
+) -> Result<()> {
+    if codex_tasks::multiple(record) {
+        return Err("Codex has separate native tasks; this Terminal action cannot verify the selected conversation".into());
+    }
+    terminal_gate_with_capture(record, true, false, backend::current(), &capture).map_err(Gate::reason)
+}
+
 /// The gate before a task input's first byte, with its typed refusal.
 fn checked_send_gate(record: &Value) -> std::result::Result<(), Gate> {
     terminal_gate_on(record, true, true, backend::current())
@@ -1429,6 +1440,18 @@ fn terminal_gate_on(
     sending: bool,
     terminal: &dyn backend::TerminalBackend,
 ) -> std::result::Result<(), Gate> {
+    terminal_gate_with_capture(record, empty, sending, terminal, &|pane| {
+        terminal.capture(pane, backend::Capture::Styled)
+    })
+}
+
+fn terminal_gate_with_capture(
+    record: &Value,
+    empty: bool,
+    sending: bool,
+    terminal: &dyn backend::TerminalBackend,
+    capture: &dyn Fn(&str) -> Result<Vec<u8>>,
+) -> std::result::Result<(), Gate> {
     terminating::check_mutation(record)?;
     let pane = string(record, "pane");
     if !pane
@@ -1450,9 +1473,9 @@ fn terminal_gate_on(
         // Kimi replaces its progress screen with the session while the launch
         // prompt waits, so its decision frame must be one read (zerus-vg4mm).
         let (state, screen) = if string(record, "agent") == "kimi" {
-            stable_frame(terminal, &claim, state)?
+            stable_frame(terminal, &claim, state, capture)?
         } else {
-            let screen = terminal.capture(pane, backend::Capture::Styled)?;
+            let screen = capture(pane)?;
             (state, String::from_utf8_lossy(&screen).into_owned())
         };
         let screen = screen.as_str();
@@ -1530,11 +1553,12 @@ fn stable_frame(
     terminal: &dyn backend::TerminalBackend,
     claim: &backend::InputClaim,
     first: backend::InputState,
+    capture: &dyn Fn(&str) -> Result<Vec<u8>>,
 ) -> Result<(backend::InputState, String)> {
     const ATTEMPTS: usize = 5;
     let mut before = first;
     for attempt in 0..ATTEMPTS {
-        let screen = terminal.capture(claim.pane, backend::Capture::Styled)?;
+        let screen = capture(claim.pane)?;
         let after = terminal.input_state(claim)?;
         if before.cursor_x == after.cursor_x && before.cursor_y == after.cursor_y {
             return Ok((before, String::from_utf8_lossy(&screen).into_owned()));

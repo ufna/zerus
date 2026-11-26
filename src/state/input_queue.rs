@@ -3,6 +3,10 @@
 use super::*;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::time::{Duration, Instant};
+
+const CAPTURE_WINDOW: Duration = Duration::from_millis(600);
+const CAPTURE_BYTES: usize = 512 * 1024;
 
 #[derive(Debug)]
 struct Queue { text: String, keys: Vec<&'static str>, hint: String }
@@ -75,7 +79,7 @@ fn digest(text: &str) -> String { format!("{:x}", Sha256::digest(text.as_bytes()
 /// Before Stop's Escape: note the ordinary follow-ups Codex shows for this turn, or
 /// forget an earlier note.
 pub(super) fn note_stop(record: &mut Value) {
-    let noted = kimi_tui_choice::capture(record).ok().and_then(|screen| ordinary_follow_ups(&screen))
+    let noted = capture_plain(record, Instant::now() + CAPTURE_WINDOW).ok().and_then(|screen| ordinary_follow_ups(&screen))
         .map(|text| json!({"run_id":record["run_id"],"conversation_id":record["conversation_id"],
             "turn_started":record["turn_started"],"digest":digest(&text)}));
     let Some(fields) = record.as_object_mut() else { return };
@@ -95,7 +99,7 @@ pub(super) fn returned_by_stop(record: &Value) -> bool {
     let noted = &record[STOP_FOLLOW_UPS];
     record["agent"] == "codex" && record["phase"] == "interrupted" && noted["digest"].is_string()
         && ["run_id", "conversation_id", "turn_started"].iter().all(|key| noted[*key] == record[*key])
-        && kimi_tui_choice::capture(record).ok().zip(interrupt::cursor(record))
+        && capture_plain(record, Instant::now() + CAPTURE_WINDOW).ok().zip(interrupt::cursor(record))
             .and_then(|(screen, (_, y))| returned_draft(record, &screen, y))
             .is_some_and(|draft| noted["digest"] == draft)
 }
@@ -112,15 +116,27 @@ fn snapshot(record: &Value, queue: &Queue) -> Value {
 }
 pub(super) fn inspection(record: &Value, live: bool) -> Option<Value> {
     if !live || !eligible(record) {return None;}
-    let queue = parse(string(record,"agent"),&kimi_tui_choice::capture(record).ok()?)?;
+    let until = Instant::now() + CAPTURE_WINDOW;
+    let queue = parse(string(record,"agent"), &capture_plain(record, until).ok()?)?;
     kimi_tui_choice::identity(record).ok()?;
     let mut data = snapshot(record,&queue);
     // Never submit an unrelated draft together with the queue.
-    if input::checked_terminal(record,true).is_err() {
+    if check_empty_composer(record, until).is_err() {
         data["can_send_now"] = json!(false);
         data["hint"] = json!("Return Terminal to an empty input before sending the queue now");
     }
     Some(data)
+}
+fn capture_plain(record: &Value, until: Instant) -> Result<String> {
+    let screen = backend::current().capture_until(
+        string(record, "pane"), backend::Capture::Plain, until, CAPTURE_BYTES,
+    )?;
+    String::from_utf8(screen).map_err(|_| "Invalid terminal text".into())
+}
+fn check_empty_composer(record: &Value, until: Instant) -> Result<()> {
+    input::checked_queue_terminal(record, |pane| {
+        backend::current().capture_until(pane, backend::Capture::Styled, until, CAPTURE_BYTES)
+    })
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,8 +157,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let path=absolute_root()?.join("queue_receipts").join(format!("{uuid}.json"));
     if path.exists() {return Err("This send-now request was already attempted; nothing was sent again".into());}
     let current=kimi_tui_choice::identity(&record)?;
-    input::checked_terminal(&current,true)?;
-    let screen=kimi_tui_choice::capture(&current)?;
+    let until = Instant::now() + CAPTURE_WINDOW;
+    check_empty_composer(&current, until)?;
+    let screen=capture_plain(&current, until)?;
     let queue=parse(string(&current,"agent"),&screen).ok_or("The native queue is no longer visible; nothing was sent")?;
     let data=snapshot(&current,&queue);
     if data["id"]!=request.queue_id || data["can_send_now"]!=true {return Err("The queue changed or cannot be sent now; nothing was sent".into());}
@@ -152,7 +169,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // Recheck right before the native shortcut; no generic Enter, Escape retry,
     // or synthetic re-submission if the provider has already consumed the queue.
     kimi_tui_choice::identity(&current)?;
-    let latest=parse(string(&current,"agent"),&kimi_tui_choice::capture(&current)?).ok_or("Queue disappeared before sending")?;
+    let latest=parse(string(&current,"agent"),&capture_plain(&current, until)?).ok_or("Queue disappeared before sending")?;
     if snapshot(&current,&latest)["id"]!=request.queue_id {return Err("Queue changed before sending".into());}
     let keys:Vec<_>=queue.keys.iter().map(|key|backend::Key::Named(key)).collect();
     backend::current().send(string(&current,"pane"),&keys).map_err(|e|format!("Delivery uncertain: {e}. Check Terminal before trying again"))?;

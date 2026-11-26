@@ -1362,6 +1362,12 @@ class OpenCodeNative(unittest.TestCase):
         self.assertEqual(queued['status'], 'submitted')
         self.assertTrue(queued.get('queued'))
         left_id = queued['native_message_id']
+        before_stop = self.wait(name, lambda v: any(
+            e.get('message_id') == left_id and e.get('delivery_state') == 'queued' for e in v['events']))
+        [native_item] = [item for item in self.inbox(conversation) if item['id'] == left_id]
+        [inbox_row] = [e for e in before_stop['events'] if e.get('message_id') == left_id]
+        self.assertEqual(native_item['sessionID'], conversation)
+        self.assertEqual(inbox_row['queued_at'], native_item['time']['created'] / 1000)
         stop = {'request_id': str(uuid.uuid4()), 'expected_run_id': b['run_id'], 'expected_conversation_id': conversation,
                 'expected_turn_started': working['turn_started']}
         self.hgs(['interrupt', name, '--json'], stop)
@@ -1370,6 +1376,8 @@ class OpenCodeNative(unittest.TestCase):
                             and any(e.get('delivery_state') == 'not_delivered' for e in v['events']))
         self.assertEqual([(e['detail'], e['delivery_state']) for e in stopped['events'] if e.get('message_id') == left_id],
                          [(left_text, 'not_delivered')])
+        self.assertEqual([e['queued_at'] for e in stopped['events'] if e.get('message_id') == left_id],
+                         [inbox_row['queued_at']])
         self.assertIn('remove_queued', stopped['allowed_actions'])
         # Left alone, OpenCode keeps the message queued and never runs it.
         until = time.monotonic() + 3

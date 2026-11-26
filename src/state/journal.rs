@@ -1154,6 +1154,11 @@ pub(super) fn inspection_with(
         output["restore_name_busy"] = json!(lifecycle::restore_name_busy(name)?);
     }
     drop(_guard);
+    if output["previous_message_pending"] == true {
+        if let Some(submission) = input::acceptance::pending_zerus_submission(&record) {
+            output["pending_zerus_submission"] = submission;
+        }
+    }
     // Before the listed questions and the provider messages below.
     if current_read && archive_id.is_none() {
         if let Some(current) = read_marks::current_read(name, &record, summary, panes.is_some()) {

@@ -48,7 +48,10 @@ export function QueuePanel() {
         </Show>
         <div class="act-queue-text">
           <For each={display()?.items}>{(item) => <div class="act-queue-message">
-            <Show when={item.sender}>{(sender) => <div class="act-queue-source">{tr("Sender shown by agent: %1", sender())}</div>}</Show>
+            <div class="act-queue-meta">
+              <Show when={item.sender}>{(sender) => <span class="act-queue-source">{tr("Sender shown by agent: %1", sender())}</span>}</Show>
+              <span class="act-queue-time">{tr("Queue time unavailable")}</span>
+            </div>
             <OutgoingMessage item={item} scope={display()?.scope} session={display()?.scope ? selected() : undefined} />
           </div>}</For>
         </div>
