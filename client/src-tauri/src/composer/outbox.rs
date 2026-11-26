@@ -134,6 +134,10 @@ fn native_outbox(entry: &Entry) -> bool {
     entry.target.name.starts_with("opencode/")
 }
 
+fn guarded_action(entry: &Entry) -> Action {
+    Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
+}
+
 fn can_probe(entry: &Entry) -> bool {
     entry.state == State::Waiting || entry.state == State::Unknown && native_outbox(entry)
 }
@@ -172,6 +176,10 @@ impl Context {
 impl Composers {
     pub(crate) fn set_outbox_dispatch(&self, dispatch: super::OutboxDispatch) {
         assert!(self.0.outbox_dispatch.set(dispatch).is_ok());
+    }
+
+    pub(crate) fn set_outbox_status(&self, status: super::OutboxStatus) {
+        assert!(self.0.outbox_status.set(status).is_ok());
     }
 
     fn offer_guarded(
@@ -428,19 +436,26 @@ impl Composers {
         drop(hub);
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| me.check_outbox(&entry)));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if entry.state == State::Unknown {
+                    me.check_outbox_receipt(&entry)
+                } else {
+                    me.check_outbox(&entry)
+                }
+            }));
             let mut hub = me.lock();
             hub.outbox_probe = false;
             if hub.outbox_route_revision != route_revision {
                 return;
             }
-            if let Ok(Some(details)) = result {
+            if let Ok(Some(result)) = result {
                 if entry.state == State::Unknown {
-                    if me.native_outcome(&entry, &details) {
-                        me.settle_head_locked(&mut hub, key, entry, None, true);
+                    if me.outbox_row(&entry).is_some() {
+                        let outcome = Outcome::Done { receipt: result, cleanup: None };
+                        me.settle_head_locked(&mut hub, key, entry, Some(outcome), State::Unknown);
                     }
                 } else {
-                    me.reserve_head(&mut hub, key, entry, details);
+                    me.reserve_head(&mut hub, key, entry, result);
                 }
             }
         }));
@@ -470,17 +485,10 @@ impl Composers {
         (self.0.deps.inspect)(&entry.target, None, None).ok()
     }
 
-    fn native_outcome(&self, entry: &Entry, details: &serde_json::Value) -> bool {
-        let Some(row) = self.outbox_row(entry) else {
-            return false;
-        };
-        exact_input_details(&row, (&entry.target.run_id, &entry.target.conversation_id), details)
-            && details["events"].as_array().is_some_and(|events| events.iter().any(|event| {
-                event["type"] == "UserPromptSubmit"
-                    && event["source"] == zerus_client_core::local_messages::OPENCODE_SOURCE
-                    && event["request_id"] == entry.request_id
-                    && event["message_id"].as_str().is_some_and(zerus_client_core::actions::native_message_id)
-            }))
+    fn check_outbox_receipt(&self, entry: &Entry) -> Option<serde_json::Value> {
+        self.outbox_row(entry)?;
+        let status = self.0.outbox_status.get()?;
+        status(&entry.target, &guarded_action(entry), &entry.request_id)
     }
 
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
@@ -597,10 +605,7 @@ impl Composers {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = Action::SendWhenIdle {
-                text: entry.text.clone(),
-                attachments: entry.attachments.clone(),
-            };
+            let action = guarded_action(&entry);
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
             })) {
@@ -619,7 +624,7 @@ impl Composers {
 
     // None means this process retained the reservation and made no native call.
     fn settle_head(&self, key: String, entry: Entry, outcome: Option<Outcome>) {
-        self.settle_head_locked(&mut self.lock(), key, entry, outcome, false);
+        self.settle_head_locked(&mut self.lock(), key, entry, outcome, State::Reserved);
     }
 
     fn settle_head_locked(
@@ -628,7 +633,7 @@ impl Composers {
         key: String,
         entry: Entry,
         outcome: Option<Outcome>,
-        accepted_in_history: bool,
+        expected: State,
     ) {
         let Some(c) = hub.composers.get_mut(&key) else {
             return;
@@ -636,7 +641,6 @@ impl Composers {
         if c.outbox
             .first()
             .is_none_or(|head| {
-                let expected = if accepted_in_history { State::Unknown } else { State::Reserved };
                 head.state != expected || head.request_id != entry.request_id
             })
             || c.queue_editing || c.queue_writing
@@ -654,7 +658,10 @@ impl Composers {
             }
             _ => None,
         };
-        let exact = accepted_in_history || receipt.is_some_and(|receipt| receipt["status"] == "submitted");
+        let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
+        if expected == State::Unknown && !exact {
+            return;
+        }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
             && entry.target.name.starts_with("codex/")

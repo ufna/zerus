@@ -40,6 +40,76 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+/// Resolve one original offer. The desktop sends only its original
+/// stdin digest and identity. This command never admits input.
+pub(super) fn status(name: &str) -> Result<i32> {
+    let mut input = Vec::new();
+    io::stdin()
+        .take(8193)
+        .read_to_end(&mut input)
+        .map_err(|e| e.to_string())?;
+    if input.len() > 8192 {
+        return Err("OpenCode outbox status request exceeds 8 KiB".into());
+    }
+    let request = parse_request(&input)?;
+    let input_hash = string(&request, "input_sha256");
+    if input_hash.len() != 64 || !input_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("OpenCode outbox status requires the original input digest".into());
+    }
+    let _bindings = try_bindings(Duration::from_millis(200)).ok_or(UNCERTAIN_STATE)?;
+    let record = binding(name)?;
+    check_request_identity(&record, &request)?;
+    let request_id = string(&request, "request_id");
+    let ledger = Ledger::current();
+    let mut receipt = ledger.sent(request_id).ok_or(UNCERTAIN_STATE)?;
+    if receipt["request_id"] != request_id
+        || receipt["name"] != name
+        || receipt["transport"] != "native_opencode"
+        || receipt["outbox_guarded"] != true
+        || receipt["outbox_input_sha256"] != input_hash
+    {
+        return Err(UNCERTAIN_STATE.into());
+    }
+    check_receipt_identity(&record, &receipt)?;
+    if ledger
+        .removal(&record, string(&receipt, "native_message_id"))?
+        .is_some()
+    {
+        return Err(UNCERTAIN_STATE.into());
+    }
+    if receipt["status"] == "pending" {
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        let service = service::connect_within(deadline).map_err(|_| UNCERTAIN_STATE)?;
+        let native = Bounded {
+            service: &service,
+            deadline,
+        };
+        verify_native(&native, &record)?;
+        settle(
+            &native,
+            &ledger,
+            &record,
+            &mut receipt,
+            &ledger.receipt(request_id),
+            Some(deadline),
+        )?;
+    }
+    if receipt["status"] != "submitted" {
+        return Err(UNCERTAIN_STATE.into());
+    }
+    println!(
+        "{}",
+        json!({
+            "schema": 1, "status": "submitted", "proof": "native_opencode_receipt",
+            "transport": receipt["transport"], "request_id": receipt["request_id"],
+            "name": receipt["name"], "run_id": receipt["run_id"],
+            "conversation_id": receipt["conversation_id"], "input_sha256": input_hash,
+            "native_message_id": receipt["native_message_id"], "submitted_at": receipt["submitted_at"],
+        })
+    );
+    Ok(0)
+}
+
 /// At idle, a native inbox may still hold messages left parked by Stop.
 /// A queue-only offer restarts that inbox in its existing order.
 pub(super) fn wait_receipt(

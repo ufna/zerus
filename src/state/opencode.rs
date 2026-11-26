@@ -23,6 +23,9 @@ mod outbox;
 pub(super) fn send_when_idle(args: &[String]) -> Result<i32> {
     outbox::dispatch(args)
 }
+pub(super) fn outbox_status(name: &str) -> Result<i32> {
+    outbox::status(name)
+}
 pub(crate) use terminal::attach;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod shortlist;
@@ -1725,12 +1728,17 @@ fn settle(
     record: &Value,
     receipt: &mut Value,
     path: &Path,
+    deadline: Option<Instant>,
 ) -> Result<Delivery> {
     check_receipt_identity(record, receipt)?;
     let id = string(receipt, "native_message_id").to_owned();
     let outcome = reconcile_payload(native, ledger, record, &id, receipt)?;
     // A removal recorded since the inbox was read wins over that read.
-    let _guard = ledger.lock()?;
+    let _guard = if let Some(deadline) = deadline {
+        lock_until(&ledger.0.join("receipts.lock"), deadline)?.ok_or(UNCERTAIN_STATE)?
+    } else {
+        ledger.lock()?
+    };
     let outcome = match (outcome, ledger.removal(record, &id)?) {
         (Delivery::Queued, Some(Removal::Intended)) => return Err(UNCERTAIN_STATE.into()),
         (Delivery::Queued, Some(Removal::Removed)) => Delivery::Refused(REMOVED.into()),
@@ -1766,7 +1774,7 @@ fn reconcile_receipt_with<N: Native>(
     }
     let native = connect()?;
     verify_session(&native, record)?;
-    match settle(&native, ledger, record, receipt, &path)? {
+    match settle(&native, ledger, record, receipt, &path, None)? {
         Delivery::Refused(reason) => Err(refused(&reason)),
         _ => Ok(true),
     }
@@ -1858,7 +1866,7 @@ fn deliver_offer(
             _ => {}
         }
         verify_native(native, record)?;
-        return match settle(native, ledger, record, &mut prior, path) {
+        return match settle(native, ledger, record, &mut prior, path, None) {
             Ok(Delivery::Refused(reason)) => Err(refused(&reason)),
             Ok(_) => Ok(prior),
             Err(_) => Err(UNCERTAIN_REPLAY.into()),
@@ -1886,8 +1894,9 @@ fn deliver_offer(
         delivery::bind(&mut receipt, record, &target);
         receipt["graph_target"] = target;
     }
-    if idle_guard.is_some() {
+    if let Some(hash) = idle_guard {
         receipt["outbox_guarded"] = json!(true);
+        receipt["outbox_input_sha256"] = json!(hash);
     }
     let staged = if has_files {
         let stage = attachments::prepare_native(request)?;
@@ -1938,7 +1947,7 @@ fn deliver_offer(
             return Err(refused(&reason));
         }
         // A transport error or a 5xx leaves the admission unknown.
-        _ => match settle(native, ledger, record, &mut receipt, path) {
+        _ => match settle(native, ledger, record, &mut receipt, path, None) {
             Ok(Delivery::Refused(reason)) => return Err(refused(&reason)),
             Ok(_) => {}
             Err(_) => return Err(UNCERTAIN_REPLAY.into()),

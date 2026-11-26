@@ -1002,7 +1002,7 @@ fn host_busy_after_the_observation_releases_only_the_exact_pre_input_reservation
 }
 
 #[test]
-fn opencode_lost_acknowledgement_advances_only_on_exact_native_activity_after_reopen() {
+fn opencode_lost_acknowledgement_advances_only_on_exact_receipt_after_reopen() {
     let root = dir("opencode-outbox-lost-acknowledgement");
     let store = drafts(&root);
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
@@ -1023,22 +1023,36 @@ fn opencode_lost_acknowledgement_advances_only_on_exact_native_activity_after_re
 
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
     present(&c, &fake, &session, "opencode");
-    let mut wrong = idle.clone();
-    let event = json!({"source": "opencode_native", "type": "UserPromptSubmit",
-        "message_id": "msg_Original", "detail": "same", "request_id": first});
-    wrong["events"] = json!([event]);
+    let reply = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+    let reply_for_status = reply.clone();
+    c.set_outbox_status(std::sync::Arc::new(move |target, action, id| {
+        use zerus_client_core::actions::{opencode_outbox_receipt, opencode_outbox_status};
+        let query = opencode_outbox_status(target, action, id).ok()?;
+        let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+        let mut response = lock(&reply_for_status).clone()?;
+        if response["input_sha256"].is_null() {
+            response["input_sha256"] = input["input_sha256"].clone();
+        }
+        opencode_outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+            code: 0, stdout: serde_json::to_vec(&response).unwrap(), stderr: String::new(),
+        })
+    }));
+    let accepted = json!({"schema": 1, "status": "submitted", "transport": "native_opencode",
+        "proof": "native_opencode_receipt", "name": session.name, "native_message_id": "msg_Original",
+        "run_id": "run-1", "conversation_id": "conv-1", "request_id": first});
+    let mut wrong = accepted.clone();
     wrong["conversation_id"] = json!("replacement");
-    settle_next(&c, &fake, &store, wrong);
-    let mut no_proof = idle.clone();
-    no_proof["events"] = json!([{"source": "opencode_native", "type": "UserPromptSubmit",
-        "message_id": "msg_Different", "detail": "same"}]);
-    settle_next(&c, &fake, &store, no_proof);
+    *lock(&reply) = Some(wrong);
+    settle_next(&c, &fake, &store, idle.clone());
+    let mut wrong = accepted.clone();
+    wrong["input_sha256"] = json!("wrong input");
+    *lock(&reply) = Some(wrong);
+    settle_next(&c, &fake, &store, idle.clone());
     assert_eq!(c.current().unwrap().waiting_in_zerus.len(), 2);
     assert!(lock(&fake.calls).is_empty());
 
-    let mut working = details(&session, "opencode", true, Some(true));
-    working["events"] = json!([event]);
-    settle_next(&c, &fake, &store, working);
+    *lock(&reply) = Some(accepted);
+    settle_next(&c, &fake, &store, details(&session, "opencode", true, Some(true)));
     let remaining = until(&c, |v| v.waiting_in_zerus.len() == 1);
     assert_eq!(remaining.waiting_in_zerus[0].request_id, second);
     assert!(lock(&fake.calls).is_empty(), "the accepted turn is still working");

@@ -17,6 +17,14 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
     def attempt(self, binding, text, **fields):
         return self.payload(binding, text=text, only_when_idle=True, **fields)
 
+    def status(self, binding, request, success=True, **overrides):
+        query = {
+            'request_id': request['request_id'], 'expected_run_id': request['expected_run_id'],
+            'expected_conversation_id': request['expected_conversation_id'],
+            'input_sha256': hashlib.sha256(json.dumps(request).encode()).hexdigest(),
+        } | overrides
+        return self.hgs(['delivery', 'outbox-status', binding['name'], '--json'], query, success=success)
+
     def exact_events(self, binding, request):
         return self.wait(binding['name'], lambda row: any(
             e.get('request_id') == request['request_id'] for e in row['events']))
@@ -107,11 +115,10 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
                 with response:
                     status, raw = response.status, response.read(32 * 1024 * 1024 + 1)
                 if self.path == '/openapi.json' and mode == 'steer_only':
-                    schema = json.loads(raw)['paths']
-                    operation = schema['/api/session/{sessionID}/prompt']['post']
+                    schema = json.loads(raw)
+                    operation = schema['paths']['/api/session/{sessionID}/prompt']['post']
                     fields = operation['requestBody']['content']['application/json']['schema']['properties']
                     fields['delivery'] = {'type': 'string', 'enum': ['steer']}
-                    schema = json.loads(raw) | {'paths': schema}
                     raw = json.dumps(schema).encode()
                 if self.command == 'POST' and self.path == path:
                     offered.append((json.loads(body), status))
@@ -141,19 +148,32 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
 
     def test_unbound_4xx_after_native_admission_remains_pending_and_never_reposts(self):
         target = self.start()
-        request = self.attempt(target, 'Run the synthetic regression once')
+        data = 'Zml4dHVyZSBmaWxlIGJvZHk='
+        request = self.attempt(target, 'Run the synthetic regression once [File #1]', attachments=[{
+            'name': 'fixture.txt', 'mime': 'text/plain', 'reference': '[File #1]', 'data_base64': data,
+        }])
         with self.prompt_proxy(target, 'unbound') as offered:
             result = self.guarded(target, request, success=False)
             self.assertIn('uncertain', result.stderr.lower())
             self.assertEqual(json.loads(self.receipt_path(request).read_text())['status'], 'pending')
-            self.guarded(target, request, success=False)
+            self.status(target, request, success=False)
             self.assertEqual(len(offered), 1, offered)
         body, status = offered[0]
         self.assertEqual(status, 200)
+        self.status(target, request, success=False, input_sha256='0' * 64)
+        self.status(target, request, success=False, expected_run_id='changed')
+        self.assertEqual(json.loads(self.receipt_path(request).read_text())['status'], 'pending')
+        receipt = self.status(target, request)
+        self.assertEqual(receipt['proof'], 'native_opencode_receipt')
+        self.assertEqual(receipt['native_message_id'], body['id'])
+        self.assertEqual(json.loads(self.receipt_path(request).read_text())['status'], 'submitted')
         observed = self.exact_events(target, request)
-        self.assertIn(body['id'], [e['message_id'] for e in observed['events']
-                                  if e.get('request_id') == request['request_id']])
-        self.assertEqual(self.guarded(target, request)['native_message_id'], body['id'])
+        [event] = [e for e in observed['events'] if e.get('request_id') == request['request_id']]
+        self.assertEqual(event['message_id'], body['id'])
+        self.assertEqual(event['attachments'][0]['name'], 'fixture.txt')
+        attachment = self.hgs(['attachment', target['name'], '--request', request['request_id'],
+                               '--index', '0', '--conversation', target['conversation_id'], '--json'])
+        self.assertEqual(attachment['data_base64'], data)
         self.assertEqual(self.user_messages(target['conversation_id']), [(body['id'], request['text'])])
 
     def test_native_prompt_schema_must_accept_queue_on_the_actual_operation(self):

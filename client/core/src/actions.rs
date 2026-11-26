@@ -1867,6 +1867,44 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     }
 }
 
+/// Read one original guarded OpenCode offer by its exact stdin hash.
+pub fn opencode_outbox_status(
+    target: &Target,
+    action: &Action,
+    request_id: &str,
+) -> Result<Invocation, String> {
+    use sha2::{Digest, Sha256};
+
+    if !target.name.starts_with("opencode/") || !matches!(action, Action::SendWhenIdle { .. }) {
+        return Err("Expected an original OpenCode outbox request.".into());
+    }
+    let original = invocation(target, action, request_id)?;
+    let input = original.stdin.ok_or("The original OpenCode input is unavailable.")?;
+    let mut args = vec!["delivery".into(), "outbox-status".into(), target.name.clone(), "--json".into()];
+    let remote = prepend_alias(&mut args, &target.computer);
+    let query = json!({"request_id": request_id, "expected_run_id":target.run_id,
+        "expected_conversation_id":target.conversation_id, "input_sha256":format!("{:x}", Sha256::digest(input))});
+    Ok(Invocation {
+        args, stdin: Some(serde_json::to_vec(&query).map_err(|e| e.to_string())?),
+        timeout: Duration::from_secs(if remote { 10 } else { 3 }), request_id: Some(request_id.into()),
+    })
+}
+
+pub fn opencode_outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
+    let Exit::Code { code: 0, stdout, .. } = exit else { return None };
+    if stdout.len() > 8192 { return None; }
+    let receipt: Value = serde_json::from_slice(&stdout).ok()?;
+    let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+    (receipt["schema"] == 1 && receipt["status"] == "submitted"
+        && receipt["proof"] == "native_opencode_receipt" && receipt["transport"] == "native_opencode"
+        && receipt["request_id"].as_str() == query.request_id.as_deref()
+        && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
+        && receipt["name"] == target.name && receipt["run_id"] == target.run_id
+        && receipt["conversation_id"] == target.conversation_id
+        && receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        .then_some(receipt)
+}
+
 /// A stop receipt names the same process, run and conversation, and says
 /// `requested` or `already-finished`.
 fn classify_stop(target: &Target, process_id: &str, exit: Exit) -> Outcome {
