@@ -4843,6 +4843,7 @@
   "Update hgs": "Нужно обновить hgs",
   "Update hgs for metrics": "Обновить hgs для метрик",
   "Update hgs on this computer to change the reconnect schedule.": "Обновите hgs на этом компьютере, чтобы изменить расписание переподключения.",
+  "Update hgs on this computer to queue messages. The draft stays in the editor.": "Обновите hgs на этом компьютере, чтобы ставить сообщения в очередь. Черновик остался в редакторе.",
   "Update hgs on this session's host to support shared notification preferences.": "Обновите hgs на компьютере этой сессии для поддержки общих настроек уведомлений.",
   "Update hgs to check the original delivery receipt from this desktop.": "Обновите hgs, чтобы проверить исходное подтверждение доставки в этом приложении.",
   "Update the background service to reconnect a machine now.": "Обновите фоновую службу, чтобы переподключать машину сразу.",

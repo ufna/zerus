@@ -2709,7 +2709,9 @@ checks the original run and sends in order when it confirms an idle input
 with no earlier message pending. The host checks idle again under its native
 input lock before offering the message. If it confirms that the agent became
 busy before any input was offered, that same message waits with its original
-request ID. Previously opened queues can drain while
+request ID. Queueing requires guarded Send support from the computer running
+the session. A ready session on an older computer still uses ordinary Send.
+Previously opened queues can drain while
 another session is selected. After restarting the app, open the session to
 load its saved queue. The queue holds up to 16 messages, 80 KiB of text and
 20 MiB of files per session. The queue saves its messages and files separately

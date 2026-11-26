@@ -18,6 +18,7 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     value["agent"] = json!(agent);
     value["activity"] = json!(if is_busy { "busy" } else { "idle" });
     value["phase"] = json!(if is_busy { "tool" } else { "idle" });
+    value["guarded_idle_send"] = json!(true);
     if let Some(pending) = pending {
         value["previous_message_pending"] = json!(pending);
     }
@@ -206,6 +207,47 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
 }
 
 #[test]
+fn ordinary_send_keeps_the_older_hosts_ready_route_and_preserves_its_busy_draft() {
+    let root = dir("single-send-old-host");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_on(&store);
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    let mut busy = details(&session, "codex", true, Some(false));
+    busy.as_object_mut().unwrap().remove("guarded_idle_send");
+    c.observe(&state(busy));
+    assert!(matches!(
+        c.send_message(view.handle, view.rev + 1, view.text_epoch, "old draft".into(), 0, 0),
+        SendReply::Notice { text, .. } if text == QUEUE_OLD_HOST
+    ));
+    assert!(lock(&fake.calls).is_empty());
+    let kept = c.current().unwrap();
+    assert_eq!(kept.text, "old draft");
+    assert!(kept.waiting_in_zerus.is_empty());
+
+    let mut idle = details(&session, "codex", false, Some(false));
+    idle.as_object_mut().unwrap().remove("guarded_idle_send");
+    lock(&fake.row).phase = Some("idle".into());
+    c.observe(&state(idle));
+    assert_eq!(
+        c.send_message(
+            kept.handle,
+            kept.rev + 1,
+            kept.text_epoch,
+            "old draft".into(),
+            0,
+            0
+        ),
+        SendReply::Sending
+    );
+    until(&c, |v| !v.sending);
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert!(matches!(&calls[0].1, Action::Send { text, .. } if text == "old draft"));
+    assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+}
+
+#[test]
 fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen_run() {
     for agent in ["codex", "kimi"] {
         let root = dir(&format!("outbox-{agent}"));
@@ -258,6 +300,11 @@ fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen
         for invalid in [
             details(&target, agent, false, None),
             details(&target, agent, false, Some(true)),
+            {
+                let mut older = ready.clone();
+                older.as_object_mut().unwrap().remove("guarded_idle_send");
+                older
+            },
             {
                 let mut wrong = ready.clone();
                 wrong["run_id"] = json!("other");

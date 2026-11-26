@@ -25,6 +25,9 @@ const QUEUE_UNAVAILABLE: &str = zerus_client_core::source!(
 );
 const QUEUE_TARGET_CHANGED: &str =
     zerus_client_core::source!("The original session changed. The draft is still in the editor.");
+const QUEUE_OLD_HOST: &str = zerus_client_core::source!(
+    "Update hgs on this computer to queue messages. The draft stays in the editor."
+);
 
 pub(super) enum ManualSend {
     Direct,
@@ -130,6 +133,9 @@ impl Composers {
             {
                 return ManualSend::Blocked(QUEUE_TARGET_CHANGED.into());
             }
+            if details["guarded_idle_send"] != true {
+                return ManualSend::Blocked(QUEUE_OLD_HOST.into());
+            }
             ManualSend::Wait
         } else if exact
             && supported
@@ -184,6 +190,11 @@ impl Composers {
             || !c.has_content()
             || text.len() > MAX_TEXT_BYTES
             || !self.question_part(hub).1
+            || (!c.draft.attachments.is_empty()
+                && ctx
+                    .details
+                    .as_ref()
+                    .is_some_and(|d| d["attachments_supported"] == false))
         {
             return Err(SendReply::Busy);
         }
@@ -345,7 +356,8 @@ impl Composers {
     }
 
     fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
-        row.phase.as_deref() == Some("idle")
+        details["guarded_idle_send"] == true
+            && row.phase.as_deref() == Some("idle")
             && super::send::previous_message_pending(
                 row,
                 (&target.run_id, &target.conversation_id),
