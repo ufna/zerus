@@ -703,3 +703,23 @@ it("does not give an earlier equal-text native prompt the later FIFO request's i
   const exact = { ...late, source: "hgs_delivery", message_id: submitted.id };
   expect(ids(projection.build([earlier, exact], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
 });
+
+it("hands an OpenCode outbox row to its exact native prompt without merging equal text", () => {
+  const projection = createTranscriptProjection();
+  const first = { request_id: "first", handle: 1, run_id: "run", conversation_id: "conversation",
+    preview: "same text", state: "unknown" } as const;
+  const second = { ...first, request_id: "second", state: "waiting" } as const;
+  const event = { type: "UserPromptSubmit", source: "opencode_native", detail: "same text",
+    at: 10, message_id: "msg_Earlier", run_id: first.run_id, conversation_id: first.conversation_id };
+  const original = { ...event, request_id: first.request_id, message_id: "msg_Original", at: 11 };
+  const earlierKey = buildTranscript([event])[0].id;
+  expect(projection.build([event, original], undefined, [], [], [first, second]).map(row => row.id))
+    .toEqual([earlierKey, "local-first", "local-second"]);
+  expect(projection.build([event, original], undefined, [], [], [second]).map(row => row.id))
+    .toEqual([earlierKey, "local-first", "local-second"]);
+  const otherRequest = { ...original, request_id: undefined, message_id: "msg_Unrelated" };
+  projection.reset();
+  const onlyLocal = projection.build([otherRequest], undefined, [], [], [first, second]);
+  expect(onlyLocal).toHaveLength(3);
+  expect(onlyLocal[1]).toMatchObject({ id: "local-first", outbox: { state: "unknown" } });
+});

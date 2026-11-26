@@ -163,6 +163,7 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     && (!event.turn_origin || event.turn_origin === "user") && !event.inherited_from && PROMPTS.has(event.type ?? "");
   const requests = (event: ActivityEvent): string[] => [...new Set([
     event.attachment_request_id, ...(event.source === "hgs_delivery" ? [event.message_id] : []),
+    ...(opencodePromptId(event) ? [event.request_id] : []),
     ...(event.attachments ?? []).map(file => file.request_id),
   ].filter((id): id is string => typeof id === "string" && !!id))];
   let changed = false;
@@ -174,7 +175,8 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     // local cards and rows that are no longer eligible for body replacement.
     const owners = events.flatMap((event, index) => requests(event).includes(request) ? [index] : []);
     if (owners.length > 1) continue;
-    const exact = owners.length ? owners : events.flatMap((event, index) => own(event) && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
+    const exact = owners.length ? owners : events.flatMap((event, index) => own(event) && !opencodePromptId(event)
+      && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
       && ownMessageText(event).trim() === submitted ? [index] : []);
     if (exact.length !== 1 || !own(events[exact[0]])) continue;
     const at = exact[0], event = events[at];
@@ -833,7 +835,8 @@ function outboxReceiptId(event: ActivityEvent, target?: OutboxIdentity): string 
   if (event.inherited_from || messageRole(event) !== "user" || !PROMPTS.has(event.type ?? "")) return undefined;
   if (target && ((event.run_id !== undefined && event.run_id !== target.run_id)
     || (event.conversation_id !== undefined && event.conversation_id !== target.conversation_id))) return undefined;
-  const id = event.source === "hgs_delivery" ? event.message_id : event.attachment_request_id;
+  const id = opencodePromptId(event) ? event.request_id
+    : event.source === "hgs_delivery" ? event.message_id : event.attachment_request_id;
   return typeof id === "string" ? id : undefined;
 }
 

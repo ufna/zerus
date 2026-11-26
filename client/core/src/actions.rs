@@ -1622,7 +1622,7 @@ fn classify_answer(
 
 /// OpenCode's message ID as `hgs` checks it: `msg_` and at most 128 ASCII
 /// letters, digits, `_` and `-`.
-pub(crate) fn native_message_id(id: &str) -> bool {
+pub fn native_message_id(id: &str) -> bool {
     id.strip_prefix("msg_").is_some_and(|rest| {
         (1..=124).contains(&rest.len())
             && rest
@@ -1833,11 +1833,16 @@ fn classify_send(
 fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
     use sha2::{Digest, Sha256};
 
+    let opencode = target.name.starts_with("opencode/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         if receipt["schema"] == 1
             && receipt["status"] == "waiting_for_idle"
-            && receipt["proof"] == "native_input_lock"
+            && receipt["proof"] == if opencode {
+                "native_opencode_queue"
+            } else {
+                "native_input_lock"
+            }
             && receipt["request_id"].as_str().zip(invocation.request_id.as_deref()).is_some_and(|(actual, expected)| actual == expected)
             && receipt["name"] == target.name
             && receipt["run_id"] == target.run_id
@@ -1847,6 +1852,12 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             })
         {
             return done(receipt, None);
+        }
+        if opencode
+            && (receipt["transport"] != "native_opencode"
+                || !receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        {
+            return uncertain("The original OpenCode Send is unconfirmed.");
         }
     }
     let started = !matches!(exit, Exit::StartFailed(_));

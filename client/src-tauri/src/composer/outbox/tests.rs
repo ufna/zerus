@@ -75,7 +75,7 @@ fn settle_next(
 
 #[test]
 fn ordinary_send_accepts_a_busy_draft_without_native_input() {
-    for agent in ["codex", "kimi"] {
+    for agent in ["codex", "kimi", "opencode"] {
         let root = dir("ordinary-send-busy");
         let (c, fake) = send_hub_on(&drafts(&root));
         let target = target_session(agent);
@@ -999,4 +999,58 @@ fn host_busy_after_the_observation_releases_only_the_exact_pre_input_reservation
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].2, original.request_id);
     assert_eq!(calls[1].2, original.request_id);
+}
+
+#[test]
+fn opencode_lost_acknowledgement_advances_only_on_exact_native_activity_after_reopen() {
+    let root = dir("opencode-outbox-lost-acknowledgement");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("opencode");
+    present(&c, &fake, &session, "opencode");
+    let queued = enqueue(&c, "same");
+    let first = queued.waiting_in_zerus[0].request_id.clone();
+    let queued = enqueue(&c, "same");
+    let second = queued.waiting_in_zerus[1].request_id.clone();
+    assert_ne!(first, second);
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "lost stdout".into() });
+    lock(&fake.row).phase = Some("idle".into());
+    let idle = details(&session, "opencode", false, Some(false));
+    settle_next(&c, &fake, &store, idle.clone());
+    until(&c, |v| v.waiting_in_zerus.first().is_some_and(|m| m.state == State::Unknown));
+    assert_eq!(lock(&fake.calls).iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), [first.as_str()]);
+    drop(c);
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    present(&c, &fake, &session, "opencode");
+    let mut wrong = idle.clone();
+    let event = json!({"source": "opencode_native", "type": "UserPromptSubmit",
+        "message_id": "msg_Original", "detail": "same", "request_id": first});
+    wrong["events"] = json!([event]);
+    wrong["conversation_id"] = json!("replacement");
+    settle_next(&c, &fake, &store, wrong);
+    let mut no_proof = idle.clone();
+    no_proof["events"] = json!([{"source": "opencode_native", "type": "UserPromptSubmit",
+        "message_id": "msg_Different", "detail": "same"}]);
+    settle_next(&c, &fake, &store, no_proof);
+    assert_eq!(c.current().unwrap().waiting_in_zerus.len(), 2);
+    assert!(lock(&fake.calls).is_empty());
+
+    let mut working = details(&session, "opencode", true, Some(true));
+    working["events"] = json!([event]);
+    settle_next(&c, &fake, &store, working);
+    let remaining = until(&c, |v| v.waiting_in_zerus.len() == 1);
+    assert_eq!(remaining.waiting_in_zerus[0].request_id, second);
+    assert!(lock(&fake.calls).is_empty(), "the accepted turn is still working");
+
+    lock(&fake.row).phase = Some("idle".into());
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
+        receipt: json!({"status": "submitted", "transport": "native_opencode", "request_id": request,
+            "name": name, "run_id": "run-1", "conversation_id": "conv-1", "native_message_id": "msg_Second"}),
+        cleanup: None,
+    });
+    settle_next(&c, &fake, &store, idle);
+    until(&c, |v| v.waiting_in_zerus.is_empty());
+    assert_eq!(lock(&fake.calls).iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), [second.as_str()]);
 }
