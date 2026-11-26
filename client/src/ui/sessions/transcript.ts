@@ -276,6 +276,7 @@ function recordedContext(summary: Record<string, unknown> | undefined): Transcri
 // 1053-1068).
 
 const PROMPTS = new Set(["UserPromptSubmit", "UserPromptQueued", "TurnStarted"]);
+const OUTBOX_SOURCE = "zerus_outbox";
 const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
 const agyOffer = (event: ActivityEvent) => event.source === "agy_acp" && event.type === "UserPromptSubmit";
 const agyRequest = (event: ActivityEvent) => typeof event.request_id === "string" && event.request_id
@@ -357,6 +358,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
     }
     const submitted = submittedOf(row);
     const sent = row.status !== "error";
+    const fifo = row.source === OUTBOX_SOURCE;
     let match = -1;
     const exact: number[] = [];
     const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !childEvent(e) && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
@@ -377,10 +379,12 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       continue;
     }
     const ordinary = (e: ActivityEvent, i: number) => eligible(e, i) && !agyOffer(e);
-    if (sent) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
-    if (sent && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
+    if (sent && fifo) match = source.findIndex((e, i) => ordinary(e, i)
+      && outboxReceiptId(e, row) === row.id);
+    if (sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
+    if (sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
       && !!(e.message_id || e.attachment_request_id) && [row.id, row.message_id].some(id => !!id && (e.message_id === id || e.attachment_request_id === id)));
-    if (sent && match < 0 && row.attachments.length) {
+    if (sent && !fifo && match < 0 && row.attachments.length) {
       source.forEach((e, i) => {
         if (ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
           && submitted && ownMessageText(e).trim() === submitted) exact.push(i);
@@ -389,7 +393,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       // Qt also remembers which of several exact events a row was bound to; with one it is that one.
       if (competing === 1 && exact.length === 1) match = exact[0];
     }
-    if (sent && match < 0 && !exact.length) {
+    if (sent && !fifo && match < 0 && !exact.length) {
       const full = source.flatMap((e, i) => ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
         && !e.message_id && !e.attachment_request_id && submitted && ownMessageText(e).trim() === submitted
         && Math.abs((e.at ?? NaN) - row.submitted_at) <= NEAREST ? [i] : []);
@@ -411,7 +415,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   // receipt. Keep the client's row visible through that short gap; do not
   // invent an identity binding from text. Equal-text sends remain separate.
   const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
-    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
+    if (row.source === OUTBOX_SOURCE || row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
       || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
     const raw = event.detail ?? "";
     if (!echoMatchesFiles(raw, row.attachments as ActivityEvent["attachments"])) return false;
@@ -791,9 +795,13 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
   return items;
 }
 
+type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id">;
+
 /** Only a bound receipt can take over a queued row's display identity. */
-function outboxReceiptId(event: ActivityEvent): string | undefined {
+function outboxReceiptId(event: ActivityEvent, target?: OutboxIdentity): string | undefined {
   if (event.inherited_from || messageRole(event) !== "user" || !PROMPTS.has(event.type ?? "")) return undefined;
+  if (target && ((event.run_id !== undefined && event.run_id !== target.run_id)
+    || (event.conversation_id !== undefined && event.conversation_id !== target.conversation_id))) return undefined;
   const id = event.source === "hgs_delivery" ? event.message_id : event.attachment_request_id;
   return typeof id === "string" ? id : undefined;
 }
@@ -802,7 +810,7 @@ function outboxReceiptId(event: ActivityEvent): string | undefined {
  * journal/display-key bindings; never retain another session's transcript.
  * Rust may drop its local row before the corresponding activity batch arrives. */
 export function createTranscriptProjection() {
-  const recent = new Map<string, LocalMessage>(), bindings = new Map<string, string>(), outboxRequests = new Map<string, true>();
+  const recent = new Map<string, LocalMessage>(), bindings = new Map<string, string>(), outboxRequests = new Map<string, OutboxIdentity>();
   const trim = <T>(map: Map<string, T>, limit: number) => { while (map.size > limit) map.delete(map.keys().next().value!); };
   return {
     reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); },
@@ -811,7 +819,9 @@ export function createTranscriptProjection() {
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
       const queued = outbox.filter(row => !sent.has(row.request_id));
       const queuedIds = new Set(queued.filter(row => !row.target_changed).map(row => row.request_id));
-      for (const id of queuedIds) outboxRequests.set(id, true);
+      for (const item of queued) if (queuedIds.has(item.request_id)) {
+        outboxRequests.set(item.request_id, { run_id: item.run_id, conversation_id: item.conversation_id });
+      }
       trim(outboxRequests, 50);
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
@@ -828,7 +838,8 @@ export function createTranscriptProjection() {
       for (const event of provider) {
         const request = outboxReceiptId(event);
         const key = eventKey(event);
-        if (request && outboxRequests.has(request)) {
+        const target = request ? outboxRequests.get(request) : undefined;
+        if (request && target && outboxReceiptId(event, target)) {
           // The queue remains the authority for its visible state until the
           // backing entry leaves. An echo or an early receipt never edits it.
           if (queuedIds.has(request) || seenOutbox.has(request)) continue;

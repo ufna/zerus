@@ -19,6 +19,8 @@ pub const MAX_PER_SESSION: usize = 50;
 /// Sessions with rows. Past it, the least recently touched session without
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
+/// An original durable FIFO request, which only an exact history receipt can join.
+const OUTBOX_SOURCE: &str = "zerus_outbox";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -238,6 +240,7 @@ impl LocalMessages {
             files_value(files),
             run_id,
             conversation_id,
+            None,
             now,
         );
     }
@@ -255,6 +258,7 @@ impl LocalMessages {
             files,
             &entry.target.run_id,
             &entry.target.conversation_id,
+            Some(OUTBOX_SOURCE),
             now,
         );
         self.finished(key, &entry.request_id, outcome);
@@ -270,14 +274,17 @@ impl LocalMessages {
         attachments: Vec<Value>,
         run_id: &str,
         conversation_id: &str,
+        source: Option<&str>,
         now: f64,
     ) {
         let rows = self.rows.entry(key.to_owned()).or_default();
-        rows.retain(|row| {
-            !(row.status == Status::Error
-                && (Some(row.id.as_str()) == retry_id
-                    || (row.text == text && row.attachments == attachments)))
-        });
+        if source.is_none() {
+            rows.retain(|row| {
+                !(row.status == Status::Error
+                    && (Some(row.id.as_str()) == retry_id
+                        || (row.text == text && row.attachments == attachments)))
+            });
+        }
         rows.push(LocalMessage {
             id: request_id.into(),
             text: text.into(),
@@ -290,7 +297,7 @@ impl LocalMessages {
             uncertain: false,
             message_id: None,
             submitted_text: None,
-            source: None,
+            source: source.map(str::to_owned),
             voice: None,
             resumed_from: None,
         });
@@ -440,6 +447,16 @@ impl LocalMessages {
             if listed("attachment_messages", &row.message_id) {
                 result.removed += 1;
                 return false;
+            }
+            if row.source.as_deref() == Some(OUTBOX_SOURCE) {
+                let shown = events.iter().any(|event| {
+                    event["type"] == "UserPromptSubmit" && event["source"] == "hgs_delivery"
+                        && event["message_id"] == row.id
+                        && event.get("run_id").is_none_or(|value| *value == row.run_id)
+                        && event.get("conversation_id").is_none_or(|value| *value == row.conversation_id)
+                });
+                result.removed += usize::from(shown);
+                return !shown;
             }
             // A file card stays until the durable attachment metadata arrives.
             if !row.attachments.is_empty() {

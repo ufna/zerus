@@ -497,7 +497,7 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   const confirmed: LocalMessage = {
     id: localQueue[0].request_id, text: "same", status: "sent", attachments: localQueue[0].attachments ?? [],
     run_id: row.run_id!, conversation_id: row.conversation_id!, submitted_at: localQueue[0].queued_at! + 5,
-    error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: null, voice: null,
+    error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: "zerus_outbox", voice: null,
   };
   const firstId = waitingRows()[0].id;
   const staged = { ...initial, text_epoch: 4, waiting_in_zerus: localQueue.slice(1), local: [confirmed] };

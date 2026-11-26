@@ -618,3 +618,19 @@ it("keeps equal queued texts distinct and hands one exact receipt to the same Ac
   rows.reset();
   expect(rows.build([receipt]).map(item => item.id)).not.toContain("local-queue-one");
 });
+
+
+it("does not give an earlier equal-text native prompt the later FIFO request's identity", () => {
+  const projection = createTranscriptProjection();
+  const pending = { request_id: "request-b", handle: 9, preview: "repeat", state: "reserved", queued_at: 5000 } as const;
+  const earlier = { seq: 41, type: "UserPromptSubmit", source: "codex_transcript", detail: "repeat", at: 5000 };
+  const submitted = local("sent", false, { id: pending.request_id, source: "zerus_outbox",
+    text: "repeat", submitted_at: 5001, message_id: pending.request_id });
+  const ids = (items: ReturnType<typeof projection.build>) => items.map(item => item.id);
+  expect(ids(projection.build([earlier], undefined, [], [], [pending]))).toEqual(["s41", "local-request-b"]);
+  expect(ids(projection.build([earlier], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
+  const late = { ...earlier, seq: 42, at: 5002 };
+  expect(ids(projection.build([earlier, late], undefined, [submitted]))).toEqual(["s41", "local-request-b", "s42"]);
+  const exact = { ...late, source: "hgs_delivery", message_id: submitted.id };
+  expect(ids(projection.build([earlier, exact], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
+});
