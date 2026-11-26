@@ -20,6 +20,7 @@ pub const MAX_PER_SESSION: usize = 50;
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
 pub const OPENCODE_SOURCE: &str = "opencode_native";
+const CLAUDE_OUTBOX_SOURCE: &str = "zerus_claude_outbox";
 /// An original durable FIFO request, which only an exact history receipt can join.
 const OUTBOX_SOURCE: &str = "zerus_outbox";
 
@@ -255,6 +256,8 @@ impl LocalMessages {
         let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
         let source = if entry.target.name.starts_with("opencode/") {
             OPENCODE_SOURCE
+        } else if entry.target.name.starts_with("claude/") {
+            CLAUDE_OUTBOX_SOURCE
         } else {
             OUTBOX_SOURCE
         };
@@ -383,6 +386,12 @@ impl LocalMessages {
                         row.message_id = Some(id.into());
                     }
                 }
+                if row.source.as_deref() == Some(CLAUDE_OUTBOX_SOURCE)
+                    && receipt["status"] == "submitted" && request == row.id
+                    && receipt["run_id"] == row.run_id && receipt["conversation_id"] == row.conversation_id
+                {
+                    row.message_id = crate::actions::claude_outbox_prompt(receipt).map(str::to_owned);
+                }
                 for (index, file) in row.attachments.iter_mut().enumerate() {
                     file["request_id"] = request.clone();
                     file["index"] = json!(index);
@@ -444,6 +453,17 @@ impl LocalMessages {
                 // is evidence about this row or its draft.
                 let shown = row.status == Status::Sent
                     && events.iter().any(|event| opencode_echo(row, event));
+                result.removed += usize::from(shown);
+                return !shown;
+            }
+            if row.source.as_deref() == Some(CLAUDE_OUTBOX_SOURCE) {
+                let Some(id) = row.message_id.as_deref() else { return true; };
+                let shown = row.status == Status::Sent
+                    && (row.attachments.is_empty() || details["attachment_messages"].as_array()
+                        .is_some_and(|messages| messages.iter().any(|event| {
+                            event["message_id"] == row.id && claude_outbox_echo(row, event, id)
+                        })))
+                    && events.iter().any(|event| claude_outbox_echo(row, event, id));
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -612,6 +632,12 @@ impl LocalMessages {
     pub fn forget(&mut self, key: &str) {
         self.drop_key(key);
     }
+}
+
+fn claude_outbox_echo(row: &LocalMessage, event: &Value, id: &str) -> bool {
+    event["type"] == "UserPromptSubmit" && event["claude_prompt_id"] == id
+        && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
+        && event["agent_id"].as_str().unwrap_or("").is_empty()
 }
 
 fn opencode_echo(row: &LocalMessage, event: &Value) -> bool {

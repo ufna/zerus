@@ -21,7 +21,10 @@ mod pin;
 mod point;
 mod question;
 pub(super) use admission::Wait as QuestionAdmission;
-pub(super) use point::{delivery_binding, delivery_receipt, DeliveryBinding, DeliveryQuery};
+pub(super) use point::{
+    claude_outbox_prompt, claude_outbox_status, claude_prompt_uuid, delivery_binding, delivery_receipt,
+    DeliveryBinding, DeliveryQuery,
+};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
 pub(crate) use question::{question_page, Coverage, QuestionReceiptPage, QuestionReceiptRow};

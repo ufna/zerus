@@ -153,6 +153,12 @@ struct Original {
     native_message_id: Option<String>,
     delivery_binding: Option<DeliveryBinding>,
     graph_target: Option<GraphTarget>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    claude_outbox: bool,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    native: Value,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    native_input: Value,
 }
 
 fn original(state: &Path, source: Source, id: &str) -> std::result::Result<Original, &'static str> {
@@ -223,6 +229,61 @@ fn controlled_directory(directory: &Directory) -> std::result::Result<bool, &'st
     #[cfg(windows)]
     let result = directory.private();
     result.map_err(|_| "source_unavailable")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutboxQuery {
+    request_id: String,
+    expected_run_id: String,
+    expected_conversation_id: String,
+    input_sha256: String,
+}
+
+pub(in crate::state) fn claude_prompt_uuid(value: &str) -> bool {
+    uuid(value)
+}
+
+pub(in crate::state) fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
+    (receipt["claude_outbox"] == true && receipt["native"] == "transcript"
+        && uuid(string(&receipt["native_input"], "uuid")))
+        .then_some(string(&receipt["native_input"], "prompt_id"))
+        .filter(|id| uuid(id))
+}
+
+/// Read one final native Claude receipt. No transcript search, pane input,
+/// or replay can result from a missing or non-final receipt.
+pub(in crate::state) fn claude_outbox_status(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
+    let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid Claude outbox query")?;
+    if !name.starts_with("claude/") || !bounded_identity(name, 512)
+        || !uuid(&query.request_id) || !uuid(&query.expected_run_id)
+        || !uuid(&query.expected_conversation_id) || !hex(&query.input_sha256)
+    {
+        return Err("Invalid Claude outbox identity".into());
+    }
+    let receipt = original(state, Source::Terminal, &query.request_id)
+        .map_err(|_| "Original Claude delivery is unconfirmed")?;
+    if !receipt.claude_outbox || receipt.status != "submitted" || receipt.transport != "terminal"
+        || receipt.request_id != query.request_id || receipt.name != name
+        || receipt.run_id != query.expected_run_id || receipt.conversation_id != query.expected_conversation_id
+        || receipt.digest != query.input_sha256 || receipt.first_message || !receipt.agent_id.is_empty()
+        || !matches!(receipt.native.as_str(), Some("transcript" | "queue"))
+        || !receipt.submitted_at.is_finite() || receipt.submitted_at <= 0.0
+    {
+        return Err("Original Claude delivery is unconfirmed".into());
+    }
+    let native_input = if receipt.native == "transcript"
+        && uuid(string(&receipt.native_input, "uuid")) && uuid(string(&receipt.native_input, "prompt_id"))
+    {
+        json!({"uuid":receipt.native_input["uuid"],"prompt_id":receipt.native_input["prompt_id"]})
+    } else {
+        Value::Null
+    };
+    Ok(json!({"schema":1,"status":"submitted","proof":"native_claude_receipt","claude_outbox":true,
+        "request_id":receipt.request_id,"name":name,"run_id":receipt.run_id,
+        "conversation_id":receipt.conversation_id,"input_sha256":query.input_sha256,
+        "transport":receipt.transport,"native":receipt.native,"native_input":native_input,
+        "submitted_at":receipt.submitted_at}))
 }
 
 /// Historical proof only: no name resolution, current-session read, SQL,

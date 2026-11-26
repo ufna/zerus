@@ -127,6 +127,15 @@ pub(super) fn inspection(record: &Value, live: bool) -> Option<Value> {
     }
     Some(data)
 }
+/// The queue still belongs to Claude even if a late hook says the turn is idle.
+pub(super) fn claude_waiting(record: &Value) -> Result<bool> {
+    let screen = capture_plain(record, Instant::now() + CAPTURE_WINDOW)?;
+    Ok(parse("claude", &screen).is_some() || screen.lines().rev().take(6).any(|line| {
+        line.trim().strip_prefix('❯')
+            .is_some_and(|text| text.trim() == "Press up to edit queued messages")
+    }))
+}
+
 fn capture_plain(record: &Value, until: Instant) -> Result<String> {
     let screen = backend::current().capture_until(
         string(record, "pane"), backend::Capture::Plain, until, CAPTURE_BYTES,

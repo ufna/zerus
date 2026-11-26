@@ -74,6 +74,11 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
                 string(&message, "message_id"),
             );
             body["conversation_id"] = json!(id);
+            if agent == "claude" && event["sessionId"] == id
+                && receipt_index::claude_prompt_uuid(string(&event, "promptId"))
+            {
+                body["claude_prompt_id"] = event["promptId"].clone();
+            }
             messages.push(body);
         } else {
             messages.push(message);
@@ -86,6 +91,13 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
 /// message. Genuinely repeated later messages stay in the conversation, and
 /// Claude's thinking is never a repeat.
 fn repeated(recent: &[Value], message: &Value) -> bool {
+    if message["type"] == "UserMessageBody" && message["source"] == "claude_transcript"
+        && !string(message, "message_id").is_empty()
+    {
+        return recent.iter().rev().take(4).any(|earlier| {
+            earlier["type"] == "UserMessageBody" && earlier["message_id"] == message["message_id"]
+        });
+    }
     message["type"] != "AgentThinking" && recent.iter().rev().take(4).any(|m| {
         m["type"] == message["type"]
             && m["detail"] == message["detail"]

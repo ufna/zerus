@@ -7,10 +7,10 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let [operation, name, format] = args else {
         return Err("usage: hgs delivery receipt <original-session-name> --json".into());
     };
-    if format == "--json" && operation == "outbox-status" {
+    if format == "--json" && operation == "outbox-status" && !name.starts_with("claude/") {
         return opencode::outbox_status(name);
     }
-    if operation != "receipt" || format != "--json" {
+    if !matches!(operation.as_str(), "receipt" | "outbox-status") || format != "--json" {
         return Err("usage: hgs delivery receipt <original-session-name> --json".into());
     }
     let mut bytes = Vec::new();
@@ -20,6 +20,10 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         .map_err(|_| "Invalid delivery receipt query")?;
     if bytes.len() > 8192 {
         return Err("Delivery receipt query exceeds 8 KiB".into());
+    }
+    if operation == "outbox-status" {
+        println!("{}", receipt_index::claude_outbox_status(&root(), name, &bytes)?);
+        return Ok(0);
     }
     let query: receipt_index::DeliveryQuery =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid delivery receipt query")?;

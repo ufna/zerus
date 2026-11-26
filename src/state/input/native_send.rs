@@ -882,6 +882,12 @@ mod tests {
             assert_eq!(original.matches(witnessed).count(), 1, "{witnessed}");
             original = original.replacen(witnessed, reviewed, 1);
         }
+        let claude_outbox = r#"    if agent == "claude" && request.only_when_idle {
+        receipt["claude_outbox"] = json!(true);
+    }
+"#;
+        assert_eq!(original.matches(claude_outbox).count(), 1);
+        original = original.replacen(claude_outbox, "", 1);
         // zerus-46l1q review D2: a writer at the person's request checks it
         // under Root before anything is typed; project that addition away.
         let admit = "    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,\n";

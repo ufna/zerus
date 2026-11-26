@@ -1834,6 +1834,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     use sha2::{Digest, Sha256};
 
     let opencode = target.name.starts_with("opencode/");
+    let claude = target.name.starts_with("claude/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         if receipt["schema"] == 1
@@ -1859,6 +1860,9 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
+        if claude && !claude_outbox_submitted(&receipt) {
+            return uncertain("The original Claude Send is unconfirmed.");
+        }
     }
     let started = !matches!(exit, Exit::StartFailed(_));
     match classify_send(target, invocation, None, exit) {
@@ -1867,19 +1871,21 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     }
 }
 
-/// Read one original guarded OpenCode offer by its exact stdin hash.
-pub fn opencode_outbox_status(
+/// Read one original guarded offer by its exact stdin hash.
+pub fn outbox_status(
     target: &Target,
     action: &Action,
     request_id: &str,
 ) -> Result<Invocation, String> {
     use sha2::{Digest, Sha256};
 
-    if !target.name.starts_with("opencode/") || !matches!(action, Action::SendWhenIdle { .. }) {
-        return Err("Expected an original OpenCode outbox request.".into());
+    if !(target.name.starts_with("opencode/") || target.name.starts_with("claude/"))
+        || !matches!(action, Action::SendWhenIdle { .. })
+    {
+        return Err("Expected an original outbox request.".into());
     }
     let original = invocation(target, action, request_id)?;
-    let input = original.stdin.ok_or("The original OpenCode input is unavailable.")?;
+    let input = original.stdin.ok_or("The original outbox input is unavailable.")?;
     let mut args = vec!["delivery".into(), "outbox-status".into(), target.name.clone(), "--json".into()];
     let remote = prepend_alias(&mut args, &target.computer);
     let query = json!({"request_id": request_id, "expected_run_id":target.run_id,
@@ -1890,18 +1896,37 @@ pub fn opencode_outbox_status(
     })
 }
 
-pub fn opencode_outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
+fn claude_outbox_submitted(receipt: &Value) -> bool {
+    receipt["claude_outbox"] == true && receipt["transport"] == "terminal"
+        && matches!(receipt["native"].as_str(), Some("transcript" | "queue"))
+}
+
+pub fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
+    if !claude_outbox_submitted(receipt) || receipt["native"] != "transcript"
+        || !receipt["native_input"]["uuid"].as_str().is_some_and(crate::creation::canonical_uuid)
+    {
+        return None;
+    }
+    receipt["native_input"]["prompt_id"].as_str().filter(|id| crate::creation::canonical_uuid(id))
+}
+
+pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
     let Exit::Code { code: 0, stdout, .. } = exit else { return None };
     if stdout.len() > 8192 { return None; }
     let receipt: Value = serde_json::from_slice(&stdout).ok()?;
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
-    (receipt["schema"] == 1 && receipt["status"] == "submitted"
-        && receipt["proof"] == "native_opencode_receipt" && receipt["transport"] == "native_opencode"
+    let provider = if target.name.starts_with("claude/") {
+        receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
+    } else {
+        target.name.starts_with("opencode/") && receipt["proof"] == "native_opencode_receipt"
+            && receipt["transport"] == "native_opencode"
+            && receipt["native_message_id"].as_str().is_some_and(native_message_id)
+    };
+    (provider && receipt["schema"] == 1 && receipt["status"] == "submitted"
         && receipt["request_id"].as_str() == query.request_id.as_deref()
         && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
         && receipt["name"] == target.name && receipt["run_id"] == target.run_id
-        && receipt["conversation_id"] == target.conversation_id
-        && receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        && receipt["conversation_id"] == target.conversation_id)
         .then_some(receipt)
 }
 

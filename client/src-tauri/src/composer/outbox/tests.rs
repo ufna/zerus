@@ -19,6 +19,9 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     value["activity"] = json!(if is_busy { "busy" } else { "idle" });
     value["phase"] = json!(if is_busy { "tool" } else { "idle" });
     value["guarded_idle_send"] = json!(true);
+    if agent == "claude" {
+        value["claude_outbox_supported"] = json!(true);
+    }
     if let Some(pending) = pending {
         value["previous_message_pending"] = json!(pending);
     }
@@ -75,7 +78,7 @@ fn settle_next(
 
 #[test]
 fn ordinary_send_accepts_a_busy_draft_without_native_input() {
-    for agent in ["codex", "kimi", "opencode"] {
+    for agent in ["codex", "kimi", "opencode", "claude"] {
         let root = dir("ordinary-send-busy");
         let (c, fake) = send_hub_on(&drafts(&root));
         let target = target_session(agent);
@@ -1026,14 +1029,14 @@ fn opencode_lost_acknowledgement_advances_only_on_exact_receipt_after_reopen() {
     let reply = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
     let reply_for_status = reply.clone();
     c.set_outbox_status(std::sync::Arc::new(move |target, action, id| {
-        use zerus_client_core::actions::{opencode_outbox_receipt, opencode_outbox_status};
-        let query = opencode_outbox_status(target, action, id).ok()?;
+        use zerus_client_core::actions::{outbox_receipt, outbox_status};
+        let query = outbox_status(target, action, id).ok()?;
         let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
         let mut response = lock(&reply_for_status).clone()?;
         if response["input_sha256"].is_null() {
             response["input_sha256"] = input["input_sha256"].clone();
         }
-        opencode_outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+        outbox_receipt(target, &query, zerus_client_core::Exit::Code {
             code: 0, stdout: serde_json::to_vec(&response).unwrap(), stderr: String::new(),
         })
     }));
@@ -1067,4 +1070,49 @@ fn opencode_lost_acknowledgement_advances_only_on_exact_receipt_after_reopen() {
     settle_next(&c, &fake, &store, idle);
     until(&c, |v| v.waiting_in_zerus.is_empty());
     assert_eq!(lock(&fake.calls).iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), [second.as_str()]);
+}
+
+#[test]
+fn claude_fifo_waits_for_native_queue_and_reconciles_one_lost_acknowledgement() {
+    let root = dir("claude-outbox-receipt");
+    let store = drafts(&root);
+    let (composers, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("claude");
+    present(&composers, &fake, &session, "claude");
+    let first = enqueue(&composers, "same").waiting_in_zerus[0].request_id.clone();
+    let second = enqueue(&composers, "same").waiting_in_zerus[1].request_id.clone();
+    let idle = details(&session, "claude", false, Some(false));
+    let mut before = idle.clone();
+    before["input_queue"] = json!({"id":"native-existing-queue"});
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(&composers, &fake, &store, before);
+    assert!(lock(&fake.calls).is_empty());
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "lost stdout".into() });
+    settle_next(&composers, &fake, &store, idle.clone());
+    let held = until(&composers, |view| view.waiting_in_zerus[0].state == State::Unknown);
+    assert_eq!(held.waiting_in_zerus[0].request_id, first);
+    assert_eq!(lock(&fake.calls).len(), 1);
+
+    let prompt = "937ff07b-b157-401f-8c90-4ecfc308744e";
+    let native_row = "abba57d9-57a4-441d-a81d-e0278da2eaf8";
+    let original = first.clone();
+    composers.set_outbox_status(std::sync::Arc::new(move |target, action, request| {
+        let query = zerus_client_core::actions::outbox_status(target, action, request).unwrap();
+        assert_eq!(request, original);
+        let input: Value = serde_json::from_slice(query.stdin.as_deref().unwrap()).unwrap();
+        let receipt = json!({"schema":1,"status":"submitted","proof":"native_claude_receipt",
+            "claude_outbox":true,"transport":"terminal","native":"transcript","native_input":{
+                "prompt_id":prompt,"uuid":native_row},
+            "request_id":request,"name":target.name,"run_id":target.run_id,
+            "conversation_id":target.conversation_id,"input_sha256":input["input_sha256"]});
+        zerus_client_core::actions::outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+            code:0, stdout:serde_json::to_vec(&receipt).unwrap(), stderr:String::new(),
+        })
+    }));
+    settle_next(&composers, &fake, &store, idle);
+    let waiting = until(&composers, |view| view.waiting_in_zerus.len() == 1);
+    assert_eq!(waiting.waiting_in_zerus[0].request_id, second);
+    assert_eq!(waiting.local[0].id, first);
+    assert_eq!(waiting.local[0].message_id.as_deref(), Some(prompt));
+    assert_eq!(lock(&fake.calls).len(), 1);
 }

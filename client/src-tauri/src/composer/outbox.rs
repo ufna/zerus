@@ -102,7 +102,7 @@ pub(super) fn view(
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
             can_check_terminal: entry.state == State::Unknown
-                && !native_outbox(entry)
+                && !opencode_outbox(entry)
                 && entry.draft_key == key
                 && context.is_some_and(|ctx| {
                     ctx.online
@@ -127,10 +127,10 @@ fn target(ctx: &super::send::Context) -> Target {
 }
 
 fn supported_agent(agent: &str) -> bool {
-    matches!(agent, "codex" | "kimi" | "opencode")
+    matches!(agent, "codex" | "kimi" | "opencode" | "claude")
 }
 
-fn native_outbox(entry: &Entry) -> bool {
+fn opencode_outbox(entry: &Entry) -> bool {
     entry.target.name.starts_with("opencode/")
 }
 
@@ -139,7 +139,13 @@ fn guarded_action(entry: &Entry) -> Action {
 }
 
 fn can_probe(entry: &Entry) -> bool {
-    entry.state == State::Waiting || entry.state == State::Unknown && native_outbox(entry)
+    entry.state == State::Waiting || entry.state == State::Unknown
+        && (opencode_outbox(entry) || entry.target.name.starts_with("claude/"))
+}
+
+fn guarded_supported(agent: &str, details: &serde_json::Value) -> bool {
+    details["guarded_idle_send"] == true
+        && (agent != "claude" || details["claude_outbox_supported"] == true)
 }
 
 impl Context {
@@ -250,7 +256,7 @@ impl Composers {
             {
                 return ManualSend::Blocked(QUEUE_TARGET_CHANGED.into());
             }
-            if details["guarded_idle_send"] != true {
+            if !guarded_supported(&ctx.row.agent, details) {
                 return ManualSend::Blocked(QUEUE_OLD_HOST.into());
             }
             ManualSend::Wait
@@ -499,7 +505,7 @@ impl Composers {
     }
 
     fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
-        details["guarded_idle_send"] == true
+        guarded_supported(&row.agent, details)
             && row.phase.as_deref() == Some("idle")
             && super::send::previous_message_pending(
                 row,
@@ -664,12 +670,14 @@ impl Composers {
         }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
-            && entry.target.name.starts_with("codex/")
-            && entry.attachments.is_empty();
+            && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
+                || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
+                    zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
+                }));
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle"
-                    && receipt["proof"] == if native_outbox(&entry) { "native_opencode_queue" } else { "native_input_lock" }
+                    && receipt["proof"] == if opencode_outbox(&entry) { "native_opencode_queue" } else { "native_input_lock" }
             });
         let mut entries = c.outbox.clone();
         if exact {

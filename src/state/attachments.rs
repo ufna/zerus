@@ -190,8 +190,17 @@ fn projected_page(record:&Value,agent:&str,cursor:&str,limit:usize)->Result<(Val
             receipt["resolved_conversation_id"]=record["conversation_id"].clone();
             let _=receipt_index::persist(&directory(record).join(format!("{}.json",locator.id)),&receipt);
         }
-        messages.push(json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
-            "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)}));
+        let mut message = json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
+            "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)});
+        if record["agent"] == "claude" && receipt["claude_outbox"] == true {
+            message["claude_outbox"] = json!(true);
+            if let Some(prompt) = receipt_index::claude_outbox_prompt(&receipt) {
+                message["claude_prompt_id"] = json!(prompt);
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
+        }
+        messages.push(message);
     }
     if !gaps.is_empty() {page.metadata["state"]=json!("partial");}
     page.metadata["gaps"]=json!(gaps);

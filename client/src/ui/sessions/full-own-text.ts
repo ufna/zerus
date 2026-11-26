@@ -25,6 +25,12 @@ const own = (event: ActivityEvent) => PROMPTS.has(event.type ?? "") && (!event.a
 /** Native IDs are namespaced by provider and conversation. A typed Kimi turn
  * cannot fall back to text or another ID when either side lacks its binding. */
 function bound(event: ActivityEvent, body: ActivityEvent, summary?: Record<string, unknown>): boolean {
+  if (event.claude_prompt_id !== undefined) {
+    const cid = text(event.conversation_id);
+    return body.source === "claude_transcript" && !!cid && body.conversation_id === cid
+      && !!text(event.claude_prompt_id) && event.claude_prompt_id === body.claude_prompt_id
+      && (!summary?.conversation_id || summary.conversation_id === cid);
+  }
   if (event.kimi_turn_id !== undefined || body.kimi_turn_id !== undefined) {
     const cid = text(event.kimi_conversation_id);
     return body.source === "kimi_wire" && (!event.source || event.source === "kimi_wire")
@@ -48,7 +54,7 @@ export function restoreOwnMessages(given: readonly ActivityEvent[], summary?: Re
   for (const body of [...historical, ...providers].slice(-200)) {
     if (body.type !== "UserMessageBody" || !SOURCES.has(body.source ?? "") || body.agent_id || body.origin) continue;
     const parts = Array.isArray(body.message_parts) ? body.message_parts : [body.detail];
-    const identity = JSON.stringify([body.source, body.message_id, body.conversation_id, body.kimi_turn_id, body.kimi_conversation_id, parts, body.message_text_truncated]);
+    const identity = JSON.stringify([body.source, body.message_id, body.conversation_id, body.kimi_turn_id, body.kimi_conversation_id, body.claude_prompt_id, parts, body.message_text_truncated]);
     if (seen.has(identity)) continue;
     seen.add(identity);
     // Complete and already attached rows also reserve their exact native body.
