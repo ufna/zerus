@@ -30,20 +30,44 @@ fn pending(attempt: &Value) -> bool {
     ["submitted", "compacting", "uncertain"].contains(&string(attempt, "status"))
 }
 
-fn native_status(message: &Value, attempt: &Value) -> Option<&'static str> {
+fn terminal(attempt: &Value) -> bool {
+    matches!(
+        string(attempt, "status"),
+        "completed" | "failed" | "cancelled"
+    )
+}
+
+fn same_attempt(saved: &Value, attempt: &Value) -> bool {
+    [
+        "request_id",
+        "session_id",
+        "run_id",
+        "conversation_id",
+        "native_message_id",
+    ]
+    .into_iter()
+    .all(|key| {
+        attempt[key]
+            .as_str()
+            .is_some_and(|value| !value.is_empty() && saved[key] == value)
+    })
+}
+
+fn native_status(message: &Value, attempt: &Value) -> Option<(&'static str, Option<u64>)> {
     if message["id"] != attempt["native_message_id"]
         || message["type"] != "compaction"
         || message["reason"] != "manual"
     {
         return None;
     }
-    match string(message, "status") {
-        "completed" => Some("completed"),
-        "failed" => Some("failed"),
-        "cancelled" | "canceled" => Some("cancelled"),
-        "running" | "pending" => Some("compacting"),
-        _ => None,
-    }
+    let status = match string(message, "status") {
+        "completed" => "completed",
+        "failed" => "failed",
+        "cancelled" | "canceled" => "cancelled",
+        "running" | "pending" => "compacting",
+        _ => return None,
+    };
+    Some((status, message["time"]["created"].as_u64()))
 }
 
 /// The exact native message is authoritative. A missing message can still be
@@ -80,8 +104,11 @@ fn reconcile(
                 .then(|| native_status(&reply.body["data"], attempt))
                 .flatten()
         });
-    if let Some(state) = native_state {
+    if let Some((state, created)) = native_state {
         result["status"] = json!(state);
+        if state == "completed" {
+            result["native_created_at"] = json!(created);
+        }
         if state != "compacting" {
             result
                 .as_object_mut()
@@ -106,14 +133,37 @@ fn reason(available: bool, activity: bool, empty: bool, attempt: &Value) -> &'st
     }
 }
 
-pub(super) fn decorate(native: &dyn Native, record: &Value, seen: &Observed, row: &mut Value) {
-    let attempt = reconcile(
+pub(super) fn inspect(native: &dyn Native, record: &Value, seen: &Observed) -> Value {
+    let attempt = &record[FIELD];
+    if attempt["conversation_id"] != record["conversation_id"] {
+        return Value::Null;
+    }
+    if !pending(attempt) {
+        return attempt.clone();
+    }
+    if let Some(saved) = saved_attempt(attempt)
+        .ok()
+        .map(|(_, saved)| saved)
+        .filter(terminal)
+    {
+        return saved;
+    }
+    reconcile(
         native,
         record,
-        &record[FIELD],
+        attempt,
         &seen.page.messages,
         Instant::now() + Duration::from_millis(300),
-    );
+    )
+}
+
+pub(super) fn decorate(
+    native: &dyn Native,
+    record: &Value,
+    seen: &Observed,
+    attempt: Value,
+    row: &mut Value,
+) {
     let queued = [&seen.inbox["data"], &seen.forms, &seen.permissions]
         .into_iter()
         .any(|items| items.as_array().is_none_or(|items| !items.is_empty()));
@@ -142,29 +192,34 @@ fn receipt_path(id: &str) -> Result<PathBuf> {
         .join(format!("{id}.json")))
 }
 
+fn saved_attempt(attempt: &Value) -> Result<(PathBuf, Value)> {
+    let path = receipt_path(string(attempt, "request_id"))?;
+    let saved = read(&path)?.ok_or("OpenCode compact receipt is unavailable")?;
+    if !same_attempt(&saved, attempt) {
+        return Err("OpenCode compact receipt changed".into());
+    }
+    Ok((path, saved))
+}
+
 /// Publish a proven terminal outcome before a later offer can replace the
 /// session's current attempt. Inspect only projects the native evidence.
 fn settle_current(native: &dyn Native, record: &mut Value, until: Instant) -> Result<Value> {
     let original = &record[FIELD];
-    let settled = reconcile(native, record, original, &[], until);
-    if pending(original) && !pending(&settled) {
-        let path = receipt_path(string(original, "request_id"))?;
-        let saved = read(&path)?.ok_or("OpenCode compact receipt is unavailable")?;
-        if [
-            "request_id",
-            "session_id",
-            "run_id",
-            "conversation_id",
-            "native_message_id",
-        ]
-        .into_iter()
-        .any(|key| saved[key] != original[key])
-        {
-            return Err("OpenCode compact receipt changed".into());
-        }
+    if !pending(original) {
+        return Ok(original.clone());
+    }
+    let (path, saved) = saved_attempt(original)?;
+    let settled = if terminal(&saved) {
+        saved.clone()
+    } else {
+        reconcile(native, record, original, &[], until)
+    };
+    if terminal(&settled) {
         // Once the receipt is terminal, subsequent observations may update
         // the binding even after an interrupted final write.
-        atomic(&path, &settled.to_string())?;
+        if settled != saved {
+            atomic(&path, &settled.to_string())?;
+        }
         record[FIELD] = settled.clone();
         save(record)?;
     }
@@ -172,7 +227,11 @@ fn settle_current(native: &dyn Native, record: &mut Value, until: Instant) -> Re
 }
 
 fn repeat(record: &mut Value, previous: Value) -> Value {
-    if !pending(&previous) || record[FIELD]["request_id"] != previous["request_id"] {
+    if pending(&record[FIELD]) && terminal(&previous) && same_attempt(&previous, &record[FIELD]) {
+        record[FIELD] = previous.clone();
+        let _ = save(record);
+    }
+    if !pending(&previous) || !same_attempt(&previous, &record[FIELD]) {
         return previous;
     }
     let until = Instant::now() + Duration::from_secs(2);
@@ -186,7 +245,7 @@ fn repeat(record: &mut Value, previous: Value) -> Value {
     let observed =
         verify_session(&native, record).and_then(|_| settle_current(&native, record, until));
     match observed {
-        Ok(receipt) if receipt.is_object() && !pending(&receipt) => receipt,
+        Ok(receipt) if terminal(&receipt) => receipt,
         _ => previous,
     }
 }
@@ -297,6 +356,28 @@ pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_receipt_must_match_every_original_attempt_pin() {
+        let attempt = json!({"request_id":"request","session_id":"session","run_id":"run",
+            "conversation_id":"conversation","native_message_id":"message","status":"uncertain"});
+        let mut saved = attempt.clone();
+        saved["status"] = json!("completed");
+        assert!(same_attempt(&saved, &attempt));
+        for key in [
+            "request_id",
+            "session_id",
+            "run_id",
+            "conversation_id",
+            "native_message_id",
+        ] {
+            let mut changed = saved.clone();
+            changed[key] = json!("unrelated");
+            assert!(!same_attempt(&changed, &attempt));
+            changed[key] = Value::Null;
+            assert!(!same_attempt(&changed, &attempt));
+        }
+    }
 
     #[test]
     fn only_the_exact_native_missing_session_refusal_can_release_the_fence() {

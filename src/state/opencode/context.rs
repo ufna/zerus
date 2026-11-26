@@ -76,19 +76,51 @@ fn last_step<'a>(messages: &'a [Value], model: &Value) -> Option<&'a Value> {
     None
 }
 
-pub(super) fn usage(session: &Value, messages: &[Value], limits: &Value) -> Value {
-    let last = last_step(messages, &session["model"]);
+/// A completed summary is coherent with an aggregate sample only once the
+/// session has left that turn. The summary row may appear before that sample.
+pub(super) fn compact_boundary(messages: &[Value], attempt: &Value) -> Option<u64> {
+    let time = |value: &Value| number(value).filter(|&time| time > 0).unwrap_or(u64::MAX);
+    let history = messages
+        .iter()
+        .filter(|message| message["type"] == "compaction" && message["status"] == "completed")
+        .map(|message| time(&message["time"]["created"]));
+    let exact = (attempt["status"] == "completed").then(|| time(&attempt["native_created_at"]));
+    history.chain(exact).max()
+}
+
+pub(super) fn covers_compact(session: &Value, boundary: Option<u64>) -> bool {
+    boundary.is_none_or(|boundary| {
+        number(&session["time"]["idle"]).is_some_and(|idle| idle >= boundary)
+    })
+}
+
+pub(super) fn usage(
+    session: &Value,
+    messages: &[Value],
+    limits: &Value,
+    boundary: Option<u64>,
+) -> Value {
+    let current = covers_compact(session, boundary);
+    let last = current
+        .then(|| last_step(messages, &session["model"]))
+        .flatten()
+        .filter(|message| {
+            boundary.is_none_or(|boundary| {
+                number(&message["time"]["completed"]).is_some_and(|step| step > boundary)
+            })
+        });
     let step = last
         .map(|message| tokens(&message["tokens"]))
         .unwrap_or(Value::Null);
     let used = number(&step["total"]).filter(|&total| total > 0);
     let totals = tokens(&session["tokens"]);
     // A new session has zero-filled counters before OpenCode calls a model.
-    let has_usage = totals.as_object().is_some_and(|values| {
-        values
-            .values()
-            .any(|value| number(value).is_some_and(|n| n > 0))
-    });
+    let has_usage = current
+        && totals.as_object().is_some_and(|values| {
+            values
+                .values()
+                .any(|value| number(value).is_some_and(|n| n > 0))
+        });
     let cost = session["cost"]
         .as_f64()
         .filter(|cost| has_usage && cost.is_finite() && *cost >= 0.0);
@@ -152,7 +184,7 @@ mod tests {
         tool_step["finish"] = json!("tool-calls");
         tool_step["tokens"]["input"] = json!(400);
         let limits = json!({"limit":16000,"output_limit":1000});
-        let view = |messages: &[Value]| usage(&session, messages, &limits);
+        let view = |messages: &[Value]| usage(&session, messages, &limits, None);
         let measured = view(&[complete.clone(), streaming, error.clone(), retry.clone()]);
         assert_eq!(measured["context"]["used"], 335);
         assert_eq!(measured["totals"]["total"], 670);
@@ -175,5 +207,31 @@ mod tests {
             assert_eq!(next["context"]["used"], 635);
             assert_eq!(next["totals"], measured["totals"]);
         }
+    }
+
+    #[test]
+    fn a_summary_newer_than_the_native_idle_sample_keeps_only_limits() {
+        let mut session = json!({"time":{"idle":500},"tokens":{"input":100,"output":20,"reasoning":10,
+            "cache":{"read":200,"write":5}}});
+        let limits = json!({"limit":16000,"output_limit":1000});
+        let receipt = json!({"status":"completed","native_created_at":600});
+        let boundary = compact_boundary(&[], &receipt);
+        assert_eq!(boundary, Some(600));
+        let stale = usage(&session, &[], &limits, boundary);
+        assert!(stale["totals"].is_null());
+        assert!(stale["context"]["used"].is_null());
+        assert_eq!(stale["context"]["limit"], 16000);
+        session["time"]["idle"] = json!(650);
+        assert_eq!(
+            usage(&session, &[], &limits, boundary)["totals"]["total"],
+            335
+        );
+        assert!(!covers_compact(
+            &session,
+            compact_boundary(
+                &[json!({"type":"compaction","status":"completed"})],
+                &Value::Null
+            )
+        ));
     }
 }

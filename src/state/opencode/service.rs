@@ -736,7 +736,7 @@ pub(super) fn fetch_description(service: &Service) -> Result<Value> {
     service.call_within("GET", "/openapi.json", None, Duration::from_secs(10))
 }
 
-fn compatibility_in(
+pub(super) fn compatibility_in(
     dir: &Path,
     reg: &Registration,
     digest: &str,

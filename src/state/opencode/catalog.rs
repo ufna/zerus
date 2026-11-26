@@ -1567,7 +1567,7 @@ mod tests {
             pid: 0,
             password: None,
         };
-        (Service { reg }, seen, Stop(stop))
+        (Service { reg, manual_compact: false }, seen, Stop(stop))
     }
 
     fn http(status: u16, body: &str) -> Vec<u8> {

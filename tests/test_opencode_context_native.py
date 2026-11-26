@@ -193,13 +193,16 @@ class OpenCodeContext(fixture.OpenCodeNative):
         self.assert_native_total(refreshed, 3520)
 
     @contextmanager
-    def proxy(self, *, compact_response=None, without_compact=False, steer_only=False, reported_version=None):
+    def proxy(self, *, compact_response=None, without_compact=False, steer_only=False, reported_version=None,
+              release_on_session=None, binding_fault=None, unavailable_message=None):
         registration = self.registration()
         original_bytes = self.registration_path().read_bytes()
         origin = registration['url'].rstrip('/')
         requests = []
         receipts = self.state / 'opencode/compact-receipts'
         saved_receipts = receipts.with_name('private-fault-compact-receipts')
+        saved_binding = binding_fault.with_suffix('.fault-original') if binding_fault else None
+        released = threading.Event()
 
         class Proxy(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -215,12 +218,38 @@ class OpenCodeContext(fixture.OpenCodeNative):
                 requests.append((self.command, self.path))
                 headers = {name: self.headers[name] for name in ('Content-Type', 'Authorization') if name in self.headers}
                 request = urllib.request.Request(origin + self.path, data=body, headers=headers, method=self.command)
-                try:
-                    response = urllib.request.urlopen(request, timeout=5)
-                except urllib.error.HTTPError as error:
-                    response = error
-                with response:
-                    status, raw = response.status, response.read(32 * 1024 * 1024 + 1)
+                if compact and compact_response == 'exact-404':
+                    session_id = self.path.split('/')[-2]
+                    status, raw = 404, json.dumps({'_tag': 'SessionNotFoundError', 'sessionID': session_id,
+                                                   'message': 'No session for this request'}).encode()
+                elif unavailable_message and self.path.endswith('/message/' + unavailable_message):
+                    status, raw = 503, b'{}'
+                else:
+                    try:
+                        response = urllib.request.urlopen(request, timeout=5)
+                    except urllib.error.HTTPError as error:
+                        response = error
+                    with response:
+                        status, raw = response.status, response.read(32 * 1024 * 1024 + 1)
+                if compact and binding_fault:
+                    binding_fault.rename(saved_binding)
+                    binding_fault.mkdir()
+                if self.command == 'GET' and self.path == release_on_session and not released.is_set():
+                    # The first response already holds the old counters. Let
+                    # upstream complete and publish both new sources before
+                    # giving those old bytes to the production inspection.
+                    released.set()
+                    model.compact_release.set()
+                    until = time.monotonic() + 5
+                    while time.monotonic() < until:
+                        with urllib.request.urlopen(request, timeout=1) as fresh:
+                            session = json.load(fresh)['data']
+                        if session['tokens']['input'] == 2280 and session['time']['idle'] >= session['time']['busy']:
+                            break
+                        time.sleep(.02)
+                    else:
+                        self.send_error(504, 'Private native summary did not settle')
+                        return
                 if compact and compact_response == 'lost':
                     self.close_connection = True
                     return
@@ -250,6 +279,7 @@ class OpenCodeContext(fixture.OpenCodeNative):
 
             do_GET = do_POST = forward
 
+        model = self.model
         with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Proxy) as server:
             serving = threading.Thread(target=server.serve_forever, daemon=True)
             serving.start()
@@ -263,6 +293,9 @@ class OpenCodeContext(fixture.OpenCodeNative):
                 if saved_receipts.is_dir():
                     receipts.unlink()
                     saved_receipts.rename(receipts)
+                if saved_binding and saved_binding.is_file():
+                    binding_fault.rmdir()
+                    saved_binding.rename(binding_fault)
 
     def test_unknown_compact_is_never_replayed_and_reconciles_exact_id(self):
         first = self.turn(self.start(), 'Measure before the lost compact response')
@@ -313,6 +346,51 @@ class OpenCodeContext(fixture.OpenCodeNative):
         self.model.compact_release.set()
         self.wait(first['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
         self.assert_settled_receipt(first, attempt, uncertain)
+
+    def test_terminal_receipt_repairs_pending_binding_without_native_reproof(self):
+        first = self.turn(self.start(), 'Measure before refusing the exact compact request')
+        paths = [self.binding_path(first['name']), self.state / 'opencode/sessions' / (first['session_id'] + '.json')]
+        present = [path for path in paths if path.is_file()]
+        self.assertEqual(len(present), 1)
+        binding = present[0]
+        attempt = self.payload(first)
+        with self.proxy(compact_response='exact-404', binding_fault=binding) as requests:
+            first_result = self.compact(first, attempt)
+            self.assertEqual(first_result['status'], 'uncertain')
+            self.assertEqual(sum(method == 'POST' and path.endswith('/compact') for method, path in requests), 1)
+        receipt = self.state / 'opencode/compact-receipts' / (attempt['request_id'] + '.json')
+        self.assertEqual(json.loads(receipt.read_text())['status'], 'failed')
+        self.assertEqual(json.loads(binding.read_text())['opencode_compaction']['status'], 'uncertain')
+        with self.proxy(unavailable_message=first_result['native_message_id']) as requests:
+            inspected = self.hgs(['inspect', first['name']])
+            self.assertEqual(inspected['compact_context_request']['status'], 'failed')
+            self.assertTrue(inspected['compact_context_supported'])
+            repeat = self.compact(first, attempt)
+            self.assertEqual(repeat['status'], 'failed')
+            self.assertEqual(json.loads(binding.read_text())['opencode_compaction'], repeat)
+            self.assertFalse(any(path.endswith('/message/' + first_result['native_message_id']) for _, path in requests))
+            self.assertFalse(any(method == 'POST' for method, _ in requests))
+        fresh = self.compact(first)
+        self.assertEqual(fresh['status'], 'submitted')
+        self.assertNotEqual(fresh['native_message_id'], first_result['native_message_id'])
+
+    def test_completion_and_usage_remain_coherent_when_the_first_session_read_is_older(self):
+        first = self.turn(self.start(), 'Measure before forcing an older session counter sample')
+        self.model.hold_compact = True
+        accepted = self.compact(first)
+        self.assertTrue(self.model.compacting.wait(5), 'The exact native compact was admitted')
+        path = '/api/session/' + first['conversation_id']
+        with self.proxy(release_on_session=path) as reads:
+            after = self.hgs(['inspect', first['name']])
+            self.assertEqual(after['compact_context_request']['native_message_id'], accepted['native_message_id'])
+            self.assertEqual(after['compact_context_request']['status'], 'completed')
+            self.assertIsNone(after['session_usage']['context']['used'])
+            self.assertEqual(after['session_usage']['totals']['total'], 2780)
+            self.assertEqual(sum(method == 'GET' and route == path for method, route in reads), 2)
+        with self.proxy() as reads:
+            steady = self.hgs(['inspect', first['name']])
+            self.assertEqual(steady['session_usage']['totals']['total'], 2780)
+            self.assertEqual(sum(method == 'GET' and route == path for method, route in reads), 1)
 
     def test_steer_only_operation_cannot_offer_compact(self):
         first = self.turn(self.start(), 'Measure where the compact request cannot queue')

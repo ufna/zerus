@@ -927,13 +927,33 @@ fn parent_view(
     active: &Value,
     detail: Detail,
 ) -> Result<Value> {
-    let observed = observe(
+    let mut observed = observe(
         service,
         record,
         active,
         || history::fetch(service, record),
         detail == Detail::Full,
     )?;
+    let (attempt, boundary) = if detail == Detail::Full {
+        let attempt = compact::inspect(service, record, &observed);
+        let boundary = context::compact_boundary(&observed.page.messages, &attempt);
+        if !context::covers_compact(&observed.session, boundary) {
+            let fresh = service
+                .raw_until(
+                    "GET", &session_path(record, ""), None,
+                    Instant::now() + Duration::from_millis(300),
+                )
+                .ok()
+                .filter(successful)
+                .and_then(|reply| exact_session(record, reply.body).ok());
+            if let Some(session) = fresh {
+                observed.session = session;
+            }
+        }
+        (attempt, boundary)
+    } else {
+        (Value::Null, None)
+    };
     let mut result = normalize(record, Some(&observed));
     if detail != Detail::Listing {
         attachments::decorate(record, "", &mut result);
@@ -941,7 +961,7 @@ fn parent_view(
             conversation_history::inspected_voice_messages(record, &result, None);
     }
     if detail == Detail::Full {
-        compact::decorate(service, record, &observed, &mut result);
+        compact::decorate(service, record, &observed, attempt, &mut result);
         let pinned: Vec<String> = ["settings_model", "pending_model"]
             .iter()
             .filter_map(|key| result[*key].as_str())
@@ -956,8 +976,9 @@ fn parent_view(
         );
         result["model_options"] = options["model_options"].clone();
         result["model_options_truncated"] = options["model_options_truncated"].clone();
-        result["session_usage"] =
-            context::usage(&observed.session, &observed.page.messages, &options["context_limits"]);
+        result["session_usage"] = context::usage(
+            &observed.session, &observed.page.messages, &options["context_limits"], boundary,
+        );
     }
     let questions = result["pending_questions"]
         .as_array()
