@@ -691,17 +691,17 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const waitingLater = () => !!waitingView()?.after;
 
   /**
-   * The revision of a team a decision is made on. The resolver is registered
+   * Borrow one bounded native Team view. The resolver is registered
    * before the follow is sent, a read failure or an end settles it at once,
    * and [`REVISION_WAIT_MS`] settles a silent read. Afterwards the scope the
    * views want is followed again, unless another follow was sent meanwhile.
    */
-  async function revisionOf(id: string): Promise<number | undefined> {
+  async function readTeamSnapshot(id: string): Promise<TeamView | undefined> {
     const shown = team();
-    if (shown?.bar.id === id && followed() === id) return shown.revision;
+    if (shown?.bar.id === id && followed() === id) return shown;
     if (stopped) return undefined;
     let settle!: (view: TeamView | null) => void;
-    const answer = new Promise<number | undefined>((resolve) => { settle = (view) => resolve(view?.revision); });
+    const answer = new Promise<TeamView | null>((resolve) => { settle = resolve; });
     const waiters = pendingViews.get(id) ?? new Set();
     waiters.add(settle);
     pendingViews.set(id, waiters);
@@ -715,13 +715,17 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       pendingViews.get(id)?.delete(settle);
       settle(null);
     }
-    const revision = await answer;
+    const snapshot = await answer;
     clearTimeout(timer);
     const left = pendingViews.get(id);
     if (left) { left.delete(settle); if (!left.size) pendingViews.delete(id); }
     if (generation === followGeneration && !stopped && !sameFollow(borrowed, scope())) await follow(scope()).catch(() => {});
-    return revision;
+    return snapshot ?? undefined;
   }
+  async function revisionOf(id: string): Promise<number | undefined> {
+    return (await readTeamSnapshot(id))?.revision;
+  }
+
   async function decide(card: WaitingItem, decision: string, source = "waiting"): Promise<TeamOutcome | undefined> {
     const expected_revision = await revisionOf(card.team);
     if (expected_revision === undefined) return undefined;
@@ -960,7 +964,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   return {
     list, listPage, firstListPage, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending, base,
     waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, readLeadNotice, revisionOf,
-    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
+    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, readTeamSnapshot, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }
 

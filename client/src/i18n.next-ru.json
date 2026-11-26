@@ -742,6 +742,7 @@
   "Default effort": "Глубина по умолчанию",
   "Default for new %1 sessions on %2 when no account is chosen": "По умолчанию для новых сессий %1 на %2, если учётная запись не выбрана",
   "Default model": "Модель по умолчанию",
+  "Default phase acceptance: %1": "Приёмка фаз по умолчанию: %1",
   "Default pipeline": "Конвейер по умолчанию",
   "Defaults: %1, %2 and %3 seconds, then every %4 seconds": "По умолчанию: %1, %2 и %3 с, затем каждые %4 с",
   "Delegations": "Делегированные полномочия",

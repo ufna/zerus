@@ -1416,6 +1416,7 @@
   "Default model": "Модель по умолчанию",
   "Default model and effort": "Модель и глубина рассуждений по умолчанию",
   "Default on %1": "По умолчанию на %1",
+  "Default phase acceptance: %1": "Приёмка фаз по умолчанию: %1",
   "Default pipeline": "Конвейер по умолчанию",
   "Default: ~/.local/src/hgs on this device": "По умолчанию: ~/.local/src/hgs на этом устройстве.",
   "Defaults: %1, %2 and %3 seconds, then every %4 seconds": "По умолчанию: %1, %2 и %3 с, затем каждые %4 с",

@@ -4,7 +4,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { taskDetails, type TaskDetail } from "../../store/taskDetails";
 import reviewRows from "./fixtures/task-review-assignment.json";
-const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, classify: vi.fn(), quickReview: vi.fn(), submit: vi.fn(), read: vi.fn(), setLinkError: (_message: string) => {} }));
+const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, classify: vi.fn(), quickReview: vi.fn(), submit: vi.fn(), teamRead: vi.fn(), read: vi.fn(), setLinkError: (_message: string) => {} }));
 vi.mock("../../i18n", async (original) => {
   const module = await original<typeof import("../../i18n")>();
   const catalog = (await import("../../i18n.ru.json")).default;
@@ -48,7 +48,7 @@ vi.mock("../../store/taskContext", () => ({ projectSessions: () => [
   { computer: "", name: "codex/local-checker", runId: "local-run" },
   { computer: "peer", name: "codex/peer-checker", runId: "peer-run" },
 ] }));
-vi.mock("../../store/teams", () => ({ teams: { team: () => undefined, available: () => true } }));
+vi.mock("../../store/teams", () => ({ teams: { team: () => undefined, listed: () => [], available: () => true, readTeamSnapshot: state.teamRead } }));
 vi.mock("../teams/team-navigation", () => ({ openTeamPage: vi.fn() }));
 vi.mock("./TaskWorkflow", () => ({ TaskWorkflow: () => null }));
 vi.mock("./TaskTitle", () => ({ TaskTitle: () => null }));
@@ -60,7 +60,7 @@ import { taskItem } from "./tasks-ui";
 
 const tick = async () => { for (let n = 0; n < 15; n++) await Promise.resolve(); };
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.classify.mockReset(); state.quickReview.mockReset(); state.submit.mockReset(); state.setLinkError(""); });
+afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.classify.mockReset(); state.quickReview.mockReset(); state.submit.mockReset(); state.teamRead.mockReset(); state.setLinkError(""); });
 function mount(reviewRow?: unknown, projected = false) {
   const task = taskItem(reviewRow ?? { uuid: "task", id: "T-234567", stage: "active", writable: false });
   const execution = reviewRow ? undefined : { requirement: 3, attempts: 1, current: null, conflict: false, has_unknown: true, has_unexplained: false };
@@ -274,4 +274,39 @@ it("never gives reconciliation or a Team task ordinary verdict or acceptance con
   }
   expect(state.quickReview).not.toHaveBeenCalled();
   expect(state.submit).not.toHaveBeenCalled();
+});
+
+it.each(["en", "ru"] as const)("shows native Team facts only from the selected Team's own scope in %s", async (locale) => {
+  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+  const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", home = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const selected = { ...details[2], quick_review_status: "team", team: { team: id, home } };
+  const native = {
+    bar: { id, home, project: selected.project }, settings: { phase_acceptance: "person" },
+    plan: { list: { rows: [{ n: 2, acceptance: "lead" }] } },
+    groups: [{ cards: [{
+      node: 6, kind: "task", task: { uuid: selected.uuid, project: selected.project },
+      phase: 2, state: "in_progress", holder: "past-holder",
+      stages: [{ state: "reported", holder: "fixture-current-holder" }],
+    }] }],
+  };
+  state.project = selected.project; state.locale = locale;
+  state.read.mockResolvedValue(selected);
+  const pending: ((reply: unknown) => void)[] = [];
+  state.teamRead.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+  const host = mount(selected, true);
+  await tick();
+  expect(state.teamRead).toHaveBeenCalledExactlyOnceWith(id);
+  expect(host.textContent).not.toContain("fixture-current-holder");
+  pending.shift()!({ ...native, bar: { ...native.bar, home: id } }); await tick();
+  expect(host.textContent).not.toContain("fixture-current-holder");
+  dispose?.(); host.remove();
+
+  const active = mount(selected, true); await tick();
+  pending.shift()!(native); await tick();
+  expect(active.textContent).toContain("fixture-current-holder");
+  expect(active.textContent).not.toContain("past-holder");
+  expect(active.textContent).toContain(locale === "en" ? "Team stage: Submitted" : "Этап команды:");
+  expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Руководитель команды");
+  expect(active.textContent).not.toContain(locale === "en" ? "Accept result" : "Принять результат");
+  expect(state.quickReview).not.toHaveBeenCalled();
 });

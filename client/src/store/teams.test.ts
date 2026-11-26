@@ -267,3 +267,15 @@ it("a failed team read clears observation eligibility while retaining the shown 
   expect(teams.team()?.plan?.observed).toBeNull();
   expect(teams.failure()?.message).toBe("Selected source unavailable");
 });
+
+it("borrows a bounded Team view without publishing or keeping it as the selected Team", async () => {
+  const { transport, calls } = fake();
+  const teams = createTeams(transport);
+  const snapshot = teams.readTeamSnapshot(TEAM_ID);
+  expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: TEAM_ID });
+  teams.apply([entry("team:" + TEAM_ID, "team", teamView)]);
+  expect(await snapshot).toMatchObject({ bar: { id: TEAM_ID }, revision: teamView.revision });
+  expect(teams.team()).toBeUndefined();
+  expect(teams.followed()).toBeUndefined();
+  expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: null });
+});

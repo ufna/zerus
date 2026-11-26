@@ -1,10 +1,10 @@
-import { createMemo, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, onCleanup, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { machineCards } from "../../store/machines";
 import { projectSessions } from "../../store/taskContext";
-import { teams } from "../../store/teams";
+import { teams, type TeamView } from "../../store/teams";
 import { openTeamPage } from "../teams/team-navigation";
-import { stateLabel } from "../teams/team-model";
+import { taskState } from "../teams/planTasks";
 import { assigneeKey, outcomeLabel, quickAssignee, type QuickAssignee } from "./quick-review";
 import { reviewNext, sessionIdentity, sessionLabel, type Task } from "./tasks-ui";
 
@@ -24,22 +24,46 @@ export const reviewSessionChoices = createMemo(() => {
   return rows;
 });
 
-function teamFacts(project: string, task: Task) {
-  const team = task.team, view = teams.team();
-  if (!team || view?.bar.id !== team.id || view.bar.home !== team.home) return;
+type TeamBinding = { project: string; uuid: string; id: string; home: string };
+type TeamFacts = { state: string; actor?: string; phasePolicy?: string; defaultPhasePolicy?: string };
+
+function teamBinding(project: string, task: Task): TeamBinding | undefined {
+  return task.team && { project, uuid: task.uuid, ...task.team };
+}
+const bindingKey = (binding: TeamBinding) => JSON.stringify([binding.project, binding.uuid, binding.id, binding.home]);
+const policyLabel = (policy: unknown) => policy === "lead" ? tr("Team lead") : policy === "person" ? tr("Person") : undefined;
+
+function nativeTeamFacts(binding: TeamBinding, view: TeamView | undefined): TeamFacts | undefined {
+  if (view?.bar.id !== binding.id || view.bar.home !== binding.home || view.bar.project !== binding.project) return;
   const cards = view.groups.flatMap((group) => group.cards)
-    .filter((card) => card.kind !== "stage" && card.task?.project === project && card.task.uuid === task.uuid);
+    .filter((card) => card.kind !== "stage" && card.task?.project === binding.project && card.task.uuid === binding.uuid);
   if (cards.length !== 1) return;
   const card = cards[0];
   const stages = card.stages.filter((stage) => ["in_progress", "reported"].includes(stage.state));
   const stage = stages.length === 1 ? stages[0] : undefined;
   const holder = stages.length ? stage?.holder : card.holder;
-  const policy = card.phase != null ? view.settings?.phase_acceptance : undefined;
+  const phase = card.phase && card.phase > 0
+    ? [view.plan?.draft?.phase, ...(view.plan?.list?.rows ?? [])].find((phase) => phase?.n === card.phase)
+    : undefined;
+  const concretePolicy = policyLabel(phase?.acceptance);
   return {
-    state: stateLabel(stage?.state ?? card.state),
+    state: taskState(stage ? { ...card, state: stage.state, held: false } : card),
     actor: holder || undefined,
-    phasePolicy: policy === "lead" ? tr("Team lead") : policy === "person" ? tr("Person") : undefined,
+    phasePolicy: concretePolicy,
+    defaultPhasePolicy: card.phase && card.phase > 0 && !concretePolicy
+      ? policyLabel(view.settings?.phase_acceptance) : undefined,
   };
+}
+
+// Share only the selected task's facts with its compact row. No row has its own reader.
+const [inspected, setInspected] = createSignal<{ owner: symbol; binding: string; facts: TeamFacts }>();
+
+function teamFacts(project: string, task: Task): TeamFacts | undefined {
+  const binding = teamBinding(project, task);
+  if (!binding) return;
+  const pane = inspected();
+  return nativeTeamFacts(binding, teams.team())
+    ?? (pane?.binding === bindingKey(binding) ? pane.facts : undefined);
 }
 
 function executorLabel(task: Task): string | undefined {
@@ -73,13 +97,43 @@ export function TaskReviewOutcome(props: { project: string; task: Task }) {
 }
 
 export function TaskTeamReview(props: { project: string; task: Task }) {
-  const facts = () => teamFacts(props.project, props.task);
+  const owner = Symbol();
+  const binding = createMemo(() => teamBinding(props.project, props.task));
+  const request = createMemo(() => {
+    const task = binding();
+    if (!task || teams.available() !== true) return;
+    const revision = teams.listed()
+      .find((entry) => entry.id === task.id && entry.home === task.home && entry.project === task.project)?.revision;
+    return { task, revision, key: JSON.stringify([bindingKey(task), revision]) };
+  }, undefined, { equals: (previous, next) => previous?.key === next?.key });
+  const [snapshot] = createResource(request, async (pinned) => {
+    const view = await teams.readTeamSnapshot(pinned.task.id);
+    const fresh = view && (pinned.revision === undefined || view.revision >= pinned.revision);
+    return { key: pinned.key, facts: fresh ? nativeTeamFacts(pinned.task, view) : undefined };
+  });
+  const facts = createMemo(() => {
+    const pinned = request();
+    if (!pinned) return;
+    const live = teams.team();
+    const observed = live && (pinned.revision === undefined || live.revision >= pinned.revision)
+      ? nativeTeamFacts(pinned.task, live) : undefined;
+    const current = snapshot();
+    return observed ?? (current?.key === pinned.key ? current.facts : undefined);
+  });
+  const clear = () => setInspected((current) => current?.owner === owner ? undefined : current);
+  createEffect(() => {
+    const known = facts(), task = binding();
+    if (known && task) setInspected({ owner, binding: bindingKey(task), facts: known });
+    else clear();
+  });
+  onCleanup(clear);
   return <section class="tv-doc" aria-label={tr("Team review")}>
     <header><span class="eyebrow">{tr("Team review")}</span></header>
     <Show when={facts()}>{(facts) => <>
       <div>{tr("Team stage: %1", facts().state)}</div>
       <Show when={facts().actor}>{(holder) => <div>{tr("Current holder: %1", holder())}</div>}</Show>
       <Show when={facts().phasePolicy}>{(policy) => <div>{tr("Phase acceptance: %1", policy())}</div>}</Show>
+      <Show when={facts().defaultPhasePolicy}>{(policy) => <div>{tr("Default phase acceptance: %1", policy())}</div>}</Show>
     </>}</Show>
     <Show when={props.task.team && teams.available() === true}>
       <button type="button" class="btn small ghost" onClick={() => {
