@@ -763,8 +763,9 @@ it("uses the exact Claude prompt to render files even when the author reordered 
 
 it("never gives a native queue hook the original Claude file after the typed row leaves the page", () => {
   const text = 'Inspect [File #1] (Read the attached file at "/root/attachments/message-X1/01-patch.txt")';
-  const event: ActivityEvent = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation",
-    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", claude_outbox_request_id: "original", seq: 1, at: 1, detail: text };
+  const event = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation",
+    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", claude_outbox_request_id: "original",
+    seq: 1, at: 1, detail: text } satisfies ActivityEvent;
   const queued = { ...event, seq: 2, at: 2, claude_outbox_request_id: undefined };
   const file = { request_id: "original", index: 0, name: "patch.txt", mime: "text/plain", reference: "[File #1]", bytes: 5 };
   const receipt = { ...event, source: "hgs_delivery", message_id: "original", submitted_text: text,
