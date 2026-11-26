@@ -1856,9 +1856,10 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         if exact_pre_offer && receipt["status"] == "waiting_for_idle" {
             return done(receipt, None);
         }
-        if dsh && exact_pre_offer && receipt["status"] == "not_offered"
-            && let Some(reason) = receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty())
-        {
+        if let (true, Some(reason)) = (
+            dsh && exact_pre_offer && receipt["status"] == "not_offered",
+            receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty()),
+        ) {
             return failed(reason);
         }
         if opencode
