@@ -40,6 +40,53 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
     expect(items.slice(0, 2).every((i) => i.inbox === undefined)).toBe(true);
     expect(items.every((i) => !i.receipt?.includes("\u00b7"))).toBe(true);
   });
+
+  it("joins a confirmed offer to its exact native receipt in either arrival order", () => {
+    const receipt = local("sent", false, { id: "request-1", source: "opencode_native", message_id: "msg_1" });
+    const pending = { ...receipt, status: "sending" as const, message_id: null };
+    const event = { ...row("queued", "msg_1"), detail: receipt.text };
+    const projection = createTranscriptProjection();
+    expect(projection.build([], summary, [receipt])[0]).toMatchObject({ local: { stamp: "Submitted to OpenCode" } });
+    expect(projection.build([event], summary, [])).toMatchObject([{ id: "local-request-1", receipt: "Queued" }]);
+    expect(projection.build([{ ...event, delivery_state: undefined }], summary, [])).toMatchObject([{ id: "local-request-1", receipt: "Sent" }]);
+    projection.reset();
+    const early = { ...event, request_id: "request-1" };
+    expect(projection.build([early], summary, [pending])).toMatchObject([{ id: "local-request-1", receipt: "Queued" }]);
+    expect(projection.build([event], summary, [])).toMatchObject([{ id: "local-request-1", receipt: "Queued" }]);
+    projection.reset();
+    projection.build([], summary, [pending]);
+    expect(projection.build([event], summary, [])).toHaveLength(1);
+  });
+
+  it("preserves equal text, contradictory claims and distinct failed or uncertain attempts", () => {
+    const offer = local("sent", false, { id: "reply", text: "same", source: "opencode_native", message_id: "msg_1" });
+    const native = (message_id: string, extra: Partial<ActivityEvent> = {}) => ({ ...row("", message_id), detail: "same", ...extra });
+    const other = native("msg_2");
+    const exact = native("msg_1", { request_id: "reply" });
+    const falseProof = native("msg_1", { request_id: "other" });
+    const failed = { ...offer, id: "error", status: "error" as const, message_id: null };
+    const unknown = { ...failed, id: "unknown", uncertain: true };
+    expect(buildTranscript([other, exact], summary, [offer])).toHaveLength(2);
+    expect(buildTranscript([other, falseProof], summary, [offer])).toHaveLength(3);
+    expect(buildTranscript([exact], summary, [failed, unknown])).toMatchObject([
+      { receipt: "Sent" }, { local: { stamp: "Not sent" } }, { local: { stamp: "Delivery not confirmed" } },
+    ]);
+  });
+
+  it("retires the pending alias when an early exact OpenCode echo is followed by an uncertain acknowledgement", () => {
+    const pending = local("sending", false, { id: "original", source: "opencode_native" });
+    const echo = { ...row("", "msg_original"), delivery_state: undefined, request_id: pending.id,
+      run_id: pending.run_id, conversation_id: pending.conversation_id, detail: pending.text };
+    const projection = createTranscriptProjection();
+    expect(projection.build([echo], summary, [pending])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
+    const uncertain = { ...pending, status: "error" as const, uncertain: true };
+    const view = projection.build([echo], summary, [uncertain]);
+    expect(view).toMatchObject([
+      { id: "p:opencode:msg_original", receipt: "Sent" },
+      { id: "local-original", local: { stamp: "Delivery not confirmed" } },
+    ]);
+    expect(projection.build([echo], summary, [])).toMatchObject([{ id: "p:opencode:msg_original", receipt: "Sent" }]);
+  });
 });
 
 describe("local message rows (ActivityView.cpp:665-720, 1053-1068)", () => {

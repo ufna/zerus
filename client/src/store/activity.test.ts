@@ -17,6 +17,20 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("keeps one OpenCode user row through a late snapshot and preserves another with equal text and time", () => {
+    const { store } = setup();
+    store.follow(target);
+    const delivered = { source: "opencode_native", type: "UserPromptSubmit", message_id: "msg_abc",
+      detail: "same", at: 10 };
+    const queued = { ...delivered, delivery_state: "queued", request_id: "request-a" };
+    const second = { ...delivered, message_id: "msg_def" };
+    store.applyActivity([out("replace", { events: [queued] })]);
+    store.applyActivity([out("event", { id: "native-event-1", rev: 1, event: delivered })]);
+    store.applyActivity([out("replace", { events: [queued, second] })]);
+    expect(store.events()).toEqual([{ ...delivered, request_id: "request-a" }, second]);
+    store.follow(undefined);
+  });
+
   it("refreshes only the bound Activity and ignores a refresh overtaken by selection", async () => {
     const { store, calls } = setup();
     const first = { ...target, runId: "a", conversationId: "conversation" };

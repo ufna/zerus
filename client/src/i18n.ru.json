@@ -3994,6 +3994,7 @@
   "Submit phase draft": "Отправить черновик фазы",
   "Submit the draft of %1 for review in team “%2”.": "Отправить черновик фазы на проверку в команде «%2» — %1.",
   "Submitted": "Отправлено",
+  "Submitted to OpenCode": "Передано в OpenCode",
   "Submitted to coordinator — child receipt unavailable": "Передано координатору — подтверждение от дочерней сессии недоступно",
   "Submitted to executor": "Передано исполнителю",
   "Submitted to terminal": "Отправлено на терминал",

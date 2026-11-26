@@ -19,6 +19,7 @@ pub const MAX_PER_SESSION: usize = 50;
 /// Sessions with rows. Past it, the least recently touched session without
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
+pub const OPENCODE_SOURCE: &str = "opencode_native";
 /// An original durable FIFO request, which only an exact history receipt can join.
 const OUTBOX_SOURCE: &str = "zerus_outbox";
 
@@ -49,11 +50,12 @@ pub struct LocalMessage {
     /// The failure may have delivered the message: never retried.
     #[serde(default)]
     pub uncertain: bool,
+    /// The associated provider message, or the Zerus receipt ID for terminal sends.
     #[serde(default)]
     pub message_id: Option<String>,
     #[serde(default)]
     pub submitted_text: Option<String>,
-    /// `hgs_voice` for a voice message.
+    /// The provenance of a provider-backed or voice row.
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -231,6 +233,7 @@ impl LocalMessages {
         run_id: &str,
         conversation_id: &str,
         now: f64,
+        source: Option<&str>,
     ) {
         self.record_sending(
             key,
@@ -240,7 +243,7 @@ impl LocalMessages {
             files_value(files),
             run_id,
             conversation_id,
-            None,
+            source,
             now,
         );
     }
@@ -278,13 +281,11 @@ impl LocalMessages {
         now: f64,
     ) {
         let rows = self.rows.entry(key.to_owned()).or_default();
-        if source.is_none() {
-            rows.retain(|row| {
-                !(row.status == Status::Error
-                    && (Some(row.id.as_str()) == retry_id
-                        || (row.text == text && row.attachments == attachments)))
-            });
-        }
+        rows.retain(|row| {
+            !(row.status == Status::Error
+                && (Some(row.id.as_str()) == retry_id
+                    || (source.is_none() && row.text == text && row.attachments == attachments)))
+        });
         rows.push(LocalMessage {
             id: request_id.into(),
             text: text.into(),
@@ -363,6 +364,20 @@ impl LocalMessages {
                 row.uncertain = false;
                 let request = receipt.get("request_id").cloned().unwrap_or(Value::Null);
                 row.message_id = request.as_str().map(str::to_owned);
+                if row.source.as_deref() == Some(OPENCODE_SOURCE)
+                    && receipt["transport"] == "native_opencode"
+                    && receipt["status"] == "submitted"
+                    && request == row.id
+                    && receipt["run_id"] == row.run_id
+                    && receipt["conversation_id"] == row.conversation_id
+                {
+                    if let Some(id) = receipt["native_message_id"]
+                        .as_str()
+                        .filter(|id| crate::actions::native_message_id(id))
+                    {
+                        row.message_id = Some(id.into());
+                    }
+                }
                 for (index, file) in row.attachments.iter_mut().enumerate() {
                     file["request_id"] = request.clone();
                     file["index"] = json!(index);
@@ -415,6 +430,15 @@ impl LocalMessages {
             }
             if row.source.as_deref() == Some("hgs_voice") {
                 let shown = listed("voice_messages", &row.message_id);
+                result.removed += usize::from(shown);
+                return !shown;
+            }
+            if row.source.as_deref() == Some(OPENCODE_SOURCE) {
+                // The native Activity window may arrive before or after the
+                // acknowledgement. Neither a text match nor another request
+                // is evidence about this row or its draft.
+                let shown = row.status == Status::Sent
+                    && events.iter().any(|event| opencode_echo(row, event));
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -473,6 +497,7 @@ impl LocalMessages {
                     event["type"].as_str(),
                     Some("UserPromptSubmit" | "UserPromptQueued" | "TurnStarted")
                 ) && event["source"] != "agy_acp"
+                    && event["source"] != OPENCODE_SOURCE
                     && event["agent_id"].as_str().unwrap_or("").is_empty()
                     && event["at"].as_f64().unwrap_or(0.0) >= row.submitted_at - 2.0
                     && !detail.is_empty()
@@ -584,6 +609,34 @@ impl LocalMessages {
     }
 }
 
+fn opencode_echo(row: &LocalMessage, event: &Value) -> bool {
+    let Some(native_id) = event["message_id"]
+        .as_str()
+        .filter(|id| crate::actions::native_message_id(id))
+    else {
+        return false;
+    };
+    if event["source"] != OPENCODE_SOURCE
+        || event["type"] != "UserPromptSubmit"
+        || !event["agent_id"].as_str().unwrap_or("").is_empty()
+        || event.get("run_id").is_some_and(|run| *run != row.run_id)
+        || event
+            .get("conversation_id")
+            .is_some_and(|id| *id != row.conversation_id)
+        || event.get("request_id").is_some_and(|id| *id != row.id)
+    {
+        return false;
+    }
+    match row
+        .message_id
+        .as_deref()
+        .filter(|id| crate::actions::native_message_id(id))
+    {
+        Some(expected) => native_id == expected,
+        None => event["request_id"] == row.id,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,7 +655,85 @@ mod tests {
     }
 
     fn send(messages: &mut LocalMessages, id: &str, text: &str, files: &[StoredFile]) {
-        messages.sending(KEY, id, None, text, files, "run-1", "conv-1", 100.0);
+        messages.sending(KEY, id, None, text, files, "run-1", "conv-1", 100.0, None);
+    }
+
+    #[test]
+    fn opencode_reconciles_only_the_confirmed_native_id_or_exact_request() {
+        let mut messages = LocalMessages::default();
+        for id in ["one", "two", "uncertain", "refused"] {
+            messages.sending(
+                KEY,
+                id,
+                None,
+                "same text",
+                &[],
+                "run-1",
+                "conv-1",
+                100.0,
+                Some(OPENCODE_SOURCE),
+            );
+        }
+        for (id, native) in [("one", "msg_one"), ("two", "msg_two")] {
+            messages.finished(KEY, id, &Outcome::Done {
+                receipt: json!({"transport":"native_opencode","status":"submitted","request_id":id,
+                    "run_id":"run-1","conversation_id":"conv-1","native_message_id":native}),
+                cleanup: None,
+            });
+            assert_eq!(
+                messages
+                    .rows(KEY)
+                    .iter()
+                    .find(|row| row.id == id)
+                    .unwrap()
+                    .message_id
+                    .as_deref(),
+                Some(native)
+            );
+        }
+        messages.finished(
+            KEY,
+            "uncertain",
+            &Outcome::Uncertain {
+                detail: "unknown".into(),
+            },
+        );
+        messages.finished(
+            KEY,
+            "refused",
+            &Outcome::Failed {
+                detail: "refused".into(),
+            },
+        );
+        let row = |native, request, conversation| {
+            json!({"type":"UserPromptSubmit","source":OPENCODE_SOURCE,
+            "message_id":native,"request_id":request,"conversation_id":conversation,"detail":"same text","at":100})
+        };
+        let details = json!({"run_id":"run-1","conversation_id":"conv-1"});
+        let wrong = [
+            row("msg_other", "two", "conv-1"),
+            row("msg_two", "wrong", "conv-1"),
+            row("msg_one", "one", "conv-other"),
+            row("msg_uncertain", "uncertain", "conv-1"),
+            row("msg_refused", "refused", "conv-1"),
+        ];
+        assert_eq!(messages.reconcile(KEY, &details, &wrong).removed, 0);
+        let old =
+            json!({"type":"UserPromptSubmit","source":OPENCODE_SOURCE,"message_id":"msg_one"});
+        assert_eq!(messages.reconcile(KEY, &details, &[old]).removed, 1);
+        assert_eq!(
+            messages
+                .rows(KEY)
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["two", "uncertain", "refused"]
+        );
+        let result = messages.reconcile(KEY, &details, &[row("msg_two", "two", "conv-1")]);
+        assert_eq!(result.removed, 1);
+        assert!(result.delivered.is_empty());
+        assert!(messages.rows(KEY)[0].uncertain);
+        assert!(!messages.rows(KEY)[1].uncertain);
     }
 
     #[test]
@@ -731,7 +862,7 @@ mod tests {
         assert_eq!(messages.keys().count(), 0);
         for n in 0..MAX_SESSIONS + 3 {
             let key = format!("studio\nclaude/sample-project/s{n}");
-            messages.sending(&key, "1", None, "hi", &[], "run-1", "conv-1", 100.0);
+            messages.sending(&key, "1", None, "hi", &[], "run-1", "conv-1", 100.0, None);
             messages.finished(
                 &key,
                 "1",
@@ -771,7 +902,17 @@ mod tests {
         assert!(messages.retryable(KEY, "1", "run-1", "conv-1").is_some());
         assert!(messages.retryable(KEY, "1", "run-2", "conv-1").is_none());
         // The retry replaces the failed row.
-        messages.sending(KEY, "2", Some("1"), "hello", &[], "run-1", "conv-1", 101.0);
+        messages.sending(
+            KEY,
+            "2",
+            Some("1"),
+            "hello",
+            &[],
+            "run-1",
+            "conv-1",
+            101.0,
+            None,
+        );
         assert_eq!(
             messages
                 .rows(KEY)
@@ -797,7 +938,7 @@ mod tests {
             "never retried"
         );
         // The same text and files replace a failure too.
-        messages.sending(KEY, "3", None, "hello", &[], "run-1", "conv-1", 102.0);
+        messages.sending(KEY, "3", None, "hello", &[], "run-1", "conv-1", 102.0, None);
         assert_eq!(messages.rows(KEY).len(), 1);
         assert!(!messages.delete(KEY, "3"), "a sending row is not deleted");
         // A complete uncertain line of its own is shown as is: still
@@ -960,11 +1101,21 @@ mod tests {
         let mut messages = LocalMessages::default();
         let key = |index: usize| format!("studio\nclaude/p/s{index}");
         // The first session still has a send in flight; the second failed.
-        messages.sending(&key(0), "r0", None, "pending", &[], "run", "conv", 1.0);
-        messages.sending(&key(1), "r1", None, "failed", &[], "run", "conv", 1.0);
+        messages.sending(
+            &key(0),
+            "r0",
+            None,
+            "pending",
+            &[],
+            "run",
+            "conv",
+            1.0,
+            None,
+        );
+        messages.sending(&key(1), "r1", None, "failed", &[], "run", "conv", 1.0, None);
         messages.finished(&key(1), "r1", &Outcome::Failed { detail: "x".into() });
         for index in 2..MAX_SESSIONS {
-            messages.sending(&key(index), "r", None, "old", &[], "run", "conv", 1.0);
+            messages.sending(&key(index), "r", None, "old", &[], "run", "conv", 1.0, None);
             messages.finished(&key(index), "r", &Outcome::Failed { detail: "x".into() });
         }
         // Touching the failed session keeps it newer than the rest.
@@ -984,6 +1135,7 @@ mod tests {
             "run",
             "conv",
             1.0,
+            None,
         );
         assert_eq!(messages.rows.len(), MAX_SESSIONS);
         assert_eq!(messages.touched.len(), MAX_SESSIONS);

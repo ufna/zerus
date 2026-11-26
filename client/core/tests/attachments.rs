@@ -269,6 +269,7 @@ fn prepared_images_carry_geometry_into_local_rows_and_old_records_still_decode()
         "run",
         "conversation",
         10.0,
+        None,
     );
     let file = &messages.rows("session")[0].attachments[0];
     assert_eq!(
