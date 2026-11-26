@@ -13,6 +13,21 @@ type Draft = ReportGuard & { project: string; task: string; kind: QuickDispositi
 const KINDS = ["ready", "check", "rework", "parked"] as const;
 const PAGE = 50;
 
+function reviewFailure(error: unknown): string {
+  const reason = String(error).trim().replace(/^hgs: /, "");
+  switch (reason) {
+    case "Choose a review assignee on this computer. Peer sessions cannot be verified for quick review.":
+    case "The selected review assignee is unavailable.":
+      return tr("The selected session could not be verified. Choose another session on this computer.");
+    case "The task changed. Refresh its report before reviewing.":
+    case "The current report is not ready to accept.":
+      return tr("The review changed. Check the refreshed report before trying again.");
+    default:
+      return tr("The review outcome could not be verified. Check the refreshed report before trying again.");
+  }
+}
+
+
 const guard = (report: QuickReport): ReportGuard =>
   ({ report_id: report.report_id, history_revision: report.history_revision });
 const matches = (a: ReportGuard, b?: ReportGuard) =>
@@ -20,7 +35,7 @@ const matches = (a: ReportGuard, b?: ReportGuard) =>
 
 export function TaskQuickReview(props: { project: string; task: Task; stale: boolean; showHistory: (id?: string) => void }) {
   const [draft, setDraft] = createSignal<Draft>();
-  const [busy, setBusy] = createSignal(false), [failed, setFailed] = createSignal(false);
+  const [busy, setBusy] = createSignal(false), [failed, setFailed] = createSignal("");
   const [applied, setApplied] = createSignal<ReportGuard>();
   const [search, setSearch] = createSignal(""), [page, setPage] = createSignal(0);
   const report = () => props.task.quickReport;
@@ -49,7 +64,7 @@ export function TaskQuickReview(props: { project: string; task: Task; stale: boo
   const edit = () => {
     const current = report();
     if (!available() || !current) return;
-    setFailed(false); setSearch(""); setPage(0);
+    setFailed(""); setSearch(""); setPage(0);
     const disposition = current.disposition;
     setDraft({ ...guard(current), project: props.project, task: props.task.uuid, kind: disposition?.kind ?? "ready",
       text: reviewDetail(disposition), assignee: disposition?.kind === "check" ? assigneeKey(disposition.assignee) : "" });
@@ -66,10 +81,10 @@ export function TaskQuickReview(props: { project: string; task: Task; stale: boo
   };
   const perform = async (pinned: ReportGuard, action: () => Promise<boolean>) => {
     const task = props.task.uuid;
-    setBusy(true); setFailed(false); setWritingTask(task);
+    setBusy(true); setFailed(""); setWritingTask(task);
     try {
       if (await action()) { setApplied(pinned); setDraft(undefined); }
-    } catch { setFailed(true); }
+    } catch (error) { setFailed(reviewFailure(error)); }
     finally {
       setBusy(false); setWritingTask(undefined); taskDetails.refresh();
     }
@@ -112,7 +127,7 @@ export function TaskQuickReview(props: { project: string; task: Task; stale: boo
         <b>{reviewField(saved().kind)}</b><div>{reviewDetail(saved())}</div>
         <Show when={assigneeLabel()}>{(label) => <div>{label()}</div>}</Show>
       </div>}</Show>
-      <Show when={failed()}><p role="alert">{tr("The review outcome could not be verified. Check the refreshed report before trying again.")}</p></Show>
+      <Show when={failed()}><p role="alert">{failed()}</p></Show>
       <Show when={draft()} fallback={<div class="tv-review-buttons">
         <Show when={disposition()?.kind === "ready"}><button type="button" class="btn small primary" disabled={!available()} onClick={accept}>{tr("Accept result")}</button></Show>
         <Show when={disposition()?.kind === "rework"}><button type="button" class="btn small primary"
@@ -151,7 +166,7 @@ export function TaskQuickReview(props: { project: string; task: Task; stale: boo
         <Show when={editedReportChanged(d())}><p role="status">{tr("The report changed. Reopen the review form to use the current report.")}</p></Show>
         <div class="tv-review-buttons">
           <button type="submit" class="btn small primary" disabled={!available() || editedReportChanged(d()) || !fromDraft(d())}>{tr("Save review outcome")}</button>
-          <button type="button" class="btn small ghost" disabled={busy()} onClick={() => { setDraft(undefined); setFailed(false); }}>{tr("Cancel")}</button>
+          <button type="button" class="btn small ghost" disabled={busy()} onClick={() => { setDraft(undefined); setFailed(""); }}>{tr("Cancel")}</button>
         </div>
       </form>}</Show>
     </>}</Show>

@@ -122,7 +122,6 @@ export function TaskInspector(props: { project: string; task: Task; presentation
     <Show when={tab() !== "Task"}><div class="tv-section"><span class="eyebrow">{tab()}</span><span class="grow" /><button class="link tv-back" onClick={() => setTab("Task")}><Icon name="chevron-left" size={12} />{tr("Task and discussion")}</button></div></Show>
     <Show when={taskDetails.error()}><p class="notice danger" role="alert">Task could not be read: {taskDetails.error()}</p><button class="btn small" disabled={taskDetails.loading()} onClick={taskDetails.refresh}>{tr("Refresh")}</button></Show>
     <Show when={detail()} fallback={<p class="tasks-empty">{taskDetails.loading() ? tr("Loading task…") : tr("Task details are unavailable.")}</p>}>{(d) => <>
-      <TaskExecution execution={d().execution} stale={detailStale()} />
       <For each={d().unknownAttempts}>{(attempt) => <div class="tv-blocker"><Icon name="triangle-alert" size={13} /><span>{tr("Attempt delivery is unknown")} <code>{attempt}</code></span><span class="grow" /><button class="btn small" disabled={!d().writable || !!writingTask()} onClick={(e) => requestAttemptCancellation(props.project, d(), attempt, e.currentTarget)}>{tr("Abandon attempt…")}</button></div>}</For>
       <Show when={d().stage === "active" && !d().started}><p class="notice">Dispatched to {assignmentLabel(d())} — start unconfirmed</p></Show>
       <Show when={tab() === "Task" || tab() === "Result"}>
@@ -150,6 +149,7 @@ export function TaskInspector(props: { project: string; task: Task; presentation
           </Match>
         </Switch>
       </Show>
+      <TaskExecution execution={d().execution} stale={detailStale()} />
       <Show when={tab() === "Task"}>
         <Show when={(d().stage === "review" || d().stage === "done") && (d().summary || d().cancelReason)}><article class="act-msg tv-entry tv-result k-agent"><header><b>{item().worker || "Agent"}</b><span class="chip">{d().cancelledAt ? tr("Cancelled") : tr("Result")}</span></header><div class="act-body"><Body text={d().cancelReason || d().summary} /></div></article></Show>
         <section class="tv-doc" classList={{ editing: describing() }} aria-label={tr("Description")}><header><span class="eyebrow">{tr("Description")}</span><span class="grow" /><Show when={d().writable && ["todo", "backlog"].includes(d().stage)}><Show when={describing()} fallback={<button class="btn small ghost" onClick={() => setDescribing(true)}><Icon name="pencil" size={12} />{tr("Edit description")}</button>}><span class="tv-doc-state"><Icon name="pencil" size={11} />{tr("Being edited below")}</span></Show></Show></header><div class="act-body"><Body text={d().text || tr("No description yet.")} /><TaskFiles files={d().files} project={props.project} task={props.task.uuid} /></div></section>

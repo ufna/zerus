@@ -222,6 +222,13 @@ it.each([
   assignee.value = assignee.options[1].value;
   assignee.dispatchEvent(new Event("change", { bubbles: true }));
   expect(button(save).disabled).toBe(false);
+  state.quickReview.mockRejectedValueOnce("hgs: The selected review assignee is unavailable.");
+  submit(); await tick();
+  expect(host.querySelector(".tv-doc [role=alert]")?.textContent).toContain(locale === "en"
+    ? "The selected session could not be verified."
+    : "Не удалось подтвердить выбранную сессию.");
+  expect(host.querySelector<HTMLTextAreaElement>(".tv-review-editor textarea")?.value).toBe("Check the published result.");
+  state.quickReview.mockClear();
   state.read.mockResolvedValue(newer);
   taskDetails.refresh(); await tick();
   expect(button(save).disabled).toBe(true);
