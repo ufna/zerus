@@ -764,6 +764,20 @@ class TaskDelivery(DeliveryFixture):
         parked = decide(get(parked), waiting)["task"]
         checking = decide(checking, assigned)["task"]
         self.assertEqual(checking["quick_review"]["assignee"]["session"], self.name)
+        before_refusal = get(checking)
+        peer = str(uuid.uuid4())
+        catalog = self.root / "config" / "swarm" / "catalog.json"
+        configuration = json.loads(catalog.read_text())
+        configuration.setdefault("bindings", {})["sample-peer"] = dict(id=peer, verified=True)
+        catalog.write_text(json.dumps(configuration))
+        invented = "launch_id:" + str(uuid.uuid4())
+        unborn = dict(assigned, assignee=dict(assigned["assignee"], session_id=invented))
+        self.assertIn("unavailable", decide(checking, unborn, ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(
+            checking, dict(unborn, assignee=dict(machine=peer, session_id=invented)), ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(checking, dict(
+            assigned, assignee=dict(assigned["assignee"], machine=peer)), ok=False))
+        self.assertEqual(get(checking), before_refusal)
         self.assertIn("not ready", decide(parked, ok=False))
 
         actionable = listing("--quick-review", "work", "--query", "review condition")

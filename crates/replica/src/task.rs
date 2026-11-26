@@ -885,6 +885,7 @@ impl TaskDoc {
             review_assignment: None,
             review_report_id: None,
             quick_review_status: None,
+            quick_review_assignee_name: None,
             quick_review: None,
             cancelled_at: integer(&fields, "cancelled_at"),
             cancel_reason: string(&fields, "cancel_reason").unwrap_or_default(),

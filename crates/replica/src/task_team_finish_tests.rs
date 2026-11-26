@@ -130,7 +130,9 @@ mod writer {
                 let decision = crate::quick_review::Disposition::Ready {
                     evidence: "The holder's Team report".into(),
                 };
-                assert!(doc.set_quick_review(&revision, id, &decision, &actor("lead"), 7).is_err());
+                assert!(doc
+                    .set_quick_review(&revision, id, &decision, None, &actor("lead"), 7)
+                    .is_err());
                 assert!(doc.accept_quick_review(&revision, id, &Actor::Person, 8).is_err());
                 assert_eq!(doc.revision(), revision);
             }

@@ -5527,7 +5527,9 @@ send the expected `history_revision`, `report_id`, and one `disposition`:
 
 Text fields must be nonblank and at most 1024 UTF-8 bytes. The assignee's
 identity is the computer UUID and exact `launch_id:…` or `run_id:…` session
-key, up to 200 bytes. Displayed names are hints. The request is limited to 8192
+key, up to 200 bytes. Choose a named session verified on the computer handling
+the request. The pilot refuses peer assignees before writing. Displayed names
+are hints. The request is limited to 8192
 bytes and report IDs to 512 bytes. A decision records metadata and history; it
 does not send a task, change its stage or assign a new task executor. To
 reevaluate a parked report, explicitly set a new disposition against a fresh

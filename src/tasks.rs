@@ -565,14 +565,11 @@ fn label_view(mut value: Value, project_name: &str, with_log: bool, files: &[Val
             }
         }
     };
-    let name_assignee = |review: &mut Value| {
-        if let Some(assignee) = review.get_mut("assignee") {
-            assignee["session"] = json!("");
-            name(assignee);
-        }
-    };
-    if let Some(review) = value.get_mut("quick_review") {
-        name_assignee(review);
+    let assignee_name = value.as_object_mut().expect("task view is an object")
+        .remove("quick_review_assignee_name").unwrap_or_else(|| json!(""));
+    if let Some(assignee) = value.get_mut("quick_review").and_then(|review| review.get_mut("assignee")) {
+        assignee["session"] = assignee_name;
+        name(assignee);
     }
     for key in ["target", "session", "author"] { name(&mut value[key]); }
     if value["target"]["parent"].is_object() { name(&mut value["target"]["parent"]); }
@@ -1465,6 +1462,8 @@ fn change_guarded(
         matches!(action, "send" | "handoff" | "cancel"),
         team.is_some(),
     )?;
+    let assignee_name = quick_review.as_ref()
+        .map(|review| review.assignee_name(&machines)).transpose()?.flatten();
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() {
             agent_text(text, action, &who)?;
@@ -1612,7 +1611,7 @@ fn change_guarded(
         let mut admitted = store.admit_until(deadline)
             .ok_or_else(|| fail("The task is currently busy. Refresh its report and try again."))?;
         let mut reported = admitted.load_complete(task.uuid()).map_err(fail)?;
-        let (op, report_id) = review.apply(&mut reported, &r.project, &who, &machines)?;
+        let (op, report_id) = review.apply(&mut reported, &r.project, &who, assignee_name.as_deref())?;
         admitted.save(&mut reported).map_err(fail)?;
         drop(admitted);
         return Ok(json!({

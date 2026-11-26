@@ -95,33 +95,47 @@ impl Request {
         Ok(())
     }
 
+    pub(super) fn assignee_name(&self, machines: &Machines) -> Result<Option<String>> {
+        let Self::Set {
+            disposition: Disposition::Check { assignee, .. },
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        if assignee.machine != machines.here {
+            return Err(fail("Choose a review assignee on this computer. Peer sessions cannot be verified for quick review."));
+        }
+        if assignee.session_id.is_empty() {
+            return Err(fail("The selected review assignee is unavailable."));
+        }
+        let key = SessionKey {
+            machine: assignee.machine.clone(),
+            session: String::new(),
+            session_id: assignee.session_id.clone(),
+        };
+        machines
+            .resolve(&key)
+            .map(|matched| matched.session)
+            .filter(|name| {
+                !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+            })
+            .map(Some)
+            .ok_or_else(|| fail("The selected review assignee is unavailable."))
+    }
+
     pub(super) fn apply(
         &self,
         task: &mut TaskDoc,
         project: &(String, String),
         actor: &Actor,
-        machines: &Machines,
+        assignee_name: Option<&str>,
     ) -> Result<(&'static str, &str)> {
         let (revision, report) = self.guard();
         let raw = raw_report(task, &project.0, report)?;
         match self {
             Self::Set { disposition, .. } => {
-                if let Disposition::Check { assignee, .. } = disposition {
-                    let key = SessionKey {
-                        machine: assignee.machine.clone(),
-                        session: String::new(),
-                        session_id: assignee.session_id.clone(),
-                    };
-                    let known = if key.machine == machines.here {
-                        machines.resolve(&key).is_some()
-                    } else {
-                        machines.alias(&key.machine).is_some()
-                    };
-                    if !known {
-                        return Err(fail("The selected review assignee is unavailable."));
-                    }
-                }
-                task.set_quick_review(revision, raw, disposition, actor, now())
+                task.set_quick_review(revision, raw, disposition, assignee_name, actor, now())
                     .map_err(fail)?;
                 Ok(("set", report))
             }

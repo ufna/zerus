@@ -89,6 +89,8 @@ impl Disposition {
 pub struct Decision {
     pub report_id: String,
     pub disposition: Disposition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supersedes: Vec<String>,
 }
@@ -163,9 +165,12 @@ pub(crate) fn project(view: &mut TaskView, ids: &[String]) {
         view.quick_review_status = Some(Status::Unresolved);
         return;
     };
-    let current = match heads(view, ids, report).as_slice() {
-        [] => None,
-        [(_, decision)] => Some(decision.disposition.clone()),
+    let (current, assignee_name) = match heads(view, ids, report).as_slice() {
+        [] => (None, None),
+        [(_, decision)] => (
+            Some(decision.disposition.clone()),
+            decision.assignee_name.clone(),
+        ),
         _ => {
             view.quick_review_status = Some(Status::Unresolved);
             return;
@@ -180,6 +185,7 @@ pub(crate) fn project(view: &mut TaskView, ids: &[String]) {
     });
     view.review_report_id = Some(report.clone());
     view.quick_review = current;
+    view.quick_review_assignee_name = assignee_name;
 }
 
 impl TaskDoc {
@@ -207,18 +213,31 @@ impl TaskDoc {
         revision: &str,
         report: &str,
         disposition: &Disposition,
+        assignee_name: Option<&str>,
         actor: &Actor,
         now: i64,
     ) -> Result<()> {
         disposition.validate()?;
+        if matches!(disposition, Disposition::Check { .. })
+            && !assignee_name.is_some_and(|name| {
+                !name.trim().is_empty() && name.len() <= 256 && !name.chars().any(char::is_control)
+            })
+        {
+            return Err(Error::new(
+                "A targeted check needs the verified session name.",
+            ));
+        }
         let (view, ids) = self.check_quick_review(revision, report)?;
         let current = heads(&view, &ids, report);
-        if view.quick_review.as_ref() == Some(disposition) {
+        if view.quick_review.as_ref() == Some(disposition)
+            && view.quick_review_assignee_name.as_deref() == assignee_name
+        {
             return Ok(());
         }
         let decision = Decision {
             report_id: report.into(),
             disposition: disposition.clone(),
+            assignee_name: assignee_name.map(str::to_owned),
             supersedes: current.iter().map(|(id, _)| (*id).to_owned()).collect(),
         };
         self.record_quick_review(&decision, actor, now)
@@ -293,10 +312,10 @@ mod tests {
         let parked = Disposition::Parked {
             reopen_when: "Find the missing trace".into(),
         };
-        left.set_quick_review(&revision, &report, &ready, &Actor::Person, 4)
+        left.set_quick_review(&revision, &report, &ready, None, &Actor::Person, 4)
             .unwrap();
         right
-            .set_quick_review(&revision, &report, &parked, &Actor::Person, 5)
+            .set_quick_review(&revision, &report, &parked, None, &Actor::Person, 5)
             .unwrap();
         left.import(&right.snapshot().unwrap()).unwrap();
 
@@ -319,7 +338,7 @@ mod tests {
         let ready = Disposition::Ready {
             evidence: "Observed the exact result".into(),
         };
-        doc.set_quick_review(&doc.revision(), &report, &ready, &Actor::Person, 4)
+        doc.set_quick_review(&doc.revision(), &report, &ready, None, &Actor::Person, 4)
             .unwrap();
         let Actor::Agent(mut other) = owner.clone() else {
             unreachable!()

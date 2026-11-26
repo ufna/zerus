@@ -265,6 +265,8 @@ pub struct TaskView {
     pub quick_review_status: Option<crate::quick_review::Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quick_review: Option<crate::quick_review::Disposition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_review_assignee_name: Option<String>,
     pub cancelled_at: Option<i64>,
     pub cancel_reason: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
