@@ -2,6 +2,7 @@
 //! and fixture processes (copies of this test binary) under temporary folders
 //! only; no installed app, task, registration, host or agent.
 use super::*;
+use crate::platform;
 use std::{fs, io::Write, process::Command, sync::Arc};
 
 /// The original fixture bytes; `CHANGED` has exactly the same length.
@@ -619,14 +620,119 @@ fn layout_record(layout: &Layout) -> PathBuf {
     layout.images.join(staging::FRONTEND_BINDING)
 }
 
-fn icacls(arguments: &[&std::ffi::OsStr]) {
+fn acl_output(arguments: &[&std::ffi::OsStr]) -> Vec<u8> {
     let program = Path::new(&std::env::var_os("SystemRoot").unwrap()).join(r"System32\icacls.exe");
     let output = Command::new(program).args(arguments).output().unwrap();
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    output.stdout
+}
+
+fn icacls(arguments: &[&std::ffi::OsStr]) {
+    acl_output(arguments);
+}
+
+/// The hosted runner's temp folder ACL is not part of this fixture.
+fn acl_fixture() -> (tempfile::TempDir, Layout, PathBuf, PathBuf) {
+    let (dir, gui) = fixture();
+    let home = dir.path().join("profile");
+    fs::create_dir(&home).unwrap();
+    let owner = format!("*{}", crate::host::token::user_sid().unwrap());
+    let grant = format!("{owner}:(OI)(CI)F");
+    icacls(&[home.as_os_str(), "/grant:r".as_ref(), grant.as_ref()]);
+    icacls(&[home.as_os_str(), "/inheritance:r".as_ref()]);
+    icacls(&[home.as_os_str(), "/setowner".as_ref(), owner.as_ref()]);
+    let layout = Layout::new(&home.to_string_lossy(), &home.join("config"));
+    fs::create_dir_all(&layout.images).unwrap();
+    let source = dir.path().join(staging::EXECUTABLE);
+    fs::write(&source, b"staged CLI fixture").unwrap();
+    (dir, layout, gui, source)
+}
+
+fn staged_binding(
+    layout: &Layout,
+    gui: &Path,
+    source: &Path,
+    commit: &dyn Fn() -> bool,
+) -> Result<staging::InstallReport, staging::StageError> {
+    staging::install_bound(layout, source, "1.0.0", |layout, publish| {
+        let cli = PinnedImage::open(&layout.cli).unwrap();
+        let binding = binding_with(gui, &cli);
+        Ok(publish(&binding, commit)?.then_some(binding))
+    })
+}
+
+fn grant_fixture_access(path: &Path, rights: &str) {
+    let grant = format!("*S-1-1-0:{rights}");
+    icacls(&[path.as_os_str(), "/grant:r".as_ref(), grant.as_ref()]);
+}
+
+#[test]
+fn a_private_binding_publishes_and_reads_under_a_read_traverse_only_ancestor() {
+    let (_dir, layout, gui, source) = acl_fixture();
+    let ancestor = layout.images.parent().unwrap();
+    let record = layout_record(&layout);
+    let control = staged_binding(&layout, &gui, &source, &|| true)
+        .expect("private binding fixture must publish before adding the read grant");
+    assert!(control.frontend.is_some());
+    assert_eq!(staging::read_frontend(&layout.images), control.frontend);
+
+    // This ACE applies to the ancestor alone. The binding leaf and record
+    // still deny access to the additional principal.
+    grant_fixture_access(ancestor, "RX");
+    let before_acl = acl_output(&[ancestor.as_os_str()]);
+    assert!(!platform::verify_private(ancestor, platform::Private::Directory).unwrap());
+    assert!(platform::verify_private(&layout.images, platform::Private::Directory).unwrap());
+    assert!(platform::verify_private(&record, platform::Private::File).unwrap());
+
+    let old = staging::read_frontend(&layout.images);
+    let moved = ancestor.with_file_name("held-ancestor");
+    let entered = std::cell::Cell::new(false);
+    let report = staged_binding(&layout, &gui, &source, &|| {
+        entered.set(true);
+        assert!(
+            fs::rename(ancestor, &moved).is_err(),
+            "publication must hold the original ancestor against replacement"
+        );
+        true
+    })
+    .unwrap_or_else(|error| {
+        panic!(
+            "a private binding must publish under read/traverse-only access; existing read-back accepted: {}; {error}",
+            old.is_some()
+        )
+    });
+    assert!(entered.get() && report.frontend.is_some());
+    assert_eq!(old, control.frontend, "read the previous exact binding");
+    assert_eq!(staging::read_frontend(&layout.images), report.frontend);
+    assert_eq!(acl_output(&[ancestor.as_os_str()]), before_acl);
+}
+
+#[test]
+fn the_binding_refuses_write_access_above_it_and_read_access_on_its_leaf() {
+    let (_dir, layout, gui, source) = acl_fixture();
+    let ancestor = layout.images.parent().unwrap();
+    for (path, rights) in [
+        (ancestor, "M"),
+        (ancestor, "(DC)"),
+        (&layout.images, "RX"),
+    ] {
+        let initial = staged_binding(&layout, &gui, &source, &|| true).unwrap();
+        assert!(initial.frontend.is_some());
+        assert_eq!(staging::read_frontend(&layout.images), initial.frontend);
+        grant_fixture_access(path, rights);
+        assert!(staging::read_frontend(&layout.images).is_none(), "{rights}");
+        let refused = staged_binding(&layout, &gui, &source, &|| {
+            panic!("unsafe access must be refused before the commit guard: {rights}")
+        });
+        assert!(refused.is_err(), "{rights}");
+        assert!(!layout_record(&layout).exists(), "{rights}");
+        icacls(&[path.as_os_str(), "/remove:g".as_ref(), "*S-1-1-0".as_ref()]);
+    }
 }
 
 #[test]
