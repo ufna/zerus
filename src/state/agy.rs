@@ -333,18 +333,25 @@ fn message_request() -> Result<(Prompt, String)> {
     Ok((prompt, digest(&bytes)))
 }
 
-fn frame(stream: &mut UnixStream) -> Result<Value> {
+fn frame(stream: &mut UnixStream, until: Instant) -> Result<Value> {
     let mut bytes = Vec::new();
-    let until = Instant::now() + stream.read_timeout().ok().flatten().unwrap_or(ACTION_LIMIT);
     let mut chunk = [0; 4096];
     loop {
         let remaining = until.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err("Antigravity control read timed out".into());
         }
-        stream
-            .set_read_timeout(Some(remaining))
+        let timeout = stream.set_read_timeout(Some(remaining));
+        let shut_down = timeout.is_err();
+        crate::platform::receive_timeout_result(timeout, cfg!(target_vendor = "apple"))
             .map_err(|_| "Cannot bound Antigravity control reads")?;
+        if shut_down {
+            // XNU refuses new timeouts once both write sides are closed.
+            // Drain the queued frame and EOF without ever waiting on them.
+            stream
+                .set_nonblocking(true)
+                .map_err(|_| "Cannot drain the Antigravity control frame")?;
+        }
         let consumed = stream
             .read(&mut chunk)
             .map_err(|_| "Antigravity control reply is unavailable")?;
@@ -355,6 +362,9 @@ fn frame(stream: &mut UnixStream) -> Result<Value> {
         if bytes.len() as u64 > CONTROL_BYTES {
             break;
         }
+    }
+    if Instant::now() >= until {
+        return Err("Antigravity control read timed out".into());
     }
     if bytes.len() as u64 > CONTROL_BYTES {
         return Err("Antigravity control frame is too large".into());
@@ -400,15 +410,12 @@ fn contact(mut record: Value, mut request: Value, before: impl FnOnce()) -> Resu
     stream
         .set_write_timeout(Some(Duration::from_millis(500)))
         .map_err(|_| "Cannot bound Antigravity control writes")?;
-    stream
-        .set_read_timeout(Some(ACTION_LIMIT))
-        .map_err(|_| "Cannot bound Antigravity control reads")?;
     for key in ["name", "session_id", "run_id", "conversation_id"] {
         request[key] = record[key].take();
     }
     before();
     respond(&mut stream, &request)?;
-    frame(&mut stream)
+    frame(&mut stream, Instant::now() + ACTION_LIMIT)
 }
 
 fn dispatch_send(name: &str, args: &[String]) -> Result<i32> {
@@ -577,5 +584,37 @@ pub(super) fn dispatch(command: &str, name: &str, args: &[String]) -> Result<i32
             "This operation is unavailable for Antigravity; use its guarded session controls"
                 .into(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drains_the_complete_control_reply_after_both_writers_close() {
+        let (mut caller, mut worker) = UnixStream::pair().unwrap();
+        caller.shutdown(std::net::Shutdown::Write).unwrap();
+        let reply = json!({"status":"submitted"});
+        respond(&mut worker, &reply).unwrap();
+        drop(worker);
+
+        assert_eq!(
+            frame(&mut caller, Instant::now() + Duration::from_secs(1)).unwrap(),
+            reply
+        );
+    }
+
+    #[test]
+    fn a_queued_control_reply_cannot_extend_its_deadline() {
+        let (mut caller, mut worker) = UnixStream::pair().unwrap();
+        caller.shutdown(std::net::Shutdown::Write).unwrap();
+        respond(&mut worker, &json!({"status":"submitted"})).unwrap();
+        drop(worker);
+
+        assert_eq!(
+            frame(&mut caller, Instant::now()).unwrap_err(),
+            "Antigravity control read timed out"
+        );
     }
 }

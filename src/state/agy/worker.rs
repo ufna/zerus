@@ -295,16 +295,14 @@ impl Owner {
     }
 
     fn control(&mut self, mut stream: UnixStream) -> Result<bool> {
-        stream
-            .set_read_timeout(Some(Duration::from_millis(250)))
-            .map_err(|_| "Cannot bound Antigravity control requests")?;
-        stream
-            .set_write_timeout(Some(Duration::from_millis(250)))
-            .map_err(|_| "Cannot bound Antigravity control replies")?;
-        let request = match frame(&mut stream) {
+        let timeout = Duration::from_millis(250);
+        let request = match frame(&mut stream, Instant::now() + timeout) {
             Ok(value) => value,
             Err(_) => return Ok(false),
         };
+        if stream.set_write_timeout(Some(timeout)).is_err() {
+            return Ok(false);
+        }
         if ["name", "session_id", "run_id", "conversation_id"]
             .into_iter()
             .any(|key| request[key] != self.record[key])
