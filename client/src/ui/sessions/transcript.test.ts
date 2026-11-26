@@ -72,6 +72,21 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
       { receipt: "Sent" }, { local: { stamp: "Not sent" } }, { local: { stamp: "Delivery not confirmed" } },
     ]);
   });
+
+  it("retires the pending alias when an early exact OpenCode echo is followed by an uncertain acknowledgement", () => {
+    const pending = local("sending", false, { id: "original", source: "opencode_native" });
+    const echo = { ...row("", "msg_original"), delivery_state: undefined, request_id: pending.id,
+      run_id: pending.run_id, conversation_id: pending.conversation_id, detail: pending.text };
+    const projection = createTranscriptProjection();
+    expect(projection.build([echo], summary, [pending])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
+    const uncertain = { ...pending, status: "error" as const, uncertain: true };
+    const view = projection.build([echo], summary, [uncertain]);
+    expect(view).toMatchObject([
+      { id: "p:opencode:msg_original", receipt: "Sent" },
+      { id: "local-original", local: { stamp: "Delivery not confirmed" } },
+    ]);
+    expect(projection.build([echo], summary, [])).toMatchObject([{ id: "p:opencode:msg_original", receipt: "Sent" }]);
+  });
 });
 
 describe("local message rows (ActivityView.cpp:665-720, 1053-1068)", () => {

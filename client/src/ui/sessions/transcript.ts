@@ -814,6 +814,13 @@ export function createTranscriptProjection() {
   return {
     reset() { recent.clear(); bindings.clear(); },
     build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
+      const independent = new Set(local.filter(row => row.source === OPENCODE_SOURCE && row.status === "error")
+        .map(row => `local-${row.id}`));
+      // An early exact echo can share a pending row's key. A later failed or
+      // uncertain local result needs its own row, while native history stays.
+      if (independent.size) {
+        for (const [key, alias] of bindings) if (independent.has(alias)) bindings.delete(key);
+      }
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
       const present = new Set(local.map(row => row.id));
