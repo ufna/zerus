@@ -1,6 +1,5 @@
 """Private tracked Codex sessions with a terminal policy result from localhost."""
 import datetime
-import fcntl
 import hashlib
 import io
 import json
@@ -20,6 +19,9 @@ import test_pause
 from test_codex_async_questions_native import Provider as CompletionProvider
 from test_codex_input_native import StartupFixture
 from test_watch import Stream
+
+if os.name == 'posix':
+    import fcntl
 
 LAUNCH = 'Synthetic supervisor launches a local child.'
 REFUSE = 'Synthetic child request for a policy fixture.'
@@ -119,6 +121,9 @@ class NativeCodexChildPolicy(StartupFixture):
     def start_pair(self):
         self.hgs('swarm', 'hello')
         self.launch()
+        self.until('The ordinary startup composer must be fully visible', lambda:
+                   self.inspect().get('first_message_can_send') and 'Ask Codex to do anything' in self.screen())
+        time.sleep(.25)
         self.deliver_first()
         self.until('Parent should accept an ordinary message',
                    lambda: self.info(self.name).get('guarded_idle_send'))
@@ -403,6 +408,7 @@ class NativeCodexChildPolicy(StartupFixture):
                     try:
                         fcntl.flock(root, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     except BlockingIOError:
+                        time.sleep(.025)
                         os.kill(parent['pid'], signal.SIGKILL)
                         exited = subprocess.run(['ps', '-p', str(parent['pid']), '-o', 'stat='],
                                                 env=self.env, capture_output=True, text=True, timeout=1)
