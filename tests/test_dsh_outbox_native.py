@@ -267,3 +267,10 @@ class NativeDeepSeekOutbox(native.NativeHarness):
         self.assertIn('attachment data', receipt['reason'].lower())
         self.assertEqual(receipt['request_id'], invalid['request_id'])
         self.assertFalse((self.state / 'dsh/receipts' / f"{invalid['request_id']}.json").exists())
+
+
+# Share the official native fixture while leaving its original tests in their
+# own module. Both unittest and the CI job splitter discover inherited methods.
+for _test in vars(native.NativeHarness):
+    if _test.startswith('test_'):
+        setattr(NativeDeepSeekOutbox, _test, None)
