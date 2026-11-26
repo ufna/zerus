@@ -723,6 +723,7 @@ impl Validated {
                     | Request::TaskMessage { .. }
                     | Request::TaskMessageInputRelease { .. }
                     | Request::DeferredSend { .. }
+                    | Request::VerifiedSend { .. }
                     | Request::DeferredAnswer { .. }
                     | Request::TeamPersonDecide { .. }
                     | Request::TeamPersonPlanPiece { .. }
@@ -768,6 +769,14 @@ impl Validated {
             anyhow::bail!("not a deferred send");
         };
         Ok(*intent)
+    }
+    #[cfg(target_os = "linux")]
+    pub(super) fn verified_send(&self) -> Result<&zerus_client_core::desktop::verified_send::Intent> {
+        self.check()?;
+        let Request::VerifiedSend { intent } = &self.0 else {
+            anyhow::bail!("not a native verified send");
+        };
+        Ok(intent)
     }
     /// The connection a deferred-input request (send, answer, compact-to-send
     /// or session resume) was made for, read
@@ -1344,8 +1353,8 @@ pub(super) fn authenticate(location: &Scope, peer_pid: u32, value: &Value) -> Re
     let envelope: Envelope =
         serde_json::from_value(value.clone()).context("invalid frontend envelope")?;
     ensure!(envelope.valid(), "invalid frontend envelope");
-    ensure!(!matches!(envelope.request,Request::WorktreeProgramStop {..} | Request::WorktreeProgramCleanup {..}),
-        "program-stop requires its closed original helper entry");
+    ensure!(!matches!(envelope.request,Request::WorktreeProgramStop {..} | Request::WorktreeProgramCleanup {..} | Request::VerifiedSend {..}),
+        "request requires its closed original helper entry");
     let until = Instant::now() + WAIT;
     let caller = Process::read(peer_pid)?;
     #[cfg(target_os = "linux")]
@@ -1443,6 +1452,25 @@ pub(super) fn authenticate_program_stop(location: &Scope, value: &Value) -> Resu
         "original helper expired"
     );
     authenticate_caller(location, pid, envelope, caller, until)
+}
+
+/// One registered, sealed original child of the selected native frontend.
+/// The ordinary IPC and CLI send routes cannot use this own-helper proof.
+#[cfg(target_os = "linux")]
+pub(super) fn authenticate_verified_send(location: &Scope, value: Value) -> Result<Validated> {
+    let envelope: Envelope = serde_json::from_value(value).context("invalid verified send envelope")?;
+    ensure!(envelope.valid() && matches!(envelope.request, Request::VerifiedSend { .. }),
+        "expected closed verified send request");
+    let until = Instant::now() + WAIT;
+    let pid = std::process::id();
+    let mut caller = Process::read(pid)?;
+    caller.linux_freshness = Some(std::sync::Arc::new(LinuxFreshness::Own {
+        image: program_helper_image::OwnImage::capture_verified_send(until)?,
+        until,
+    }));
+    ensure!(caller.current(), "original verified send helper expired");
+    authenticate_caller(location, pid, envelope, caller, until)?
+        .into_request(&mut Order::default())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1639,6 +1667,14 @@ fn validate(
         ensure!(reply.request.ownership_mode==Some(intent.input.stop.source.mode())
             && intent.input.stop.manifest.configuration==configuration,
             "program-cleanup native mode/configuration changed");
+    }
+    if let Request::VerifiedSend { intent } = &envelope.request {
+        ensure!(
+            reply.request.ownership_mode
+                == Some(zerus_client_core::desktop::ownership::Mode::Service)
+                && intent.send.scope.configuration == configuration,
+            "verified send does not match the native service frontend"
+        );
     }
     if let Request::DesktopOwnership { action, .. } = &envelope.request {
         ensure!(
@@ -1851,6 +1887,7 @@ enum OrderedOperation {
     TaskMessage,
     TaskMessageInputRelease,
     DeferredSend,
+    VerifiedSend,
     DeferredAnswer,
     TeamPersonDecide,
     TeamPersonPlanPiece,
@@ -1884,6 +1921,7 @@ impl From<&Request> for OrderedOperation {
             Request::TaskMessage { .. } => Self::TaskMessage,
             Request::TaskMessageInputRelease { .. } => Self::TaskMessageInputRelease,
             Request::DeferredSend { .. } => Self::DeferredSend,
+            Request::VerifiedSend { .. } => Self::VerifiedSend,
             Request::DeferredAnswer { .. } => Self::DeferredAnswer,
             Request::TeamPersonDecide { .. } => Self::TeamPersonDecide,
             Request::TeamPersonPlanPiece { .. } => Self::TeamPersonPlanPiece,

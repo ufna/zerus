@@ -277,7 +277,7 @@ pub(crate) fn rows(wanted: &BTreeSet<String>) -> Result<Option<(Vec<Value>, u64)
     let keep_warm_settings = keep_warm::load();
     let question_routing = question_routing::load();
     let route_outcomes = question_route_outcomes::Reader::load();
-    let shared = Shared { marks: &marks, preferences: preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
+    let shared = Shared { marks: &marks, preferences: preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget(), #[cfg(target_os = "linux")] readiness_until: native_launch::catalog_deadline() };
     let mut process_work = processes::WorkSample::default();
     let mut rows = Vec::with_capacity(records.len());
     for record in records {
@@ -343,6 +343,8 @@ pub(crate) fn probe(rows: &[&Value]) -> Result<Probe> {
     let (snapshot, names) = live_sessions()?;
     let mut sample = processes::WorkSample::default();
     let mut stale = Vec::new();
+    #[cfg(target_os = "linux")]
+    let readiness_until = native_launch::catalog_deadline();
     for row in rows {
         let name = string(row, "name");
         if row["tracked"] != true || native(name) {
@@ -366,6 +368,13 @@ pub(crate) fn probe(rows: &[&Value]) -> Result<Probe> {
         // As live_display_row decides the catalog state. Child exit or PID
         // replacement can settle it even when terminal support stays false.
         let unverified = matched_pane && !process_running && catalog_process_unverified(&record);
+        #[cfg(target_os = "linux")]
+        if unverified && std::time::Instant::now() < readiness_until
+            && row["native_readiness"] != json!(native_launch::catalog_readiness(&record, readiness_until))
+        {
+            stale.push(name.to_owned());
+            continue;
+        }
         let terminal = string(&record, "archive_id").is_empty() && process_running;
         if quiet
             || !matched_pane

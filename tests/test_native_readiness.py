@@ -100,6 +100,14 @@ with (home / "native-input").open("ab", buffering=0) as log:
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def inspect_pending(self):
+        result = self.call(['inspect', self.name, '--after', str(2**63-1)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = json.loads(result.stdout)
+        self.assertEqual(value['process_state'], 'exited')
+        self.assertNotIn('previous_message_pending', value)
+        return value.get('verified_previous_message_pending')
+
     def refusal(self, request=None, *, reason='exact agent process'):
         request = request or self.request()
         before = self.path.read_bytes()
@@ -126,6 +134,7 @@ with (home / "native-input").open("ab", buffering=0) as log:
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse(receipts.exists())
         self.assertEqual(self.bytes_received(), b'')
+        self.assertIs(self.inspect_pending(), False)
 
         send = self.call(['send-verified', self.name, '--json'], request)
         self.assertEqual(send.returncode, 0, send.stderr)
@@ -142,6 +151,7 @@ with (home / "native-input").open("ab", buffering=0) as log:
 
         next_request = self.request()
         self.assertIn('previous input has not been confirmed', self.observe(next_request)['reason'])
+        self.assertIs(self.inspect_pending(), True)
         current = json.loads(self.path.read_bytes())
         transcript = self.root / 'accepted-native-prompt.jsonl'
         pending = current['input_pending_at']
@@ -162,6 +172,7 @@ with (home / "native-input").open("ab", buffering=0) as log:
         self.assertEqual(self.path.read_bytes(), binding, 'observed native acceptance must stay in memory')
         self.assertEqual(receipt_path.read_bytes(), original_receipt)
         self.assertEqual(self.bytes_received(), expected)
+        self.assertIs(self.inspect_pending(), False)
 
     def test_identity_changes_and_unavailable_proof_refuse_without_bytes(self):
         for case in ('child-birth', 'supervisor-birth', 'boot', 'missing-pin', 'wrong-pane',

@@ -421,6 +421,8 @@ pub(in crate::state) fn merge(
             question_routing: routing.as_ref(),
             route_outcomes: outcomes.as_ref(),
             budget: read_marks::question_budget(),
+            #[cfg(target_os = "linux")]
+            readiness_until: native_launch::catalog_deadline(),
         };
         let mut archive_page = if archives {
             // Reuse this observation for the archive's advisory Restore hint.

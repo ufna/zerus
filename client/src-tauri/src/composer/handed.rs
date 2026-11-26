@@ -64,6 +64,14 @@ pub struct DeferredRoute {
     pub check: Arc<CheckFn>,
 }
 
+type VerifiedSourceFn = dyn Fn(&(String, u64, u64)) -> bool + Send + Sync;
+type VerifiedSendFn = dyn Fn(&super::send::VerifiedTarget, &str, &Checkpoint, &[u8]) -> Outcome + Send + Sync;
+
+pub(crate) struct VerifiedRoute {
+    pub(crate) current: Arc<VerifiedSourceFn>,
+    pub(crate) send: Arc<VerifiedSendFn>,
+}
+
 /// The selected desktop service's compact-to-send route.
 pub struct CompactRoute {
     /// Offers the original once, calling its hand-over hook with the plan
@@ -225,6 +233,30 @@ fn stdin(
 }
 
 impl Composers {
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn set_verified_send(&self, route: VerifiedRoute) {
+        *lock(&self.0.verified_send) = Some(Arc::new(route));
+    }
+
+    pub(super) fn verified_route(&self) -> Option<Arc<VerifiedRoute>> {
+        lock(&self.0.verified_send).clone()
+    }
+
+    pub(super) fn offer_verified_send(&self, delivery: &Delivery, target: &super::send::VerifiedTarget) -> Outcome {
+        let refused = || Outcome::Failed { detail: "Session availability unverified".into() };
+        let Some(route) = self.verified_route().filter(|route| (route.current)(&target.source)) else {
+            return refused();
+        };
+        let checkpoint = self.lock().composers.get(&delivery.key)
+            .and_then(|composer| composer.checkpoint.clone())
+            .filter(|checkpoint| checkpoint.kind == Kind::Send && checkpoint.request_id == delivery.request_id);
+        let Some(checkpoint) = checkpoint else { return refused(); };
+        let Some(stdin) = stdin(&delivery.session.name, &checkpoint, &delivery.text, &delivery.attachments) else {
+            return refused();
+        };
+        (route.send)(target, &delivery.session.name, &checkpoint, &stdin)
+    }
+
     /// Sets the route (the app, at start): Linux and macOS in
     /// desktop-service mode. Without one every Send goes direct.
     #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -822,6 +854,7 @@ impl Composers {
             preserve,
             revision,
             request_id: checkpoint.send_request_id.clone()?,
+            verified_send: None,
         };
         Some((delivery, checkpoint))
     }

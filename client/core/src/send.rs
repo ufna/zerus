@@ -70,6 +70,12 @@ fn agent_gate(details: &Value, can_send: &str, reason: &str, fallback: &str) -> 
 /// `details` is the session's inspection, `None` until one arrived. The rules
 /// apply in Qt's order; the first that holds gives the reason.
 pub fn block_reason(facts: &BlockFacts, details: Option<&Value>) -> Option<String> {
+    block_reason_with_readiness(facts, details, false)
+}
+
+/// Only the local Desktop Send host supplies independently matched native
+/// identity for these exact details. Other callers keep the ordinary gate.
+pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, verified: bool) -> Option<String> {
     let block = |reason: &str| Some(reason.to_owned());
     if facts.start_send_waiting {
         return block("Waiting for the session to start. This exact message will be sent automatically when ready. Cancel send to edit.");
@@ -113,7 +119,7 @@ pub fn block_reason(facts: &BlockFacts, details: Option<&Value>) -> Option<Strin
             "Waiting for the agent to finish starting. Open Terminal to check login or setup.",
         );
     }
-    if text(details, "runtime_state") != "live" || text(details, "process_state") != "running" {
+    if text(details, "runtime_state") != "live" || (!verified && text(details, "process_state") != "running") {
         return block("The agent is not running. Resume it before sending.");
     }
     let opencode = facts.cmd == "opencode";

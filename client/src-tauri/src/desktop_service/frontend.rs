@@ -37,6 +37,8 @@ pub enum Operation {
     TaskMessageInputRelease,
     #[serde(skip)] // Native deferred send owner only; never generic policy dispatch or receipts.
     DeferredSend,
+    #[serde(skip)] // The original sealed verified send child only.
+    VerifiedSend,
     #[serde(skip)] // Native deferred answer owner only; never generic policy dispatch or receipts.
     DeferredAnswer,
     #[serde(skip)] // Native owner-card confirmation only; never generic policy JSON.
@@ -81,6 +83,7 @@ impl Operation {
             Request::TaskMessage { .. } => Self::TaskMessage,
             Request::TaskMessageInputRelease { .. } => Self::TaskMessageInputRelease,
             Request::DeferredSend { .. } => Self::DeferredSend,
+            Request::VerifiedSend { .. } => Self::VerifiedSend,
             Request::DeferredAnswer { .. } => Self::DeferredAnswer,
             Request::TeamPersonDecide { .. } => Self::TeamPersonDecide,
             Request::TeamPersonPlanPiece { .. } => Self::TeamPersonPlanPiece,
@@ -112,6 +115,7 @@ impl Operation {
             Self::TaskMessage => "task_message",
             Self::TaskMessageInputRelease => "task_message_input_release",
             Self::DeferredSend => "deferred_send",
+            Self::VerifiedSend => "verified_send",
             Self::DeferredAnswer => "deferred_answer",
             Self::TeamPersonDecide => "team_person_decide",
             Self::TeamPersonPlanPiece => "team_person_plan_piece",
@@ -758,6 +762,7 @@ fn submission_ready(snapshot: &Snapshot, request: &Request) -> bool {
             | Request::TaskMessage { .. }
             | Request::TaskMessageInputRelease { .. }
             | Request::DeferredSend { .. }
+            | Request::VerifiedSend { .. }
             | Request::DeferredAnswer { .. }
             | Request::TeamPersonDecide { .. }
             | Request::TeamPersonPlanPiece { .. }
@@ -960,6 +965,7 @@ fn lookup(
             | Request::TaskMessage { .. }
             | Request::TaskMessageInputRelease { .. }
             | Request::DeferredSend { .. }
+            | Request::VerifiedSend { .. }
             | Request::DeferredAnswer { .. }
             | Request::TeamPersonDecide { .. }
             | Request::TeamPersonPlanPiece { .. }
@@ -1013,6 +1019,7 @@ fn lookup_receipt(request: &Request, id: &str, value: Value) -> Result<Receipt, 
             | Request::TaskMessage { .. }
             | Request::TaskMessageInputRelease { .. }
             | Request::DeferredSend { .. }
+            | Request::VerifiedSend { .. }
             | Request::DeferredAnswer { .. }
             | Request::TeamPersonDecide { .. }
             | Request::TeamPersonPlanPiece { .. }
@@ -1110,6 +1117,7 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
             | Request::TaskMessage { .. }
             | Request::TaskMessageInputRelease { .. }
             | Request::DeferredSend { .. }
+            | Request::VerifiedSend { .. }
             | Request::DeferredAnswer { .. }
             | Request::TeamPersonDecide { .. }
             | Request::TeamPersonPlanPiece { .. }
@@ -1198,6 +1206,7 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
         | Request::TaskMessage { .. }
         | Request::TaskMessageInputRelease { .. }
         | Request::DeferredSend { .. }
+            | Request::VerifiedSend { .. }
         | Request::DeferredAnswer { .. }
         | Request::TeamPersonDecide { .. }
         | Request::TeamPersonPlanPiece { .. }

@@ -1211,19 +1211,25 @@ class LiveListingIndex(test_pause.Harness):
 
         self.save_listing_binding(path, record)
         canonical = selected(self.projected())
+        proof = {"version": 1, "session_id": record["session_id"], "run_id": record["run_id"],
+                 "conversation_id": record["conversation_id"], "send": True}
         self.assertEqual((canonical['runtime_state'], canonical['process_state']), ('live', 'unverified'))
+        self.assertEqual(canonical.get('native_readiness'), proof)
         self.assertFalse(canonical['terminal_supported'])
         self.assertNotIn('pause', canonical['allowed_actions'])
         self.assertNotIn('terminate', canonical['allowed_actions'])
         self.hgs('listing-index', 'enable', '--json')
         indexed = selected(self.ready_rows())
         self.assertEqual(indexed['process_state'], 'unverified')
+        self.assertEqual(indexed.get('native_readiness'), proof)
         self.assertFalse(indexed['terminal_supported'])
         self.assertEqual(self.binding(name), record)
 
         stream = Stream(self, executable=HGS)
         snapshot = stream.next(lambda frame: frame['t'] == 'snapshot' and frame['topic'] == 'catalog')
-        self.assertEqual(selected(item['row'] for item in snapshot['items'])['process_state'], 'unverified')
+        watched = selected(item['row'] for item in snapshot['items'])
+        self.assertEqual(watched['process_state'], 'unverified')
+        self.assertEqual(watched.get('native_readiness'), proof)
         observed = subprocess.run([str(HGS), 'send', name, '--observe', '--json'], env=self.env,
                                   input=json.dumps({'expected_run_id': record['run_id'],
                                                     'expected_conversation_id': record['conversation_id']}),
@@ -1243,7 +1249,9 @@ class LiveListingIndex(test_pause.Harness):
         update = stream.next(lambda frame: frame['t'] == 'delta' and frame['topic'] == 'catalog' and
                              any(item['row']['name'] == name and item['row']['process_state'] == 'exited'
                                  for item in frame['upsert']))
-        self.assertFalse(selected(item['row'] for item in update['upsert'])['terminal_supported'])
+        changed = selected(item['row'] for item in update['upsert'])
+        self.assertFalse(changed['terminal_supported'])
+        self.assertNotIn('native_readiness', changed)
         self.assertEqual(stream.close(), 0)
 
     def test_correlated_clock_disagreement_keeps_indexed_page_available(self):

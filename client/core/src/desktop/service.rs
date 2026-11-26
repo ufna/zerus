@@ -81,6 +81,8 @@ pub struct Snapshot {
     pub reconnecting: bool,
     pub epoch: Option<String>,
     pub generation: Option<u64>,
+    #[serde(default)]
+    pub verified_send_supported: bool,
     pub background: BTreeMap<String, Component>,
     /// Bounded connection presentation, including configured ungreeted peers.
     /// This contains no source generations or writer authority.
@@ -238,6 +240,7 @@ impl Default for Snapshot {
             reconnecting: false,
             epoch: None,
             generation: None,
+            verified_send_supported: false,
             background: BTreeMap::new(),
             fleet_computers: None,
             fleet_retry_delays: None,
@@ -380,6 +383,8 @@ impl State {
             retained_source_import: None,
             epoch: Some(epoch.into()),
             generation: Some(generation),
+            verified_send_supported: value["native_readiness"]["version"] == super::verified_send::VERSION
+                && value["native_readiness"]["send"] == true,
             background,
             fleet_computers: checked_connections(&value["background_runtime"], epoch),
             fleet_retry_delays: checked_retry_delays(&value["background_runtime"]["retry_delays"]),
