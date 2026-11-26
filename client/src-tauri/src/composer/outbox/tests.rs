@@ -760,6 +760,14 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     assert!(!view.status_error);
     assert_eq!(lock(&fake.calls).len(), 1);
     if terminal_status {
+        lock(&fake.row).conversation_id = Some("successor".into());
+        assert_ne!(
+            c.current().unwrap().status,
+            "Submitted to terminal",
+            "a new catalog conversation must not show the old acknowledgement"
+        );
+        lock(&fake.row).conversation_id = Some("conv-1".into());
+        assert_eq!(c.current().unwrap().status, "Submitted to terminal");
         c.edit(view.handle, view.rev + 1, view.text_epoch, "New draft".into(), 0, 0);
         c.edit(view.handle, view.rev + 2, view.text_epoch, String::new(), 0, 0);
         assert_ne!(c.current().unwrap().status, "Submitted to terminal");

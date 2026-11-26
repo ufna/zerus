@@ -127,7 +127,14 @@ fn target(ctx: &super::send::Context) -> Target {
 
 impl Context {
     pub(super) fn terminal_submission_shown(&self, composer: &Composer) -> bool {
-        composer.outbox.is_empty() && composer.last_terminal_submission.as_ref() == Some(&target(self))
+        composer.outbox.is_empty()
+            && !self.awaiting_outbox_details
+            && composer.last_terminal_submission.as_ref().is_some_and(|submission| {
+                self.details
+                    .as_deref()
+                    .is_some_and(|details| self.exact_outbox_details(details))
+                    && *submission == target(self)
+            })
     }
 
     pub(super) fn outbox_candidate(&self) -> bool {
