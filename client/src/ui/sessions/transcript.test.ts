@@ -600,3 +600,21 @@ describe("tool rows (ActivityView.cpp:1105-1140, zerus-5wmh.13.8.1)", () => {
     expect(performance.now() - started).toBeLessThan(2000);
   });
 });
+
+
+it("keeps equal queued texts distinct and hands one exact receipt to the same Activity key", () => {
+  const rows = createTranscriptProjection();
+  const one = { request_id: "queue-one", handle: 4, preview: "same text", state: "unknown", queued_at: 200 } as const;
+  const two = { ...one, request_id: "queue-two", state: "waiting", queued_at: 199 } as const;
+  const ordinary = { type: "UserPromptSubmit", detail: "same text", seq: 1, at: 150 };
+  const receipt = { ...ordinary, seq: 2, at: 205, source: "hgs_delivery", message_id: one.request_id };
+  const now = rows.build([ordinary, receipt], undefined, [], [], [one, two]);
+  expect(now.map(item => item.id)).toEqual(["s1", "local-queue-one", "local-queue-two"]);
+  expect(now[1]).toMatchObject({ outbox: { state: "unknown" } });
+  const settled = rows.build([ordinary, receipt], undefined, [], [], [two]);
+  expect(settled.map(item => item.id)).toEqual(now.map(item => item.id));
+  expect(settled[1]).toMatchObject({ kind: "user", body: "same text", receipt: "Sent" });
+  expect(settled[1]).not.toHaveProperty("outbox");
+  rows.reset();
+  expect(rows.build([receipt]).map(item => item.id)).not.toContain("local-queue-one");
+});

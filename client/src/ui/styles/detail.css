@@ -116,6 +116,14 @@
   .act-stamp.failed { color: color-mix(in srgb, var(--z-color-warn) 78%, var(--z-color-text)); }
   .act-error { margin-top: 6px; font-size: var(--fs-sm); color: color-mix(in srgb, var(--z-color-warn) 78%, var(--z-color-text)); white-space: pre-wrap; }
   .act-local-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; white-space: normal; }
+  .act-outbox header { flex-wrap: wrap; row-gap: 2px; }
+  .act-outbox-preview { margin: 0; overflow-wrap: anywhere; }
+  .act-outbox-files { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 4px 0 0; padding: 0; list-style: none; white-space: normal; }
+  .act-outbox-files li { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--z-color-text-2); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+  .act-outbox-files svg { flex: none; }
+  .act-outbox-actions { justify-content: flex-end; margin-top: 2px; }
+  .act-outbox-confirm { margin-top: 6px; font-size: var(--fs-sm); white-space: normal; }
+  .act-outbox-confirm p { margin: 0; }
   .act-inbox-hint { margin-top: 6px; font-size: var(--fs-sm); color: var(--z-color-text-muted, inherit); white-space: pre-wrap; }
   .att-chip.unavailable { color: var(--z-color-dim); }
   .act-copy { opacity: 0; transition: opacity var(--z-motion-fast); }

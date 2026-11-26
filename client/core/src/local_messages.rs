@@ -9,6 +9,7 @@
 //! and the voice composer's `messageChanged`).
 use crate::actions::Outcome;
 use crate::attachments::StoredFile;
+use crate::drafts::outbox::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -229,7 +230,48 @@ impl LocalMessages {
         conversation_id: &str,
         now: f64,
     ) {
-        let attachments = files_value(files);
+        self.record_sending(
+            key,
+            request_id,
+            retry_id,
+            text,
+            files_value(files),
+            run_id,
+            conversation_id,
+            now,
+        );
+    }
+
+    /// A submitted FIFO entry appears through the same outgoing row and
+    /// receipt projection as an ordinary message. Its file metadata comes
+    /// from the original entry. It has no editable-draft or cache path.
+    pub fn sent_from_outbox(&mut self, key: &str, entry: &Entry, outcome: &Outcome, now: f64) {
+        let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
+        self.record_sending(
+            key,
+            &entry.request_id,
+            None,
+            &entry.text,
+            files,
+            &entry.target.run_id,
+            &entry.target.conversation_id,
+            now,
+        );
+        self.finished(key, &entry.request_id, outcome);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_sending(
+        &mut self,
+        key: &str,
+        request_id: &str,
+        retry_id: Option<&str>,
+        text: &str,
+        attachments: Vec<Value>,
+        run_id: &str,
+        conversation_id: &str,
+        now: f64,
+    ) {
         let rows = self.rows.entry(key.to_owned()).or_default();
         rows.retain(|row| {
             !(row.status == Status::Error

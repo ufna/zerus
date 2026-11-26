@@ -1,6 +1,6 @@
 import type { ActivityEvent, LocalMessage, Reply } from "../../types";
 import { eventKey } from "../../store/activity";
-import type { ActivityItem, InboxItem, LocalItem, MediaMessage, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
+import type { ActivityItem, InboxItem, LocalItem, MediaMessage, OutboxItem, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
 import type { RouteActivity } from "../../store/questionRouteActivity";
 import { imageSize } from "./attachment-image";
 import { messageTimeOf } from "../lib/dates";
@@ -791,15 +791,28 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
   return items;
 }
 
+/** Only a bound receipt can take over a queued row's display identity. */
+function outboxReceiptId(event: ActivityEvent): string | undefined {
+  if (event.inherited_from || messageRole(event) !== "user" || !PROMPTS.has(event.type ?? "")) return undefined;
+  const id = event.source === "hgs_delivery" ? event.message_id : event.attachment_request_id;
+  return typeof id === "string" ? id : undefined;
+}
+
 /** One display target only. Remember at most 50 local receipts and 1000 small
  * journal/display-key bindings; never retain another session's transcript.
  * Rust may drop its local row before the corresponding activity batch arrives. */
 export function createTranscriptProjection() {
-  const recent = new Map<string, LocalMessage>(), bindings = new Map<string, string>();
+  const recent = new Map<string, LocalMessage>(), bindings = new Map<string, string>(), outboxRequests = new Map<string, true>();
   const trim = <T>(map: Map<string, T>, limit: number) => { while (map.size > limit) map.delete(map.keys().next().value!); };
   return {
-    reset() { recent.clear(); bindings.clear(); },
-    build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
+    reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); },
+    build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [],
+      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = []): TranscriptItem[] {
+      const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
+      const queued = outbox.filter(row => !sent.has(row.request_id));
+      const queuedIds = new Set(queued.filter(row => !row.target_changed).map(row => row.request_id));
+      for (const id of queuedIds) outboxRequests.set(id, true);
+      trim(outboxRequests, 50);
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
       const present = new Set(local.map(row => row.id));
@@ -810,10 +823,21 @@ export function createTranscriptProjection() {
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
       const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
-      const aliased = provider.map(event => {
-        const id = bindings.get(eventKey(event));
-        return id ? { ...event, activity_display_key: id } : event;
-      });
+      const aliased: ActivityEvent[] = [];
+      const seenOutbox = new Set<string>();
+      for (const event of provider) {
+        const request = outboxReceiptId(event);
+        const key = eventKey(event);
+        if (request && outboxRequests.has(request)) {
+          // The queue remains the authority for its visible state until the
+          // backing entry leaves. An echo or an early receipt never edits it.
+          if (queuedIds.has(request) || seenOutbox.has(request)) continue;
+          seenOutbox.add(request);
+          bindings.set(key, `local-${request}`);
+        }
+        const id = bindings.get(key);
+        aliased.push(id ? { ...event, activity_display_key: id } : event);
+      }
       let events = mergeLocal(aliased, [...local, ...waiting], bindingOnly);
       events = events.map(event => {
         const key = typeof event.activity_journal_key === "string" ? event.activity_journal_key : eventKey(event);
@@ -822,7 +846,11 @@ export function createTranscriptProjection() {
         return id ? { ...event, activity_display_key: id } : event;
       });
       trim(bindings, 1000);
-      return transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
+      const items = transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
+      // Waiting entries appear at the live end in FIFO order. Legacy
+      // entries without a timestamp keep their place as well.
+      for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: "", outbox: row });
+      return items;
     },
   };
 }

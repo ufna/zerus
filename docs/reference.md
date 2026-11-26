@@ -2702,9 +2702,10 @@ through that refusal.
 
 **Send** and Enter in Desktop Composer send to a ready agent immediately.
 For a busy live Codex or Kimi conversation, or one with earlier Zerus messages
-waiting, Send saves the message and its attachments in **Waiting in Zerus**
-and clears the editable draft. The queue shows each message's original local
-enqueue time. The agent receives no input during that save. The desktop
+waiting, Send saves the message and its attachments in the local queue and
+clears the editable draft. Main Activity shows each waiting message as an
+outgoing row with **Queued in Zerus**, its original local enqueue time, and
+its attachments. The agent receives no input during that save. The desktop
 checks the original run and sends in order when it confirms an idle input
 with no earlier message pending. The host checks idle again under its native
 input lock before offering the message. If it confirms that the agent became
