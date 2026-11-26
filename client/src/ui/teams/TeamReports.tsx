@@ -63,13 +63,15 @@ export function InboxText(props: { row: DrawerRow }) {
 export interface ReportTarget { team?: string; onOpenNode?: () => void }
 
 export function Report(props: { row: DrawerRow; busy: boolean } & ReportTarget) {
+  const blocked = () => props.row.notes.some((note) => note.code === "provider_stop_provider_policy" && note.parameters?.[2] === String(props.row.node));
   const node = () => props.row.state === "open" && props.team ? props.row.node : null;
   return <article class="team-report" data-report={props.row.seq}>
     <header><b>{tr("Task %1", props.row.node ?? "")}</b><span class="dim">{actorLabel(props.row)}</span><span class="dim">{itemState(props.row.state)}</span></header>
     <InboxText row={props.row} />
     <Show when={node()}>{(task) =>
       <div class="team-drawer-actions">
-        <span class="dim">{tr("Accept or return this report from the task, beside its verdicts.")}</span>
+        <span class="dim">{blocked() ? tr("Open the task to see the earlier report and its available decisions.")
+          : tr("Accept or return this report from the task, beside its verdicts.")}</span>
         <button type="button" class="btn small primary" disabled={props.busy} data-report-open
           onClick={() => { setOpenTeamNode({ team: props.team!, node: task() }); props.onOpenNode?.(); }}>{tr("Open task")}</button>
       </div>

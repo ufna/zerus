@@ -32,7 +32,7 @@ it("shows the team bar with the counts the core sent", () => {
   const { host } = setup();
   expect(host.querySelector("[data-team-bar] .team-name")?.textContent).toBe("Fixes");
   expect(host.querySelector("[data-team-bar] .team-count")?.textContent).toBe("0/2");
-  expect(host.querySelector("[data-team-bar]")?.textContent).toContain("2 active");
+  expect(host.querySelector("[data-team-bar]")?.textContent).toContain("Active roster seats (2)");
 });
 
 it("shows the member cards, the lead marked", () => {

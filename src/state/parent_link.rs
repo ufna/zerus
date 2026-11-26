@@ -12,6 +12,8 @@
 use super::*;
 use std::{fs, io::Read};
 
+mod advisory;
+
 /// The launching hgs's proven caller for a new session, as compact JSON. The
 /// launcher always sets it, empty when no live tracked agent owns it, so an
 /// inherited value never reaches the record.
@@ -663,6 +665,16 @@ fn apply(name: &str, request: Request) -> Result<Value> {
     let mut reply = json!({"ok": true, "name": name, "parent": listed(&record), "previous": previous});
     if let Some(project_status) = project_status {
         reply["project_status"] = json!(project_status);
+    }
+    if request.action == "read" {
+        // The optional advisory reads native history outside the binding locks.
+        drop(_opencode);
+        drop(_dsh);
+        drop(_writer);
+        drop(_session);
+        if let Some(advisory) = advisory::observe(&config, &record) {
+            reply["policy_advisory"] = advisory;
+        }
     }
     Ok(reply)
 }

@@ -80,6 +80,7 @@ pub(crate) fn handout_admissible(
     eligible(db, team, &n, member)
 }
 fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
+    provider_stop::no_replay(db, &team.id, node.id)?;
     if team.status != TeamStatus::Running {
         return Err(invalid("Team is not running."));
     }

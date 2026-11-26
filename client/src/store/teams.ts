@@ -74,6 +74,7 @@ export interface TeamCard {
   /** The pending decision has not started and a new Return, Reassign or
    * Cancel replaces it; absent (an older hgs) reads as false. */
   pending_replaceable?: boolean;
+  provider_policy_stopped?: boolean;
   /** The stop outcome of a stopped or archived team's row, as a stable
    * code plus the store's refusal reason as data; absent for a live
    * team's rows (zerus-63rru.52 round 2). */

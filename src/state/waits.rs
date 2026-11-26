@@ -8,6 +8,8 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::{fs, time::Duration};
 
+mod provider;
+
 const ACTIVE_LIMIT: i64 = 1024;
 const PREVIEW_LIMIT: i64 = 4;
 
@@ -46,6 +48,8 @@ fn open_at(path: &Path, write: bool) -> anyhow::Result<Connection> {
             CREATE INDEX IF NOT EXISTS waits_owner ON waits(waiter_run,waiter_conversation,state,seq);
             CREATE INDEX IF NOT EXISTS waits_pages ON waits(waiter_run,waiter_conversation,seq);
             CREATE INDEX IF NOT EXISTS waits_retention ON waits(state,updated,seq);
+            CREATE INDEX IF NOT EXISTS waits_missing_result ON waits(waiter_run,waiter_conversation,seq)
+                WHERE state='awaiting_result' AND json_type(payload,'$.producer_refusal')='object';
             CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,digest TEXT NOT NULL,receipt TEXT NOT NULL,at REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS operations_at ON operations(at);")?;
         db.execute_batch(
@@ -239,6 +243,9 @@ fn settle(
         (_, "ack") => "awaiting_result",
         _ => anyhow::bail!("Invalid wait operation"),
     };
+    if action == "ack" && state == "awaiting_ack" {
+        value["acknowledged_at"] = json!(now());
+    }
     let receipt = json!({"schema":1,"request_id":id,"wait_id":wait,"state":next});
     tx.execute(
         "UPDATE waits SET state=?2,updated=max(updated+0.001,?3),payload=?4 WHERE id=?1",
@@ -277,10 +284,58 @@ fn page(db: &Connection, run: &str, conversation: &str, before: i64) -> anyhow::
         .collect::<serde_json::Result<Vec<_>>>()?;
     Ok(json!({"schema":1,"items":items,"next_cursor":cursor}))
 }
+/// A submitted result at or after the refusal suppresses the session advisory.
+/// This check confers no authority over a wait and makes no assignment claim.
+pub(super) fn completed_result_since(parent: &Value, child: &Value, at: f64) -> Option<bool> {
+    let path = path();
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+        Ok(_) => {}
+    }
+    #[cfg(unix)]
+    let identity = crate::sqlite_file::private(&path).ok()?;
+    let db = open_at(&path, false).ok()?;
+    #[cfg(unix)]
+    crate::sqlite_file::bind_private(&db, &path, identity).ok()?;
+    db.busy_timeout(Duration::ZERO).ok()?;
+    let until = std::time::Instant::now() + Duration::from_millis(100);
+    db.progress_handler(1000, Some(move || std::time::Instant::now() >= until));
+    completed_result(&db, parent, child, at).ok()
+}
+
+fn completed_result(
+    db: &Connection,
+    parent: &Value,
+    child: &Value,
+    at: f64,
+) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM waits
+         WHERE waiter_run=?1 AND waiter_conversation=?2 AND state='completed' AND updated>=?3
+         AND json_extract(payload,'$.waiter.endpoint.machine')=?4
+         AND json_extract(payload,'$.producer.machine')=?4
+         AND json_extract(payload,'$.producer.run_id')=?5
+         AND json_extract(payload,'$.producer.conversation_id')=?6
+         AND json_extract(payload,'$.producer.provider')=?7
+         AND json_extract(payload,'$.result_receipt.submitted_at')>=?3)",
+        params![
+            text(parent, "run_id"),
+            text(parent, "conversation_id"),
+            at,
+            text(parent, "machine"),
+            text(child, "run_id"),
+            text(child, "conversation_id"),
+            text(child, "agent"),
+        ],
+        |row| row.get(0),
+    )
+}
+
 pub(crate) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() != 2 || args[1] != "--json" {
         return Err(
-            "usage: hgs [@host] wait begin|ack|finish|cancel|list --json (JSON stdin)".into(),
+            "usage: hgs [@host] wait begin|ack|finish|cancel|list|check-provider --json (JSON stdin)".into(),
         );
     }
     let mut bytes = Vec::new();
@@ -358,6 +413,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<i32> {
                 };
                 begin(&mut open_at(&path(), true)?, &input, &owner)
             }
+            "check-provider" => provider::check(&input, &config, &machine),
             "ack" | "finish" | "cancel" => settle(
                 &mut open_at(&path(), true)?,
                 &args[0],
@@ -426,9 +482,11 @@ fn summary(db: &Connection, session: &Value) -> anyhow::Result<Value> {
         let (v, s) = row?;
         items.push(public(&serde_json::from_str(&v)?, &s));
     }
-    Ok(
-        json!({"schema":1,"status":"ok","revision":revision,"run_id":run,"conversation_id":conversation,"count":count,"items":items,"truncated":count>PREVIEW_LIMIT}),
-    )
+    let mut summary = json!({"schema":1,"status":"ok","revision":revision,"run_id":run,"conversation_id":conversation,"count":count,"items":items,"truncated":count>PREVIEW_LIMIT});
+    if let Some(missing) = provider::missing_preview(db, run, conversation)? {
+        summary["missing_results"] = missing;
+    }
+    Ok(summary)
 }
 pub(super) fn decorate(sessions: &mut [Value]) {
     // One read-only connection per listing, indexed lookups per returned session.
@@ -454,7 +512,35 @@ pub(super) fn decorate(sessions: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> (tempfile::TempDir, Connection, Value, Value) {
+
+    #[test]
+    fn child_policy_advisory_checks_only_a_later_completed_result_for_the_exact_pair() {
+        let (_dir, mut db, owner, mut input) = fixture();
+        let machine = text(&owner["endpoint"], "machine");
+        let at = now() - 20.0;
+        let parent = json!({"machine":machine,"run_id":"run-one","conversation_id":"conversation-one"});
+        let child = json!({"agent":"codex","run_id":"run-two","conversation_id":"conversation-two"});
+        for (run, submitted_at, suppresses) in [
+            ("run-two", at - 1.0, false),
+            ("replacement-run", at + 1.0, false),
+            ("run-two", at + 1.0, true),
+        ] {
+            input["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+            input["producer_reference"] = json!(format!(
+                "zerus://session?machine={machine}&host=fixture&name=codex%2Fexample%2Fchild&conversation=conversation-two&run={run}"
+            ));
+            let wait = begin(&mut db, &input, &owner).unwrap();
+            assert!(!completed_result(&db, &parent, &child, at).unwrap());
+            let mut finish = operation(&wait["reply_ticket"]);
+            finish["fixture_submitted_at"] = json!(submitted_at);
+            settle(&mut db, "finish", &finish, machine, |_, input| {
+                Ok(json!({"request_id":"example-result","submitted_at":input["fixture_submitted_at"]}))
+            }).unwrap();
+            assert_eq!(completed_result(&db, &parent, &child, at).unwrap(), suppresses);
+        }
+    }
+
+    pub(super) fn fixture() -> (tempfile::TempDir, Connection, Value, Value) {
         let dir = tempfile::tempdir().unwrap();
         let db = open_at(&dir.path().join("waits.sqlite3"), true).unwrap();
         let owner = json!({"name":"codex/example/coordinator","run_id":"run-one","endpoint":{"machine":"11111111-1111-4111-8111-111111111111","provider":"codex","conversation":"conversation-one"}});
@@ -472,7 +558,7 @@ mod tests {
             Ok(json!({"request_id":"55555555-5555-4555-8555-555555555555"}))
         })
     }
-    fn operation(ticket: &Value) -> Value {
+    pub(super) fn operation(ticket: &Value) -> Value {
         let mut value = ticket.clone();
         value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
         value

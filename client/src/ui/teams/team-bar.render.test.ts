@@ -37,9 +37,9 @@ it("shows the counts the core gave, a singular for one and a plural for more", (
     dispose?.(); dispose = undefined; host.remove();
     return text;
   };
-  expect(chips(1, 1)).toEqual(["2 active", "1 inbox item", "1 card"]);
-  expect(chips(2, 3)).toEqual(["2 active", "2 inbox items", "3 cards"]);
-  expect(chips(0, 0)).toEqual(["2 active", "0 inbox items", "0 cards"]);
+  expect(chips(1, 1)).toEqual(["Active roster seats (2)", "1 inbox item", "1 card"]);
+  expect(chips(2, 3)).toEqual(["Active roster seats (2)", "2 inbox items", "3 cards"]);
+  expect(chips(0, 0)).toEqual(["Active roster seats (2)", "0 inbox items", "0 cards"]);
 });
 
 it("words the counts with the catalog's three Russian plural forms", () => {

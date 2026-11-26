@@ -214,6 +214,7 @@ pub(super) fn route(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
+    provider_stop::no_replay(ctx.db, &ctx.team.id, *node)?;
     ctx.undecided(*node)?;
     let mut n = ctx.live_node(*node)?;
     if n.source == NodeSource::Planned {
@@ -308,6 +309,7 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
+    provider_stop::no_replay(ctx.db, &ctx.team.id, *node)?;
     ctx.undecided(*node)?;
     ctx.live_node(*node)?;
     let owner = rows::hold_owner(ctx.db, &ctx.team.id, *node)?;

@@ -26,3 +26,5 @@ CREATE INDEX IF NOT EXISTS list_inbox_questions ON inbox(team,kind)
 CREATE INDEX IF NOT EXISTS list_cards_blocked ON cards(team,kind) WHERE state='open';
 CREATE INDEX IF NOT EXISTS list_phases_progress ON phases(team,json_extract(data,'$.state'));
 CREATE INDEX IF NOT EXISTS list_members_progress ON members(team,state,id);
+CREATE INDEX IF NOT EXISTS inbox_provider_stop_node ON inbox(team,node,generation)
+ WHERE kind='report' OR substr(kind,1,14)='provider_stop:';
