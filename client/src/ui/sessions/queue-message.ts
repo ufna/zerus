@@ -99,9 +99,38 @@ const decodeEntities = (text: string) => text.replace(/&(amp|lt|gt|quot);/g, (_,
 const unwrapAttribute = (value: string) => value.replace(/\n[ \t]*/g, "");
 const xmlAttribute = /^(?:[^&"<>]|&(?:amp|lt|gt|quot);)*$/u;
 
+// A clipped attribute is a prefix of the next canonical field, or an open
+// quoted value. Any closing tag or unexpected field is a structural error.
+function clippedAttribute(tail: string, field: string): string | undefined {
+  const open = `${field}="`;
+  if (open.startsWith(tail)) return "";
+  if (tail.startsWith(open) && !tail.includes('"', open.length)) return tail.slice(open.length);
+  return undefined;
+}
+
+function clippedReference(value: string): boolean {
+  const prefix = "zerus://session?";
+  if (prefix.startsWith(value)) return true;
+  if (!value.startsWith(prefix)) return false;
+  const query = value.slice(prefix.length);
+  const completeQuery = query.replace(/&(?:a|am|amp)?$/, "");
+  const fields = completeQuery.split("&amp;");
+  const seen = new Set<string>();
+  return fields.every((field, index) => {
+    const open = index === fields.length - 1 && completeQuery === query;
+    const separator = field.indexOf("=");
+    if (separator < 0) return open && [...referenceKeys].some((key) => !seen.has(key) && key.startsWith(field));
+    const key = field.slice(0, separator);
+    if (!referenceKeys.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    const value = field.slice(separator + 1);
+    return encodedValue.test(value) || (open && encodedValue.test(value.replace(/%[0-9a-fA-F]?$/, "")));
+  });
+}
+
 // A clipped terminal can show a declared sender without a complete reference.
-// When it shows the complete reference, require it to agree with both labels.
-// These previews never authorize an action or turn the reference into a link.
+// A complete opening must follow the producer's grammar and agree with both
+// labels. These previews never authorize actions or expose reference links.
 function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | undefined {
   if (!text.startsWith('<zerus-message from="')) return undefined;
   const header = text.slice(0, 4096);
@@ -111,19 +140,31 @@ function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | 
   const fromAttribute = unwrapAttribute(from[1]);
   const name = xmlAttribute.test(fromAttribute) ? decodeEntities(fromAttribute) : "";
   const host = from[2] === undefined ? undefined : unwrapAttribute(from[2]);
-  const reference = /^\s+reference="([^"]*)"(>?)/.exec(header.slice(from[0].length));
+  const rest = header.slice(from[0].length);
+  const opening = /^(?:[^"<>]|"[^"]*")*>/.exec(rest);
+  const clippedTail = !opening && text.length <= header.length
+    ? unwrapAttribute(rest.trimStart()).replace(/(?:…|\.{3})$/, "")
+    : undefined;
+  const reference = opening ? /^\s+reference="([^"]*)">/.exec(rest)
+    : clippedTail === undefined ? null : /^reference="([^"]*)"$/.exec(clippedTail);
   const validName = identity(name) && name.includes("/") && !/\p{Cf}/u.test(name);
   let sender: string | undefined;
-  if (validName && reference && host !== undefined && hostName(host)) {
+  if (validName && host !== undefined && hostName(host) && reference) {
     const attribute = unwrapAttribute(reference[1]);
     if (xmlAttribute.test(attribute) && referenceAgrees(decodeEntities(attribute), name, host)) {
       sender = tr("%1 on %2", name, host);
     }
-  } else if (validName && !reference && text.length <= header.length) {
-    sender = host === undefined ? name : hostName(host) ? tr("%1 on %2", name, host) : undefined;
+  } else if (validName && clippedTail !== undefined) {
+    if (host === undefined) {
+      const clipped = clippedAttribute(clippedTail, "host");
+      if (clipped === "" || (clipped !== undefined && hostName(clipped))) sender = name;
+    } else if (hostName(host)) {
+      const clipped = clippedAttribute(clippedTail, "reference");
+      if (clipped !== undefined && clippedReference(clipped)) sender = tr("%1 on %2", name, host);
+    }
   }
-  const body = reference?.[2] === ">"
-    ? text.slice(from[0].length + reference[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
+  const body = opening
+    ? text.slice(from[0].length + opening[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
     : "";
   return { sender, body: body ? sanitizedQueueText(decodeEntities(body)) : unavailable() };
 }

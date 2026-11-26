@@ -162,3 +162,29 @@ it("checks a complete contradicting reference even when the outer host wrapped",
   }), []);
   expect(message).toMatchObject({ body: "Text.", sender: undefined });
 });
+
+
+it.each([
+  ["complete without a reference", '<zerus-message from="kimi/example/helper" host="fixture">'],
+  ["contradicting reference after an extra attribute", '<zerus-message from="kimi/example/helper" host="fixture" extra="x" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fother&amp;run=fixture">'],
+  ["agreeing reference followed by an extra attribute", '<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture" extra="x">'],
+])("leaves a malformed full opening unattributed and display-only (%s)", (_label, header) => {
+  const native = queue({ text: `❯ ${header}\n  Text.\n  </zerus-message>` });
+  const [message] = queuedMessages(native, []);
+  expect(message).toMatchObject({ body: "Text.", sender: undefined, attachments: undefined });
+  expect(message.local).toBeUndefined();
+  expect(native.id).toBe("native-screen-id");
+});
+
+it.each([
+  ['<zerus-message from="kimi/example/helper" ho…', "kimi/example/helper"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" refe…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture"…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111&am…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" extra="unfinished…', undefined],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?unexpected=…', undefined],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="unexpected input…', undefined],
+])("attributes only an incomplete recognized opening (%s)", (text, sender) => {
+  const [message] = queuedMessages(queue({ text: `❯ ${text}` }), []);
+  expect(message).toMatchObject({ body: "Message preview unavailable in Terminal", sender, attachments: undefined });
+});

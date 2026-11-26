@@ -101,8 +101,12 @@ impl EarlierInputHold {
             })
     }
 
+    pub fn identity(&self) -> (&str, &str) {
+        (&self.run_id, &self.conversation_id)
+    }
+
     pub fn matches(&self, run_id: &str, conversation_id: &str) -> bool {
-        self.run_id == run_id && self.conversation_id == conversation_id
+        self.identity() == (run_id, conversation_id)
     }
 }
 

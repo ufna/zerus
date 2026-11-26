@@ -160,18 +160,20 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
     status: "working", caption: "Busy" };
   const key = draftKey({ computer: "", key: `run:${selectedRow.run_id}`, name: selectedRow.name,
     session_id: selectedRow.session_id, archive_id: null });
+  // The selected catalog lies one conversation behind the Activity target.
+  const actualConversation = "fixture-current-conversation";
   const queueId = "synthetic-native-queue", failedId = uuid(99901);
   const helperBody = "Synthetic helper report.";
   const draft = "Please summarize the synthetic findings.";
   const queue: ComposerView["queue"] = {
     id: queueId, hint: "Steer the agent with the queued messages now", label: "Send now", enabled: true, can_send_now: true,
-    run_id: selectedRow.run_id!, conversation_id: selectedRow.conversation_id!,
+    run_id: selectedRow.run_id!, conversation_id: actualConversation,
     text: '❯ <zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture-run">\n    '
       + helperBody + '\n    </zerus-message>',
   };
   const detail = "Message was not sent. hgs refused before typing: previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal";
   const failed: LocalMessage = { id: failedId, text: draft, status: "error", attachments: [], run_id: selectedRow.run_id!,
-    conversation_id: selectedRow.conversation_id!, submitted_at: 1, error: detail, uncertain: false,
+    conversation_id: actualConversation, submitted_at: 1, error: detail, uncertain: false,
     message_id: null, submitted_text: null, source: null, voice: null };
   const initial: ComposerView = {
     handle: 117, key, loaded: true, rev: 0, text_epoch: 1, text: "", position: 0, anchor: 0, attachments: [], removed: null,
@@ -209,7 +211,11 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   const draftState = () => host.querySelector(".cmp-draft-status")?.textContent;
   const localActions = () => host.querySelector(".act-local-actions");
   const publish = (update: Partial<ComposerView>) => receive({ ...emptyBatch(), composer: { ...initial, ...update } });
-  await open(selectedRow);
+  const activityKey = await open(selectedRow);
+  activity.applyActivity([{ computer: "", key: activityKey.slice(1), kind: "state",
+    payload: { rev: 2, value: { run_id: selectedRow.run_id, conversation_id: actualConversation,
+      activity: "busy", phase: "working" } } }]);
+  expect(selected()?.conversationId).toBe(selectedRow.conversation_id);
   const editor = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
   await vi.waitFor(() => expect(editor().disabled).toBe(false));
   editor().value = draft;
