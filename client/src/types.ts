@@ -919,6 +919,8 @@ export interface ComposerView {
   status: string; status_error: boolean; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
   /** Observed earlier-input guard for this exact conversation, when supported. */
   previous_message_pending?: boolean;
+  /** A definite refusal is waiting for a fresh release of this exact target. */
+  earlier_input_held?: boolean;
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;

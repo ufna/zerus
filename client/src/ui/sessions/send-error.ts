@@ -11,7 +11,7 @@ const EARLIER_INPUT_REFUSALS = [
 
 export const EARLIER_INPUT_PENDING = trNoop("Wait for the agent to accept the earlier message, or check Terminal.");
 export const EARLIER_INPUT_CLEARED = trNoop("The earlier input is no longer pending. Your draft is kept.");
-export const EARLIER_INPUT_UNOBSERVED = trNoop("Check Terminal for the earlier message before sending your saved draft.");
+export const EARLIER_INPUT_UNOBSERVED = trNoop("Check Terminal. Send and Retry stay paused until this host confirms the earlier input cleared. Update hgs on older hosts.");
 export const DRAFT_KEPT = trNoop("Your draft is kept.");
 
 export function earlierInputRefusal(text: string): boolean {
@@ -23,7 +23,7 @@ export function earlierInputDraftStatus(text: string, pending: boolean | undefin
   if (!earlierInputRefusal(text)) return "";
   if (pending === false) return tr(EARLIER_INPUT_CLEARED);
   if (pending === true) return tr("%1 %2", tr(DRAFT_KEPT), tr(EARLIER_INPUT_PENDING));
-  return tr(EARLIER_INPUT_UNOBSERVED);
+  return tr(DRAFT_KEPT);
 }
 
 const NATIVE_REFUSALS = [

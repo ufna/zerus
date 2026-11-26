@@ -60,26 +60,72 @@ export function sanitizedQueueText(text: string): string {
       (_whole, instruction: string) => instruction.startsWith("Inspect") ? "[Image]" : "[File]");
 }
 
-// A terminal preview can clip the envelope after its sender or wrap its
-// reference. Display only the declared sender and visible body. Neither the
-// preview nor the sender is used to authorize a queue action.
-const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-const decodeEntities = (text: string) => text.replace(/&(amp|lt|gt|quot|apos);/g, (_, key: string) => entities[key]);
+// The same encoded fields and identity bounds as the CLI's session reference.
+const referenceKeys = new Set(["machine", "host", "name", "conversation", "run", "archive", "agent", "session"]);
+const encodedValue = /^(?:[A-Za-z0-9_.~-]|%[0-9a-fA-F]{2})*$/;
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuid = (value: string) => canonicalUuid.test(value) && /[1-9a-f]/.test(value);
+const encoder = new TextEncoder();
+const identity = (value: string) => !/\p{Cc}/u.test(value) && encoder.encode(value).length <= 512;
+const hostName = (value: string) => /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,79}$/.test(value);
+
+function referenceAgrees(uri: string, name: string, host: string): boolean {
+  const prefix = "zerus://session?";
+  if (!uri.startsWith(prefix)) return false;
+  const fields = new Map<string, string>();
+  try {
+    for (const pair of uri.slice(prefix.length).split("&")) {
+      const separator = pair.indexOf("=");
+      if (separator < 0) return false;
+      const key = pair.slice(0, separator), value = pair.slice(separator + 1);
+      if (!encodedValue.test(key) || !encodedValue.test(value)) return false;
+      const decodedKey = decodeURIComponent(key);
+      if (!referenceKeys.has(decodedKey) || fields.has(decodedKey)) return false;
+      fields.set(decodedKey, decodeURIComponent(value));
+    }
+  } catch {
+    return false;
+  }
+  const field = (key: string) => fields.get(key) ?? "";
+  return field("name") === name && field("host") === host && uuid(field("machine"))
+    && !!(field("conversation") || field("run"))
+    && (!field("session") || uuid(field("session")))
+    && ["name", "conversation", "run", "archive", "agent"].every((key) => identity(field(key)));
+}
+
+const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"' };
+const decodeEntities = (text: string) => text.replace(/&(amp|lt|gt|quot);/g, (_, key: string) => entities[key]);
+// Join screen wraps only within metadata. The message body keeps its lines.
+const unwrapAttribute = (value: string) => value.replace(/\n[ \t]*/g, "");
+const xmlAttribute = /^(?:[^&"<>]|&(?:amp|lt|gt|quot);)*$/u;
+
+// A clipped terminal can show a declared sender without a complete reference.
+// When it shows the complete reference, require it to agree with both labels.
+// These previews never authorize an action or turn the reference into a link.
 function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | undefined {
   if (!text.startsWith('<zerus-message from="')) return undefined;
   const header = text.slice(0, 4096);
-  const from = /^<zerus-message from="((?:[^&"<>\n]|&(?:amp|lt|gt|quot|apos);){1,1024})"(?:\s+host="([A-Za-z0-9_][A-Za-z0-9_.-]{0,79})")?/.exec(header);
-  const name = from ? decodeEntities(from[1]) : undefined;
-  const sender = name && name.length <= 512 && name.includes("/") && !/[\p{Cc}\p{Cf}]/u.test(name)
-    ? from?.[2] ? tr("%1 on %2", name, from[2]) : name
-    : undefined;
-  const opening = from?.[2] && /^\s+reference="zerus:\/\/session\?[^"<>]*">/.exec(header.slice(from[0].length));
-  // Require the opening tag's own closing quote and bracket. A clipped
-  // attribute, terminal ellipsis or closing tag alone cannot reveal a body.
-  const body = opening && from
-    ? text.slice(from[0].length + opening[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
+  const from = /^<zerus-message from="([^"]*)"(?:\s+host="([^"]*)")?/.exec(header);
+  const unavailable = () => tr("Message preview unavailable in Terminal");
+  if (!from) return { body: unavailable() };
+  const fromAttribute = unwrapAttribute(from[1]);
+  const name = xmlAttribute.test(fromAttribute) ? decodeEntities(fromAttribute) : "";
+  const host = from[2] === undefined ? undefined : unwrapAttribute(from[2]);
+  const reference = /^\s+reference="([^"]*)"(>?)/.exec(header.slice(from[0].length));
+  const validName = identity(name) && name.includes("/") && !/\p{Cf}/u.test(name);
+  let sender: string | undefined;
+  if (validName && reference && host !== undefined && hostName(host)) {
+    const attribute = unwrapAttribute(reference[1]);
+    if (xmlAttribute.test(attribute) && referenceAgrees(decodeEntities(attribute), name, host)) {
+      sender = tr("%1 on %2", name, host);
+    }
+  } else if (validName && !reference && text.length <= header.length) {
+    sender = host === undefined ? name : hostName(host) ? tr("%1 on %2", name, host) : undefined;
+  }
+  const body = reference?.[2] === ">"
+    ? text.slice(from[0].length + reference[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
     : "";
-  return { sender, body: body ? sanitizedQueueText(decodeEntities(body)) : tr("Message preview unavailable in Terminal") };
+  return { sender, body: body ? sanitizedQueueText(decodeEntities(body)) : unavailable() };
 }
 
 interface Receipt { id: string; submitted: string; body: string; files: ActivityItem["attachments"]; metadata: string }

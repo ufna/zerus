@@ -81,6 +81,31 @@ pub fn session_part(name: &str, session_id: Option<&str>) -> String {
     }
 }
 
+/// The exact run and conversation whose ordinary input was refused. The
+/// manifest's draft key binds this to the selected computer and session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EarlierInputHold {
+    run_id: String,
+    conversation_id: String,
+}
+
+impl EarlierInputHold {
+    pub fn new(run_id: &str, conversation_id: &str) -> Option<Self> {
+        [run_id, conversation_id]
+            .iter()
+            .all(|id| !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control))
+            .then(|| Self {
+                run_id: run_id.into(),
+                conversation_id: conversation_id.into(),
+            })
+    }
+
+    pub fn matches(&self, run_id: &str, conversation_id: &str) -> bool {
+        self.run_id == run_id && self.conversation_id == conversation_id
+    }
+}
+
 /// One stored draft: the composer's text and attachments and what Qt keeps
 /// with them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -105,6 +130,7 @@ pub struct StoredDraft {
     /// Data only: nothing sends from it, and an imported or recovered draft
     /// never carries one.
     pub checkpoint: Option<Box<Checkpoint>>,
+    pub earlier_input_hold: Option<EarlierInputHold>,
 }
 
 /// Whether two stored drafts are the same in everything they store: text,
@@ -124,9 +150,9 @@ impl StoredDraft {
     }
 
     /// Something a rename, recover or import never overwrites: content, or
-    /// an unresolved deferred input even without content.
+    /// a deferred input or earlier-input hold even without content.
     fn occupied(&self) -> bool {
-        !self.is_empty() || self.checkpoint.is_some()
+        !self.is_empty() || self.checkpoint.is_some() || self.earlier_input_hold.is_some()
     }
 
     /// Anything a one-time move carries or must never overwrite: content, a
@@ -399,14 +425,16 @@ fn save_direct(root: &Path, key: &str, draft: &StoredDraft) -> Result<(), String
     if !draft.session_label.is_empty() {
         manifest["session_label"] = json!(draft.session_label);
     }
-    // Only a reserved deferred input adds its field: every other manifest
-    // keeps its exact earlier bytes.
+    // Write delivery metadata only for drafts that carry it.
     if let Some(checkpoint) = &draft.checkpoint {
         if !checkpoint.valid() {
             return Err(NOT_SAVED_CHECKPOINT.into());
         }
         manifest[CHECKPOINT] =
             serde_json::to_value(checkpoint).map_err(|_| NOT_SAVED_CHECKPOINT.to_owned())?;
+    }
+    if let Some(hold) = &draft.earlier_input_hold {
+        manifest["earlier_input_hold"] = json!(hold);
     }
     atomic_write(&path.join("draft.json"), manifest.to_string().as_bytes())?;
     // The committed manifest is authoritative: a crash during this cleanup
@@ -481,8 +509,17 @@ fn load_once(root: &Path, key: &str) -> (StoredDraft, bool) {
         sending: flag("sending"),
         uncertain: flag("uncertain"),
         checkpoint: None,
+        earlier_input_hold: None,
     };
     let mut valid = true;
+    if let Some(value) = object.get("earlier_input_hold") {
+        match serde_json::from_value::<EarlierInputHold>(value.clone()) {
+            Ok(hold) if EarlierInputHold::new(&hold.run_id, &hold.conversation_id).is_some() => {
+                draft.earlier_input_hold = Some(hold);
+            }
+            _ => valid = false,
+        }
+    }
     // Only an absent field is a draft without a deferred input. A present
     // one that does not parse or is inconsistent is never dropped as absent:
     // the draft is not restored, and its files stay.

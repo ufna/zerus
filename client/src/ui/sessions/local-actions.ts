@@ -1,6 +1,6 @@
 import type { Inspect } from "../../types";
 import { trNoop, tr } from "../../i18n";
-import { EARLIER_INPUT_PENDING } from "./send-error";
+import { EARLIER_INPUT_PENDING, EARLIER_INPUT_UNOBSERVED } from "./send-error";
 
 // The buttons of a failed local message row (SessionsWindow.cpp messageAction,
 // 4470-4527): Retry, Check Terminal or Check native UI, and Delete. Apart
@@ -14,9 +14,10 @@ export const RETRY_AFTER_SEND = trNoop("Retry is available once the current mess
 export const RETRY_WHEN_READY = trNoop("Retry is available once the composer is ready.");
 
 /** Why Retry is off, "" when it is on: a send or a wait under way, or the composer locked. */
-export function retryReason(view: { sending: boolean; waiting: string | null; previous_message_pending?: boolean } | undefined, locked: boolean): string {
+export function retryReason(view: { sending: boolean; waiting: string | null; previous_message_pending?: boolean; earlier_input_held?: boolean } | undefined, locked: boolean): string {
   if (view?.sending || view?.waiting) return tr(RETRY_AFTER_SEND);
   if (view?.previous_message_pending === true) return tr(EARLIER_INPUT_PENDING);
+  if (view?.earlier_input_held) return tr(EARLIER_INPUT_UNOBSERVED);
   return locked ? tr(RETRY_WHEN_READY) : "";
 }
 

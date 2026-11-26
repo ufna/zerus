@@ -350,6 +350,8 @@ pub struct ComposerView {
     /// Omitted in inspections that cannot observe the earlier-input guard.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_message_pending: Option<bool>,
+    /// A definite refusal awaits a fresh release for this target.
+    pub earlier_input_held: bool,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
@@ -464,6 +466,9 @@ pub(crate) struct Composer {
     /// compaction. Kept while its outcome is uncertain and loaded back as
     /// data; nothing sends from it.
     pub(crate) checkpoint: Option<Checkpoint>,
+    pub(crate) earlier_input_hold: Option<zerus_client_core::drafts::EarlierInputHold>,
+    /// Any already-started inspection predates this hold.
+    pub(crate) hold_after_inspect: u64,
     /// The desktop service still reported this draft's send in progress:
     /// it is checked again, read-only (zerus-5wmh.66.4.4).
     pub(crate) handed: Option<handed::Handed>,
@@ -506,6 +511,8 @@ impl Composer {
             delivering: None,
             digests: None,
             checkpoint: None,
+            earlier_input_hold: None,
+            hold_after_inspect: 0,
             handed: None,
             probed: false,
             offer: None,
@@ -541,6 +548,7 @@ impl Composer {
             sending: self.sending,
             uncertain: self.uncertain,
             checkpoint: self.checkpoint.clone().map(Box::new),
+            earlier_input_hold: self.earlier_input_hold.clone(),
         }
     }
 
@@ -971,6 +979,7 @@ impl Composers {
 
     fn loaded(&self, key: &str, handle: u64, loaded: Loaded) {
         let mut hub = self.lock();
+        let inspection = hub.next_inspect;
         let Some(composer) = hub
             .composers
             .get_mut(key)
@@ -991,6 +1000,8 @@ impl Composers {
         composer.uncertain = stored.uncertain || stored.sending || loaded.notice.is_some();
         // Its original identity, as data: a reload never continues it.
         composer.checkpoint = stored.checkpoint.map(|checkpoint| *checkpoint);
+        composer.earlier_input_hold = stored.earlier_input_hold;
+        composer.hold_after_inspect = inspection;
         if let Some(notice) = loaded.notice {
             composer.show_error(notice);
         }
@@ -1100,6 +1111,8 @@ impl Composers {
                             newer.checkpoint = moved.checkpoint;
                             newer.error = moved.error;
                             newer.notice = moved.notice;
+                            newer.earlier_input_hold = moved.earlier_input_hold;
+                            newer.hold_after_inspect = moved.hold_after_inspect;
                             newer.removed = moved.removed;
                             newer.loaded = true;
                             newer.storage_error = Some(error);
@@ -1890,8 +1903,10 @@ impl Composers {
                 && !too_long
                 && !locked
                 && !composer.uncertain
-                && session.previous_message_pending != Some(true),
+                && session.previous_message_pending != Some(true)
+                && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
+            earlier_input_held: session.earlier_input_held,
             send_label: if composer.sending {
                 zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {

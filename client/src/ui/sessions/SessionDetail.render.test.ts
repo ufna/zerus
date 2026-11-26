@@ -38,7 +38,7 @@ vi.mock("../../bridge", async (original) => {
     ...bridge,
     composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
-    localInspect: withDesktop(bridge.localInspect), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
+    localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
     inTauri: () => transport.enablesTeams, setParent: transport.parent,
     activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
     terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
@@ -136,14 +136,16 @@ const queueDraftLabels = {
     check: "Check Terminal", allow: "Allow retry", notConfirmed: "Delivery not confirmed",
     wait: "Your draft is kept. Wait for the agent to accept the earlier message, or check Terminal.",
     cleared: "The earlier input is no longer pending. Your draft is kept.",
-    unobserved: "Check Terminal for the earlier message before sending your saved draft.",
+    unobserved: "Your draft is kept. Check Terminal. Send and Retry stay paused until this host confirms the earlier input cleared. Update hgs on older hosts.",
+    confirmSend: "Send anyway", confirmCompact: "Compact and send",
     origin: "Sender shown by agent: kimi/example/helper on fixture" },
   ru: { send: "Отправить черновик", queue: "Отправить сообщения из очереди сейчас",
     retry: "Повторить отправку сообщения", notSent: "Не отправлено", check: "Проверить терминал",
     allow: "Разрешить повторную попытку", notConfirmed: "Доставка не подтверждена",
     wait: "Черновик сохранён. Дождитесь, пока агент примет предыдущее сообщение, или проверьте терминал.",
     cleared: "Предыдущий ввод больше не ожидает подтверждения. Черновик сохранён.",
-    unobserved: "Проверьте предыдущее сообщение в терминале, прежде чем отправлять сохранённый черновик.",
+    unobserved: "Черновик сохранён. Проверьте терминал. Отправка и повтор недоступны, пока компьютер не подтвердит, что предыдущий ввод больше не ожидает подтверждения. На старых компьютерах обновите hgs.",
+    confirmSend: "Всё равно отправить", confirmCompact: "Сжать и отправить",
     origin: "Агент показывает отправителя: kimi/example/helper на fixture" },
 };
 
@@ -164,7 +166,7 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   const queue: ComposerView["queue"] = {
     id: queueId, hint: "Steer the agent with the queued messages now", label: "Send now", enabled: true, can_send_now: true,
     run_id: selectedRow.run_id!, conversation_id: selectedRow.conversation_id!,
-    text: '❯ <zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?name=fixture">\n    '
+    text: '❯ <zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture-run">\n    '
       + helperBody + '\n    </zerus-message>',
   };
   const detail = "Message was not sent. hgs refused before typing: previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal";
@@ -185,9 +187,17 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   };
   vi.mocked(bridge.composerOpen).mockImplementation(async (s) => s?.key === `run:${selectedRow.run_id}` ? initial : null);
   const commands: Array<[string, Record<string, unknown> | undefined]> = [];
+  let cold = false;
   transport.composer = (name, args) => {
     commands.push([name, args]);
-    if (name === "send_message" || name === "local_retry") return { kind: "sending" };
+    if (name === "send_message" || name === "local_retry") {
+      if (!cold) return { kind: "sending" };
+      return { kind: "cold", token: 55, prompt: { title: "Fixture cache", text: "", informative: "", choices: [
+        { action: "send", label: labels.confirmSend, enabled: true, tooltip: "" },
+        { action: "compact", label: labels.confirmCompact, enabled: true, tooltip: "" },
+      ] } };
+    }
+    if (name === "send_answer") return { kind: "sending" };
     if (name === "queue_send_now") return true;
     if (name === "local_inspect") return { kind: "terminal" };
     return undefined;
@@ -211,7 +221,7 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   expect(sentBy("send_message")[0]).toMatchObject({ handle: 117, text: draft });
   await flush();
 
-  const refusal = { text: draft, text_epoch: 2, status: detail, status_error: true, local: [failed] };
+  const refusal = { text: draft, text_epoch: 2, status: detail, status_error: true, local: [failed], earlier_input_held: true };
   publish({ ...refusal, previous_message_pending: true });
   await vi.waitFor(() => expect(localActions()).not.toBeNull());
   expect(host.querySelector(".act-queue-source")?.textContent).toBe(labels.origin);
@@ -246,12 +256,24 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   expect(draftState()).toBe(labels.wait);
   publish({ ...refusal, previous_message_pending: undefined, queue: null });
   expect(draftState()).toBe(labels.unobserved);
-  publish({ ...refusal, previous_message_pending: false, queue: null });
+  expect(draftSend().disabled).toBe(true);
+  expect(button(labels.retry)?.getAttribute("aria-disabled")).toBe("true");
+  expect(editor().readOnly).toBe(false);
+  draftSend().click();
+  button(labels.retry)!.click();
+  editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flush();
+  expect(sentBy("send_message")).toHaveLength(1);
+  expect(sentBy("local_retry")).toEqual([]);
+
+  const released = { ...refusal, earlier_input_held: false, previous_message_pending: false, queue: null };
+  publish(released);
   expect(draftState()).toBe(labels.cleared);
   expect(draftSend().disabled).toBe(false);
   expect(button(labels.retry)?.getAttribute("aria-disabled")).toBeNull();
   expect(sentBy("local_retry")).toEqual([]);
   expect(sentBy("send_message")).toHaveLength(1);
+  cold = true;
   if (lang === "en") {
     button(labels.retry)!.click();
     expect(draftSend().disabled).toBe(true);
@@ -267,8 +289,21 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
     expect(sentBy("local_retry")).toEqual([]);
   }
 
+  await vi.waitFor(() => expect(button(labels.confirmSend)?.disabled).toBe(false));
+  publish({ ...refusal, previous_message_pending: undefined, queue: null });
+  expect(button(labels.confirmSend)?.disabled).toBe(true);
+  expect(button(labels.confirmCompact)?.disabled).toBe(true);
+  button(labels.confirmSend)!.click();
+  button(labels.confirmCompact)!.click();
+  await flush();
+  expect(sentBy("send_answer")).toEqual([]);
+  publish(released);
+  expect(button(labels.confirmSend)?.disabled).toBe(false);
+  button(labels.confirmSend)!.click();
+  await vi.waitFor(() => expect(sentBy("send_answer")).toEqual([{ token: 55, answer: { kind: "cold", action: "send" } }]));
+
   const unknown = { ...failed, id: uuid(99902), uncertain: true, error: "Delivery not confirmed" };
-  publish({ ...refusal, text_epoch: 3, previous_message_pending: false, queue: null, uncertain: true,
+  publish({ ...released, text_epoch: 3, uncertain: true,
     status: unknown.error, local: [unknown] });
   await vi.waitFor(() => expect(button(labels.allow)).toBeDefined());
   expect(host.textContent).toContain(labels.notConfirmed);

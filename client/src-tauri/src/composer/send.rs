@@ -55,6 +55,8 @@ use serde_json::Value;
 use tauri::State;
 use zerus_client_core::attachments::{self, Attachment, StoredFile};
 use zerus_client_core::cache::{self, Chip, ColdAction, ColdPrompt};
+use zerus_client_core::desktop::deferred_send::refusal;
+use zerus_client_core::drafts::EarlierInputHold;
 use zerus_client_core::local_messages::{self, Inspect, LocalMessage, LocalMessages, Status};
 use zerus_client_core::operation_recovery::deferred_input::{
     message_sha256, Checkpoint, Intent, Kind, Start,
@@ -90,6 +92,7 @@ pub(crate) struct SessionView {
     pub(crate) subagent: Option<SubagentView>,
     pub(crate) available: bool,
     pub(crate) previous_message_pending: Option<bool>,
+    pub(crate) earlier_input_held: bool,
     pub(crate) unavailable_reason: String,
     pub(crate) block_reason: Option<String>,
     pub(crate) attachments_available: bool,
@@ -279,6 +282,9 @@ fn previous_message_pending(row: &ViewRow, details: &Value) -> Option<bool> {
         || row.conversation_id.as_deref() != Some(conversation)
         || text(details, "name") != row.name
         || text(details, "agent") != row.agent
+        || (row.account_binding_reported
+            && (text(details, "account_id") != row.account_id
+                || text(details, "account_home") != row.account_home))
         || text(details, "runtime_state") != "live"
         || text(details, "process_state") != "running"
     {
@@ -327,6 +333,33 @@ impl Context {
         }
         let details = self.details.as_deref()?;
         previous_message_pending(&self.row, details)
+    }
+
+    fn earlier_input_held(&self, hub: &Hub) -> bool {
+        if self.session.archived() || self.session.subagent.is_some() {
+            return false;
+        }
+        let Some(hold) = hub
+            .composers
+            .get(&self.key)
+            .and_then(|composer| composer.earlier_input_hold.as_ref())
+        else {
+            return false;
+        };
+        match (
+            self.row.run_id.as_deref(),
+            self.row.conversation_id.as_deref(),
+        ) {
+            (Some(run), Some(conversation)) if !run.is_empty() && !conversation.is_empty() => {
+                hold.matches(run, conversation)
+            }
+            // Missing catalog identity cannot disarm a hold on this draft.
+            _ => true,
+        }
+    }
+
+    fn ordinary_input_held(&self, hub: &Hub) -> bool {
+        self.earlier_input_held(hub) || self.previous_message_pending() == Some(true)
     }
 
     /// Qt's `recorded`: session data that is not live (`SessionsWindow.cpp:3783`).
@@ -400,6 +433,62 @@ impl Composers {
         })
     }
 
+    /// Called only after a definite, identity-bound send result.
+    pub(super) fn retain_earlier_input(
+        hub: &mut Hub,
+        key: &str,
+        run: &str,
+        conversation: &str,
+        outcome: &Outcome,
+    ) {
+        if !matches!(outcome, Outcome::Failed { detail } if refusal::awaiting_earlier_input(detail))
+        {
+            return;
+        }
+        if let (Some(hold), Some(composer)) = (
+            EarlierInputHold::new(run, conversation),
+            hub.composers.get_mut(key),
+        ) {
+            composer.earlier_input_hold = Some(hold);
+            composer.hold_after_inspect = hub.next_inspect;
+        }
+    }
+
+    fn release_earlier_input(&self, hub: &mut Hub, inspection: u64, details: &Value) {
+        let Some(ctx) = self.context(hub).filter(|ctx| ctx.earlier_input_held(hub)) else {
+            return;
+        };
+        if !ctx.online
+            || ctx.recorded()
+            || previous_message_pending(&ctx.row, details) != Some(false)
+        {
+            return;
+        }
+        let Some(composer) = hub.composers.get_mut(&ctx.key) else {
+            return;
+        };
+        if inspection > composer.hold_after_inspect {
+            composer.earlier_input_hold = None;
+            self.save(composer);
+        }
+    }
+
+    fn delivery_input_held(&self, hub: &Hub, delivery: &Delivery) -> bool {
+        if delivery.session.subagent.is_some() {
+            return false;
+        }
+        hub.composers
+            .get(&delivery.key)
+            .and_then(|composer| composer.earlier_input_hold.as_ref())
+            .is_some_and(|hold| hold.matches(&delivery.run, &delivery.conversation))
+            || self.context(hub).is_some_and(|ctx| {
+                ctx.key == delivery.key
+                    && ctx.row.run_id.as_deref() == Some(delivery.run.as_str())
+                    && ctx.row.conversation_id.as_deref() == Some(delivery.conversation.as_str())
+                    && ctx.ordinary_input_held(hub)
+            })
+    }
+
     /// One `inspect` of the open session, off the UI thread; its value
     /// stands in for the stream's state until the next state frame. As Qt's
     /// `inspect()` (`SessionsWindow.cpp:3467-3492`), it reads nothing while
@@ -413,15 +502,16 @@ impl Composers {
 
     fn read_details(&self, waiting_send: bool) {
         let mut hub = self.lock();
-        if hub.closed
-            || hub.followed.inspecting.is_some()
-            || (hub.followed.streamed && !waiting_send)
-        {
+        if hub.closed || hub.followed.inspecting.is_some() {
             return;
         }
         let Some(ctx) = self.context(&hub) else {
             return;
         };
+        let verify_hold = ctx.earlier_input_held(&hub);
+        if hub.followed.streamed && !waiting_send && !verify_hold {
+            return;
+        }
         let followed =
             hub.followed.computer == ctx.session.computer && hub.followed.key == ctx.session.key;
         if !followed || !ctx.online || ctx.session.archived() {
@@ -485,20 +575,33 @@ impl Composers {
                 (None, None) => true,
                 _ => false,
             };
-            if !hub.followed.streamed || (waiting_send && unchanged) {
+            if !hub.followed.streamed || ((waiting_send || verify_hold) && unchanged) {
+                // An extra hold verification is separate from Activity. A
+                // failed or downlevel read must not discard the followed
+                // queue, hide questions, or lock the local draft editor.
+                let verification_only = verify_hold && !waiting_send;
                 match read {
-                    Ok((details, expiry, events)) => {
+                    Ok((details, expiry, events))
+                        if !verification_only
+                            || me.context(&hub).is_some_and(|ctx| {
+                                ctx.online && previous_message_pending(&ctx.row, &details).is_some()
+                            }) =>
+                    {
                         accepted_details = true;
                         hub.followed.inspect_error = None;
+                        if verify_hold {
+                            me.release_earlier_input(&mut hub, number, &details);
+                        }
                         hub.followed.details = Some(details);
                         hub.followed.expiry = expiry;
                         let (replace, events) = events;
                         merge_events(&mut hub.followed.events, replace, events);
                     }
-                    Err(detail) => {
+                    Err(detail) if !verification_only => {
                         hub.followed.inspect_error =
                             Some(format!("Could not refresh activity: {detail}"))
                     }
+                    _ => {}
                 }
             }
             drop(hub);
@@ -548,10 +651,17 @@ impl Composers {
     /// run, conversation or state changed.
     fn wants_details(&self, hub: &Hub, now: f64) -> bool {
         let followed = &hub.followed;
-        if hub.open.as_ref().is_none_or(SessionRef::archived)
-            || followed.inspecting.is_some()
-            || followed.streamed
+        if hub.open.as_ref().is_none_or(SessionRef::archived) || followed.inspecting.is_some() {
+            return false;
+        }
+        if self
+            .context(hub)
+            .is_some_and(|ctx| ctx.online && ctx.earlier_input_held(hub))
         {
+            return followed.inspected.is_none()
+                || now - followed.inspected_at >= hub.poll.unwrap_or(RETRY_WAIT).max(RETRY_WAIT);
+        }
+        if followed.streamed {
             return false;
         }
         match &followed.inspected {
@@ -729,10 +839,15 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         Some((at, text)) if *at == seconds => text.clone(),
         _ => local_time(seconds),
     };
+    let earlier_input_held = ctx.earlier_input_held(hub);
+    let previous_message_pending = ctx
+        .previous_message_pending()
+        .filter(|pending| *pending || !earlier_input_held);
     SessionView {
         subagent,
         available,
-        previous_message_pending: ctx.previous_message_pending(),
+        previous_message_pending,
+        earlier_input_held,
         unavailable_reason,
         clear: clear_control(hub, &ctx, details),
         block_reason: reason,
@@ -1315,6 +1430,10 @@ impl Composers {
             (None, Answer::Cold { action }) => *action,
             _ => return SendReply::Busy,
         };
+        if matches!(action, ColdAction::Send | ColdAction::Compact) && ctx.ordinary_input_held(&hub)
+        {
+            return SendReply::Busy;
+        }
         match action {
             ColdAction::Send => {
                 if let Some(reason) = ctx.reason() {
@@ -1359,7 +1478,7 @@ impl Composers {
     /// drops the open questions of its key and clears Undo, so no older
     /// question resends and Undo never brings a sent file back.
     pub(crate) fn deliver(&self, hub: &mut Hub, mut delivery: Delivery) -> bool {
-        if hub.closed {
+        if hub.closed || self.delivery_input_held(hub, &delivery) {
             return false;
         }
         // `deliverMessage`: a Retry's row must still be a definite failure.
@@ -1510,10 +1629,11 @@ impl Composers {
             }
             // Qt (`deliverMessage`, 4905): the delivery ended meanwhile, or a
             // newer one took its place; either way this one calls nothing.
-            if !hub
-                .composers
-                .get(&key)
-                .is_some_and(|c| c.sending && c.delivering == Some(delivery.revision))
+            if self.delivery_input_held(&hub, &delivery)
+                || !hub
+                    .composers
+                    .get(&key)
+                    .is_some_and(|c| c.sending && c.delivering == Some(delivery.revision))
             {
                 drop(hub);
                 return self.ended(&delivery, false, CHANGED, false);
@@ -1594,10 +1714,27 @@ impl Composers {
     /// `service`: the desktop service's own line, shown as is.
     pub(super) fn delivered(&self, delivery: &Delivery, outcome: &Outcome, service: bool) {
         let (key, request_id) = (&delivery.key, &delivery.request_id);
-        let detail = if service {
-            self.lock().local.finished_as_is(key, request_id, outcome)
-        } else {
-            self.lock().local.finished(key, request_id, outcome)
+        let detail = {
+            let mut hub = self.lock();
+            if delivery.session.subagent.is_none()
+                && hub
+                    .composers
+                    .get(key)
+                    .is_some_and(|c| c.delivering == Some(delivery.revision))
+            {
+                Self::retain_earlier_input(
+                    &mut hub,
+                    key,
+                    &delivery.run,
+                    &delivery.conversation,
+                    outcome,
+                );
+            }
+            if service {
+                hub.local.finished_as_is(key, request_id, outcome)
+            } else {
+                hub.local.finished(key, request_id, outcome)
+            }
         };
         let ok = matches!(outcome, Outcome::Done { .. });
         let uncertain = matches!(outcome, Outcome::Uncertain { .. });
@@ -1621,6 +1758,9 @@ impl Composers {
             return false;
         }
         let hub = self.lock();
+        if self.delivery_input_held(&hub, delivery) {
+            return false;
+        }
         let Some((row, online)) = (self.0.deps.rows)(
             &delivery.session.computer,
             &delivery.session.key,
@@ -1936,7 +2076,7 @@ impl Composers {
                 error: true,
             });
         }
-        if ctx.previous_message_pending() == Some(true) {
+        if ctx.ordinary_input_held(&hub) {
             return Err(SendReply::Busy);
         }
         let Some(files) = LocalMessages::stored_files(&row) else {
@@ -2007,6 +2147,7 @@ impl Composers {
             && online
             && (self.0.deps.facts)(&ctx.session.computer, &ctx.session.name, &row.run_id).is_none()
             && previous_message_pending(&now_row, evidence) != Some(true)
+            && !open.as_ref().is_some_and(|ctx| ctx.ordinary_input_held(&hub))
             && text(evidence, "run_id") == row.run_id
             && text(evidence, "conversation_id") == row.conversation_id
             && text(evidence, "runtime_state") == "live"
@@ -3870,7 +4011,14 @@ pub(crate) mod tests {
         details["agent"] = json!("claude");
         details["previous_message_pending"] = json!(true);
         let view = opened(&c, details.clone());
-        c.edit(view.handle, 1, view.text_epoch, "person draft".into(), 12, 12);
+        c.edit(
+            view.handle,
+            1,
+            view.text_epoch,
+            "person draft".into(),
+            12,
+            12,
+        );
         let blocked = until(&c, |v| v.text == "person draft");
         assert_eq!(blocked.previous_message_pending, Some(true));
         assert!(!blocked.session_blocks_input);
@@ -3879,12 +4027,219 @@ pub(crate) mod tests {
         let mut other = details.clone();
         other["conversation_id"] = json!("other-conversation");
         c.observe(&state(other));
-        assert_eq!(until(&c, |v| v.previous_message_pending.is_none()).text, "person draft");
+        assert_eq!(
+            until(&c, |v| v.previous_message_pending.is_none()).text,
+            "person draft"
+        );
         details["previous_message_pending"] = json!(false);
         c.observe(&state(details));
         let released = until(&c, |v| v.previous_message_pending == Some(false));
         assert!(released.can_send);
         assert_eq!(released.text, "person draft");
+    }
+
+    fn prior_input_refusal() -> Outcome {
+        Outcome::Failed {
+            detail: "Message was not sent. hgs refused before typing: previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into(),
+        }
+    }
+
+    fn input_inspection(pending: Option<bool>) -> Value {
+        let mut details = ready();
+        details["name"] = json!(session().name);
+        details["agent"] = json!("claude");
+        if let Some(pending) = pending {
+            details["previous_message_pending"] = json!(pending);
+        }
+        details
+    }
+
+    fn complete_input_inspection(c: &Composers, fake: &Fake, details: Value) {
+        let before = fake.inspects.load(Ordering::SeqCst);
+        *lock(&fake.inspected) = Some(details);
+        c.refresh_details();
+        eventually(|| {
+            fake.inspects.load(Ordering::SeqCst) > before && c.lock().followed.inspecting.is_none()
+        });
+    }
+
+    #[test]
+    fn earlier_input_hold_requires_a_fresh_matching_inspection_and_survives_reopen() {
+        let root = dir("earlier-input-hold");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_on(&store);
+        let view = opened(&c, input_inspection(Some(false)));
+        *lock(&fake.outcome) = Box::new(|_, _| prior_input_refusal());
+        assert_eq!(
+            c.send_message(
+                view.handle,
+                1,
+                view.text_epoch,
+                "person draft".into(),
+                12,
+                12
+            ),
+            SendReply::Sending
+        );
+        let held = until(&c, |v| v.earlier_input_held && !v.sending);
+        let failed_id = held.local[0].id.clone();
+        eventually(|| c.lock().followed.inspecting.is_none());
+        assert_eq!(held.text, "person draft");
+        assert!(!held.session_blocks_input);
+        assert!(!held.can_send);
+
+        let old_peer = input_inspection(None);
+        complete_input_inspection(&c, &fake, old_peer.clone());
+        let held = c.current().unwrap();
+        assert_eq!(held.previous_message_pending, None);
+        assert_eq!(c.retry(held.handle, &failed_id), SendReply::Busy);
+        assert_eq!(
+            c.send_message(
+                held.handle,
+                2,
+                held.text_epoch,
+                "edited draft".into(),
+                12,
+                12
+            ),
+            SendReply::Busy
+        );
+        assert_eq!(sent(&fake).len(), 1);
+        assert_eq!(c.current().unwrap().text, "edited draft");
+
+        let released = input_inspection(Some(false));
+        let mut wrong = released.clone();
+        wrong["conversation_id"] = json!("other-conversation");
+        complete_input_inspection(&c, &fake, wrong);
+        c.observe(&state(released.clone()));
+        let held = c.current().unwrap();
+        assert!(held.earlier_input_held && !held.can_send);
+        assert_eq!(
+            held.previous_message_pending, None,
+            "a streamed false could predate the refusal"
+        );
+        c.open(Some(other_session()));
+        assert!(!until(&c, |v| v.loaded && v.key.ends_with("/other")).earlier_input_held);
+        let again = opened(&c, old_peer.clone());
+        assert!(again.earlier_input_held && !again.can_send);
+        store.flush();
+        drop(c);
+
+        let (reopened, fake) = send_hub_on(&store);
+        let same = opened(&reopened, old_peer);
+        assert!(same.earlier_input_held && !same.can_send);
+        assert_eq!(same.text, "edited draft");
+        complete_input_inspection(&reopened, &fake, released);
+        let view = until(&reopened, |v| !v.earlier_input_held && v.can_send);
+        assert_eq!(view.previous_message_pending, Some(false));
+        assert!(sent(&fake).is_empty(), "release does not replay");
+        assert_eq!(
+            reopened.send_message(view.handle, 1, view.text_epoch, view.text, 12, 12),
+            SendReply::Sending
+        );
+        until(&reopened, |v| !v.sending);
+        assert_eq!(sent(&fake).len(), 1);
+    }
+
+    #[test]
+    fn earlier_input_hold_covers_open_cold_send_and_retry_answers() {
+        for retry in [false, true] {
+            let root = dir("cold-earlier-input");
+            let (c, fake) = send_hub(&root);
+            let mut view = opened(&c, input_inspection(Some(false)));
+            let row = if retry {
+                *lock(&fake.outcome) = Box::new(|_, _| Outcome::Failed {
+                    detail: "fixture refusal".into(),
+                });
+                assert_eq!(
+                    c.send_message(
+                        view.handle,
+                        1,
+                        view.text_epoch,
+                        "person draft".into(),
+                        12,
+                        12
+                    ),
+                    SendReply::Sending
+                );
+                view = until(&c, |v| !v.sending && !v.local.is_empty());
+                Some(view.local[0].id.clone())
+            } else {
+                None
+            };
+            let mut details = input_inspection(Some(false));
+            details["cache_hint"] = json!({"status": "cold", "tokens": 120000});
+            c.observe(&state(details));
+            let reply = match row {
+                Some(id) => c.retry(view.handle, &id),
+                None => c.send_message(
+                    view.handle,
+                    2,
+                    view.text_epoch,
+                    "person draft".into(),
+                    12,
+                    12,
+                ),
+            };
+            let SendReply::Cold { token, .. } = reply else {
+                panic!("{reply:?}")
+            };
+            Composers::retain_earlier_input(
+                &mut c.lock(),
+                KEY,
+                "run-1",
+                "conv-1",
+                &prior_input_refusal(),
+            );
+            c.observe(&state(input_inspection(None)));
+            let before = sent(&fake).len();
+            assert_eq!(
+                c.answer(
+                    token,
+                    Answer::Cold {
+                        action: ColdAction::Send
+                    }
+                ),
+                SendReply::Busy
+            );
+            assert_eq!(sent(&fake).len(), before);
+            assert_eq!(c.current().unwrap().text, "person draft");
+        }
+    }
+
+    #[test]
+    fn earlier_input_hold_stops_the_final_dispatch_after_a_send_was_prepared() {
+        let root = dir("dispatch-earlier-input");
+        let store = drafts(&root);
+        let (spawn, jobs) = held_spawn();
+        let (c, fake) = send_hub_with(&store, spawn);
+        let view = opened(&c, input_inspection(Some(false)));
+        assert_eq!(
+            c.send_message(
+                view.handle,
+                1,
+                view.text_epoch,
+                "person draft".into(),
+                12,
+                12
+            ),
+            SendReply::Sending
+        );
+        let dispatch = next_job(&jobs);
+        Composers::retain_earlier_input(
+            &mut c.lock(),
+            KEY,
+            "run-1",
+            "conv-1",
+            &prior_input_refusal(),
+        );
+        c.observe(&state(input_inspection(None)));
+        dispatch();
+        let held = until(&c, |v| !v.sending);
+        assert_eq!(held.text, "person draft");
+        assert!(held.earlier_input_held);
+        assert!(!held.can_send);
+        assert!(sent(&fake).is_empty());
     }
 
     fn child_session() -> SessionRef {

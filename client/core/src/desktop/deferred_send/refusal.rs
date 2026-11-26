@@ -7,6 +7,22 @@ pub const CODE: &str = "deferred_send_refused_before_input";
 pub const BYTES: usize = 8192;
 pub const MESSAGE: &str = crate::source!("Message was not sent. hgs refused before typing: %1");
 
+/// Match only the message of a definite outcome. This is a reason to hold
+/// input, and never evidence permitting retry.
+pub fn awaiting_earlier_input(detail: &str) -> bool {
+    let Some((prefix, _)) = MESSAGE.split_once("%1") else {
+        return false;
+    };
+    matches!(
+        detail.strip_prefix(prefix),
+        Some(
+            "previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds"
+            | "previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal"
+            | "previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus"
+        )
+    )
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Refusal {

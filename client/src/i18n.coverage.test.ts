@@ -58,6 +58,7 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./store/composer.ts": "its own error constants, the draft store refused-save constant and send-error native refusal",
   "./ui/sessions/send-error.ts": "its own native refusal and earlier input status constants",
   "./ui/sessions/QueuePanel.tsx": "its own native queue hint tables",
+  "./ui/sessions/ComposerDialogs.tsx": "the earlier input hold status constants",
   "./store/contentSearch.ts": "its own notice constant",
   "./store/creations.ts": "the creations-ui notice constant",
   "./store/drops.ts": "its own drop hint constants",
