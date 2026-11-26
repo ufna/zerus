@@ -194,6 +194,7 @@ fn page_scope<'a>(session: &'a Option<String>, host: &'a Option<String>) -> Opti
 /// With `session` (an identity, `launch_id:...` or `run_id:...`) and its
 /// computer's `host`, a page of that session's view only (`--session`).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn task_page(
     project: String,
     stage: String,

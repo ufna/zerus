@@ -219,3 +219,32 @@ fn reported_review_classification_preserves_work_and_filters_the_full_scope() {
     reopened.set_stage(Stage::Done, &Actor::Person, 10).unwrap();
     assert_eq!(reopened.stage().unwrap(), Stage::Done);
 }
+
+#[test]
+fn conflicting_legacy_results_stay_in_triage() {
+    let worker = Actor::Agent(agent());
+    let mut task = TaskDoc::create(NewTask {
+        project: "example",
+        id: "T-aaaaba",
+        text: "Read both observations",
+        stage: Stage::Todo,
+        target: Target::Any,
+        author: worker.clone(),
+        rank: "U",
+        now: 1,
+    }).unwrap();
+    task.record_start(&worker, 2).unwrap();
+    let mut other = TaskDoc::from_bytes(&task.snapshot().unwrap()).unwrap();
+    assert!(task.record_report("Result from the left replica", &worker, 3).unwrap());
+    assert!(other.record_report("Result from the right replica", &worker, 4).unwrap());
+    task.import(&other.snapshot().unwrap()).unwrap();
+
+    let view = task.view().unwrap();
+    assert_eq!(view.stage, Stage::Review);
+    assert_eq!(view.log.iter().filter(|entry| entry.kind == "report").count(), 2);
+    assert_eq!(view.review_lane(), Some("triage"));
+    let revision = task.revision();
+    let assignment = ReviewAssignment::new(ReviewOwner::Person, "Pick a result".into()).unwrap();
+    assert!(task.classify_review(&revision, Some(&assignment), &Actor::Person, 5).is_err());
+    assert_eq!(task.revision(), revision);
+}

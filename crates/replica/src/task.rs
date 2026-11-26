@@ -51,14 +51,15 @@ pub(crate) fn cutover_schema() -> i64 {
     cutover::SCHEMA
 }
 
-/// One map value keeps the reviewer, criterion and report ID together under
-/// concurrent replica writes. Older readers project the two original fields.
-#[derive(serde::Deserialize, serde::Serialize)]
-struct StoredReviewAssignment {
-    #[serde(flatten)]
-    assignment: ReviewAssignment,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    report: Option<String>,
+// Older readers know only the queued task-wide assignment. Keeping the
+// report-specific decision under a separate key prevents them from reusing it.
+const QUEUED_REVIEW: &str = "review_assignment";
+const REPORTED_REVIEW: &str = "report_review_assignment";
+
+#[derive(PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct ReportReviewAssignment {
+    report: String,
+    assignment: Option<ReviewAssignment>,
 }
 
 pub struct NewTask<'a> {
@@ -889,13 +890,12 @@ impl TaskDoc {
             log,
             execution,
         };
-        // A subsequent report needs its own classification. Older queued
-        // assignments do not name a report and remain task-wide.
-        view.review_assignment = assignment
-            .filter(|assignment| assignment.report.as_ref().is_none_or(|report| {
-                view.review_report().and_then(|at| ids.get(at)) == Some(report)
-            }))
-            .map(|assignment| assignment.assignment);
+        view.review_assignment = match self.report_review_assignment() {
+            Some(decision) if view.review_report().and_then(|at| ids.get(at)) == Some(&decision.report) => {
+                decision.assignment
+            }
+            _ => assignment,
+        };
         Ok((view, ids))
     }
 
@@ -1206,10 +1206,16 @@ impl TaskDoc {
         Ok(())
     }
 
-    fn review_assignment(&self) -> Option<StoredReviewAssignment> {
-        decode::<StoredReviewAssignment>(&self.fields(), "review_assignment")
+    fn review_assignment(&self) -> Option<ReviewAssignment> {
+        decode::<ReviewAssignment>(&self.fields(), QUEUED_REVIEW)
             .ok()
-            .filter(|value| value.assignment.check().is_ok())
+            .filter(|value| value.check().is_ok())
+    }
+
+    fn report_review_assignment(&self) -> Option<ReportReviewAssignment> {
+        decode::<ReportReviewAssignment>(&self.fields(), REPORTED_REVIEW)
+            .ok()
+            .filter(|value| value.assignment.as_ref().is_none_or(|assignment| assignment.check().is_ok()))
     }
 
     pub fn set_review_assignment(
@@ -1226,7 +1232,25 @@ impl TaskDoc {
         if self.team()?.is_some() || self.team_invalid() {
             return Err(Error::new("use the team's review policy for a team task"));
         }
-        self.write_review_assignment(assignment, None, actor, now)
+        let fields = self.fields();
+        if let Some(assignment) = assignment {
+            assignment.check()?;
+        }
+        if self.review_assignment().as_ref() == assignment
+            && (assignment.is_some() || fields.get(QUEUED_REVIEW).is_none())
+            && fields.get(REPORTED_REVIEW).is_none()
+        {
+            return Ok(());
+        }
+        if let Some(assignment) = assignment {
+            fields.insert(QUEUED_REVIEW, serde_json::to_string(assignment)?)?;
+        } else {
+            fields.delete(QUEUED_REVIEW)?;
+        }
+        if fields.get(REPORTED_REVIEW).is_some() {
+            fields.delete(REPORTED_REVIEW)?;
+        }
+        self.log_review_assignment(assignment, actor, now)
     }
 
     /// Metadata only, pinned to the current reported task under the project lock.
@@ -1243,38 +1267,34 @@ impl TaskDoc {
         let (view, log_ids) = self.view_with_history_ids()?;
         let report = view.review_report().and_then(|at| log_ids.get(at))
             .ok_or_else(|| Error::new("Only a settled ordinary task report can be classified."))?;
-        self.write_review_assignment(assignment, Some(report), actor, now)
-    }
-
-    fn write_review_assignment(
-        &mut self,
-        assignment: Option<&ReviewAssignment>,
-        report: Option<&str>,
-        actor: &Actor,
-        now: i64,
-    ) -> Result<()> {
         if let Some(assignment) = assignment {
             assignment.check()?;
         }
+        let decision = ReportReviewAssignment { report: report.clone(), assignment: assignment.cloned() };
         let fields = self.fields();
-        let stored = self.review_assignment();
-        if stored.as_ref().map(|value| &value.assignment) == assignment
-            && stored.as_ref().and_then(|value| value.report.as_deref()) == report.filter(|_| assignment.is_some())
-            && (assignment.is_some() || fields.get("review_assignment").is_none())
-        {
+        let has_queued = fields.get(QUEUED_REVIEW).is_some();
+        if !has_queued && self.report_review_assignment().as_ref() == Some(&decision) {
             return Ok(());
         }
-        let label = match assignment {
-            Some(assignment) => {
-                let value = StoredReviewAssignment { assignment: assignment.clone(), report: report.map(str::to_owned) };
-                fields.insert("review_assignment", serde_json::to_string(&value)?)?;
-                format!("{}: {}", assignment.owner.as_str(), assignment.criterion)
-            }
-            None => {
-                fields.delete("review_assignment")?;
-                "unspecified".into()
-            }
-        };
+        // This explicit decision supersedes the pre-work hint. An older
+        // reader must not present that hint as the reviewer of this result.
+        if has_queued {
+            fields.delete(QUEUED_REVIEW)?;
+        }
+        fields.insert(REPORTED_REVIEW, serde_json::to_string(&decision)?)?;
+        self.log_review_assignment(assignment, actor, now)
+    }
+
+    fn log_review_assignment(
+        &self,
+        assignment: Option<&ReviewAssignment>,
+        actor: &Actor,
+        now: i64,
+    ) -> Result<()> {
+        let label = assignment.map_or_else(
+            || "unspecified".into(),
+            |assignment| format!("{}: {}", assignment.owner.as_str(), assignment.criterion),
+        );
         self.log("review_assignment", actor, now, &label, None)?;
         self.commit()
     }

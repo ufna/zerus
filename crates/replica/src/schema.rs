@@ -299,14 +299,24 @@ impl TaskView {
                 attempt = Some(current.id.as_str());
             }
         }
-        let mut reports = self.log.iter().enumerate().filter(|(_, entry)| {
+        // Legacy writers have no attempt ID. Two current reports merged
+        // from different replicas still provide no single settled result.
+        let opened = self.log.iter().rposition(|entry| {
+            entry.kind == "resumed"
+                || entry.kind == "stage" && matches!(entry.text.as_str(), "todo" | "backlog")
+        }).map_or(0, |position| position + 1);
+        let mut reports = self.log.iter().enumerate().skip(opened).filter(|(_, entry)| {
             entry.kind == "report" && entry.stale.is_none()
-                && entry.at == self.stage_at && entry.text == self.summary
                 && (entry.reported_attempt.as_deref() == attempt
                     || (entry.reported_attempt.is_none() && entry.actor == Actor::Person))
         });
-        let (index, _) = reports.next()?;
-        reports.next().is_none().then_some(index)
+        let (index, report) = reports.next()?;
+        let reporter_matches = match &report.actor {
+            Actor::Person => true,
+            Actor::Agent(session) => self.session.as_ref() == Some(session),
+        };
+        (reports.next().is_none() && reporter_matches
+            && report.at == self.stage_at && report.text == self.summary).then_some(index)
     }
 
     pub fn review_editable(&self) -> bool {

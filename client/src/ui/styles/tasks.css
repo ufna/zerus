@@ -320,13 +320,13 @@
 .tk-review-queues {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s-1, 4px);
+  gap: 4px;
   padding: 0 10px 6px;
 }
 .tk-review-queues button { display: inline-flex; gap: 6px; align-items: center; }
-.tk-review-queues button[aria-pressed="true"] { background: var(--surface-active, var(--surface-2)); }
+.tk-review-queues button[aria-pressed="true"] { background: var(--z-color-row-selected); color: var(--z-color-text); }
 
 .tv-review-editor { display: grid; gap: 8px; }
 .tv-review-editor label { display: grid; gap: 4px; }
-.tv-review-editor select { font: inherit; color: inherit; background: var(--surface-2); }
+.tv-review-editor select { font: inherit; color: inherit; background: var(--z-color-input, var(--z-color-hover)); }
 .tv-review-buttons { display: flex; gap: 6px; }
