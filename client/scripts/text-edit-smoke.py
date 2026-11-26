@@ -41,10 +41,12 @@ manager = web.get_user_content_manager()
 manager.register_script_message_handler("result")
 rows = []
 finished = False
+numbered_draft = "1. Первый\n2. Второй\n3. " + "Текст с переносом по ширине поля. " * 6
 list_cases = iter(
     (kind, case, before, after, start, end)
     for kind in ("composer", "task-description", "task-comment")
     for case, before, after, start, end in (
+        ("adds one fourth item during native typing", numbered_draft, numbered_draft + "x\n4. ", None, None),
         ("continues an ordered list over a selection", "9. item selected tail", "9. item\n10.  tail", 7, 16),
         ("leaves nested fenced code literal", "1. outer\n   - inner\n     ```js\n     - literal",
          "1. outer\n   - inner\n     ```js\n     - literal\n", None, None),
@@ -146,6 +148,10 @@ def receive(_manager, message):
         kind, case, _, after, _, _ = list_case
         if case.startswith("continues"):
             rows.append({"name": kind + " preserves composition-final Enter", "pass": True})
+        if case == "adds one fourth item during native typing":
+            # The open WebKit typing transaction re-enters beforeinput. Loading
+            # a complete draft and jumping straight to Shift+Enter misses it.
+            keys([ord("x")])
         keys([0xff0d] if after is None else [0xffe1, 0xff0d])
         GLib.timeout_add(180, lambda: list_snapshot("list-edited"))
     elif data.get("stage") == "list-edited":
@@ -162,6 +168,8 @@ def receive(_manager, message):
             GLib.timeout_add(150, lambda: list_snapshot("list-undone"))
     elif data.get("stage") == "list-undone":
         kind, case, before, _, start, end = list_case
+        if case == "adds one fourth item during native typing":
+            before += "x"
         selection = start is None or (data["start"], data["end"]) == (start, end)
         rows.append({"name": kind + " native undo: " + case,
                      "pass": data["value"] == data["draft"] == before and selection,
