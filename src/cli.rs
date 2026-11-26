@@ -245,6 +245,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
+       antigravity-native-login-v1
        delivery-receipt-v1
        native-send-outcome-v2
        session-question-routing-v1
@@ -1681,6 +1682,10 @@ pub(crate) fn bounded_archive_script(args: &[String], guarded: bool) -> String {
 /// A POSIX script that runs `hgs ARGS` on the peer only when the installed
 /// CLI's help lists every marker; otherwise it asks for an update.
 pub(crate) fn gated(markers: &[Marker], args: &[String]) -> String {
+    gated_with_message(markers, args, "update the selected computer to select sessions by ID")
+}
+
+fn gated_with_message(markers: &[Marker], args: &[String], message: &str) -> String {
     let probes: Vec<String> = markers
         .iter()
         .map(|marker| match marker {
@@ -1691,7 +1696,7 @@ pub(crate) fn gated(markers: &[Marker], args: &[String]) -> String {
         })
         .collect();
     platform::remote_sh(&format!(
-        "if {}; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to select sessions by ID' >&2; exit 1; fi",
+        "if {}; then exec ~/.local/bin/hgs {}; else echo 'hgs: {message}' >&2; exit 1; fi",
         probes.join(" && "),
         platform::join(args)
     ))
@@ -2198,19 +2203,20 @@ const CALLBACK_PORT: u16 = 1455;
 /// local port is busy.
 const CALLBACK_FORWARD: [&str; 6] = ["-o", "ExitOnForwardFailure=no", "-o", "ControlPath=none", "-L", "1455:localhost:1455"];
 
-/// Whether a peer call signs an account in (`account login`, guarded or not).
-fn account_sign_in(command: &str, args: &[String]) -> bool {
+/// The account selected for a peer login, with or without a machine guard.
+fn account_sign_in<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
     let rest = if command == "--expect-machine" {
         if args.get(1).map(String::as_str) != Some("account") {
-            return false;
+            return None;
         }
         args.get(2..).unwrap_or_default()
     } else if command == "account" {
         args
     } else {
-        return false;
+        return None;
     };
-    rest.first().is_some_and(|operation| operation == "login")
+    rest.first().filter(|operation| *operation == "login")?;
+    Some(rest.get(1).map(String::as_str).unwrap_or_default())
 }
 
 /// The SSH line a peer command's dry run prints, for a person to read or
@@ -2239,6 +2245,11 @@ fn remote_via(
 ) -> Result<i32> {
     // Every route to another computer passes here, before any ssh is built.
     person_only_forwarding(command, args)?;
+    let login = account_sign_in(command, args);
+    let antigravity_login = login == Some("native-agy");
+    if antigravity_login && !global_dry && !has(args, "--dry-run") {
+        crate::accounts::require_antigravity_login_person()?;
+    }
     let answer_input = forwarded_answer_input(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
@@ -2261,6 +2272,12 @@ fn remote_via(
     let mut tab = None;
     let mut ssh = platform::ssh();
     let remote_args: Vec<String> = match command {
+        _ if antigravity_login => {
+            // The native login accepts a code in the remote terminal. It
+            // needs a tty, with no browser callback or local forwarding.
+            flags = ["-t", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].map(String::from).into();
+            std::iter::once(command.to_owned()).chain(args.clone()).collect()
+        }
         "ls" => {
             flags = vec![
                 "-o".into(),
@@ -2439,7 +2456,7 @@ fn remote_via(
             all
         }
     };
-    if account_sign_in(command, &args) {
+    if login.is_some() && !antigravity_login {
         // Codex finishes a browser sign-in on the signing computer's
         // localhost:1455, which a browser on this computer cannot reach.
         // Forward this computer's port there, as OpenAI documents for
@@ -2456,7 +2473,18 @@ fn remote_via(
         None => remote_args,
     };
     let wrapped_path_info = command == "--expect-machine" && args.get(1).is_some_and(|actual| actual == "path-info");
-    let remote = if let Some(markers) = selector_markers(command, &args)? {
+    use zerus_client_core::account_actions::setup::ANTIGRAVITY_LOGIN_MARKER;
+    let remote = if antigravity_login {
+        let mut markers = vec![Marker::Line(ANTIGRAVITY_LOGIN_MARKER)];
+        if command == "--expect-machine" || machine.is_some() {
+            markers.push(Marker::Text("guarded-create-v1"));
+        }
+        gated_with_message(
+            &markers,
+            &remote_args,
+            "update the selected computer to open Antigravity sign-in",
+        )
+    } else if let Some(markers) = selector_markers(command, &args)? {
         // An older peer would read the flag as a session name; it must
         // advertise the selector, and what the command needs already, first.
         gated(&markers, &remote_args)
@@ -2621,6 +2649,7 @@ fn remote_via(
         {
             markers.push((state::LISTING_METADATA_MARKER, true));
         }
+        if antigravity_login { markers.push((ANTIGRAVITY_LOGIN_MARKER, true)); }
         if machine.is_some() { markers.push(("guarded-create-v1", false)); }
         let mut words = remote_args.clone();
         // A non-POSIX peer runs the words without a shell probe: send --bounded only to one that lists it.

@@ -41,6 +41,8 @@ pub struct SetupHost {
     saved: Vec<Saved>,
     listed: Vec<String>,
     deepseek_installed: bool,
+    antigravity_installed: bool,
+    antigravity_sign_in: bool,
 }
 #[derive(Serialize)]
 pub struct SetupView {
@@ -162,9 +164,10 @@ impl Screens {
                 .iter()
                 .find(|e| e.computer == host.computer)
                 .ok_or(account_actions::CHANGED)?;
-            let providers: Vec<String> = ["codex", "claude", "kimi", "dsh", "opencode"]
+            let antigravity = policy::antigravity(catalog);
+            let providers: Vec<String> = ["codex", "claude", "kimi", "dsh", "opencode", "agy"]
                 .into_iter()
-                .filter(|p| accounts::launchable(entry, p))
+                .filter(|p| accounts::launchable(entry, p) && (*p != "agy" || antigravity.is_some()))
                 .map(str::to_owned)
                 .collect();
             let saved: Vec<_> = catalog["removed_profiles"]
@@ -211,6 +214,8 @@ impl Screens {
                             .any(|r| r["id"] == "native-dsh" && r["installed"] == true)
                     })
                 }),
+                antigravity_installed: antigravity.is_some_and(|row| row["installed"] == true),
+                antigravity_sign_in: binding.antigravity_login(catalog).is_ok(),
             });
             hosts.push(HostPlan {
                 binding,
@@ -267,6 +272,14 @@ impl Screens {
             None
         };
         drop(hub);
+        if kind == SetupKind::Add
+            && shown.iter().any(|host| !host.key.is_empty() && host.antigravity_sign_in)
+            && policy::antigravity_forwarder(&self.0.hgs).is_none()
+        {
+            for host in shown.iter_mut().filter(|host| !host.key.is_empty()) {
+                host.antigravity_sign_in = false;
+            }
+        }
         let handle = uuid::Uuid::new_v4().to_string();
         let label = view
             .accounts
@@ -376,6 +389,14 @@ impl Screens {
                 b.verify(&catalog)?;
             }
             match plan.kind {
+                SetupKind::Add if provider == "agy" => {
+                    if !request.saved.is_empty() || !request.label.is_empty() || !request.api_key.is_empty() {
+                        return Err(account_actions::CHANGED.into());
+                    }
+                    let (program, call) = host.binding.antigravity_terminal(&self.0.hgs, &catalog)?;
+                    let mut terminal = Launcher::new(crate::desk::terminal_settings(dir));
+                    notices.extend(terminal.open_program(&program, &call.args)?);
+                }
                 SetupKind::Add if !request.saved.is_empty() => {
                     let saved = host
                         .saved

@@ -7,14 +7,19 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default)]
 pub struct System;
 
-impl Desktop for System {
-    fn find(&self, program: &str) -> Option<String> {
+impl System {
+    pub(crate) fn find_path(program: &str) -> Option<PathBuf> {
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)
             .filter(|folder| !folder.as_os_str().is_empty())
             .flat_map(|folder| candidates(&folder, program))
             .find(|candidate| executable(candidate))
-            .map(|found| found.to_string_lossy().into_owned())
+    }
+}
+
+impl Desktop for System {
+    fn find(&self, program: &str) -> Option<String> {
+        Self::find_path(program).map(|found| found.to_string_lossy().into_owned())
     }
 
     fn env(&self, name: &str) -> Option<String> {
