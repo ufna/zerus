@@ -1,22 +1,42 @@
 //! Account setup uses the same catalog revision and physical-computer guard.
 use super::{run_catalog, Binding, CHANGED, MAX_MEMBERS};
-use crate::{actions::Invocation, ComputerId};
+use crate::{
+    actions::Invocation,
+    terminal_launch::{Desktop, System},
+    ComputerId,
+};
 use serde_json::{json, Value};
-use std::{path::Path, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 pub const ANTIGRAVITY_LOGIN_MARKER: &str = "antigravity-native-login-v1";
 
-/// Check the local binary that will actually forward the interactive command.
-pub fn antigravity_forwarding_supported(hgs: &Path) -> bool {
+fn antigravity_program(hgs: &Path) -> Option<PathBuf> {
+    let selected = if hgs.file_name() == Some(hgs.as_os_str()) {
+        PathBuf::from(System.find(hgs.to_str()?)?)
+    } else {
+        hgs.to_path_buf()
+    };
+    // Configured terminals start in the user's home. Resolve a relative
+    // override in the desktop's directory before the help probe and launch.
+    std::path::absolute(selected).ok()
+}
+
+/// Resolve and verify the binary that will forward the interactive command.
+pub fn antigravity_forwarder(hgs: &Path) -> Option<PathBuf> {
+    let program = antigravity_program(hgs)?;
     let call = Invocation {
         args: vec!["--help".into()],
         stdin: None,
         timeout: Duration::from_secs(5),
         request_id: None,
     };
-    matches!(crate::run::run_limited(hgs, &call, &[], 64 * 1024),
+    matches!(crate::run::run_limited(&program, &call, &[], 64 * 1024),
         Ok(crate::Exit::Code { code: 0, stdout, .. })
             if String::from_utf8_lossy(&stdout).lines().any(|line| line.trim() == ANTIGRAVITY_LOGIN_MARKER))
+    .then_some(program)
 }
 
 /// The single native Antigravity account advertised by this catalog.
@@ -100,15 +120,20 @@ impl Host {
             .ok_or(CHANGED)?;
         self.terminal_call("login", "native-agy")
     }
-    pub fn antigravity_terminal(&self, hgs: &Path, catalog: &Value) -> Result<Invocation, String> {
+    pub fn antigravity_terminal(
+        &self,
+        hgs: &Path,
+        catalog: &Value,
+    ) -> Result<(PathBuf, Invocation), String> {
         let call = self.antigravity_login(catalog)?;
-        if !self.computer.is_local() && !antigravity_forwarding_supported(hgs) {
-            return Err(
-                "Update the local hgs before opening Antigravity sign-in on another computer."
-                    .into(),
-            );
-        }
-        Ok(call)
+        let program = if self.computer.is_local() {
+            antigravity_program(hgs).ok_or("Could not resolve the local hgs executable.")?
+        } else {
+            antigravity_forwarder(hgs).ok_or(
+                "Update the local hgs before opening Antigravity sign-in on another computer.",
+            )?
+        };
+        Ok((program, call))
     }
     pub fn fresh(&self, hgs: &Path) -> Result<Value, String> {
         let catalog = self.read(hgs)?;
@@ -288,7 +313,9 @@ mod tests {
         help(&format!("missing {ANTIGRAVITY_LOGIN_MARKER}"), 0);
         assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
         help(&format!("       {ANTIGRAVITY_LOGIN_MARKER}"), 0);
-        assert!(peer.antigravity_terminal(&hgs, &catalog).is_ok());
+        let (program, _) = peer.antigravity_terminal(&hgs, &catalog).unwrap();
+        assert!(program.is_absolute());
+        assert_eq!(program, hgs);
         help("older executable", 0);
         assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
         let local = Host::capture(ComputerId::local(), machine.into(), &catalog).unwrap();
