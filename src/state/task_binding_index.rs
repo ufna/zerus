@@ -378,8 +378,8 @@ fn identity(row: &Value) -> String {
 }
 
 /// Only metadata needed by the selected task rows. A name-only reference
-/// includes aliases too, so Machines::resolve retains current-name precedence
-/// and ambiguity handling. Unknown immutable IDs never adopt a reused name.
+/// includes aliases too, so Machines::resolve can detect conflicting names
+/// across current and historical records. Unknown IDs never adopt a reused name.
 pub(crate) fn rows(root: &Path, wanted: &BTreeSet<(String, String)>) -> Result<Vec<Value>> {
     if wanted.is_empty() {
         return Ok(Vec::new());

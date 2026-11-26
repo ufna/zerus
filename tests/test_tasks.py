@@ -199,6 +199,28 @@ class TaskCommands(Fixture):
         self.assertEqual((targets[pinned["id"]]["session"], targets[pinned["id"]]["session_id"]),
                          (after, "launch_id:" + original))
 
+        if os.geteuid() != 0:
+            binding = self.state / (hashlib.sha256(after.encode()).hexdigest() + ".json")
+            original_record = binding.read_bytes()
+            mode = binding.stat().st_mode & 0o777
+            binding.chmod(0)
+            try:
+                with self.assertRaises(PermissionError):
+                    binding.read_bytes()
+                read = self.hgs("get", legacy["ref"])["task"]["target"]
+                edited = self.hgs("edit", legacy["ref"], text="Unrelated description edit")["task"]
+                refused = self.hgs("send", legacy["ref"], ok=False)
+                choice = self.add("Explicit durable selection", "--target", before,
+                                  "--session-id", "launch_id:" + replacement)
+            finally:
+                binding.chmod(mode)
+            self.assertEqual(binding.read_bytes(), original_record)
+            self.assertEqual(self.hgs("get", legacy["ref"])["task"]["target"], unresolved)
+            self.assertEqual(read, unresolved)
+            self.assertEqual(edited["target"], unresolved)
+            self.assertIn("no longer exists", refused)
+            self.assertEqual(choice["target"]["session_id"], "launch_id:" + replacement)
+
         reassigned = self.hgs("target", legacy["ref"], before)["task"]["target"]
         self.assertEqual((reassigned["session"], reassigned["session_id"]),
                          (before, "launch_id:" + replacement))

@@ -300,6 +300,7 @@ struct Machines {
     selves: Vec<String>,
     peers: BTreeMap<String, String>,
     bindings: Vec<Value>,
+    bindings_complete: bool,
 }
 
 fn machines(config: &Config) -> Result<Machines> {
@@ -308,7 +309,9 @@ fn machines(config: &Config) -> Result<Machines> {
 
 fn machines_for(config: &Config, here: String) -> Result<Machines> {
     let mut machines = machine_routes(config, here);
-    machines.bindings = crate::state::task_bindings().map_err(fail)?;
+    let inventory = crate::state::task_bindings().map_err(fail)?;
+    machines.bindings = inventory.rows;
+    machines.bindings_complete = inventory.complete;
     Ok(machines)
 }
 
@@ -324,6 +327,7 @@ fn machine_routes(config: &Config, here: String) -> Machines {
         selves: config.selves.clone(),
         peers,
         bindings: Vec::new(),
+        bindings_complete: false,
     }
 }
 
@@ -2354,11 +2358,11 @@ mod tests {
             now: 1,
         })
         .unwrap();
-        let machines = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]), bindings: vec![] };
+        let machines = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]), bindings: vec![], bindings_complete: true };
         let args = ["--session".to_owned(), "codex/api".to_owned()];
         let error = send_session(&task, &args, &Actor::Person, &machines).unwrap_err().message;
         assert!(error.contains("pinned to codex/api on mac"), "{error}");
-        let unknown = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::new(), bindings: vec![] };
+        let unknown = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::new(), bindings: vec![], bindings_complete: true };
         let error = send_session(&task, &args, &Actor::Person, &unknown).unwrap_err().message;
         assert!(error.contains("pinned to codex/api on another computer"), "{error}");
     }
@@ -2370,6 +2374,7 @@ mod tests {
             selves: vec!["arch".into(), "arch-lan".into()],
             peers: BTreeMap::from([("mac".to_owned(), "node-mac".to_owned())]),
             bindings: vec![],
+            bindings_complete: true,
         };
         for host in [None, Some(""), Some("arch"), Some("arch-lan")] {
             assert_eq!(machines.node(host).unwrap(), "node-here", "{host:?}");
@@ -2396,7 +2401,7 @@ mod tests {
         let file = |n: u8| format!("{n:064x}.json");
         saved(root, &file(1), json!({"name":"codex/api","run_id":"run-api","launch_id":"launch-api"}));
         saved(root, &format!("bindings/{}", file(2)), json!({"name":"codex/renamed","run_id":"run-renamed","legacy_shadow":{"name":"codex/older","run_id":"run-renamed"}}));
-        let machines = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::new(), bindings: crate::state::task_bindings_in(root).unwrap() };
+        let machines = Machines { here: "node-here".into(), selves: vec![], peers: BTreeMap::new(), bindings: crate::state::task_bindings_in(root).unwrap(), bindings_complete: true };
         let legacy = |name: &str| {
             let mut task = TaskDoc::create(NewTask { project: "example", id: "T-abcdef", text: "Description", stage: Stage::Todo, target: Target::Any, author: Actor::Person, rank: "U", now: 1 }).unwrap();
             let key = SessionKey { machine: "node-here".into(), session: name.into(), session_id: String::new() };
@@ -2442,6 +2447,7 @@ mod tests {
             selves: vec![],
             peers: BTreeMap::new(),
             bindings: crate::state::task_bindings_in(root).unwrap(),
+            bindings_complete: true,
         };
         let routed = |session: &str| {
             let key = SessionKey {
@@ -2479,6 +2485,7 @@ mod tests {
             selves: vec![],
             peers: BTreeMap::new(),
             bindings: crate::state::task_bindings_in(root).unwrap(),
+            bindings_complete: true,
         };
         let routed = |session: &str, session_id: &str| {
             let key = SessionKey { machine: "node-here".into(), session: session.into(), session_id: session_id.into() };

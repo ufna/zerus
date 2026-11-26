@@ -26,6 +26,7 @@ pub(super) fn for_rows(config: &Config, machines: &mut Machines, rows: &[Value])
     if !wanted.is_empty() {
         machines.bindings =
             crate::state::task_binding_rows(&config.state, &wanted).map_err(fail)?;
+        machines.bindings_complete = true;
     }
     Ok(())
 }
@@ -68,6 +69,9 @@ impl Machines {
             return Some(key.clone());
         }
         let by_name = key.session_id.is_empty();
+        if by_name && !self.bindings_complete {
+            return None;
+        }
         let current_name = |row: &Value| row["name"].as_str() == Some(&key.session);
         // An explicit request may select the current holder of a label. An
         // existing name-only reference has no such evidence of intent. A
@@ -124,6 +128,7 @@ mod tests {
             selves: vec!["local".into()],
             peers: BTreeMap::from([("remote".into(), "remote-node".into())]),
             bindings,
+            bindings_complete: true,
         }
     }
 
