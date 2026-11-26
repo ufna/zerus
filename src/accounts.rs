@@ -349,6 +349,15 @@ fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
         };
         rows.push(row);
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if wanted("agy") {
+        let executable = crate::state::agy::executable();
+        rows.push(json!({"id":crate::state::agy::ACCOUNT,"provider":"agy",
+            "label":"Google Antigravity","native":true,"installed":executable.is_some(),
+            "executable":executable,"launch_supported":executable.is_some(),
+            "auth_status":"unknown","credential_file":false,"portable":false,
+            "permission_mode_supported":false,"login_command":"agy acp --login"}));
+    }
     for row in &mut rows {
         let provider = row["provider"].as_str().unwrap_or("").to_owned();
         row["is_default"] = json!(row["id"].as_str() == Some(catalog.defaults.get(&provider).map(String::as_str).unwrap_or(&format!("native-{provider}"))));
@@ -567,7 +576,7 @@ pub(crate) fn model_settings(config: &Config, id: &str) -> Result<Value> {
     model_defaults::inspect(config, id)
 }
 /// The providers `account ls --provider` accepts.
-const PROVIDERS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
+const PROVIDERS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
 pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     let dry = dry || args.iter().any(|arg| arg == "--dry-run");
     let operation = args.first().map(String::as_str).unwrap_or("ls");
@@ -595,7 +604,7 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             let only=match args.iter().position(|x|x=="--provider") {
                 None=>None,
                 Some(i)=>Some(args.get(i+1).map(String::as_str).filter(|p|PROVIDERS.contains(p))
-                    .ok_or_else(||Error::new(2,"Choose --provider codex, claude, kimi, dsh or opencode."))?),
+                    .ok_or_else(||Error::new(2,"Choose --provider codex, claude, kimi, dsh, opencode or agy."))?),
             };
             println!("{}",listing(config,only)?);
         },
@@ -717,6 +726,11 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             println!("{}",import(config,id,arg(args,"--label").unwrap_or(id),&payload,args)?);
         },
         "login"=>{
+            if id == "native-agy" {
+                const GUIDANCE: &str = "Sign in to Antigravity with `agy acp --login` in Terminal on this computer";
+                if dry { println!("{GUIDANCE}"); return Ok(0); }
+                return Err(Error::new(1, GUIDANCE));
+            }
             if id=="native-dsh" {return crate::native_ui::open(config,"","@account",None,dry);}
             if id=="native-opencode" {
                 const GUIDANCE: &str = "Connect OpenCode providers with `opencode auth login` in a terminal on this computer";

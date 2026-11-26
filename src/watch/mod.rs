@@ -1656,7 +1656,7 @@ impl<'a> Watch<'a> {
             .unwrap_or(&session.name)
             .to_owned();
         let tail = request.tail.map_or(protocol::ACTIVITY_TAIL, |tail| (tail as usize).min(protocol::ACTIVITY_TAIL));
-        let mut sub = Subscription::new(key, name.clone(), session.run_id.filter(|run| !run.is_empty()), source::native(&name), tail);
+        let mut sub = Subscription::new(key, name.clone(), session.run_id.filter(|run| !run.is_empty()), source::replaces_history(&name), tail);
         if let Some(index) = row {
             sub.listed = true;
             sub.row = Some(self.digests[index]);

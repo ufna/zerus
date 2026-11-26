@@ -316,6 +316,10 @@ fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
             scope,
         );
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if agy::named(name) {
+        return agy::action(name, &request.action, scope);
+    }
     if opencode::exists(name) {
         scope.opencode_error();
         return opencode::session_action(name, &request.action, request.new_name.as_deref(), request.message_id.as_deref(), scope);

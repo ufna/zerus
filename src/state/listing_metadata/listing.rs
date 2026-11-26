@@ -494,6 +494,11 @@ pub(in crate::state) fn merge(
                     opencode.push(record);
                     continue;
                 }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if record["backend"] == "agy" {
+                    rows.push(agy::row(&record, false));
+                    continue;
+                }
                 if archive::equivalent(&record, &archived) {
                     continue;
                 }

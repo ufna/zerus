@@ -21,9 +21,22 @@ pub(crate) fn native(name: &str) -> bool {
     dsh::exists(name) || opencode::exists(name)
 }
 
+/// Activity synthesized by an owned native adapter replaces its current bounded window.
+pub(crate) fn replaces_history(name: &str) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if agy::named(name) {
+        return true;
+    }
+    native(name)
+}
+
 /// `hgs inspect NAME --after AFTER --skip-processes`.
 pub(crate) fn inspect(name: &str, after: i64) -> Result<Value> {
     local_sessions()?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if agy::named(name) {
+        return agy::inspect(name);
+    }
     if opencode::exists(name) {
         return opencode::inspect(name, None);
     }
@@ -281,6 +294,11 @@ pub(crate) fn rows(wanted: &BTreeSet<String>) -> Result<Option<(Vec<Value>, u64)
     let mut process_work = processes::WorkSample::default();
     let mut rows = Vec::with_capacity(records.len());
     for record in records {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if record["backend"] == "agy" {
+            rows.push(agy::row(&record, false));
+            continue;
+        }
         // Its row is its own terminal's (P3b), listed under its label.
         let terminal = terminal_name(&record);
         let Some(session) = sessions.iter().find(|session| string(session, "name") == terminal) else {

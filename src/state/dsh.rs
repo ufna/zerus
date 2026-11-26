@@ -402,7 +402,7 @@ fn lifecycle_state(answer: &Value) -> Result<bool> {
 /// The process serving a connected host socket, as the kernel recorded it,
 /// and only when it runs as this user.
 #[cfg(target_os = "linux")]
-fn host_peer(stream: &UnixStream) -> Option<u32> {
+pub(super) fn host_peer(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
     let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
@@ -423,7 +423,7 @@ fn host_peer(stream: &UnixStream) -> Option<u32> {
     .then_some(credentials.pid as u32)
 }
 #[cfg(target_os = "macos")]
-fn host_peer(stream: &UnixStream) -> Option<u32> {
+pub(super) fn host_peer(stream: &UnixStream) -> Option<u32> {
     use std::os::fd::AsRawFd;
     let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
     // SAFETY: a connected Unix socket and two writable identifiers.

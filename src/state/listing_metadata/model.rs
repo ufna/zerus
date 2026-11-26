@@ -63,7 +63,7 @@ impl Key {
                         opencode::native_id(string(record, "conversation_id"), "ses_")
                     }
             }
-            None => record["version"] == 1 && AGENTS.contains(&string(record, "agent")),
+            None => record["version"] == 1 && storage::binding_agent(record),
         };
         schema
             && !string(record, "name").is_empty()
@@ -122,6 +122,10 @@ impl Seed {
             "recovery_cancel_at",
             "keep_warm_prompt_at",
             "turn_started",
+            "auth_required",
+            "agy_worker",
+            "agy_provider",
+            "reply_at",
             "last_main_progress_at",
             "compaction_started",
             "attention_started",
