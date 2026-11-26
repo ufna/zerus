@@ -5036,6 +5036,7 @@ mod tests {
             service,
             computer: Some("build-01".into()),
             active,
+            archive_ancestors: None,
             migration,
             verdicts: Some(Vec::new()),
             verdicts_changed: false,
