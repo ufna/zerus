@@ -17,6 +17,29 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("refreshes only the bound Activity and ignores a refresh overtaken by selection", async () => {
+    const { store, calls } = setup();
+    const first = { ...target, runId: "a", conversationId: "conversation" };
+    const state = (rev: number) => out("state", { rev, value: { run_id: "a", conversation_id: "conversation" } });
+    const history = [ev(10)];
+    store.follow(first);
+    store.applyActivity([state(7), out("replace", { events: history })]);
+    expect(store.refresh(first, "a", "other")).toBe(false);
+    expect(store.refresh(first, "a", "conversation")).toBe(true);
+    expect(store.events()).toEqual(history);
+    await Promise.resolve();
+    expect(calls).toHaveLength(2);
+    expect(calls.at(-1)).toMatchObject({ key: first.key, run_id: "a", conversation_id: "conversation" });
+    store.applyActivity([state(1)]);
+    expect(store.currentSummary()?.run_id).toBe("a");
+    expect(store.refresh(first, "a", "conversation")).toBe(true);
+    store.follow({ ...target, id: "\nrun:b", key: "run:b", runId: "b" });
+    await Promise.resolve();
+    expect(calls.map(call => call.key)).toEqual(["run:a", "run:a", "run:b"]);
+    expect(store.refresh(first, "a", "conversation")).toBe(false);
+    store.follow(undefined);
+  });
+
   it("reloads a saved reading window using the current session's routing", () => {
     const { store, calls } = setup();
     store.follow(target);

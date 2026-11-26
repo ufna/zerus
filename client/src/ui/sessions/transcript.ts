@@ -277,6 +277,20 @@ function recordedContext(summary: Record<string, unknown> | undefined): Transcri
 
 const PROMPTS = new Set(["UserPromptSubmit", "UserPromptQueued", "TurnStarted"]);
 const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
+const agyOffer = (event: ActivityEvent) => event.source === "agy_acp" && event.type === "UserPromptSubmit";
+const agyRequest = (event: ActivityEvent) => typeof event.request_id === "string" && event.request_id
+  ? JSON.stringify([event.run_id, event.conversation_id, event.request_id]) : "";
+
+/** Older workers recorded only the offer. An exact native reply supplies proof for that request. */
+function agyDelivery(events: readonly ActivityEvent[]): readonly ActivityEvent[] {
+  if (!events.some(agyOffer)) return events;
+  const replies = new Set(events.filter(e => e.source === "agy_acp" && e.type === "AgentMessage").map(agyRequest));
+  return events.map(event => {
+    if (!agyOffer(event) || event.delivery_state !== undefined) return event;
+    const request = agyRequest(event);
+    return { ...event, delivery_state: request && replies.has(request) ? "submitted" : "unconfirmed" };
+  });
+}
 /** How far a sent row's own prompt event may be from it, in seconds (ActivityView.cpp:684). */
 const NEAREST = 10;
 
@@ -347,12 +361,28 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
     const exact: number[] = [];
     const eligible = (e: ActivityEvent, i: number) => !claimed.has(i) && !childEvent(e) && e.source !== "hgs_voice" && PROMPTS.has(e.type ?? "")
       && (!e.activity_display_key || e.activity_display_key === `local-${row.id}`);
-    if (sent) match = source.findIndex((e, i) => eligible(e, i) && e.activity_display_key === `local-${row.id}`);
-    if (sent && match < 0) match = source.findIndex((e, i) => eligible(e, i)
+    const agy = row.id && (row.status !== "error" || row.uncertain)
+      ? source.findIndex((e, i) => agyOffer(e) && eligible(e, i) && e.request_id === row.id
+        && (e.run_id === undefined || e.run_id === row.run_id)
+        && (e.conversation_id === undefined || e.conversation_id === row.conversation_id)) : -1;
+    if (agy >= 0) {
+      const offer = source[agy];
+      const submitted = offer.delivery_state === "submitted" || row.status === "sent";
+      source[agy] = {
+        ...offer, ...(submitted ? { detail: row.text, message_text: row.text, message_text_truncated: false, delivery_state: "submitted" }
+          : localEvent(row)),
+        activity_journal_key: eventKey(offer), activity_display_key: `local-${row.id}`,
+      };
+      claimed.add(agy);
+      continue;
+    }
+    const ordinary = (e: ActivityEvent, i: number) => eligible(e, i) && !agyOffer(e);
+    if (sent) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
+    if (sent && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
       && !!(e.message_id || e.attachment_request_id) && [row.id, row.message_id].some(id => !!id && (e.message_id === id || e.attachment_request_id === id)));
     if (sent && match < 0 && row.attachments.length) {
       source.forEach((e, i) => {
-        if (eligible(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
+        if (ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
           && submitted && ownMessageText(e).trim() === submitted) exact.push(i);
       });
       const competing = candidates.filter((other) => other.status !== "error" && other.attachments.length && submittedOf(other) === submitted).length;
@@ -360,7 +390,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       if (competing === 1 && exact.length === 1) match = exact[0];
     }
     if (sent && match < 0 && !exact.length) {
-      const full = source.flatMap((e, i) => eligible(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
+      const full = source.flatMap((e, i) => ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
         && !e.message_id && !e.attachment_request_id && submitted && ownMessageText(e).trim() === submitted
         && Math.abs((e.at ?? NaN) - row.submitted_at) <= NEAREST ? [i] : []);
       if (full.length === 1) match = full[0];
@@ -609,7 +639,7 @@ export function mergeRoutes(events: readonly ActivityEvent[], routes: readonly R
 }
 
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
-  const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
+  const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
   if (!provider.length && !local.length && !routes.length) return recordedContext(summary);
   const events = mergeRoutes(mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary), routes);
   return transcriptItems(events, summary, !provider.length);
@@ -696,13 +726,17 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     }
     if (role) {
       let receipt: string | undefined;
+      let receiptUnconfirmed = false;
       let inbox: InboxItem | undefined;
       let displayTime = at;
       // OpenCode reports its inbox: a waiting message is queued, and after
       // Stop it stays there, not delivered, until it is sent or removed
       // (ActivityView.cpp:1036-1038, 1072-1087).
       const delivery = role === "user" ? e.delivery_state : undefined;
-      if (delivery === "queued" || delivery === "not_delivered") {
+      if (role === "user" && agyOffer(e)) {
+        receiptUnconfirmed = delivery !== "submitted";
+        receipt = receiptUnconfirmed ? tr("Delivery not confirmed") : tr("Sent");
+      } else if (delivery === "queued" || delivery === "not_delivered") {
         receipt = delivery === "queued" ? tr("Queued") : tr("Not delivered");
         const messageId = typeof e.message_id === "string" ? e.message_id : "";
         const allowed = Array.isArray(summary?.allowed_actions) && summary.allowed_actions.includes("remove_queued");
@@ -728,7 +762,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       items.push({ id, kind: role === "user" ? "user" : "agent", at: displayTime, body: role === "user" ? ownMessageText(e) : e.detail ?? "",
         ...(role === "user" ? { bodyTruncated: ownMessageTruncated(e) } : {}),
         echoBody: typeof e.attachment_echo === "string" ? e.attachment_echo : undefined,
-        attachments: attachments(e), receipt, label, replies, ...(inbox ? { inbox } : {}) });
+        attachments: attachments(e), receipt, label, replies, ...(receiptUnconfirmed ? { receiptUnconfirmed } : {}), ...(inbox ? { inbox } : {}) });
       i++; continue;
     }
     // Adjacent operational events form one group; messages and attention stay boundaries.
@@ -775,7 +809,7 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const provider = mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary);
+      const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
       const aliased = provider.map(event => {
         const id = bindings.get(eventKey(event));
         return id ? { ...event, activity_display_key: id } : event;

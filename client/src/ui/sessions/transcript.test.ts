@@ -43,6 +43,31 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
 });
 
 describe("local message rows (ActivityView.cpp:665-720, 1053-1068)", () => {
+  it("binds Antigravity receipts by request and preserves an exact earlier reply", () => {
+    const details = { backend: "agy", run_id: "r", conversation_id: "c" };
+    const offered = (seq: number, request_id: string, more: Partial<ActivityEvent> = {}): ActivityEvent => ({
+      source: "agy_acp", type: "UserPromptSubmit", seq, request_id, detail: "hello", ...more,
+    });
+    const events = [offered(1, "earlier"),
+      { ...offered(2, "earlier"), type: "AgentMessage", detail: "Earlier reply" },
+      offered(3, "current", { delivery_state: "unconfirmed", run_id: "r", conversation_id: "c" }),
+      { ...offered(4, "current"), type: "ProviderError", detail: "No proof" }];
+    const withoutLocal = buildTranscript(events, details) as ActivityItem[];
+    expect(withoutLocal[0]).toMatchObject({ receipt: "Sent" });
+    expect(withoutLocal[1]).toMatchObject({ body: "Earlier reply" });
+    expect(withoutLocal[2]).toMatchObject({ receipt: "Delivery not confirmed", receiptUnconfirmed: true });
+    const current = local("error", true, { id: "current" });
+    const bound = buildTranscript(events, details, [current]) as ActivityItem[];
+    expect(bound).toHaveLength(4);
+    expect(bound[0].receipt).toBe("Sent");
+    expect(bound[2].local).toMatchObject({ id: "current", stamp: "Delivery not confirmed", inspectLabel: "Check Activity" });
+    const wrong = buildTranscript(events, details, [{ ...current, conversation_id: "other" }]) as ActivityItem[];
+    expect(wrong).toHaveLength(5);
+    expect(wrong.find(i => i.receiptUnconfirmed)?.local).toBeUndefined();
+    const control = buildTranscript([offered(1, "silent", { delivery_state: "submitted" })], details) as ActivityItem[];
+    expect(control[0]).toMatchObject({ receipt: "Sent" });
+  });
+
   it("a native queued prompt keeps its queued label before answer labels", () => {
     const events: ActivityEvent[] = [{ seq: 1, type: "UserPromptQueued", at: 10, detail: "also lint",
       question_replies: [{ question: "Which checks?", answer: "Lint" }] }];

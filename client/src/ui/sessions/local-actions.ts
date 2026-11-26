@@ -29,7 +29,7 @@ export interface InspectPorts {
 }
 
 /** Where Check leads (messageAction "inspect", 4477-4481); nothing once its composer went. */
-export function routeInspect(inspect: Inspect | undefined, ports: InspectPorts): void {
+export function routeInspect(inspect: Exclude<Inspect, { kind: "activity" }> | undefined, ports: InspectPorts): void {
   if (!inspect) return;
   if (inspect.kind === "terminal") ports.showTerminal();
   else if (inspect.kind === "native_ui") ports.showNativeUi();

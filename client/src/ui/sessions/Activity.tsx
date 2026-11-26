@@ -454,11 +454,20 @@ function LocalActions(props: { local: LocalItem }) {
     else if (action === "delete") setDeleting({ id, from });
     else {
       const showNativeUi = nativeRoute(selected());
-      void composer.localInspect(id).then((routed) => routeInspect(routed, {
-        showNativeUi,
-        showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
-        notify: (tone, text) => { notify(tone, text); },
-      }));
+      const followed = activity.target();
+      void composer.localInspect(id).then((routed) => {
+        if (routed?.kind === "activity") {
+          if (activity.refresh(followed, routed.run_id, routed.conversation_id)) {
+            notify("info", tr("Refreshing Activity. Check the recorded messages before retrying."));
+          }
+          return;
+        }
+        routeInspect(routed, {
+          showNativeUi,
+          showTerminal: () => { terminal.opened(); setDetailTab("terminal"); },
+          notify: (tone, text) => { notify(tone, text); },
+        });
+      });
     }
   };
   const label = (action: LocalItem["actions"][number]) => (action === "retry"
@@ -656,7 +665,7 @@ function Item(props: {
           <Show when={it.local} fallback={<span class="act-time">{it.at}</span>}>
             {(l) => <span class="act-stamp" classList={{ failed: !!l().error || l().uncertain }}>{l().stamp}</span>}
           </Show>
-          <Show when={it.kind === "user" && it.receipt}><span class="act-receipt"><Icon name="check" size={11} />{it.receipt}</span></Show>
+          <Show when={it.kind === "user" && it.receipt}><span class="act-receipt"><Show when={!it.receiptUnconfirmed}><Icon name="check" size={11} /></Show>{it.receipt}</span></Show>
           <span class="grow" />
           <Show when={it.kind === "agent" && !it.excerpt}><button class="icon-btn small act-copy" title={tr("Copy as Markdown")} onClick={() => copyText(it.body ?? "", tr("The reply is on the clipboard"))}><Icon name="copy" size={12} /></button></Show>
         </header>

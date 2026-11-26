@@ -239,19 +239,34 @@ export function createActivity(port: ActivityPort) {
   function retry() {
     const t = target();
     if (!t || loaded() || !stalled() || subscribed !== t) return;
+    refollow(t, request(t));
+  }
+
+  /** Refresh a checked request's current Activity without dropping its transcript. */
+  function refresh(t: FollowTarget | undefined, run: string, conversation: string): boolean {
+    const state = currentSummary();
+    if (!t || t !== target() || subscribed !== t || !run || !conversation
+      || state?.run_id !== run || state.conversation_id !== conversation
+      || (t.runId && t.runId !== run) || (t.conversationId && t.conversationId !== conversation)) return false;
+    refollow(t, { ...request(t), run_id: run, conversation_id: conversation });
+    return true;
+  }
+
+  function refollow(t: FollowTarget, spec: FollowRequest) {
     const mine = ++attempt;
     const current = () => target() === t && attempt === mine;
-    subscribed = undefined;
     observing = false;
     setCurrentSummary(undefined);
     clearTimeout(firstPage);
     setStalled(false);
     const again = () => {
       if (!current()) return;
+      stateRev = -1;
+      revs.clear();
       subscribed = t;
       observing = true;
       watchFirstPage(t, mine);
-      void port.follow(request(t)).catch((reason) => {
+      void port.follow(spec).catch((reason) => {
         if (current()) followFailed(reason);
       });
     };
@@ -393,7 +408,7 @@ export function createActivity(port: ActivityPort) {
     return { computer: t.computer, name: t.name, conversation_id: conversation, archive_id: null };
   };
 
-  return { target, displayKey, events, summary, currentSummary, transcriptSummary, ended, loaded, loadingOlder, olderDone, error, stalled, retry, follow, loadOlder, applyActivity, attachmentScope };
+  return { target, displayKey, events, summary, currentSummary, transcriptSummary, ended, loaded, loadingOlder, olderDone, error, stalled, retry, refresh, follow, loadOlder, applyActivity, attachmentScope };
 }
 
 export type ActivityStore = ReturnType<typeof createActivity>;

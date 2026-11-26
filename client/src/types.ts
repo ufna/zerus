@@ -1007,7 +1007,8 @@ export type SendReply =
   | { kind: "cold"; token: number; prompt: ColdPrompt } | { kind: "clear_context"; token: number } | { kind: "start"; token: number; question: StartQuestion };
 export type Answer = { kind: "cold"; action: ColdAction } | { kind: "start"; choice: StartChoice } | { kind: "cancel" };
 /** Where Inspect on a failed local row leads. */
-export type Inspect = { kind: "native_ui" } | { kind: "terminal" } | { kind: "refresh"; notice: string };
+export type Inspect = { kind: "native_ui" } | { kind: "terminal" } | { kind: "refresh"; notice: string }
+  | { kind: "activity"; run_id: string; conversation_id: string };
 /** One exact native child; sends still name the parent run and conversation. */
 export interface SubagentRef { agent_id: string; parent_conversation_id: string }
 /** The session or child a composer belongs to (src-tauri `SessionRef`): `key` is the parent catalog key. */
