@@ -868,3 +868,151 @@ describe("the latest output in view (checkViewedReply's Terminal branch)", () =>
     });
   });
 });
+
+describe("the native OpenCode client exit", () => {
+  const openCode = (conversation_id = "ses_one", run_id = "run-open-code"): TerminalTarget => ({
+    computer: "", name: "opencode/example/first", run_id, conversation_id, machine: "fixture",
+  });
+  const attempts = (f: ReturnType<typeof fakes>) => f.calls.filter(call => call.startsWith("connect "));
+  const ended = { kind: "finished", status: "Disconnected", code: 0 } as const;
+
+  it("keeps a cleanly closed conversation disconnected across a tab remount and clears only on explicit Connect", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(openCode(), ok, "opencode");
+    t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    expect(t.openCodeAttached("", "run-open-code", "ses_one")).toBe(true);
+    expect(t.openCodeAttached("", "run-open-code", "ses_two")).toBe(false);
+    t.input(new TextEncoder().encode("/exit"));
+    await tick();
+    expect(f.calls).toContain("write 7 /exit");
+    expect(t.connected()).toBe(true);
+    f.emit(ended);
+    expect(t.connected()).toBe(false);
+    expect(t.openCodeAttached("", "run-open-code", "ses_one")).toBe(false);
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    expect(t.status()).toBe("Terminal closed. Select Connect to reopen.");
+    await t.toggle();
+    expect(attempts(f)).toHaveLength(2);
+    expect(t.connected()).toBe(true);
+  });
+
+  it("keeps the stop bound to the exact OpenCode run and conversation, including after a rename", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(openCode(), ok, "opencode");
+    t.show(f.screen); await tick();
+    f.emit(ended);
+    t.hide();
+    f.setChanged(false); // Rust also preserves the exact run on rename.
+    await t.setTarget({ ...openCode(), name: "opencode/example/renamed" }, ok, "opencode");
+    t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    await t.setTarget(openCode("ses_two"), ok, "opencode");
+    await tick();
+    expect(attempts(f)).toHaveLength(2);
+    expect(t.connected()).toBe(true);
+    f.setChanged(true);
+    await t.setTarget(openCode(), ok, "opencode"); await tick();
+    expect(attempts(f)).toHaveLength(2);
+  });
+
+  it("preserves the remount behavior of other providers and a failed OpenCode attach", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(target(), ok);
+    t.opened(); t.show(f.screen); await tick(); f.emit(ended);
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(2);
+    await t.setTarget(openCode(), ok, "opencode"); await tick();
+    f.emit({ ...ended, code: 1 });
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(4);
+  });
+});
+
+describe("OpenCode sink and retarget ordering", () => {
+  const bound = (conversation_id: string): TerminalTarget => ({
+    computer: "", machine: "fixture", name: "opencode/fixture/review", run_id: "opencode-run", conversation_id,
+  });
+  const ended = { kind: "finished", code: 0, status: "Disconnected" } as const;
+
+  it("keeps the clean finish on the prior sink while a live remount can only rebind", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    const connect = f.port.connect;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started = 0, rebinds = 0;
+    f.port.connect = async (...args) => {
+      if (args[5] !== undefined) {
+        expect(args[5]).toBe(7);
+        rebinds++;
+        await gate;
+        throw "The original native client is no longer attached";
+      }
+      started++;
+      return connect(...args);
+    };
+    await t.setTarget(bound("ses_a"), ok, "opencode");
+    t.show(f.screen); await tick();
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(rebinds).toBe(1);
+    f.emit(ended);
+    release();
+    await tick();
+    expect(t.status()).toBe("Terminal closed. Select Connect to reopen.");
+    expect(t.connected()).toBe(false);
+    expect(started).toBe(1);
+    t.hide(); t.show(f.screen); await tick();
+    expect(started).toBe(1);
+    await t.toggle();
+    expect(started).toBe(2);
+  });
+
+  it("keeps waiting for a clean finish even if the rebind refusal arrives first", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    const connect = f.port.connect;
+    let started = 0;
+    f.port.connect = async (...args) => {
+      if (args[5] !== undefined) throw "The original native client is no longer attached";
+      started++;
+      return connect(...args);
+    };
+    await t.setTarget(bound("ses_a"), ok, "opencode");
+    t.show(f.screen); await tick();
+    t.hide(); t.show(f.screen); await tick();
+    expect(t.connected()).toBe(false);
+    t.hide(); t.show(f.screen); await tick();
+    expect(started).toBe(1);
+    f.emit(ended);
+    expect(t.status()).toBe("Terminal closed. Select Connect to reopen.");
+    await t.toggle();
+    expect(started).toBe(2);
+  });
+
+  it("keeps the newest binding when an already issued same-run retarget settles late", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    const starts: string[] = [], original = f.port.connect;
+    f.port.connect = (...args) => { starts.push(args[1].conversation_id!); return original(...args); };
+    let complete!: () => void;
+    const gate = new Promise<void>(resolve => { complete = resolve; });
+    let entered = false;
+    f.port.retarget = async (_view, next) => {
+      if (next.conversation_id === "ses_b") { entered = true; await gate; }
+      return true;
+    };
+    await t.setTarget(bound("ses_a"), ok, "opencode");
+    t.show(f.screen); await tick();
+    const obsolete = t.setTarget(bound("ses_b"), ok, "opencode");
+    await tick();
+    expect(entered).toBe(true);
+    expect(t.ready()).toBe(false);
+    await t.toggle();
+    const latest = t.setTarget(bound("ses_a"), ok, "opencode");
+    complete();
+    await Promise.all([obsolete, latest]);
+    await tick();
+    expect(starts).toEqual(["ses_a", "ses_a"]);
+    expect(t.openCodeAttached("", "opencode-run", "ses_a")).toBe(true);
+    expect(t.openCodeAttached("", "opencode-run", "ses_b")).toBe(false);
+  });
+});

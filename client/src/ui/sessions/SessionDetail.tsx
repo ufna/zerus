@@ -14,7 +14,7 @@ import { Icon } from "../lib/icons";
 import { ActivityView, columnStyle } from "./Activity";
 import { KeepWarmChip } from "./KeepWarmChip";
 import { ShowInListButton } from "./ShowInList";
-import { AgentBadge, MachineBadge, captionText, statusOf, folderOf } from "./SessionCard";
+import { AgentBadge, MachineBadge, captionText, openCodeAvailabilityCaption, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
 import { teams } from "../../store/teams";
 import { rowIdentity } from "../teams/session-binding";
@@ -64,7 +64,7 @@ let reportedRemovedDetail = false;
 function headerCaption(): string {
   const s = selected();
   if (!s) return "";
-  return statusOf(s) === "offline" ? tr("Offline") : captionText(s.caption);
+  return statusOf(s) === "offline" ? tr("Offline") : openCodeAvailabilityCaption(s) ?? captionText(s.caption);
 }
 
 function EmptyDetail() {
@@ -203,11 +203,20 @@ createRoot(() => {
     return JSON.stringify([s.key, s.name, s.runId, s.terminalConversationId ?? s.conversationId, s.cmd, s.state, s.terminalSupported, s.terminalReported, s.terminalAttachSupported,
       s.terminalAttachReported, !computerOffline(s.computer), followed.value ?? details ?? null]);
   });
-  // Another selection: input stops reaching the previous session before anything is awaited.
-  createEffect(on(() => selected()?.key, () => { terminal.leaveSession(); }, { defer: true }));
+  // A new row or known OpenCode binding withdraws old input before status I/O.
+  createEffect(on(() => {
+    const s = selected();
+    return JSON.stringify(s?.cmd === "opencode"
+      ? [s.key, s.runId, s.terminalConversationId ?? s.conversationId] : [s?.key]);
+  }, () => { terminal.leaveSession(); }, { defer: true }));
+  let terminalStatusRequest = 0;
   createEffect(on(inputs, (input) => {
+    const request = ++terminalStatusRequest;
     const s = selected();
     if (!input || !s) { setTerminalTexts(undefined); void terminal.setTarget(undefined, undefined); return; }
+    const target = { computer: s.computer, name: s.name, run_id: s.runId ?? "",
+      conversation_id: s.terminalConversationId ?? s.conversationId, machine: s.machine };
+    const provider = s.cmd === "opencode" ? "opencode" : undefined;
     const followed = followedFor(s.key);
     void bridge.terminalStatus({
       facts: { cmd: s.cmd, terminal_supported: s.terminalSupported, terminal_reported: s.terminalReported, terminal_attach_supported: s.terminalAttachSupported,
@@ -215,9 +224,9 @@ createRoot(() => {
       details: followed.value ?? detailsFor(s, !computerOffline(s.computer), followed) ?? {},
       state: s.state, online: !computerOffline(s.computer), restored_pending: false, name: s.name, machine: s.machine,
     }).then((status) => {
-      if (selected()?.key !== s.key) return;
+      if (request !== terminalStatusRequest || inputs() !== input) return;
       setTerminalTexts(status);
-      void terminal.setTarget({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.terminalConversationId ?? s.conversationId, machine: s.machine }, status);
+      void terminal.setTarget(target, status, provider);
     });
   }));
   // Leaving the Sessions page disconnects, and coming back does not connect (SessionsWindow.cpp:1637, QStackedWidget::currentChanged).

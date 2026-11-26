@@ -10,7 +10,7 @@ import { copyVerbatim, pasteText } from "../../bridge";
 import { platform } from "../../store/shortcuts";
 import { clipboardKeyHandler, normalizeTerminalImage, terminalMenu } from "./terminal-clipboard";
 import { skin } from "../../skin/runtime";
-import { screenShowsLatest, terminal, type Screen } from "../../store/terminal";
+import { OPENCODE_TERMINAL_CLOSED, screenShowsLatest, terminal, type Screen } from "../../store/terminal";
 import { tr } from "../../i18n";
 
 // xterm.js 6 loads when Terminal first opens. Linux keeps the DOM renderer;
@@ -187,12 +187,25 @@ export function TerminalTab() {
   // Qt's updateButtons tooltips; unavailable shows the reason.
   const reason = () => terminal.texts()?.reason ?? "";
   const available = () => !!terminal.texts()?.available;
-  const toggleTip = () => (connected() ? tr("Disconnect terminal. The session keeps running") : available() ? tr("Connect terminal") : reason());
-  const reconnectTip = () => (available() ? tr("Reconnect terminal. The session keeps running") : reason());
+  const openCode = () => selected()?.cmd === "opencode";
+  const toggleTip = () => connected()
+    ? openCode() ? tr("Disconnect terminal") : tr("Disconnect terminal. The session keeps running")
+    : available() ? tr("Connect terminal") : reason();
+  const reconnectTip = () => available()
+    ? openCode() ? tr("Reconnect terminal") : tr("Reconnect terminal. The session keeps running")
+    : reason();
+  const status = () => {
+    const text = terminal.status();
+    if (text === OPENCODE_TERMINAL_CLOSED) return tr("Terminal closed. Select Connect to reopen.");
+    if (text === "Terminal is no longer attached. Select Connect to reopen.") {
+      return tr("Terminal is no longer attached. Select Connect to reopen.");
+    }
+    return text;
+  };
   return (
     <div class="term-tab">
       <div class="term-bar">
-        <span class="ell" title={terminal.status()}>{terminal.status()}</span>
+        <span class="ell" title={status()}>{status()}</span>
         <span class="grow" />
         <Show when={recoverable()}>{(pending) => (
           <button class="icon-btn term-release-input" data-tip={tr("Release unconfirmed input")} aria-label={tr("Release unconfirmed input")}
