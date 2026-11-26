@@ -14,7 +14,8 @@ use std::io::Read;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zerus_replica::{
     cancel_message, execution::ReportKind, task_dispatch_content, Actor, Position, ProjectStore,
-    SessionKey, Settings, Stage, Target, TaskAttachment, TaskDoc, Tools, MAX_TEXT,
+    ReviewAssignment, ReviewOwner, SessionKey, Settings, Stage, Target, TaskAttachment, TaskDoc,
+    Tools, MAX_TEXT,
 };
 
 mod answers;
@@ -68,7 +69,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | review-owner REF person|technical|unspecified | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -774,7 +775,7 @@ fn execute(config: &Config, args: &[String]) -> Result<Value> {
             change_guarded(config, "cancel", args, None, Some(&guard))
         }
         "start-plan" | "start-deliver" => dispatch::execute(config, action, args),
-        "edit" | "rename" | "move" | "stage" | "target" | "comment" | "report" | "start" | "send" | "handoff" | "cancel" | "worker" => {
+        "edit" | "rename" | "move" | "stage" | "target" | "comment" | "report" | "start" | "send" | "handoff" | "cancel" | "worker" | "review-owner" => {
             change(config, action, args)
         }
         "settings" => settings(config, args),
@@ -1269,6 +1270,39 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     Ok(teams::annotate(with_answer(&author, "add", out, at, "")))
 }
 
+/// A separate command lets older readers refuse rather than ignore a new
+/// option on an existing assignment command.
+fn review_assignment(
+    args: &[String],
+    read_criterion: impl FnOnce() -> Result<String>,
+) -> Result<Option<ReviewAssignment>> {
+    const USAGE: &str = "review-owner needs REF person|technical|unspecified; give the criterion on stdin for person or technical";
+    let [reference, owner, options @ ..] = args else {
+        return Err(fail(USAGE));
+    };
+    if reference.is_empty() || reference.starts_with('-') {
+        return Err(fail(USAGE));
+    }
+    match options {
+        [] => (),
+        [json] if json == "--json" => (),
+        [project, value] | [project, value, _]
+            if project == "--project"
+                && !value.is_empty()
+                && !value.starts_with('-')
+                && options.get(2).is_none_or(|arg| arg == "--json") => (),
+        _ => return Err(fail(USAGE)),
+    }
+    let owner = match owner.as_str() {
+        "person" => ReviewOwner::Person,
+        "technical" => ReviewOwner::Technical,
+        "unspecified" => return Ok(None),
+        _ => return Err(fail(USAGE)),
+    };
+    let criterion = read_criterion()?.trim().to_owned();
+    ReviewAssignment::new(owner, criterion).map(Some).map_err(fail)
+}
+
 fn change(config: &Config, action: &str, args: &[String]) -> Result<Value> {
     change_within(config, action, args, None)
 }
@@ -1286,6 +1320,11 @@ fn change_guarded(
     wait: Option<std::time::Duration>,
     guard: Option<&cancellation::Guard>,
 ) -> Result<Value> {
+    let review = if action == "review-owner" {
+        review_assignment(args, || stdin_text("review criterion"))?
+    } else {
+        None
+    };
     let team = teams::target(config, action, args)?;
     let content = if action == "edit" || (action == "comment" && flag(args, "--content-json")) {
         Some(stdin_content(args)?)
@@ -1622,6 +1661,9 @@ fn change_guarded(
                 &who,
                 now(),
             )
+            .map_err(fail)?,
+        "review-owner" => task
+            .set_review_assignment(review.as_ref(), &who, now())
             .map_err(fail)?,
         "report" | "report-attempt" => {
             let progress = flag(args, "--progress");

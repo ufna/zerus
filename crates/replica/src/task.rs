@@ -10,8 +10,8 @@ use crate::execution::{
     MAX_ATTEMPTS, MAX_ATTEMPT_EVENTS,
 };
 use crate::schema::{
-    check_text, Actor, LogEntry, SessionKey, Stage, Target, TaskView, TaskWorker, MAX_DOCUMENT,
-    SCHEMA,
+    check_text, Actor, LogEntry, ReviewAssignment, SessionKey, Stage, Target, TaskView, TaskWorker,
+    MAX_DOCUMENT, SCHEMA,
 };
 use crate::{ids, rank, Error, Result};
 use loro::{ContainerTrait, ExportMode, LoroDoc, LoroMap, LoroValue, UpdateOptions, VersionVector};
@@ -832,6 +832,16 @@ impl TaskDoc {
             Err(_) if !writable => None,
             Err(error) => return Err(error),
         };
+        #[cfg(not(feature = "test-without-team"))]
+        let (team, team_invalid) = (self.team()?, self.team_invalid());
+        #[cfg(not(feature = "test-without-team"))]
+        let review_assignment = if team.is_none() && !team_invalid {
+            self.review_assignment()
+        } else {
+            None
+        };
+        #[cfg(feature = "test-without-team")]
+        let review_assignment = self.review_assignment();
         Ok((
             TaskView {
                 uuid: self.uuid.clone(),
@@ -848,9 +858,9 @@ impl TaskDoc {
                 stage,
                 target,
                 #[cfg(not(feature = "test-without-team"))]
-                team: self.team()?,
+                team,
                 #[cfg(not(feature = "test-without-team"))]
-                team_invalid: self.team_invalid(),
+                team_invalid,
                 rank: self.rank(),
                 session,
                 worker: match string(&fields, "worker")
@@ -861,6 +871,7 @@ impl TaskDoc {
                     worker => worker?,
                 },
                 summary: string(&fields, "summary").unwrap_or_default(),
+                review_assignment,
                 cancelled_at: integer(&fields, "cancelled_at"),
                 cancel_reason: string(&fields, "cancel_reason").unwrap_or_default(),
                 title: self.title(),
@@ -1178,6 +1189,49 @@ impl TaskDoc {
         self.log("stage", actor, now, to.as_str(), None)?;
         self.commit()?;
         Ok(())
+    }
+
+    fn review_assignment(&self) -> Option<ReviewAssignment> {
+        decode::<ReviewAssignment>(&self.fields(), "review_assignment")
+            .ok()
+            .filter(|assignment| assignment.check().is_ok())
+    }
+
+    pub fn set_review_assignment(
+        &mut self,
+        assignment: Option<&ReviewAssignment>,
+        actor: &Actor,
+        now: i64,
+    ) -> Result<()> {
+        self.require(
+            &[Stage::Backlog, Stage::Todo],
+            "the review assignment can be changed only in Backlog or To do",
+        )?;
+        #[cfg(not(feature = "test-without-team"))]
+        if self.team()?.is_some() || self.team_invalid() {
+            return Err(Error::new("use the team's review policy for a team task"));
+        }
+        if let Some(assignment) = assignment {
+            assignment.check()?;
+        }
+        if self.review_assignment().as_ref() == assignment
+            && (assignment.is_some() || self.fields().get("review_assignment").is_none())
+        {
+            return Ok(());
+        }
+        let label = match assignment {
+            Some(assignment) => {
+                self.fields()
+                    .insert("review_assignment", serde_json::to_string(assignment)?)?;
+                format!("{}: {}", assignment.owner.as_str(), assignment.criterion)
+            }
+            None => {
+                self.fields().delete("review_assignment")?;
+                "unspecified".into()
+            }
+        };
+        self.log("review_assignment", actor, now, &label, None)?;
+        self.commit()
     }
 
     pub fn set_target(&mut self, target: &Target, actor: &Actor, now: i64) -> Result<()> {

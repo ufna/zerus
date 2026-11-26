@@ -5414,6 +5414,21 @@ progress to In review and pastes the cancel message without stopping the turn;
 its reason is kept as a comment and never pasted. A task this computer already
 shows In progress is not sent again.
 
+At assignment, `hgs task review-owner REF person|technical` records who is
+expected to review an ordinary project task. Put a one-line acceptance criterion
+on stdin. Set it in Backlog or To do, alongside the executor assignment.
+`person` is for a concrete decision or personal verification.
+`technical` is for the coordinator or reviewer. `review-owner REF unspecified`
+clears the assignment. The task details show the reviewer and criterion.
+
+The shared In review stage still includes all reports. On the desktop, its
+cards distinguish **Your decision**, **Coordinator or reviewer next**, and
+**Coordinator to triage**. Older entries with no explicit assignment and
+cancelled or unresolved executions go to triage. The task inspector shows
+the saved criterion. These labels do not accept work or change who may move a
+task to Done. Tasks routed to an Agent Team continue to use that team's review
+policy.
+
 Both report commands add the report to history. For a managed execution an
 agent uses `hgs task report-attempt REF --attempt UUID`, with the UUID supplied
 by its original dispatch or start acknowledgement. The named immutable attempt

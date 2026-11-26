@@ -61,6 +61,11 @@ pub(super) fn answer(action: &str, out: &Value, place: usize, caller: &str, dest
             format!("{it} now goes to {}.", session(&task["target"]))
         }
         "target" => format!("{it} now goes to any session."),
+        "review-owner" => match task["review_assignment"]["owner"].as_str() {
+            Some("person") => format!("{it} is assigned to the person for review."),
+            Some("technical") => format!("{it} is assigned to the coordinator or reviewer."),
+            _ => format!("{it} has no review assignment."),
+        },
         "comment" => format!("Added your comment to {it}."),
         "report" if out["moved_to_review"] == true => format!("{it} is In review."),
         "report" if out["stale"].is_string() => {

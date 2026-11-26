@@ -1,0 +1,74 @@
+[
+  {
+    "author": {
+      "kind": "agent",
+      "machine": "example-computer",
+      "session": "codex/example/worker",
+      "session_id": "run_id:example"
+    },
+    "cancelled_at": null,
+    "id": "T-aaaa00",
+    "review_assignment": {
+      "criterion": "Approve the sample output",
+      "owner": "person"
+    },
+    "stage": "review",
+    "summary": "Finished",
+    "title": "Needs a decision",
+    "uuid": "00000000-0000-4000-8000-000000000000",
+    "writable": true
+  },
+  {
+    "author": {
+      "kind": "agent",
+      "machine": "example-computer",
+      "session": "codex/example/worker",
+      "session_id": "run_id:example"
+    },
+    "cancelled_at": null,
+    "id": "T-aaaa01",
+    "review_assignment": {
+      "criterion": "Verify the test results",
+      "owner": "technical"
+    },
+    "stage": "review",
+    "summary": "Finished",
+    "title": "Needs a technical check",
+    "uuid": "00000000-0000-4000-8000-000000000001",
+    "writable": true
+  },
+  {
+    "author": {
+      "kind": "agent",
+      "machine": "example-computer",
+      "session": "codex/example/worker",
+      "session_id": "run_id:example"
+    },
+    "cancelled_at": null,
+    "id": "T-aaaa02",
+    "stage": "review",
+    "summary": "Finished",
+    "title": "Review owner unspecified",
+    "uuid": "00000000-0000-4000-8000-000000000002",
+    "writable": true
+  },
+  {
+    "author": {
+      "kind": "agent",
+      "machine": "example-computer",
+      "session": "codex/example/worker",
+      "session_id": "run_id:example"
+    },
+    "cancelled_at": 17,
+    "id": "T-aaaa03",
+    "review_assignment": {
+      "criterion": "Check the sample output",
+      "owner": "person"
+    },
+    "stage": "review",
+    "summary": "",
+    "title": "Cancelled work",
+    "uuid": "00000000-0000-4000-8000-000000000003",
+    "writable": true
+  }
+]

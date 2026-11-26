@@ -1,6 +1,6 @@
 import { batch, createSignal } from "solid-js";
 import type { TaskScope } from "../bridge";
-import { STAGES, object, taskItem, text, type Stage, type Task } from "../ui/screens/tasks-ui";
+import { STAGES, decodeTaskRows, object, text, type Stage, type Task } from "../ui/screens/tasks-ui";
 
 /** `hgs task list --session` of an older hgs (client/core `UPDATE_FOR_SESSION_PAGES`). */
 export const UPDATE_FOR_SESSION_PAGES = "Update hgs to read one session's tasks.";
@@ -26,6 +26,10 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
   const [counts, setCounts] = createSignal<Record<Stage, number> | null>(null);
   const [loading, setLoading] = createSignal(none(false));
   const [error, setError] = createSignal("");
+  const [refreshErrors, setRefreshErrors] = createSignal(none(""));
+  const [reviewStale, setReviewStale] = createSignal(false);
+  const refreshError = (stage: Stage, message: string) =>
+    setRefreshErrors((errors) => ({ ...errors, [stage]: message }));
   const [unsupported, setUnsupported] = createSignal(false);
   let project = "", scope: TaskScope | undefined, query = "", watched: readonly Stage[] = [], generation = 0;
   /** Changes of the list so far, and the change the shown totals were read at (zerus-0h8lg). */
@@ -33,13 +37,6 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
   let extent = none(0), fresh = none(false), reads = none(0), again = none(false);
 
   const busy = (stage: Stage, on: boolean) => setLoading({ ...loading(), [stage]: on });
-  const unique = (values: unknown, stage: Stage) => {
-    const seen = new Set<string>();
-    return (Array.isArray(values) ? values : []).flatMap((value) => {
-      const t = taskItem(value); if (!t.uuid || seen.has(t.uuid) || t.stage !== stage) return [];
-      seen.add(t.uuid); return [t];
-    });
-  };
   /** Totals of every stage from a reply read at change `seen`; never older than those shown. */
   const counted = (page: Page, seen: number) => {
     const c = object(page.counts);
@@ -70,18 +67,34 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
         const page = await (search ? read(owner, stage, limit, after, as, search) : read(owner, stage, limit, after, as)) as Page;
         if (at !== generation || mine !== reads[stage]) return;
         const cursor = text(object(page.page).next) || null;
-        found = unique([...found, ...(Array.isArray(page.tasks) ? page.tasks : [])], stage);
+        found = decodeTaskRows(Array.isArray(page.tasks) ? page.tasks : [], stage, found);
         counted(page, seen);
         // A cursor that does not advance ends the read rather than looping on it.
         after = cursor && cursor !== after ? cursor : null;
       } while (after && found.length < want && ++pages < maxPages);
-      batch(() => { placed(stage, found, after); setError(""); });
+      batch(() => {
+        placed(stage, found, after);
+        if (seen === change) {
+          refreshError(stage, "");
+          if (stage === "review") setReviewStale(false);
+        }
+        setError("");
+      });
     } catch (e) {
-      if (at === generation && mine === reads[stage]) failed(e);
+      if (at === generation && mine === reads[stage]) {
+        failed(e);
+        refreshError(stage, String(e));
+      }
     } finally {
       if (at === generation && mine === reads[stage]) settle(stage);
     }
   }
+  function invalidate() {
+    change++;
+    fresh = none(false);
+    setReviewStale(true);
+  }
+
   function refresh(stage: Stage) {
     if (!key() || unsupported()) return;
     if (!watched.includes(stage)) { fresh[stage] = false; return; }
@@ -93,7 +106,8 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
     /** Whether the board shows hgs's session view or search results. */
     active: () => !!key() && !unsupported(),
     /** An hgs without `--session`: the board filters its loaded rows instead. */
-    unsupported, error, loading,
+    unsupported, error, loading, reviewStale,
+    refreshError: (stage: Stage) => refreshErrors()[stage],
     rows: (stage: Stage) => view().rows[stage],
     /** Whether `stage` was read for this view (an empty one is then really empty). */
     read: (stage: Stage) => view().read[stage],
@@ -114,7 +128,7 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
         extent = none(0); fresh = none(false); again = none(false);
         batch(() => {
           setKey(next); setView({ rows: none([]), next: none(null), read: none(false) }); setCounts(null);
-          setLoading(none(false)); setError(""); setUnsupported(false);
+          setLoading(none(false)); setError(""); setRefreshErrors(none("")); setUnsupported(false); setReviewStale(false);
         });
       }
       watched = stages;
@@ -122,9 +136,14 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
     },
     /** The project's list changed: every stage is read again when shown. */
     changed() {
-      change++;
-      fresh = none(false);
+      invalidate();
       for (const s of watched) refresh(s);
+    },
+    /** A project failure ages the retained scoped Review rows and any
+     * in-flight answer. Reconnect starts the next read. */
+    unavailable() {
+      invalidate();
+      again = none(false);
     },
     /**
      * Nothing shows the view now (the Tasks panel closed, zerus-fgyiy): no
@@ -148,7 +167,7 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
       try {
         const page = await (query ? read(project, stage, window, after, scope, query) : read(project, stage, window, after, scope)) as Page;
         if (at !== generation || mine !== reads[stage]) return;
-        const rows = unique([...view().rows[stage], ...(Array.isArray(page.tasks) ? page.tasks : [])], stage);
+        const rows = decodeTaskRows(Array.isArray(page.tasks) ? page.tasks : [], stage, view().rows[stage]);
         extent = { ...extent, [stage]: rows.length };
         counted(page, seen);
         batch(() => { placed(stage, rows, text(object(page.page).next) || null); setError(""); });

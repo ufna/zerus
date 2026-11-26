@@ -190,6 +190,8 @@ pub fn checked_scoped_page(
     {
         return Err("Invalid task page.".into());
     }
+    let mut tasks = tasks.clone();
+    present_rows(&mut tasks);
     let mut out = json!({
         "tasks": tasks,
         "page": page,
@@ -200,6 +202,15 @@ pub fn checked_scoped_page(
         out["session"] = reply["session"].clone();
     }
     Ok(out)
+}
+
+/// The bounded page and the batched subscription publish the same task rows.
+pub(crate) fn present_rows(rows: &mut [Value]) {
+    for task in rows {
+        if let Some(task) = task.as_object_mut() {
+            crate::task_view::present_review(task);
+        }
+    }
 }
 
 /// One change of a followed project's task list.

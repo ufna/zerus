@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub mod execution;
+mod review;
+
+pub(crate) use review::present_review;
 
 #[cfg(test)]
 #[path = "task_view/execution_tests.rs"]

@@ -61,7 +61,13 @@ export function createTaskDetails(read: (project: string, uuid: string, before: 
       const reply = await read(target.project, target.uuid, cursor ?? null);
       if (mine === generation) { const next = taskDetail(reply, target.project, target.uuid); setData((previous) => retained(previous, next)); setError(""); }
     } catch (e) { if (mine === generation) setError(String(e)); }
-    finally { running = false; if (mine === generation) setLoading(false); void drain(); }
+    finally {
+      running = false;
+      // A reply may publish its discussion while a newer read is pending.
+      // Keep loading continuously true until that current read settles.
+      if (mine === generation && !pending) setLoading(false);
+      void drain();
+    }
   };
   const refresh = () => { if (selection) { pending = true; void drain(); } };
   return {

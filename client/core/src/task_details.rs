@@ -356,9 +356,6 @@ pub fn present(
     mut files: impl FnMut(&Value, Option<&str>) -> Result<Value, String>,
 ) -> Result<Value, String> {
     let unknown = detail.pointer("/execution/unknown").cloned();
-    // Share the list reader's bounded scalar projection. Never pass the raw
-    // execution object (including frozen input/history) to the renderer.
-    let execution = crate::task_view::execution::Execution::from_value(&detail["execution"]);
     const FIELDS: &[&str] = &[
         "uuid",
         "id",
@@ -385,15 +382,15 @@ pub fn present(
         "history_next",
         "history_schema",
         "unknown_attempts",
+        "execution",
+        "execution_unavailable",
+        "review_assignment",
+        "team",
+        "team_invalid",
     ];
-    detail
-        .as_object_mut()
-        .ok_or("Invalid task response")?
-        .retain(|key, _| FIELDS.contains(&key.as_str()));
-    if let Some(execution) = execution {
-        detail["execution"] =
-            serde_json::to_value(execution).map_err(|_| "Invalid task execution")?;
-    }
+    let view = detail.as_object_mut().ok_or("Invalid task response")?;
+    view.retain(|key, _| FIELDS.contains(&key.as_str()));
+    crate::task_view::present_review(view);
     // Only original UUIDs, never frozen native requests or arbitrary replica
     // fields. The protocol bounds one task to 256 attempts.
     detail.as_object_mut().unwrap().remove("unknown_attempts");

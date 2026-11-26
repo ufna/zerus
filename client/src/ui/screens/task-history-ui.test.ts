@@ -36,3 +36,10 @@ describe("Qt task journal labels", () => {
     e.delivery.error = "offline"; expect(deliveryError(e)).toBe("offline");
   });
 });
+
+it("uses review assignment history labels instead of stored owner codes", () => {
+  const review = (text: string) => historyAction({ ...entry("note"), kind: "review_assignment", text });
+  expect(review("person: Check the sample")).toBe("Assigned personal review. Criterion: Check the sample");
+  expect(review("technical: Check the sample")).toBe("Assigned technical review. Criterion: Check the sample");
+  expect(review("unspecified")).toBe("Cleared review assignment");
+});
