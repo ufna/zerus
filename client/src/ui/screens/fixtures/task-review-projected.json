@@ -1,0 +1,786 @@
+{
+  "details": [
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "started:3",
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa00",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "review_assignment": {
+        "criterion": "Check the fixture",
+        "owner": "person"
+      },
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": true,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "text": "Check the sample",
+      "title": "Person",
+      "uuid": "00000000-0000-4000-8000-000000000100",
+      "writable": true
+    },
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "started:3",
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa01",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "review_assignment": {
+        "criterion": "Check the fixture",
+        "owner": "technical"
+      },
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": true,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "text": "Check the sample",
+      "title": "Technical",
+      "uuid": "00000000-0000-4000-8000-000000000101",
+      "writable": true
+    },
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "started:3",
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa02",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": true,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "text": "Check the sample",
+      "title": "Legacy",
+      "uuid": "00000000-0000-4000-8000-000000000102",
+      "writable": true
+    },
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "started:3",
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa03",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": true,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "team": {
+        "home": "22222222-2222-4222-8222-222222222222",
+        "team": "11111111-1111-4111-8111-111111111111"
+      },
+      "text": "Check the sample",
+      "title": "Team",
+      "uuid": "00000000-0000-4000-8000-000000000103",
+      "writable": true
+    },
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "11111111-1111-4111-8111-111111111111",
+      "execution": {
+        "attempts": 2,
+        "conflict": true,
+        "current": {
+          "at": 3,
+          "began_at": null,
+          "executor": {
+            "host": null,
+            "machine": "example-computer",
+            "resolved": true,
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "generation": 1,
+          "id": "11111111-1111-4111-8111-111111111111",
+          "legacy": false,
+          "origin": "send",
+          "phase": "ready",
+          "progress_at": null,
+          "request_id": "11111111-1111-4111-8111-111111111111",
+          "requirement": 1
+        },
+        "has_unexplained": false,
+        "has_unknown": false,
+        "requirement": 1
+      },
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa04",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "review_assignment": {
+        "criterion": "Check the fixture",
+        "owner": "person"
+      },
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": false,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "text": "Check the sample",
+      "title": "Conflict",
+      "uuid": "00000000-0000-4000-8000-000000000104",
+      "writable": true
+    },
+    {
+      "attachments": [],
+      "author": {
+        "kind": "person"
+      },
+      "cancel_reason": "",
+      "cancelled_at": null,
+      "created_at": 1,
+      "dispatch_id": "11111111-1111-4111-8111-111111111111",
+      "execution": {
+        "attempts": 2,
+        "conflict": true,
+        "current": {
+          "at": 3,
+          "began_at": null,
+          "executor": {
+            "host": null,
+            "machine": "example-computer",
+            "resolved": true,
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "generation": 1,
+          "id": "11111111-1111-4111-8111-111111111111",
+          "legacy": false,
+          "origin": "send",
+          "phase": "ready",
+          "progress_at": null,
+          "request_id": "11111111-1111-4111-8111-111111111111",
+          "requirement": 1
+        },
+        "has_unexplained": false,
+        "has_unknown": true,
+        "requirement": 1
+      },
+      "history_next": null,
+      "history_schema": 1,
+      "id": "T-aaaa05",
+      "log": [],
+      "log_total": 0,
+      "project": "example-project",
+      "review_assignment": {
+        "criterion": "Check the fixture",
+        "owner": "person"
+      },
+      "session": {
+        "machine": "example-computer",
+        "session": "codex/example/worker",
+        "session_id": "run_id:example"
+      },
+      "stage": "review",
+      "stage_at": 5,
+      "start_confirmed": false,
+      "summary": "Finished",
+      "target": {
+        "kind": "any"
+      },
+      "text": "Check the sample",
+      "title": "Unknown",
+      "unknown_attempts": [
+        "22222222-2222-4222-8222-222222222222"
+      ],
+      "uuid": "00000000-0000-4000-8000-000000000105",
+      "writable": true
+    }
+  ],
+  "search": {
+    "counts": {
+      "active": 0,
+      "backlog": 0,
+      "done": 0,
+      "review": 6,
+      "todo": 0
+    },
+    "page": {
+      "next": null,
+      "schema": 1,
+      "stage": "review"
+    },
+    "query": "sample",
+    "revision": null,
+    "tasks": [
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "started:3",
+        "id": "T-aaaa00",
+        "project": "example-project",
+        "rank": "U",
+        "review_assignment": {
+          "criterion": "Check the fixture",
+          "owner": "person"
+        },
+        "schema": 4,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "text": "Check the sample",
+        "title": "Person",
+        "uuid": "00000000-0000-4000-8000-000000000100",
+        "writable": true
+      },
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "started:3",
+        "id": "T-aaaa01",
+        "project": "example-project",
+        "rank": "V",
+        "review_assignment": {
+          "criterion": "Check the fixture",
+          "owner": "technical"
+        },
+        "schema": 4,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "text": "Check the sample",
+        "title": "Technical",
+        "uuid": "00000000-0000-4000-8000-000000000101",
+        "writable": true
+      },
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "started:3",
+        "id": "T-aaaa02",
+        "project": "example-project",
+        "rank": "W",
+        "schema": 4,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "text": "Check the sample",
+        "title": "Legacy",
+        "uuid": "00000000-0000-4000-8000-000000000102",
+        "writable": true
+      },
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "started:3",
+        "id": "T-aaaa03",
+        "project": "example-project",
+        "rank": "X",
+        "schema": 4,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "team": {
+          "home": "22222222-2222-4222-8222-222222222222",
+          "team": "11111111-1111-4111-8111-111111111111"
+        },
+        "text": "Check the sample",
+        "title": "Team",
+        "uuid": "00000000-0000-4000-8000-000000000103",
+        "writable": true
+      },
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "11111111-1111-4111-8111-111111111111",
+        "execution": {
+          "attempts": 2,
+          "conflict": true,
+          "current": {
+            "at": 3,
+            "began_at": null,
+            "executor": {
+              "host": null,
+              "machine": "example-computer",
+              "resolved": true,
+              "session": "codex/example/worker",
+              "session_id": "run_id:example"
+            },
+            "generation": 1,
+            "id": "11111111-1111-4111-8111-111111111111",
+            "legacy": false,
+            "origin": "send",
+            "phase": "ready",
+            "progress_at": null,
+            "request_id": "11111111-1111-4111-8111-111111111111",
+            "requirement": 1
+          },
+          "has_unexplained": false,
+          "has_unknown": false,
+          "requirement": 1
+        },
+        "id": "T-aaaa04",
+        "project": "example-project",
+        "rank": "Y",
+        "review_assignment": {
+          "criterion": "Check the fixture",
+          "owner": "person"
+        },
+        "schema": 7,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "text": "Check the sample",
+        "title": "Conflict",
+        "uuid": "00000000-0000-4000-8000-000000000104",
+        "writable": true
+      },
+      {
+        "author": {
+          "kind": "person"
+        },
+        "cancel_reason": "",
+        "cancelled_at": null,
+        "created_at": 1,
+        "dispatch_id": "11111111-1111-4111-8111-111111111111",
+        "execution": {
+          "attempts": 2,
+          "conflict": true,
+          "current": {
+            "at": 3,
+            "began_at": null,
+            "executor": {
+              "host": null,
+              "machine": "example-computer",
+              "resolved": true,
+              "session": "codex/example/worker",
+              "session_id": "run_id:example"
+            },
+            "generation": 1,
+            "id": "11111111-1111-4111-8111-111111111111",
+            "legacy": false,
+            "origin": "send",
+            "phase": "ready",
+            "progress_at": null,
+            "request_id": "11111111-1111-4111-8111-111111111111",
+            "requirement": 1
+          },
+          "has_unexplained": false,
+          "has_unknown": true,
+          "requirement": 1
+        },
+        "id": "T-aaaa05",
+        "project": "example-project",
+        "rank": "Z",
+        "review_assignment": {
+          "criterion": "Check the fixture",
+          "owner": "person"
+        },
+        "schema": 7,
+        "session": {
+          "machine": "example-computer",
+          "session": "codex/example/worker",
+          "session_id": "run_id:example"
+        },
+        "stage": "review",
+        "stage_at": 5,
+        "summary": "Finished",
+        "target": {
+          "kind": "any"
+        },
+        "text": "Check the sample",
+        "title": "Unknown",
+        "uuid": "00000000-0000-4000-8000-000000000105",
+        "writable": true
+      }
+    ]
+  },
+  "stream": {
+    "computer": "",
+    "key": "example-project",
+    "kind": "list",
+    "payload": {
+      "damaged": [],
+      "digest": "review-fixture",
+      "project": {
+        "accessible": true,
+        "id": "example-project",
+        "name": "Example"
+      },
+      "tasks": [
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "started:3",
+          "id": "T-aaaa00",
+          "project": "example-project",
+          "rank": "U",
+          "review_assignment": {
+            "criterion": "Check the fixture",
+            "owner": "person"
+          },
+          "schema": 4,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "text": "Check the sample",
+          "title": "Person",
+          "uuid": "00000000-0000-4000-8000-000000000100",
+          "writable": true
+        },
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "started:3",
+          "id": "T-aaaa01",
+          "project": "example-project",
+          "rank": "V",
+          "review_assignment": {
+            "criterion": "Check the fixture",
+            "owner": "technical"
+          },
+          "schema": 4,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "text": "Check the sample",
+          "title": "Technical",
+          "uuid": "00000000-0000-4000-8000-000000000101",
+          "writable": true
+        },
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "started:3",
+          "id": "T-aaaa02",
+          "project": "example-project",
+          "rank": "W",
+          "schema": 4,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "text": "Check the sample",
+          "title": "Legacy",
+          "uuid": "00000000-0000-4000-8000-000000000102",
+          "writable": true
+        },
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "started:3",
+          "id": "T-aaaa03",
+          "project": "example-project",
+          "rank": "X",
+          "schema": 4,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "team": {
+            "home": "22222222-2222-4222-8222-222222222222",
+            "team": "11111111-1111-4111-8111-111111111111"
+          },
+          "text": "Check the sample",
+          "title": "Team",
+          "uuid": "00000000-0000-4000-8000-000000000103",
+          "writable": true
+        },
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "11111111-1111-4111-8111-111111111111",
+          "execution": {
+            "attempts": 2,
+            "conflict": true,
+            "current": {
+              "at": 3,
+              "began_at": null,
+              "executor": {
+                "host": null,
+                "machine": "example-computer",
+                "resolved": true,
+                "session": "codex/example/worker",
+                "session_id": "run_id:example"
+              },
+              "generation": 1,
+              "id": "11111111-1111-4111-8111-111111111111",
+              "legacy": false,
+              "origin": "send",
+              "phase": "ready",
+              "progress_at": null,
+              "request_id": "11111111-1111-4111-8111-111111111111",
+              "requirement": 1
+            },
+            "has_unexplained": false,
+            "has_unknown": false,
+            "requirement": 1
+          },
+          "id": "T-aaaa04",
+          "project": "example-project",
+          "rank": "Y",
+          "review_assignment": {
+            "criterion": "Check the fixture",
+            "owner": "person"
+          },
+          "schema": 7,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "text": "Check the sample",
+          "title": "Conflict",
+          "uuid": "00000000-0000-4000-8000-000000000104",
+          "writable": true
+        },
+        {
+          "author": {
+            "kind": "person"
+          },
+          "cancel_reason": "",
+          "cancelled_at": null,
+          "created_at": 1,
+          "dispatch_id": "11111111-1111-4111-8111-111111111111",
+          "execution": {
+            "attempts": 2,
+            "conflict": true,
+            "current": {
+              "at": 3,
+              "began_at": null,
+              "executor": {
+                "host": null,
+                "machine": "example-computer",
+                "resolved": true,
+                "session": "codex/example/worker",
+                "session_id": "run_id:example"
+              },
+              "generation": 1,
+              "id": "11111111-1111-4111-8111-111111111111",
+              "legacy": false,
+              "origin": "send",
+              "phase": "ready",
+              "progress_at": null,
+              "request_id": "11111111-1111-4111-8111-111111111111",
+              "requirement": 1
+            },
+            "has_unexplained": false,
+            "has_unknown": true,
+            "requirement": 1
+          },
+          "id": "T-aaaa05",
+          "project": "example-project",
+          "rank": "Z",
+          "review_assignment": {
+            "criterion": "Check the fixture",
+            "owner": "person"
+          },
+          "schema": 7,
+          "session": {
+            "machine": "example-computer",
+            "session": "codex/example/worker",
+            "session_id": "run_id:example"
+          },
+          "stage": "review",
+          "stage_at": 5,
+          "summary": "Finished",
+          "target": {
+            "kind": "any"
+          },
+          "text": "Check the sample",
+          "title": "Unknown",
+          "uuid": "00000000-0000-4000-8000-000000000105",
+          "writable": true
+        }
+      ],
+      "truncated": false
+    }
+  }
+}

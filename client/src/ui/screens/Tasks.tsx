@@ -12,7 +12,7 @@ import { selectedTask, openTask, requestTaskRename } from "../../store/taskNavig
 import { tasks } from "../../store/tasks";
 import { flag, setSetting } from "../../store/settings";
 import { now, selected, setMenu } from "../../store/ui";
-import { RECENT_DONE, STAGES, STAGE_ICON, STAGE_LABEL, stageLabel, TASK_PAGE, assignmentLabel, boardRows, boardTask, belongsTo, keepsSessionFilter, executorRef, sessionIdentity, taskPageOffset, type Stage, type Task } from "./tasks-ui";
+import { RECENT_DONE, STAGES, STAGE_ICON, STAGE_LABEL, stageLabel, TASK_PAGE, assignmentLabel, reviewNext, boardRows, boardTask, belongsTo, keepsSessionFilter, executorRef, sessionIdentity, taskPageOffset, type Stage, type Task } from "./tasks-ui";
 import { openTaskAssignment, assigningTask, canAssign, draggedTask, setDraggedTask, taskDragStart, readTaskDrag, TASK_MIME, assign, taskAssignmentAt } from "../../store/taskAssignment";
 import { POINTER_DRAG, pointerDrag } from "../lib/pointerDrag";
 import { ACTION_ICON, ACTION_LABEL, actionLabel, actOnTask, boardActions, canDrag, primaryAction, reorderGap, sendToTeam, stageDropAction, writingTask } from "../../store/taskBoard";
@@ -69,7 +69,12 @@ export function TasksPanel() {
     : s === "current" ? tasks.total("review") + tasks.total("active") : tasks.total(s);
   const remaining = (s: Stage) => searchBlocked() ? 0 : sessionTaskRows() ? view.remaining(s) : tasks.remaining(s);
   const reading = (s: Stage) => sessionTaskRows() ? view.loading()[s] : tasks.loading()[s];
-  const pageError = () => sessionTaskRows() ? view.error() : tasks.pageError();
+  const reviewRefreshError = () => sessionTaskRows() ? view.refreshError("review") : tasks.refreshError("review");
+  const currentReview = (task: Task) => sessionTaskRows()
+    ? !view.reviewStale() && !view.refreshError("review")
+    : !tasks.retainedReview().has(task.uuid);
+  const pageError = () => (stagesOf(stage()).includes("review") && reviewRefreshError())
+    || (sessionTaskRows() ? view.error() : tasks.pageError());
   const listed = () => sessionTaskRows() ? stagesOf(stage()).every((s) => view.read(s)) : tasks.loaded();
   const moreStages = () => stagesOf(stage()).filter((s) => remaining(s) > 0);
   const loadMore = async (s: Stage) => {
@@ -197,7 +202,17 @@ export function TasksPanel() {
       <Show when={drag() && canAssign(drag()!, project()!.id)}><div class="tk-drophint" role="status"><Icon name="corner-down-right" size={13} />{tr("Drop onto a session in the list to assign it; onto the project header for Any session.")}</div></Show>
       <div class="tk-scroll" ref={scroller} onDragOver={over} onDrop={dropped} onDragLeave={(e) => { if (!scroller.contains(e.relatedTarget as Node)) endDrag(); }}><div class="tk-cards" ref={cards} role="list" aria-label={tr("%1 tasks", tr(LABEL[stage()]))}><For each={shown()}>{(t) => <article class={`tk-card st-${t.stage}`} data-task={t.uuid} data-stage={t.stage} classList={{ sel: selectedTask()?.uuid === t.uuid, mine: !!selected() && belongsTo(t, selected()!), quiet: ["backlog", "done"].includes(t.stage), dragging: draggedTask()?.uuid === t.uuid }} tabindex="0" role="listitem" aria-label={`${t.id}: ${t.title}`} draggable={!POINTER_DRAG && canDrag(t) && !writingTask()} onDragStart={(e) => taskDragStart(e, t)} onPointerDown={(e) => pointerTask(e, t)} onDragEnd={() => { setDraggedTask(undefined); setDropTile(undefined); endDrag(); }} onClick={() => openTask(project()!.id, t.uuid)} onContextMenu={(e) => menu(e, t)} onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTask(project()!.id, t.uuid); } else if (e.key === "ContextMenu" || e.shiftKey && e.key === "F10") menu(e, t); }}>
         <span class={`tk-glyph st-${t.stage}`} aria-hidden="true"><Show when={t.stage === "todo" && t.queue > 0}>{t.queue}</Show><Show when={["review", "done"].includes(t.stage)}><Icon name="check" size={11} /></Show></span>
-        <div class="tk-card-main"><div class="tk-card-title">{t.title || tr("Untitled task")}</div><div class="tk-meta"><Show when={stage() === "current"}><span class="tk-meta-stage">{stageLabel(t.stage)}</span></Show><span class="mono tk-id">{t.id}</span><span class="tk-target ell" title={assignmentLabel(t)}>{t.worker ? `Subagent: ${t.worker}` : assignmentLabel(t)}</span><Show when={t.stage === "active" && find()(executorRef(t))}>{(s) => <span class={`hbadge t-${statusOf(s())}`}>{s().caption}</span>}</Show></div><Show when={t.stage === "review" && (t.summary || t.cancelReason)}><p class="tk-summary">{t.cancelReason || t.summary}</p></Show></div>
+        <div class="tk-card-main">
+          <div class="tk-card-title">{t.title || tr("Untitled task")}</div>
+          <div class="tk-meta">
+            <Show when={stage() === "current"}><span class="tk-meta-stage">{stageLabel(t.stage)}</span></Show>
+            <span class="mono tk-id">{t.id}</span>
+            <span class="tk-target ell" title={assignmentLabel(t)}>{t.worker ? `Subagent: ${t.worker}` : assignmentLabel(t)}</span>
+            <Show when={t.stage === "active" && find()(executorRef(t))}>{(s) => <span class={`hbadge t-${statusOf(s())}`}>{s().caption}</span>}</Show>
+          </div>
+          <Show when={t.stage === "review" && currentReview(t) && reviewNext(t)}>{(next) => <p class="tk-review-owner">{next()}</p>}</Show>
+          <Show when={t.stage === "review" && (t.summary || t.cancelReason)}><p class="tk-summary">{t.cancelReason || t.summary}</p></Show>
+        </div>
         <div class="tk-card-acts"><Show when={supportsTaskStart(t) && ["todo", "backlog"].includes(t.stage)}><TaskStartButton card project={project()!.id} task={t} showReason={showReason} /></Show><Show when={t.stage === "active"}><button class="icon-btn tk-act tk-primary blocked" aria-label={tr("Pause task")} aria-description={tr(PAUSE_REASON)} title={tr(PAUSE_REASON)} onClick={(e) => { e.stopPropagation(); openTask(project()!.id, t.uuid); showReason(e.currentTarget, tr(PAUSE_REASON)); }}><Icon name="pause" size={15} /></button></Show><Show when={primaryAction(t.stage)}>{(action) => <button class="icon-btn tk-act tk-primary" aria-label={actionLabel(action())} title={actionLabel(action())} disabled={!t.writable || !!writingTask()} onClick={(e) => { e.stopPropagation(); void actOnTask(project()!.id, t, { kind: action() }); }}><Icon name={ACTION_ICON[action()]} size={15} /></button>}</Show><button class="icon-btn tk-act" aria-label={tr("Task actions")} title={tr("Task actions")} aria-haspopup="menu" onClick={(e) => menu(e, t)}><Icon name="ellipsis" size={15} /></button></div>
       </article>}</For><div class="tk-dropline" classList={{ on: lineAt() !== undefined }} style={{ translate: `0 ${lineAt() ?? 0}px` }} aria-hidden="true" /></div><Show when={!visible().length && !tasks.error()}><div class="tk-empty"><Icon name={ICON[stage()]} size={20} /><span>{!project()!.accessible ? tr("This project is unavailable on this computer.") : searchBlocked() ? tr("This session has no stable identity. Turn off Only this session to search the project.") : listed() ? query() ? tr("No tasks match your search") : EMPTY[stage()] : tr("Loading tasks…")}</span></div></Show>
         <Show when={!searchBlocked() && stage() === "done" && stageRows("done", true).length}><button class="tk-older" onClick={() => setOlder(!older())}>{older() ? tr("Hide older") : tr("Show older (%1)", stageRows("done", true).length)}</button></Show>

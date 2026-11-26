@@ -131,6 +131,7 @@
   .tk-target.mine { color: var(--z-color-accent); font-weight: 600; }
   .tk-filed { color: var(--z-color-violet); }
   .tk-meta .sbadge { height: 17px; padding: 0 6px; font-size: var(--fs-2xs); gap: 4px; }
+  .tk-review-owner { color: var(--z-color-text-2); font-size: var(--fs-xs); font-weight: 600; margin: 5px 0 0; }
   .tk-summary { margin: 6px 0 0; padding: 1px 0 1px 9px; border-left: 2px solid var(--stage); color: var(--z-color-muted); font-size: var(--fs-xs); line-height: 1.4; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
   .tk-summary b { color: var(--z-color-text-2); font-weight: 600; }
   .tk-card-acts { display: flex; gap: 1px; margin-top: -4px; }

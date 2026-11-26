@@ -43,9 +43,9 @@ const ROWS: i64 = 6;
 const SCHEMA: i64 = ROWS * 1000 + zerus_replica::MARK_FORMAT;
 /// The rule rows are read under, kept in meta: "repaired-1" reads a task as
 /// the store's inventory does, repairing a lowered execution schema first
-/// (zerus-cg5h.21). Rows of an index without it are read again once; the
-/// row shape is unchanged, so this needs no other index file.
-const DERIVED: &str = "repaired-2-proof-budget";
+/// (zerus-cg5h.21). Review assignment is optional projected data, so older
+/// cached headers are refreshed without changing the SQLite schema.
+const DERIVED: &str = "repaired-3-review-assignment";
 /// The histories kept: the most recently read tasks.
 const HISTORIES: i64 = 16;
 /// The one-task history cache this index replaces.

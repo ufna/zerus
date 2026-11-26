@@ -1,6 +1,6 @@
 Tasks (hgs guide tasks)
 
-Own session/project; REF: T-xxxxxx or PROJECT/T-xxxxxx; stdin text; --json: task.
+Own project; REF: T-xxxxxx or PROJECT/T-xxxxxx. Text on stdin.
 
   hgs task list [--stage review|active|todo|backlog|done]
   hgs task list --stage S --limit 1..200 [--query TEXT] [--after CURSOR]
@@ -25,13 +25,12 @@ Own session/project; REF: T-xxxxxx or PROJECT/T-xxxxxx; stdin text; --json: task
   hgs task cancel-attempt REF --attempt UUID [--reason TEXT]
 
 Add queues; --start/start records work, no resend. Accept Done when the person asks.
-Acknowledge once as prompted. Inactive: start; activated: begin-attempt replaces managed start.
-Report with pinned command/UUID; never get/start's latest ID.
+Acknowledge once as prompted. Managed work uses begin-attempt instead of start.
+Report with the pinned command and UUID.
 --progress updates. Legacy start prints report command without UUID.
-History-only: saved, not moved; no retry. No pinned command: ask person to accept/resend.
-Cancel a task sent to you only if the person asks; else report/handoff. Only submitted handoff
-transfers ownership.
-Unknown delivery: recover, never replay; else abandon that exact attempt if the person asks.
+History-only: saved, not moved. No retry. Without a pin, ask for accept/resend.
+Cancel your task only if asked; else report/handoff. Ownership moves on submission.
+Recover unknown delivery, never replay. Abandon the exact attempt only if asked.
 
 Plans launch none. Ask parent/Start dialog; bind live ID to receipt.
 Parent reports; children never use parent identity.
@@ -39,6 +38,8 @@ Unknown launch: review, no retry. No task Pause.
 
 Edit: To do/Backlog. Same UUID keeps edits; changed input refuses.
 Files: --content-json; get first.
+  hgs task review-owner REF person|technical|unspecified
+Backlog/To do. Criterion on stdin except unspecified.
 
 hgs task message REF --request-id UUID --mode queue|send|reopen|note
   --expect-dispatch ID --content-json

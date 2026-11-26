@@ -4,6 +4,15 @@ import { tr } from "../../i18n";
 
 /** TaskDialogs::taskHistoryAction and TaskInspector's discussion receipts. */
 export function historyAction(e: TaskEntry): string {
+  if (e.kind === "review_assignment") {
+    if (e.text.startsWith("person: ")) {
+      return tr("Assigned personal review. Criterion: %1", e.text.slice("person: ".length));
+    }
+    if (e.text.startsWith("technical: ")) {
+      return tr("Assigned technical review. Criterion: %1", e.text.slice("technical: ".length));
+    }
+    return tr("Cleared review assignment");
+  }
   if (e.kind === "attempt_cancelled") return tr("abandoned attempt %1; delivery remains unknown", e.requestId);
   const words: Record<string, string> = { created: "created the task", edited: "edited the prompt", cancelled: "cancelled it",
     resumed: "requested changes and submitted feedback", started: "started the task" };

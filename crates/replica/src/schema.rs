@@ -185,6 +185,50 @@ pub struct TaskWorker {
     pub request_id: String,
 }
 
+/// The expected review participant. This is assignment metadata, not authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOwner {
+    Person,
+    Technical,
+}
+
+impl ReviewOwner {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Technical => "technical",
+        }
+    }
+}
+
+/// The review assignment and the criterion agreed before work starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewAssignment {
+    pub owner: ReviewOwner,
+    pub criterion: String,
+}
+
+impl ReviewAssignment {
+    pub fn new(owner: ReviewOwner, criterion: String) -> Result<Self> {
+        let assignment = Self { owner, criterion };
+        assignment.check()?;
+        Ok(assignment)
+    }
+
+    pub(crate) fn check(&self) -> Result<()> {
+        if self.criterion.trim().is_empty()
+            || self.criterion.len() > 512
+            || crate::forbidden_char(&self.criterion).is_some()
+        {
+            return Err(Error::new(
+                "the review criterion must be one line of at most 512 bytes",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A task as callers read it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct TaskView {
@@ -211,6 +255,8 @@ pub struct TaskView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker: Option<TaskWorker>,
     pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_assignment: Option<ReviewAssignment>,
     pub cancelled_at: Option<i64>,
     pub cancel_reason: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

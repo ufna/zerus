@@ -22,7 +22,7 @@ import { setMenu } from "../../store/ui";
 import { Icon } from "../lib/icons";
 import { Body } from "../sessions/Activity";
 import { messageTimeOf } from "../lib/dates";
-import { assignmentText, assignmentLabel, STAGE_LABEL, stageLabel, type Stage, type Task } from "./tasks-ui";
+import { assignmentText, assignmentLabel, reviewNext, STAGE_LABEL, stageLabel, type Stage, type Task } from "./tasks-ui";
 import { changeRequest, deliveryError, deliveryText, historyAction } from "./task-history-ui";
 import { tr } from "../../i18n";
 
@@ -63,11 +63,12 @@ export function TaskInspector(props: { project: string; task: Task; presentation
   const [tab, setTab] = createSignal<typeof TABS[number]>("Task"), [count, setCount] = createSignal(8);
   const identity = createMemo(() => `${props.project}\n${props.task.uuid}`);
   const revision = createMemo(() => JSON.stringify([props.project, props.task.uuid, props.task.historyRevision || props.task]));
+  const projectUnavailable = () => tasks.project() === props.project && !!tasks.error();
   let selected = "";
-  createEffect(on(revision, () => {
+  createEffect(on(() => [revision(), projectUnavailable()] as const, ([, unavailable]) => {
     const task = props.task, key = identity();
     if (key !== selected) { selected = key; taskDetails.select(props.project, task.uuid); }
-    else taskDetails.refresh();
+    else if (!unavailable) taskDetails.refresh();
   }));
   createEffect(on(identity, () => { setTab("Task"); setCount(8); setDescribing(false); setRenaming(false); }));
   createEffect(() => { const request = taskRenameRequest(); if (request?.project === props.project && request.uuid === props.task.uuid) { setTaskRenameRequest(undefined); setRenaming(true); } });
@@ -78,6 +79,7 @@ export function TaskInspector(props: { project: string; task: Task; presentation
   onCleanup(() => { executorClosed = true; executorUnlisten?.(); taskExecutors.follow(); });
   onCleanup(() => { taskDetails.select(); taskStarts.follow(); });
   const detail = taskDetails.data;
+  const detailStale = () => taskDetails.loading() || !!taskDetails.error() || projectUnavailable();
   const item = () => props.presentation ?? props.task;
   const shown = () => detail()?.log.slice(-count()) ?? [];
   const discussion = () => detail()?.log.filter((e) => e.kind === "message" || e.kind === "comment") ?? [];
@@ -90,9 +92,22 @@ export function TaskInspector(props: { project: string; task: Task; presentation
     <Show when={tab() !== "Task"}><div class="tv-section"><span class="eyebrow">{tab()}</span><span class="grow" /><button class="link tv-back" onClick={() => setTab("Task")}><Icon name="chevron-left" size={12} />{tr("Task and discussion")}</button></div></Show>
     <Show when={taskDetails.error()}><p class="notice danger" role="alert">Task could not be read: {taskDetails.error()}</p><button class="btn small" disabled={taskDetails.loading()} onClick={taskDetails.refresh}>{tr("Refresh")}</button></Show>
     <Show when={detail()} fallback={<p class="tasks-empty">{taskDetails.loading() ? tr("Loading task…") : tr("Task details are unavailable.")}</p>}>{(d) => <>
-      <TaskExecution execution={d().execution} stale={!!taskDetails.error() || tasks.project() === props.project && !!tasks.error()} />
+      <TaskExecution execution={d().execution} stale={detailStale()} />
       <For each={d().unknownAttempts}>{(attempt) => <div class="tv-blocker"><Icon name="triangle-alert" size={13} /><span>{tr("Attempt delivery is unknown")} <code>{attempt}</code></span><span class="grow" /><button class="btn small" disabled={!d().writable || !!writingTask()} onClick={(e) => requestAttemptCancellation(props.project, d(), attempt, e.currentTarget)}>{tr("Abandon attempt…")}</button></div>}</For>
       <Show when={d().stage === "active" && !d().started}><p class="notice">Dispatched to {assignmentLabel(d())} — start unconfirmed</p></Show>
+      <Show when={tab() === "Task" || tab() === "Result"}>
+        <Show when={reviewNext(d()) || (["todo", "backlog", "active"].includes(d().stage) && d().reviewAssignment)}>
+          <section class="tv-doc" aria-label={tr("Review assignment")}>
+            <header><span class="eyebrow">{tr("Review assignment")}</span></header>
+            <Show when={d().stage === "review"} fallback={
+              <div>{d().reviewAssignment?.owner === "person" ? tr("Person review") : tr("Technical review")}</div>
+            }>
+              <Show when={!detailStale() && props.task.stage === d().stage && reviewNext(d())}>{(next) => <div>{next()}</div>}</Show>
+            </Show>
+            <Show when={d().reviewAssignment}>{(assignment) => <div>{tr("Acceptance criterion: %1", assignment().criterion)}</div>}</Show>
+          </section>
+        </Show>
+      </Show>
       <Show when={tab() === "Task"}>
         <Show when={(d().stage === "review" || d().stage === "done") && (d().summary || d().cancelReason)}><article class="act-msg tv-entry tv-result k-agent"><header><b>{item().worker || "Agent"}</b><span class="chip">{d().cancelledAt ? tr("Cancelled") : tr("Result")}</span></header><div class="act-body"><Body text={d().cancelReason || d().summary} /></div></article></Show>
         <section class="tv-doc" classList={{ editing: describing() }} aria-label={tr("Description")}><header><span class="eyebrow">{tr("Description")}</span><span class="grow" /><Show when={d().writable && ["todo", "backlog"].includes(d().stage)}><Show when={describing()} fallback={<button class="btn small ghost" onClick={() => setDescribing(true)}><Icon name="pencil" size={12} />{tr("Edit description")}</button>}><span class="tv-doc-state"><Icon name="pencil" size={11} />{tr("Being edited below")}</span></Show></Show></header><div class="act-body"><Body text={d().text || tr("No description yet.")} /><TaskFiles files={d().files} project={props.project} task={props.task.uuid} /></div></section>

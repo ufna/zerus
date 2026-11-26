@@ -128,8 +128,7 @@ pub struct ProcessesOut {
 
 /// The latest change of a followed project's task list, keyed by the project
 /// ID as followed. `kind` and `payload`: `list` carries `{tasks, project,
-/// damaged, digest, truncated}` (the whole list, `tasks` as `hgs task list
-/// --json` lists them), `failed` `{code, message}` (the last list stays) and
+/// damaged, digest, truncated}` (task rows with bounded execution evidence), `failed` `{code, message}` (the last list stays) and
 /// `ended` null (the follow ended).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TasksOut {
@@ -539,13 +538,14 @@ impl Coalescer {
         for ((computer, key), update) in std::mem::take(&mut self.tasks) {
             let (kind, payload) = match update {
                 TasksUpdate::List {
-                    tasks,
+                    mut tasks,
                     project,
                     damaged,
                     digest,
                     truncated,
                     window,
                 } => {
+                    crate::tasks::present_rows(&mut tasks);
                     let mut payload = json!({"tasks": tasks, "project": project,
                         "damaged": damaged, "digest": digest, "truncated": truncated});
                     // Only a windowed list names its window; a whole list keeps its shape.

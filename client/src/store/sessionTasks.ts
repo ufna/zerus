@@ -26,6 +26,10 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
   const [counts, setCounts] = createSignal<Record<Stage, number> | null>(null);
   const [loading, setLoading] = createSignal(none(false));
   const [error, setError] = createSignal("");
+  const [refreshErrors, setRefreshErrors] = createSignal(none(""));
+  const [reviewStale, setReviewStale] = createSignal(false);
+  const refreshError = (stage: Stage, message: string) =>
+    setRefreshErrors((errors) => ({ ...errors, [stage]: message }));
   const [unsupported, setUnsupported] = createSignal(false);
   let project = "", scope: TaskScope | undefined, query = "", watched: readonly Stage[] = [], generation = 0;
   /** Changes of the list so far, and the change the shown totals were read at (zerus-0h8lg). */
@@ -75,13 +79,29 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
         // A cursor that does not advance ends the read rather than looping on it.
         after = cursor && cursor !== after ? cursor : null;
       } while (after && found.length < want && ++pages < maxPages);
-      batch(() => { placed(stage, found, after); setError(""); });
+      batch(() => {
+        placed(stage, found, after);
+        if (seen === change) {
+          refreshError(stage, "");
+          if (stage === "review") setReviewStale(false);
+        }
+        setError("");
+      });
     } catch (e) {
-      if (at === generation && mine === reads[stage]) failed(e);
+      if (at === generation && mine === reads[stage]) {
+        failed(e);
+        refreshError(stage, String(e));
+      }
     } finally {
       if (at === generation && mine === reads[stage]) settle(stage);
     }
   }
+  function invalidate() {
+    change++;
+    fresh = none(false);
+    setReviewStale(true);
+  }
+
   function refresh(stage: Stage) {
     if (!key() || unsupported()) return;
     if (!watched.includes(stage)) { fresh[stage] = false; return; }
@@ -93,7 +113,8 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
     /** Whether the board shows hgs's session view or search results. */
     active: () => !!key() && !unsupported(),
     /** An hgs without `--session`: the board filters its loaded rows instead. */
-    unsupported, error, loading,
+    unsupported, error, loading, reviewStale,
+    refreshError: (stage: Stage) => refreshErrors()[stage],
     rows: (stage: Stage) => view().rows[stage],
     /** Whether `stage` was read for this view (an empty one is then really empty). */
     read: (stage: Stage) => view().read[stage],
@@ -114,7 +135,7 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
         extent = none(0); fresh = none(false); again = none(false);
         batch(() => {
           setKey(next); setView({ rows: none([]), next: none(null), read: none(false) }); setCounts(null);
-          setLoading(none(false)); setError(""); setUnsupported(false);
+          setLoading(none(false)); setError(""); setRefreshErrors(none("")); setUnsupported(false); setReviewStale(false);
         });
       }
       watched = stages;
@@ -122,9 +143,14 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
     },
     /** The project's list changed: every stage is read again when shown. */
     changed() {
-      change++;
-      fresh = none(false);
+      invalidate();
       for (const s of watched) refresh(s);
+    },
+    /** A project failure ages the retained scoped Review rows and any
+     * in-flight answer. Reconnect starts the next read. */
+    unavailable() {
+      invalidate();
+      again = none(false);
     },
     /**
      * Nothing shows the view now (the Tasks panel closed, zerus-fgyiy): no

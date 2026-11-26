@@ -41,6 +41,12 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
   const [shown, setShown] = createSignal(none(0), { equals: (a, b) => STAGES.every((s) => a[s] === b[s]) });
   const [loading, setLoading] = createSignal(none(false));
   const [pageError, setPageError] = createSignal("");
+  const [refreshErrors, setRefreshErrors] = createSignal(none(""));
+  // A new project window certifies its own rows. Its retained Review tail
+  // still belongs to the previous window until the bounded reread covers it.
+  const [retainedReview, setRetainedReview] = createSignal<ReadonlySet<string>>(new Set());
+  const refreshError = (stage: Stage, message: string) =>
+    setRefreshErrors((errors) => ({ ...errors, [stage]: message }));
   /** Tasks read on their own (a selected task beyond the loaded rows), at most `ADOPTED`. */
   const [adopted, setAdopted] = createSignal<Map<string, Task>>(new Map());
   let rows = none<Task[]>([]), next = none<string | null>(null), extent = none(0), reads = none(0);
@@ -91,9 +97,16 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
         // A cursor that does not advance ends the read rather than looping on it.
         after = cursor && cursor !== after ? cursor : null;
       } while (after && found.length < want && ++pages < MAX_REREAD_PAGES);
-      place(stage, found); next = { ...next, [stage]: after }; publish(); setPageError("");
+      batch(() => {
+        place(stage, found); next = { ...next, [stage]: after }; publish();
+        refreshError(stage, ""); setPageError("");
+        if (stage === "review") setRetainedReview(new Set());
+      });
     } catch (e) {
-      if (at === generation && mine === reads[stage]) setPageError(String(e));
+      if (at === generation && mine === reads[stage]) {
+        refreshError(stage, String(e));
+        setPageError(String(e));
+      }
     } finally {
       if (at === generation && mine === reads[stage]) busy(stage, false);
     }
@@ -101,6 +114,8 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
 
   return {
     project, tasks, loaded, error, truncated, damaged, keptDamaged, windowed, loading, pageError, session,
+    refreshError: (stage: Stage) => refreshErrors()[stage],
+    retainedReview,
     /** A task by UUID: a loaded row, else a row of the session view, else one read on its own. */
     find: (uuid: string) => tasks().find((t) => t.uuid === uuid) ?? session.find(uuid) ?? adopted().get(uuid),
     /**
@@ -122,8 +137,8 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
       setKeptDamaged([]);
       const mine = ++generation;
       setProject(nextProject); setTasks([]); setShown(none(0)); setLoaded(false); setError(""); setTruncated(false); setDamaged(0);
-      setWindowed(false); setTotals(none(0)); setLoading(none(false)); setPageError(""); setAdopted(new Map());
-      rows = none([]); next = none(null); extent = none(0); whole = null;
+      setWindowed(false); setTotals(none(0)); setLoading(none(false)); setPageError(""); setRefreshErrors(none("")); setAdopted(new Map());
+      rows = none([]); next = none(null); extent = none(0); whole = null; setRetainedReview(new Set());
       session.show(undefined, undefined, []);
       sent = sent.then(() => follow(nextProject ?? null)).catch((e) => { if (mine === generation) { setError(String(e)); setLoaded(true); } });
     },
@@ -167,17 +182,19 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
               const head = first.filter((t) => t.stage === s), cursor = text(object(stages[s]).next) || null;
               if (extent[s] > head.length && cursor) {
                 const kept = rows[s].filter((t) => !current.has(t.uuid));
+                if (s === "review") setRetainedReview(new Set(kept.map((t) => t.uuid)));
                 rows = { ...rows, [s]: [...head, ...kept] };
                 void reread(s, extent[s]);
               } else {
-                abandon(s);
+                abandon(s); refreshError(s, "");
+                if (s === "review") setRetainedReview(new Set());
                 rows = { ...rows, [s]: head }; next = { ...next, [s]: cursor }; extent = { ...extent, [s]: 0 };
               }
             }
             setTruncated(false);
             setDamaged(Number(summary.damaged_total) || (Array.isArray(p.damaged) ? p.damaged.length : 0));
           } else {
-            setWindowed(false); STAGES.forEach(abandon);
+            setWindowed(false); STAGES.forEach(abandon); setRefreshErrors(none("")); setRetainedReview(new Set());
             const all = unique(p.tasks.slice(0, TASK_LIMIT));
             whole = all;
             rows = Object.fromEntries(STAGES.map((s) => [s, all.filter((t) => t.stage === s)])) as Record<Stage, Task[]>;
@@ -187,8 +204,12 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
           }
           publish(); setError(""); setLoaded(true);
           session.changed();
-        } else if (update.kind === "failed") { setError(text(p.message) || tr("Tasks could not be read.")); setLoaded(true); }
-        else if (update.kind === "ended") { setError(tr("The task subscription ended. Reopen Tasks to reconnect.")); setLoaded(true); }
+        } else if (update.kind === "failed" || update.kind === "ended") {
+          session.unavailable();
+          setError(update.kind === "failed" ? text(p.message) || tr("Tasks could not be read.")
+            : tr("The task subscription ended. Reopen Tasks to reconnect."));
+          setLoaded(true);
+        }
       }
     },
   };

@@ -6,6 +6,8 @@ use std::time::Instant;
 use zerus_replica::{Inventory, NewTask, SessionKey, Target, TaskAttachment};
 
 mod search;
+mod review_assignment;
+mod review_projection;
 
 /// What `f` decoded and stamped.
 fn counted<T>(f: impl FnOnce() -> T) -> (T, usize, usize) {
