@@ -51,7 +51,7 @@ beforeAll(async () => {
             locale.language = language;
             try {
               return renderToString(() => createComponent(compact ? CompactCard : SessionCard,
-                {session, selected: false, expandable: false, expanded: false, onToggleChildren() {}, onExpand() {}, team}));
+                {session, selected: false, expandable: false, expanded: false, onToggleChildren() {}, onExpand() {}, onCompact() {}, onOpenActivity() {}, team}));
             } finally { locale.language = 'en'; }
           };
           export const renderChild = (parent, child) => renderToString(() => createComponent(ChildCard,
@@ -248,4 +248,39 @@ describe("parent child-session counters", () => {
     expect(html).toContain('class="cc-team-body"');
     expect(html.indexOf('class="chev"')).toBeGreaterThan(html.lastIndexOf('class="cc-team-body"'));
   });
+});
+
+it.each(["en", "ru"] as const)("names activity and the request separately and labels both row-density controls in %s", (language) => {
+  const status = language === "en" ? "Session running" : "Сессия запущена";
+  const refusal = language === "en" ? "Request blocked by provider" : "Запрос заблокирован провайдером";
+  for (const compact of [false, true]) {
+    const session = row({ status: "error", caption: "Request blocked by provider", summary: "private provider detail",
+      phase: "error", activity: "attention", processState: "running", providerRefusal: "current" } as Partial<Session>);
+    const html = render(compact, session, true, undefined, language);
+    expect(text(html)).toContain(status);
+    expect(html).toContain(refusal);
+    expect(html).not.toContain("private provider detail");
+    expect(html).toContain(compact ? 'aria-expanded="false"' : 'aria-expanded="true"');
+    expect(html).toContain(language === "en"
+      ? compact ? 'aria-label="Expand session row"' : 'aria-label="Collapse session row"'
+      : compact ? 'aria-label="Развернуть строку сессии"' : 'aria-label="Свернуть строку сессии"');
+  }
+});
+
+it("shows current unavailability and later work independently from a refused request", () => {
+  for (const compact of [false, true]) {
+    const unavailable = render(compact, row({ providerRefusal: "current", status: "error",
+      phase: "error", caption: "Session availability unverified", processState: "unverified" }));
+    expect(text(unavailable)).toContain("Session availability unverified");
+    expect(text(unavailable)).toContain("Request blocked by provider");
+    expect(text(unavailable)).not.toContain("Session running");
+    const working = render(compact, row({ providerRefusal: "earlier", status: "working", caption: "Working",
+      phase: "working", activity: "busy", processState: "running" }));
+    expect(text(working)).toContain("Working");
+    expect(text(working)).toContain("Earlier request refused");
+    expect(working).not.toContain('sc-refusal current');
+    const ready = render(compact, row());
+    expect(text(ready)).toContain("Ready");
+    expect(ready).not.toContain("sc-refusal");
+  }
 });

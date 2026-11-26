@@ -21,7 +21,7 @@ vi.mock("@tanstack/solid-virtual", () => ({
 import { SessionList } from "./SessionList";
 import { applyBatch } from "../../store/catalog";
 import { emptyBatch } from "../../types";
-import { now, setCompactRows, setNow, setPage, setStripMode } from "../../store/ui";
+import { detailTab, now, selectedKey, setCompactRows, setDetailTab, setNow, setPage, setSelectedKey, setStripMode } from "../../store/ui";
 
 const TURN_STARTED = 1_793_000_000;
 /** 9 min 57 s into both rows' turn: the third tick reaches 10 min. */
@@ -91,4 +91,33 @@ describe("a working row's tooltip under the pointer", () => {
     hover(tiles[0], false);
     expect(tiles[0].title).toContain("Working (10m)");
   });
+});
+
+it("expands and compacts from the row button, preserves focus, and opens Activity without delivery", async () => {
+  const host = await mount(false);
+  const running = working(0);
+  applyBatch({ ...emptyBatch(), replaces: [{ computer: "", rows: [
+    { ...running, row: { ...running.row, status: "error", phase: "error", activity: "attention",
+      caption: "Request blocked by provider", provider_refusal: "current", process_state: "running" } }, working(1),
+  ] }] });
+  const first = () => host.querySelector<HTMLElement>(".vrow[data-type=card]")!;
+  const density = () => first().querySelector<HTMLButtonElement>(".cc-expand")!;
+  setSelectedKey("\nrun:steady-0");
+  // The virtual row remains mounted while the native button swaps card density.
+  expect(density().getAttribute("aria-label")).toBe("Expand session row");
+  expect(density().getAttribute("aria-expanded")).toBe("false");
+  density().focus();
+  density().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+  await settle();
+  expect(density().getAttribute("aria-expanded")).toBe("true");
+  expect(density().getAttribute("aria-label")).toBe("Collapse session row");
+  expect(document.activeElement).toBe(density());
+  density().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+  await settle();
+  expect(density().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(density());
+  setDetailTab("terminal");
+  first().querySelector<HTMLButtonElement>(".sc-refusal")!.click();
+  expect(selectedKey()).toBe("\nrun:steady-0");
+  expect(detailTab()).toBe("activity");
 });
