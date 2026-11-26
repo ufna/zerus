@@ -1134,7 +1134,6 @@ export const stripChildStatus = (row: Extract<Row, { type: "child" }>) =>
 function StripRow(props: { id: string; list: RowSource }) {
   const row = () => props.list.byId().get(props.id);
   const top = () => props.list.startOf().get(props.id) ?? 0;
-  const openActivity = () => { setSelectedKey(props.id); setSubagentOpen(undefined); showLatestActivity(); };
   return (
     <div class="vrow" style={{ transform: `translateY(${top()}px)`, height: `${props.list.heightOf(props.id)}px` }}>
       <Show when={row()?.type === "header" ? (row() as Extract<Row, { type: "header" }>) : undefined}>{(h) => <StripBand row={h()} />}</Show>

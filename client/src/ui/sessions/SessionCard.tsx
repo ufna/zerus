@@ -41,7 +41,7 @@ function elapsed(s: Session): number | undefined {
 const CAPTIONS = new Set<string>([
   trNoop("Agent exited"), trNoop("Archived"), trNoop("Background"), trNoop("Compacting"), trNoop("Connecting"), trNoop("Error"),
   trNoop("Interrupted"), trNoop("Model unavailable"), trNoop("Needs approval"), trNoop("Needs attention"), trNoop("Needs input"),
-  trNoop("Not tracked"), trNoop("Paused"), trNoop("Provider error"), trNoop("Ready"), trNoop("Retrying"), trNoop("Scheduled"),
+  trNoop("Not tracked"), trNoop("Paused"), trNoop("Provider error"), trNoop("Ready"), trNoop("Request blocked by provider"), trNoop("Retrying"), trNoop("Scheduled"),
   trNoop("Session availability unverified"),
   trNoop("Sign in"), trNoop("Sign in required"), trNoop("Starting"), trNoop("Status unknown"), trNoop("Waiting for a task"), trNoop("Stopped"),
   trNoop("Using a tool"), trNoop("Waiting for acceptance"), trNoop("Waiting for result"), trNoop("Waiting to retry"), trNoop("Warming cache"), trNoop("Working"),
@@ -432,7 +432,7 @@ function RequestRefusal(props: { session: Session; onOpenActivity?: () => void }
 }
 
 function RowDensityButton(props: { expanded: boolean; onToggle: () => void; description?: string }) {
-  const label = () => tr(props.expanded ? "Collapse session row" : "Expand session row");
+  const label = () => props.expanded ? tr("Collapse session row") : tr("Expand session row");
   const title = steadyTitle(() => [label(), props.description].filter(Boolean).join("\n"));
   return <button type="button" class="cc-expand" aria-label={label()} aria-expanded={props.expanded}
     aria-description={props.description} title={title.title()} onPointerEnter={title.enter} onPointerLeave={title.leave}
@@ -446,7 +446,7 @@ function RowDensityButton(props: { expanded: boolean; onToggle: () => void; desc
       if (focused) queueMicrotask(() => row?.querySelector<HTMLButtonElement>(".cc-expand")?.focus());
     }}>
     <Icon name="chevron-down" size={16} />
-    <span>{tr(props.expanded ? "Collapse row" : "Expand row")}</span>
+    <span>{props.expanded ? tr("Collapse row") : tr("Expand row")}</span>
   </button>;
 }
 
