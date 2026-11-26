@@ -34,6 +34,7 @@ person command below a live agent, team reads included.
 The Kimi class runs only in the hosted Kimi workflow.
 """
 from contextlib import closing, contextmanager, nullcontext
+import fcntl
 import hashlib
 import json
 import os
@@ -43,6 +44,7 @@ import re
 import shutil
 import shlex
 import socket
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -156,6 +158,27 @@ def assert_lead_launch_audit(case):
     case.assertEqual((brief['question_id'], brief['run']), ('brief:' + lead['run'], lead['run']))
     case.assertIsNone(brief['scope'])
     case.assertIs(brief['saved_question']['can_answer'], False)
+
+
+MANUAL_END_NOTE = 'The exact member run was deliberately archived or terminated.'
+
+
+def manual_end_event(cards, journal, opened):
+    """Only the service's deliberate-retirement close of this observed card counts."""
+    matches = [card for card in cards if card['seq'] == opened['seq']]
+    if len(matches) != 1:
+        return None
+    card = matches[0]
+    if (card['state'], card['decision'], card['decided_actor']) != ('closed', 'stale', opened['actor']):
+        return None
+    events = [row for row in journal if row['kind'] == 'close_card'
+              and f"card:{opened['seq']}" in row['refs']]
+    if len(events) != 1:
+        return None
+    event = events[0]
+    if event['actor'] == opened['actor'] and event['text'] == MANUAL_END_NOTE:
+        return event
+    return None
 
 
 # Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
@@ -764,24 +787,118 @@ class ResumeContract(ClassFixture):
     def test_2_a_member_the_person_terminates_is_not_resumed(self):
         fx = self.fx
         view = fx.inspect('m1')
-        pid, _ = fx.process('m1')
-        # The launch from the team store's binding (fails if absent), and the view agrees.
+        pid, ticks = fx.process('m1')
+        name = fx.sessions['m1']['name']
         launch = fx.sessions['m1']['launch']
-        self.assertEqual(view.get('launch_id'), launch)
+        run = view['run_id']
+        self.assertEqual((view['launch_id'], run), (launch, self.resumed_run))
+        [prior] = [row for row in fx.audit_rows(name) if row['categories'] == ['team_resume']]
+        self.assertNotEqual(prior['run'], run)
+        refused = fx.hgs('terminate', name, '--expected-run-id', prior['run'], ok=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('session changed before termination', refused.stderr)
+        self.assertEqual(fx.start_ticks(pid), ticks)
+        self.assertEqual(fx.inspect('m1')['run_id'], run)
+
+        state = Path(fx.env['HGS_STATE_DIR'])
         last = max([c.get('seq', 0) for c in fx.cards()] or [0])
-        fx.hgs('terminate', fx.sessions['m1']['name'], '--expected-run-id', view['run_id'], timeout=120)
-        fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
-        refused = fx.wait('the service refused to resume the terminated member, with a card for the person',
-                          lambda: [c for c in fx.cards() if c.get('seq', 0) > last
-                                   and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
-        fx.evidence.write('terminate-refusal.json', refused)
-        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
+        fx.hgs('__state', 'archive-catalog-worker', timeout=70)
+        catalog = state / 'archive-catalog-v1.sqlite3'
+        stamp = hashlib.sha256(json.dumps(
+            [launch, view['session_id'], run, view['conversation_id']], separators=(',', ':')).encode()
+        ).hexdigest()
+
+        def unreadable_card():
+            cards = [card for card in fx.cards() if card['seq'] > last and card['kind'] == 'team_actor_blocked'
+                     and card['state'] == 'open' and card['node'] is None and card['actor']['kind'] == 'service'
+                     and card['actor']['team'] == fx.team
+                     and f'Whether member session {name} ended is unknown' in card['text']
+                     and 'Archive catalog coverage is incomplete' in card['text']]
+            if not cards:
+                return None
+            [card] = cards
+            actor = state / 'teams/actor-v1.sqlite3'
+            with closing(sqlite3.connect(f'file:{actor}?mode=ro', uri=True, timeout=1)) as ledger:
+                held = ledger.execute("""SELECT data FROM actor_rows
+                                         WHERE team=? AND key='gate:unreadable_confirmation:m1'""",
+                                      (fx.team,)).fetchone()
+            # The visible card can commit just before its opener receipt.
+            gate = json.loads(held[0])
+            self.assertEqual(json.loads(gate['revision']), [0, 0, stamp])
+            return card if gate['card'] == card['seq'] else None
+
+        # Keep the real Terminate archive on disk while making its exact index
+        # publication roll back. A real observation of that gap opens the card
+        # the service must close when it processes the deliberate end.
+        lock = state / 'archive-catalog-v2/worker.lock'
+        with lock.open('r+b') as exclusion, closing(sqlite3.connect(catalog, timeout=5)) as db:
+            def acquire_worker_lock():
+                try:
+                    fcntl.flock(exclusion, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                return True
+
+            fx.wait('fixture owns the archive worker lock', acquire_worker_lock, fixture.BOUND['exit'], 1)
+            quoted_run, = db.execute('SELECT quote(?)', (run,)).fetchone()
+            db.execute(f"""CREATE TRIGGER fixture_lost_terminate_publication BEFORE INSERT ON archive_rows
+                           WHEN NEW.run = {quoted_run}
+                           BEGIN SELECT RAISE(ABORT, 'fixture lost Terminate publication'); END""")
+            try:
+                terminated = fx.hgs('terminate', name, '--expected-run-id', run, timeout=120)
+                match = re.fullmatch(rf'hgs: terminated and archived {re.escape(name)} \(([0-9a-f-]{{36}})\)',
+                                     terminated.stdout.strip())
+                self.assertIsNotNone(match, terminated.stdout)
+                archive_id = str(uuid.UUID(match[1]))
+                self.assertTrue((state / 'archives' / f'{archive_id}.json').is_file())
+                fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None,
+                        fixture.BOUND['exit'], 1)
+                self.assertIsNone(db.execute('SELECT id FROM archive_identities WHERE run=? LIMIT 1',
+                                             (run,)).fetchone())
+                # The service waits 180 seconds before opening the card. Allow
+                # two 60-second safety observations and runner scheduling.
+                opened = fx.wait('the service opened the exact member unreadable-end card',
+                                 unreadable_card, 330, 3)
+                fx.evidence.write('terminate-card-open.json', dict(card=opened, binding_stamp=stamp))
+            finally:
+                db.execute('DROP TRIGGER fixture_lost_terminate_publication')
+
+        fx.hgs('__state', 'archive-catalog-worker', timeout=70)
+
+        def retirement():
+            page = fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json')
+            events = fx.listed(page, 'rows', 'team journal')
+            return manual_end_event(fx.cards(), events, opened)
+
+        closed = fx.wait('the service retired the exact manually terminated member', retirement,
+                         fixture.BOUND['doorbell'], 3)
+        archived = fx.json('inspect', name, '--archive', archive_id, '--after', str(2 ** 63 - 1), '--skip-processes')
+        keys = ('name', 'agent', 'account_id', 'cwd', 'worktree_owner_id', 'session_id', 'launch_id',
+                'run_id', 'conversation_id')
+        before = {key: view[key] for key in keys}
+        self.assertTrue(all(before.values()), before)
+        self.assertEqual({key: archived[key] for key in keys}, before)
+        self.assertEqual((archived['archive_id'], archived['completion_source'], archived['completion_reason']),
+                         (archive_id, 'manual_terminate', 'user_terminated'))
+        fx.evidence.write('terminate-retirement.json', dict(archive=before, archive_id=archive_id, close=closed))
+
+        # The old successful reservation must still be visible in the same
+        # ledger. A missing database or an empty reader cannot pass this check.
+        standing = state / 'teams/standing-v1/journal.sqlite3'
+        with closing(sqlite3.connect(f'file:{standing}?mode=ro', uri=True, timeout=1)) as db:
+            reservations = db.execute("""SELECT run FROM standing_effects
+                                         WHERE team=? AND member='m1' AND launch=? AND kind='resume'
+                                         LIMIT 2""", (fx.team, launch)).fetchall()
+        self.assertEqual(reservations, [(prior['run'],)], 'only the original self-exit reserved a resume')
+        rows = [r for r in fx.audit_rows(name)
+                if r['source'] == 'team_resume' and r['run'] == run and r['question_id'].startswith('resume:')]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
-        # The positive control: the same reader still finds the first resume and its brief.
         journal_is(self, self.resume_journal(), 'the journal still holds only the launch and original resume records')
         live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
         self.assertFalse(live, 'no session of the member launch runs again')
+        later = [c for c in fx.cards() if c['seq'] > last and c['seq'] != opened['seq']
+                 and ('Member m1' in c['text'] or name in c['text'])]
+        self.assertEqual(later, [], 'no additional attention card for the deliberately terminated member')
 
 
 class UnworkedResumeContract(ClassFixture):
@@ -1687,8 +1804,6 @@ class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
 
     @contextmanager
     def during_exit(self, before):
-        import fcntl
-        import sqlite3
         import threading
 
         fx = self.fx
