@@ -265,6 +265,65 @@ pub(super) fn event_db() -> Result<Connection> {
     event_db_at(&root())
 }
 
+/// Append the notice and retain its identity in the same transaction. Ordinary
+/// Activity retention can remove a row without making its refusal publish again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn child_policy_notice(
+    db: &mut Connection,
+    parent: &Value,
+    id: &str,
+    event: &Value,
+) -> Result<()> {
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS child_policy_notices_v1 (id TEXT PRIMARY KEY) WITHOUT ROWID;",
+    )
+    .map_err(|error| error.to_string())?;
+    if tx
+        .execute("INSERT OR IGNORE INTO child_policy_notices_v1(id) VALUES (?1)", [id])
+        .map_err(|error| error.to_string())?
+        != 0
+    {
+        tx.execute(
+            "INSERT INTO events(name, conversation, payload) VALUES (?1, ?2, ?3)",
+            params![journal_name(parent), string(parent, "conversation_id"), event.to_string()],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[test]
+fn child_policy_notice_tombstone_and_event_commit_together() {
+    let fixture = tempfile::tempdir().unwrap();
+    let parent = json!({"name":"codex/example/parent","conversation_id":"chat"});
+    let notice = json!({"type":"Notification","source":"zerus_child_policy"});
+    let open = || event_db_at(fixture.path()).unwrap();
+    let rows = |db: &Connection| {
+        db.query_row("SELECT count(*) FROM events", [], |row| row.get::<_, u64>(0)).unwrap()
+    };
+    let mut db = open();
+    db.execute_batch(
+        "CREATE TRIGGER fixture_unavailable BEFORE INSERT ON events BEGIN
+            SELECT RAISE(ABORT, 'simulated unavailable writer');
+         END;",
+    ).unwrap();
+    assert!(child_policy_notice(&mut db, &parent, "native-event", &notice).is_err());
+    assert_eq!(rows(&db), 0);
+    db.execute_batch("DROP TRIGGER fixture_unavailable;").unwrap();
+    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    drop(db);
+    let mut db = open();
+    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    assert_eq!(rows(&db), 1);
+    db.execute_batch("DELETE FROM events;").unwrap();
+    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    assert_eq!(rows(&db), 0);
+}
+
 fn event_db_at(root: &Path) -> Result<Connection> {
     private_dir(root)?;
     let path = root.join("events.sqlite3");

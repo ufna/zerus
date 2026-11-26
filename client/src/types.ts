@@ -427,6 +427,12 @@ export interface ActivityEvent {
   sender?: string;
   activity_key?: string;
   message_id?: string;
+  /** Host-authored policy refusal observed in a verified local child. */
+  child_policy_advisory?: {
+    scope: "session";
+    child: { name: string; session_id: string; run_id: string; conversation_id: string };
+    event: { kind: "provider_policy"; source: string; event_id: string; turn_id: string; at: number };
+  };
   /** OpenCode's inbox: a waiting message is `queued`, and after Stop it stays `not_delivered` until it is sent or removed. */
   delivery_state?: string;
   /** Creation time of an exact current OpenCode inbox entry. */

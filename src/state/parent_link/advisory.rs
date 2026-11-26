@@ -5,36 +5,62 @@ use crate::state::codex_tasks::history::HistoryRoot;
 use std::time::{Duration, Instant};
 use zerus_client_core::input_acknowledgment::canonical;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) mod activity;
+
 pub(super) fn observe(config: &crate::config::Config, record: &Value) -> Option<Value> {
     let parent = listed(record)?;
-    let after = floor(record, &parent)?;
     let machine = session_graph::caller_machine(config).ok()?;
-    if parent["machine"] != machine || !caller_matches(&parent) || !live(record) {
+    if parent["machine"] != machine || !caller_matches(&parent) {
         return None;
     }
-    let history = History::open(record)?;
-    let event = provider_errors::codex_policy_notice(record, &history.file)?;
-    let at = event["at"].as_f64().filter(|at| *at >= after)?;
-    if !history.held_by_child() {
-        return None;
-    }
+    let observation = Observation::read(record, &parent)?;
 
     let until = Instant::now() + Duration::from_millis(100);
     let _guard = storage::existing_lock_until(&root().join(".lock"), until).ok()??;
-    let path = storage::own_path(record).ok()?;
-    let bytes = storage::binding_bytes(&path).ok()?;
-    let current = storage::verify_metadata_at(&path, string(record, "name"), &bytes).ok()?;
-    if !same_observation(record, &current)
-        || waits::completed_result_since(&parent, &current, at)?
+    if !observation.current(record)
+        || waits::completed_result_since(&parent, record, observation.at) != Some(false)
         || !caller_matches(&parent)
-        || !live(&current)
-        || !history.current()
     {
         return None;
     }
     Some(json!({"scope":"session","child":{
-        "session_id":current["session_id"],"run_id":current["run_id"],
-        "conversation_id":current["conversation_id"]},"event":event}))
+        "session_id":record["session_id"],"run_id":record["run_id"],
+        "conversation_id":record["conversation_id"]},"event":observation.event}))
+}
+
+struct Observation {
+    history: History,
+    event: Value,
+    at: f64,
+}
+
+impl Observation {
+    fn read(record: &Value, parent: &Value) -> Option<Self> {
+        let after = floor(record, parent)?;
+        if !live(record) {
+            return None;
+        }
+        let history = History::open(record)?;
+        let event = provider_errors::codex_policy_notice(record, &history.file)?;
+        let at = event["at"].as_f64().filter(|at| *at >= after)?;
+        history
+            .held_by_child()
+            .then_some(Self { history, event, at })
+    }
+
+    /// Called under the state writer. A changed binding or transcript voids
+    /// the observation for a later admission.
+    fn current(&self, record: &Value) -> bool {
+        let current = (|| {
+            let path = storage::own_path(record).ok()?;
+            let bytes = storage::binding_bytes(&path).ok()?;
+            storage::verify_metadata_at(&path, string(record, "name"), &bytes).ok()
+        })();
+        current.is_some_and(|current| {
+            same_observation(record, &current) && live(&current) && self.history.current()
+        })
+    }
 }
 
 fn caller_matches(parent: &Value) -> bool {
@@ -92,33 +118,37 @@ fn floor(record: &Value, parent: &Value) -> Option<f64> {
     Some(linked.max(created) + 1.0)
 }
 
+const OBSERVATION_FIELDS: &[&str] = &[
+    "agent",
+    "name",
+    "layout",
+    "session_id",
+    "run_id",
+    "conversation_id",
+    "pid",
+    "process_start",
+    "run_identity_version",
+    "startup_kind",
+    "fork_parent_id",
+    "expected_id",
+    "requested_id",
+    "created",
+    "agent_home",
+    "launch_dir",
+    "transcript",
+    "parent",
+    "state",
+    "session_end",
+    "archive_id",
+    "rename_shadow",
+    "last_main_progress_at",
+    "turn_started",
+];
+
 fn same_observation(before: &Value, current: &Value) -> bool {
-    [
-        "agent",
-        "session_id",
-        "run_id",
-        "conversation_id",
-        "pid",
-        "process_start",
-        "run_identity_version",
-        "startup_kind",
-        "fork_parent_id",
-        "expected_id",
-        "requested_id",
-        "created",
-        "agent_home",
-        "launch_dir",
-        "transcript",
-        "parent",
-        "state",
-        "session_end",
-        "archive_id",
-        "rename_shadow",
-        "last_main_progress_at",
-        "turn_started",
-    ]
-    .iter()
-    .all(|key| before[*key] == current[*key])
+    OBSERVATION_FIELDS
+        .iter()
+        .all(|key| before[*key] == current[*key])
 }
 
 struct History {

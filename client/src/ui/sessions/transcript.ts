@@ -735,6 +735,12 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       i++; continue;
     }
     if (role === "notice") {
+      const child = e.child_policy_advisory?.child?.name;
+      if (e.type === "Notification" && e.source === "zerus_child_policy" && typeof child === "string" && child) {
+        items.push({ id, kind: "system", at, sender: tr("Child provider refusal"),
+          body: tr("The provider blocked a request in %1.", child) });
+        i++; continue;
+      }
       const report = typeof e.report === "string" ? e.report : "";
       if (e.origin === "subagent_report") items.push({ id, kind: "report", at, title: preview(e.detail) || tr("Subagent report"), body: report || e.detail, sender: e.sender || undefined });
       else items.push({ id, kind: "system", at, sender: e.origin === "peer_message" ? tr("Message from %1", e.sender ?? tr("another session")) : tr("Background task"), body: report || e.detail });

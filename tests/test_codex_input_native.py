@@ -394,7 +394,7 @@ class NativeCodexMentionsV2Input(NativeCodexInput):
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN'), 'Set HGS_CODEX_TEST_BIN for isolated native Codex startup')
-class NativeCodexStartup(test_pause.Harness):
+class StartupFixture(test_pause.Harness):
     """Production launch/hooks/first send, with a keyless localhost model only."""
     def setUp(self):
         super().setUp()
@@ -525,6 +525,7 @@ class NativeCodexStartup(test_pause.Harness):
         self.assertEqual(json.loads(first.stdout), json.loads(replay.stdout))
         self.assertEqual(sum(row['texts'][-1:] == [text] for row in self.server.requests), 1)
 
+class NativeCodexStartup(StartupFixture):
     def test_fresh_native_launch_reaches_its_first_turn_through_the_real_hooks(self):
         self.launch()
         self.deliver_first()
