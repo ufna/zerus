@@ -30,6 +30,25 @@ const QUEUE_OLD_HOST: &str = zerus_client_core::source!(
     "Update hgs on this computer to queue messages. The draft stays in the editor."
 );
 
+/// Proof stays in memory and follows the reserved request to its child.
+#[derive(Clone)]
+pub(crate) struct OutboxAdmission {
+    composers: Composers,
+    revision: u64,
+}
+
+impl OutboxAdmission {
+    pub(crate) fn spawn<T>(&self, child: impl FnOnce() -> T) -> Option<T> {
+        // Observing a route change and starting the original child must have
+        // a definite order. Release the hub as soon as the spawn returns,
+        // leaving stdin, stdout and the wait to the ordinary runner.
+        let hub = self.composers.lock();
+        let started = (!hub.closed && hub.outbox_route_revision == self.revision).then(child);
+        drop(hub);
+        started
+    }
+}
+
 pub(super) enum ManualSend {
     Direct,
     Wait,
@@ -112,6 +131,31 @@ impl Context {
 }
 
 impl Composers {
+    pub(crate) fn set_outbox_dispatch(&self, dispatch: super::OutboxDispatch) {
+        assert!(self.0.outbox_dispatch.set(dispatch).is_ok());
+    }
+
+    fn offer_guarded(
+        &self,
+        entry: &Entry,
+        action: Action,
+        revision: u64,
+    ) -> Result<Option<Outcome>, String> {
+        let admission = OutboxAdmission {
+            composers: self.clone(),
+            revision,
+        };
+        let target = entry.target.clone();
+        let request = entry.request_id.clone();
+        if let Some(dispatch) = self.0.outbox_dispatch.get() {
+            return dispatch(target, action, request, admission);
+        }
+        #[cfg(test)]
+        return (self.0.deps.dispatch)(target, action, request).map(Some);
+        #[cfg(not(test))]
+        Err("Guarded Send is unavailable.".into())
+    }
+
     pub(super) fn observe_outbox_details(&self, hub: &mut Hub, details: &Value) {
         if hub.followed.awaiting_outbox_details
             && self
@@ -500,19 +544,19 @@ impl Composers {
                 attachments: entry.attachments.clone(),
             };
             match catch_unwind(AssertUnwindSafe(|| {
-                (self.0.deps.dispatch)(entry.target.clone(), action, entry.request_id.clone())
+                self.offer_guarded(&entry, action, route_revision)
             })) {
                 Ok(Ok(outcome)) => outcome,
-                _ => Outcome::Uncertain {
+                _ => Some(Outcome::Uncertain {
                     detail: "The send receipt is unavailable.".into(),
-                },
+                }),
             }
         } else {
-            Outcome::Failed {
+            Some(Outcome::Failed {
                 detail: CHANGED.into(),
-            }
+            })
         };
-        self.settle_head(key, entry, Some(outcome));
+        self.settle_head(key, entry, outcome);
     }
 
     // None means this process retained the reservation and made no native call.

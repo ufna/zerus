@@ -386,6 +386,52 @@ fn a_route_loss_before_the_guarded_offer_keeps_the_same_head_waiting() {
 }
 
 #[test]
+fn a_route_change_inside_the_dispatcher_blocks_the_original_child() {
+    let root = dir("single-send-route-in-dispatcher");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_on(&store);
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    lock(&fake.row).phase = Some("idle".into());
+    c.observe(&state(details(&session, "codex", false, Some(false))));
+    let invoked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    c.set_outbox_dispatch(std::sync::Arc::new({
+        let invoked = std::sync::Arc::clone(&invoked);
+        move |target, action, id, admission| {
+            assert!(matches!(action, Action::SendWhenIdle { .. }));
+            lock(&invoked).push((target, id.clone()));
+            // The dispatcher is already selected. The host changes during
+            // its read-only preparation, before trying the original child.
+            admission.composers.observe(&watch_reconnecting());
+            Ok(admission.spawn(|| panic!("a stale offer must not start a child")))
+        }
+    }));
+    let SendReply::Accepted {
+        view,
+        waiting: false,
+    } = c.send_message(
+        view.handle,
+        view.rev + 1,
+        view.text_epoch,
+        "original".into(),
+        0,
+        0,
+    )
+    else {
+        panic!("ready Send must reserve before the dispatcher runs");
+    };
+    let reserved = &view.waiting_in_zerus[0];
+    let waiting = until(&c, |v| v.waiting_in_zerus[0].state == State::Waiting);
+    assert_eq!(waiting.waiting_in_zerus[0].request_id, reserved.request_id);
+    assert_eq!(waiting.waiting_in_zerus[0].queued_at, reserved.queued_at);
+    let calls = lock(&invoked);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.name, session.name);
+    assert_eq!(calls[0].1, reserved.request_id);
+    assert!(lock(&fake.calls).is_empty());
+}
+
+#[test]
 fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen_run() {
     for agent in ["codex", "kimi"] {
         let root = dir(&format!("outbox-{agent}"));

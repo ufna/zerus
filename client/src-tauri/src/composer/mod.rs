@@ -79,6 +79,11 @@ pub type Reconnect = Arc<dyn Fn(&str) + Send + Sync>;
 /// request id the delivery made for it.
 pub type Dispatch = Arc<dyn Fn(Target, Action, String) -> Result<Outcome, String> + Send + Sync>;
 
+pub(crate) type OutboxDispatch = Arc<
+    dyn Fn(Target, Action, String, OutboxAdmission) -> Result<Option<Outcome>, String> + Send + Sync,
+>;
+pub(crate) use outbox::OutboxAdmission;
+
 const COMPOSERS: usize = 64;
 /// Attachment bytes the idle composers in memory may hold; their drafts stay on disk.
 const HELD_BYTES: usize = 128 * 1024 * 1024;
@@ -751,6 +756,7 @@ pub(crate) struct Shared {
     /// The tray reads the same bounded keys as the window, after the hub
     /// lock is released; this callback only wakes its worker.
     pub(crate) draft_listener: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    outbox_dispatch: std::sync::OnceLock<OutboxDispatch>,
     /// Wakes the ticker, which sleeps while no composer is open.
     opened: Condvar,
     /// The selected desktop service's deferred send route, if any.
@@ -817,6 +823,7 @@ impl Composers {
             deps,
             changes: AtomicU64::new(0),
             draft_listener: Default::default(),
+            outbox_dispatch: Default::default(),
             opened: Condvar::new(),
             deferred: Mutex::new(None),
             verified_send: Mutex::new(None),

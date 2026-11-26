@@ -1026,6 +1026,12 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(task_executor::TaskExecutors::start(app.handle()));
                 let composers = app.state::<composer::Composers>();
                 app.state::<actions::Actions>().on_writes(composers.changed_hook());
+                let actions = app.state::<actions::Actions>().inner().clone();
+                composers.set_outbox_dispatch(std::sync::Arc::new(move |target, action, id, admission| {
+                    tauri::async_runtime::block_on(actions::dispatch_outbox_as(
+                        &actions, target, action, id, admission,
+                    ))
+                }));
                 #[cfg(target_os = "linux")]
                 if desktop_service::mode() {
                     let (checking, sending) = (app.handle().clone(), app.handle().clone());
