@@ -668,9 +668,15 @@ fn uses(references: &[Reference], path: &Path) -> Vec<String> {
 
 /// Running processes and saved sessions that use a folder. Shared by worktree
 /// rows and partial-removal leftovers.
-fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<Value>) {
+fn occupants(
+    path: &Path,
+    processes: &ProcessReview,
+    bindings: &[Reference],
+    row: &mut Value,
+    reasons: &mut Vec<Value>,
+) {
     // Without the running processes' folders, nothing may count as unused.
-    let mut samples: Vec<_> = match &context.processes {
+    let mut samples: Vec<_> = match processes {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         ProcessReview::NativeObjects {
             path: original,
@@ -746,7 +752,7 @@ fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<
             ),
         ));
     }
-    let sessions = uses(&context.bindings, path);
+    let sessions = uses(bindings, path);
     if !sessions.is_empty() {
         reasons.push(reason(
             "sessions",
@@ -757,6 +763,30 @@ fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<
         ));
     }
     row["sessions"] = json!(sessions);
+}
+
+/// Look at current occupants without visiting archive or cleanup journals, or
+/// creating fingerprints from a review. The consumer receives display data.
+pub(super) fn observe_blockers(path: &Path, until: Instant) -> Value {
+    let records = bindings();
+    let processes = ProcessReview::Ordinary(crate::platform::worktree_processes(until));
+    let mut reasons = Vec::new();
+    if records.is_err() {
+        reasons.push(reason("sessions_unavailable", "Saved sessions could not be checked."));
+    }
+    let mut row = json!({});
+    occupants(path, &processes, &records.unwrap_or_default(), &mut row, &mut reasons);
+    let fields = row.as_object_mut().expect("blocker view");
+    if let Some(coverage) = fields.remove("process_coverage") {
+        if coverage["complete"] != true {
+            reasons.push(reason("program_scan_incomplete", "The program inspection was incomplete."));
+        }
+    }
+    if let Some(unreadable) = fields.remove("unreadable_processes") {
+        row["unreadable_count"] = json!(unreadable.as_array().map_or(0, Vec::len));
+    }
+    row["reasons"] = json!(reasons);
+    row
 }
 
 fn assess(tree: &Value, trees: &[Value], context: &Context, total: Instant) -> Value {
@@ -819,7 +849,7 @@ fn assess(tree: &Value, trees: &[Value], context: &Context, total: Instant) -> V
         return finish(row, reasons, notes);
     }
 
-    occupants(&path, context, &mut row, &mut reasons);
+    occupants(&path, &context.processes, &context.bindings, &mut row, &mut reasons);
     let archived = uses(&context.archives, &path).len();
     row["archived_sessions"] = json!(archived);
     if !context.archives_complete {
@@ -1314,7 +1344,7 @@ fn leftover(
             "Saved sessions could not be checked. Review again before removal.",
         ));
     }
-    occupants(&path, context, &mut row, &mut reasons);
+    occupants(&path, &context.processes, &context.bindings, &mut row, &mut reasons);
     let scan = scan_leftover(&path, step(total, WALK_TIME.as_secs()));
     #[cfg(test)]
     AFTER_LEFTOVER_SCAN.with(|hook| {
@@ -3031,7 +3061,7 @@ mod tests {
             };
             let mut row = json!({});
             let mut reasons = vec![];
-            occupants(root, &context, &mut row, &mut reasons);
+            occupants(root, &context.processes, &context.bindings, &mut row, &mut reasons);
             let projected = finish(row, reasons, vec![]);
             assert_eq!(projected["verdict"], "blocked");
             if observed == root && !expired {
@@ -3085,7 +3115,7 @@ mod tests {
                     cwd:true, executable:false, files:false, invocation_ancestor:false }], membership_complete:true })),
             bindings:vec![], bindings_complete:true, archives:vec![], archives_complete:true };
         let mut row = json!({}); let mut reasons = vec![];
-        occupants(dir.path(), &context, &mut row, &mut reasons);
+        occupants(dir.path(), &context.processes, &context.bindings, &mut row, &mut reasons);
         assert_eq!(row["process_count"], 1);
         assert_eq!(row["processes"][0]["pid"], 7);
         assert!(reasons.iter().any(|r| r["code"] == "processes"));

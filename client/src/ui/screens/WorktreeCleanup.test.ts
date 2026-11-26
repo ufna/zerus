@@ -11,7 +11,13 @@ vi.mock("../../store/catalog", () => ({ catalog: catalogState }));
 vi.mock("../../store/ui", () => ({ setPage: navigation.page, setSelectedKey: navigation.select, setDetailTab: navigation.tab }));
 vi.mock("../../store/cleanupNotices", () => ({ anyCleanupRestore: () => false, cleanupRestoring: () => false, restoreCleanupRow: native.restore, syncCleanupNotices: native.sync }));
 vi.mock("../../store/actions", () => ({ notify: vi.fn() }));
-vi.mock("../../i18n", () => ({ tr: (s: string, ...args: unknown[]) => s.replace(/%(\d+)/g, (_, n) => String(args[Number(n) - 1])), trNoop: (s: string) => s }));
+const locale = vi.hoisted(() => ({ value: "en" as "en" | "ru" }));
+vi.mock("../../i18n", async (actual) => {
+  const i18n = await actual<typeof import("../../i18n")>();
+  const russian = (await import("../../i18n.ru.json")).default;
+  return { ...i18n, tr: (source: string, ...args: (string | number)[]) =>
+    i18n.translateWithCatalog(russian, locale.value, source, ...args) };
+});
 // An empty marker naming the icon: no text, so the copy assertions are unchanged.
 vi.mock("../lib/icons", () => ({ Icon: (props: { name: string }) => { const marker = document.createElement("i"); marker.dataset.icon = props.name; return marker; } }));
 vi.mock("../components/MachineLabel", () => ({ MachineLabel: () => null }));
@@ -24,6 +30,7 @@ const row = (over: Partial<CleanupRow> = {}): CleanupRow => ({ id: "original", l
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 let revision = 0, dispose: (() => void) | undefined;
 beforeEach(() => {
+  locale.value = "en";
   vi.clearAllMocks(); catalogState.rows = {}; closeCleanup(); applyCleanup({ ...emptyCleanup(), revision: ++revision });
   native.inspect.mockResolvedValue({ path: "unrelated fixture response" });
   native.dismiss.mockImplementation(async () => ({ ...emptyCleanup(), revision: ++revision }));
@@ -221,6 +228,87 @@ it("runs Check again once with no automatic Force or removal", async () => {
  expect(native.offer).not.toHaveBeenCalled();
  expect(native.remove).not.toHaveBeenCalled();
  expect(native.confirm).not.toHaveBeenCalled();
+});
+
+it.each([
+  {lang: "en", kept: "Kept", check: "Check again", unreadable: "Programs Zerus cannot check: 6.", helper: "The retained program helper is unavailable.", noRequest: "The original stop request is unavailable.", minutes: "five minutes"},
+  {lang: "ru", kept: "Сохранено", check: "Проверить снова", unreadable: "Программ, которые Zerus не может проверить: 6.", helper: "Помощник, который выполнял остановку программ, недоступен.", noRequest: "Исходный запрос на остановку недоступен.", minutes: "пять минут"},
+] as const)("checks the screenshot's unconfirmed stop in $lang without offering manual consent", async (copy) => {
+  locale.value = copy.lang;
+  const original = row({
+    can_check: false, can_force: false, program_retirement: "holder_unavailable",
+    program_stop_check: { can_check: true, has_request: false },
+    reason: "The program stop is unconfirmed.",
+  });
+  const reply = { path: original.path, review: { unreadable_count: 6 } };
+  native.inspect.mockImplementation(async (_id, _file, _offset, checkStop) => ({
+    ...reply, ...(checkStop ? { program_stop_result: "request_unavailable" } : {}),
+  }));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [original], kept: 1 });
+  const host = mount(); review(host).click(); await flush();
+  expect(host.querySelector('[data-outcome="kept"] b')?.textContent).toBe(copy.kept);
+  expect(host.textContent).toContain(copy.unreadable);
+  expect(host.textContent).not.toContain(copy.minutes);
+  expect(host.textContent).toContain(copy.helper);
+  expect(button(host, copy.check).disabled).toBe(false);
+  button(host, copy.check).click(); await flush();
+  expect(native.inspect.mock.calls).toEqual([["original", "", 0, false], ["original", "", 0, true]]);
+  expect(host.textContent).toContain(copy.noRequest);
+  expect(host.querySelector(".bc-consent input")).toBeNull();
+  expect(cleanup().rows[0]).toBe(original);
+  for (const action of [native.check, native.remove, native.offer, native.confirm, native.manual, native.restore]) {
+    expect(action).not.toHaveBeenCalled();
+  }
+});
+
+it.each([false, true])("uses the selected exact stop in a grouped folder (reversed %s)", async (reverse) => {
+  const source = (id: string) => ({computer: "", name: `codex/example/${id}`, run_id: id, conversation_id: id});
+  const stop = (id: string) => row({
+    id, source: source(id), can_force: false, program_stop_check: {can_check: true, has_request: true},
+    reason: "The program stop is unconfirmed.",
+  });
+  const first = stop("first"), second = stop("second");
+  const manual = row({id: "manual", source: source("manual"), can_check: true, can_force: false, can_remove_anyway: true});
+  const rows = reverse ? [manual, second, first] : [first, second, manual];
+  const delayed = deferred<unknown>();
+  native.inspect.mockImplementation((id, _file, _offset, check) => !check
+    ? Promise.resolve({path: first.path, review: {unreadable_count: 6}})
+    : id === first.id ? delayed.promise
+    : Promise.resolve({path: first.path, review: {}, program_stop_result: "complete"}));
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows, kept: 1 });
+  const host = mount();
+  openCleanup(first.id); await flush(); button(host, "Check again").click();
+  expect(button(host, "Check again").disabled).toBe(true);
+  expect(button(host, "Remove anyway…")).toBeUndefined();
+  button(host, second.source!.name).click(); await flush();
+  delayed.resolve({path: first.path, review: {}, program_stop_result: "refused"});
+  await flush();
+  expect(host.textContent).not.toContain("The original program stop was refused.");
+  button(host, "Check again").click(); await flush();
+  expect(native.inspect.mock.calls.filter((call) => call[3] === true).map((call) => call[0])).toEqual([first.id, second.id]);
+  expect(host.querySelector(".wtc-reason")?.textContent).toContain("The original program stop completed.");
+  expect(host.textContent).not.toContain("five minutes");
+  expect(cleanup().rows).toEqual(rows);
+  expect(native.check).not.toHaveBeenCalled(); expect(native.remove).not.toHaveBeenCalled();
+  button(host, manual.source!.name).click(); await flush();
+  expect(host.querySelector(".bc-next")?.textContent).toContain("Choose Remove anyway");
+  expect(button(host, "Remove anyway…")).toBeTruthy();
+});
+
+it.each([
+  {lang: "en", button: "Check again", next: "Open Worktrees to inspect it there."},
+  {lang: "ru", button: "Проверить снова", next: "Откройте «Рабочие деревья» для проверки на этом компьютере."},
+] as const)("explains the unavailable scope in $lang without launching a check", (copy) => {
+  locale.value = copy.lang;
+  const original = row({
+    can_check: false, can_force: false, program_stop_check: {can_check: false, has_request: false},
+  });
+  applyCleanup({ ...emptyCleanup(), revision: ++revision, rows: [original], kept: 1 });
+  const host = mount(); review(host).click();
+  expect(host.querySelector(".bc-next")?.textContent).toContain(copy.next);
+  expect(button(host, copy.button).disabled).toBe(true);
+  button(host, copy.button).click();
+  expect(native.inspect).not.toHaveBeenCalled(); expect(native.check).not.toHaveBeenCalled();
 });
 
 it("keeps Check again disabled until the native row admits review", () => {
