@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type ViteDevServer } from "vite";
 import solid from "vite-plugin-solid";
 import type { Session, Subagent } from "./types";
+import { QT_ICONS } from "../lib/qt-icons";
 import russian from "../../i18n.ru.json";
 
 // Render the actual JSX in Node without adding a DOM dependency. Only the
@@ -260,6 +261,9 @@ it.each(["en", "ru"] as const)("names activity and the request separately and la
     expect(text(html)).toContain(status);
     expect(html).toContain(refusal);
     expect(html).not.toContain("private provider detail");
+    const button = html.match(/<button[^>]*class="cc-expand"[^>]*>([\s\S]*?)<\/button>/)?.[1];
+    expect(button).toContain(QT_ICONS[compact ? "expand-row" : "compact-row"].body);
+    expect(text(button!)).toBe("");
     expect(html).toContain(compact ? 'aria-expanded="false"' : 'aria-expanded="true"');
     expect(html).toContain(language === "en"
       ? compact ? 'aria-label="Expand session row"' : 'aria-label="Collapse session row"'

@@ -445,8 +445,7 @@ function RowDensityButton(props: { expanded: boolean; onToggle: () => void; desc
       props.onToggle();
       if (focused) queueMicrotask(() => row?.querySelector<HTMLButtonElement>(".cc-expand")?.focus());
     }}>
-    <Icon name="chevron-down" size={16} />
-    <span>{props.expanded ? tr("Collapse row") : tr("Expand row")}</span>
+    <Icon name={props.expanded ? "compact-row" : "expand-row"} size={16} />
   </button>;
 }
 
