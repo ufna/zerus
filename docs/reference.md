@@ -2724,6 +2724,10 @@ delivery pauses the Zerus queue at that message. Check the agent's Terminal
 before deciding whether to remove an unknown message from the Zerus queue.
 A new run or a renamed session cannot inherit the earlier run's delivery.
 
+A successful plain-text Codex terminal submission shows **Submitted to
+terminal** in the composer. Its outgoing message appears in Activity when
+Codex records it. An equal prompt typed in Terminal is its own native message.
+
 Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.
 Each sample is at most 16 KiB: cursor coordinates, bounded cursor-row text and
