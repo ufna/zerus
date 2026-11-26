@@ -94,7 +94,7 @@ REFRESH_MAC_DESKTOP = None
 LABEL = 'com.hgdev.hgs-tray'
 PLIST = HOME / f'Library/LaunchAgents/{LABEL}.plist'
 UNIT = 'hgs-tray.service'
-NATIVE = {'codex', 'claude', 'kimi', 'dsh', 'node', 'codex-code-mode'}
+NATIVE = {'codex', 'claude', 'kimi', 'dsh', 'node', 'codex-code-mode', 'agy'}
 # Hidden folders that earlier hand-made updates (and an interrupted run of this
 # one) left beside the installed GUI, and the installer copies they may hold.
 UPDATE_PREFIX = '.hgs-tray-update-'
