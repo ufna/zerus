@@ -21,17 +21,19 @@ const [dialog,setDialog]=createSignal(""),[epoch,setEpoch]=createSignal(1);
 const [number,setNumber]=createSignal(10);
 const [change,setChange]=createSignal(""),[ime,setIme]=createSignal("");
 const [taskNumber, setTaskNumber] = createSignal(0);
+const [describing, setDescribing] = createSignal(true);
 let inputs=0;
 render(()=><><Composer/><TextInput id="dialog" value={dialog()} historyKey={epoch()} onInput={e=>{inputs++;setDialog(e.currentTarget.value);}}/>
  <TextInput id="change" value={change()} onChange={e=>setChange(e.currentTarget.value)}/>
  <TextInput id="number" type="number" value={number()} onInput={e=>setNumber(e.currentTarget.valueAsNumber)}/>
  <TextArea id="ime" value={ime()} onInput={e=>setIme(e.currentTarget.value)}/>
- <div id="task-fixture"><TaskInput project="fixture" task={taskItem({ uuid: "task-" + taskNumber(), stage: "active" })} describing={true}
+ <div id="task-fixture"><TaskInput project="fixture" task={taskItem({ uuid: "task-" + taskNumber(), stage: "active" })} describing={describing()}
    cancel={() => {}} saved={() => {}} /></div></>,document.getElementById("fixture")!);
 const editor=()=>document.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
-type EditorKind = "composer" | "task";
+type EditorKind = "composer" | "task-description" | "task-comment";
 const listEditor = (kind: EditorKind) => kind === "composer" ? editor() : document.querySelector<HTMLTextAreaElement>("#task-fixture .cmp-editor")!;
-const submitted = (kind: EditorKind) => kind === "composer" ? sends : taskSaves;
+const taskMode = (kind: EditorKind) => kind === "task-description" ? "description" : "note";
+const submitted = (kind: EditorKind) => kind === "composer" ? sends : taskSaves.filter(save => save.mode === taskMode(kind)).map(save => save.text);
 const post = (data: unknown) => (window as any).webkit?.messageHandlers.result.postMessage(JSON.stringify(data));
 function listSnapshot(kind: EditorKind, stage: string) {
   const el = listEditor(kind);
@@ -42,11 +44,13 @@ async function prepareList(kind: EditorKind, text: string, start: number, end: n
   if (kind === "composer") handBack(text);
   else {
     seedTask(text);
+    setDescribing(kind === "task-description");
     setTaskNumber(n => n + 1);
   }
   await tick();
   const el = listEditor(kind);
   if (el.value !== text || el.readOnly || el.disabled) throw Error(kind + ": draft is not ready");
+  if (kind !== "composer" && taskModel.view()?.mode !== taskMode(kind)) throw Error(kind + ": wrong task editor mode");
   el.focus();
   el.setSelectionRange(start, end, start === end ? "none" : "backward");
   if (composition) {

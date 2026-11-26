@@ -29,7 +29,7 @@ export const model=createComposer(port);
 export const open=async()=>{await model.open({computer:"fixture",key:"run:fixture",name:"claude/project/test",archive_id:null});};
 export const handBack=(text:string)=>{state=view({rev:state.rev+100,text_epoch:state.text_epoch+1,text,anchor:text.length,position:text.length});model.apply(state);};
 
-export const taskSaves: string[] = [];
+export const taskSaves: Pick<TaskEditorView, "mode" | "text">[] = [];
 let taskSeed = "", taskHandle = 0;
 let taskState: TaskEditorView;
 export const seedTask = (text: string) => { taskSeed = text; };
@@ -42,7 +42,7 @@ export const taskModel = createTaskEditor({
   pick: async () => taskState,
   remove: async () => taskState,
   submit: async () => {
-    taskSaves.push(taskState.text);
+    taskSaves.push({ mode: taskState.mode, text: taskState.text });
     return taskState = { ...taskState, saved: true };
   },
 });

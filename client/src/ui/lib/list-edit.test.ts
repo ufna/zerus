@@ -20,6 +20,8 @@ describe("list newlines", () => {
     ["\t* item", "\t* item\n\t* "],
     ["+ item", "+ item\n+ "],
     ["- [x] done", "- [x] done\n- [ ] "],
+    ["- - - item", "- - - item\n- "],
+    ["- inline `code`", "- inline `code`\n- "],
     ["2. [X] done", "2. [X] done\n3. [ ] "],
     ["1. first\n2. ", "1. first\n"],
     ["  - [ ] ", "  "],
@@ -28,11 +30,18 @@ describe("list newlines", () => {
     ["1. outer\n   - inner\n     ~~~ts\n     - literal\n     ~~~\n     - real", "1. outer\n   - inner\n     ~~~ts\n     - literal\n     ~~~\n     - real\n     - "],
   ])("continues or ends %j", (before, after) => expect(newline(before)).toBe(after));
 
-  it.each(["ordinary text", "version 1. text", "1.no space", "-word", "---", "```md\n1. code", "~~~~\n~~~\n- code", "```\n~~~\n1. code"])("leaves %j to native editing", value => {
+  it.each([
+    "ordinary text", "version 1. text", "1.no space", "-word", "---", "- - -", "* * *", "  - \t- -\t",
+    "```md\n1. code", "~~~~\n~~~\n- code", "```\n~~~\n1. code",
+  ])("leaves %j to native editing", value => {
     expect(newline(value)).toBeUndefined();
   });
 
   it.each([
+    "- ```js",
+    "1. ~~~js",
+    "Intro\n\n- outer\n  - ```js",
+    "1. outer\n   - ~~~js",
     "- ```ts\n  1. literal",
     "1. outer\n   - inner\n     ```ts\n     - literal",
     "1. outer\n   - inner\n     ~~~~ts\n     ~~~\n     - literal",
@@ -47,6 +56,15 @@ describe("list newlines", () => {
     expect(newline("1. first\n2. second", 8, 12)).toBeUndefined();
     expect(newline("1. first", 0)).toBeUndefined();
     expect(newline("1. first", 3)).toBeUndefined();
+  });
+
+  it("keeps the native newline when the fence context or current line exceeds the input budget", () => {
+    const long = "text\n".repeat(10_000);
+    for (const value of ["```\n" + long + "- literal", "```\nclosed\n```\n" + long + "- real"]) {
+      expect(listNewline(value, value.length, value.length)).toBeUndefined();
+    }
+    expect(listNewline("- " + "x".repeat(50_000), 3, 3)).toBeUndefined();
+    expect(listNewline("1. start\n" + long, 8, 8)).toEqual({ start: 8, end: 8, text: "\n2. " });
   });
 });
 

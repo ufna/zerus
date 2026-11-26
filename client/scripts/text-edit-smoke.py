@@ -43,11 +43,15 @@ rows = []
 finished = False
 list_cases = iter(
     (kind, case, before, after, start, end)
-    for kind in ("composer", "task")
+    for kind in ("composer", "task-description", "task-comment")
     for case, before, after, start, end in (
         ("continues an ordered list over a selection", "9. item selected tail", "9. item\n10.  tail", 7, 16),
         ("leaves nested fenced code literal", "1. outer\n   - inner\n     ```js\n     - literal",
          "1. outer\n   - inner\n     ```js\n     - literal\n", None, None),
+        ("keeps a list-item fence opener literal", "- ```js", "- ```js\n", None, None),
+        ("keeps a nested tilde fence opener literal", "1. outer\n   - ~~~js", "1. outer\n   - ~~~js\n", None, None),
+        ("keeps a hyphen thematic break", "- - -", "- - -\n", None, None),
+        ("keeps an asterisk thematic break", "* * *", "* * *\n", None, None),
         ("ends an empty list", "- ", "", None, None),
         ("plain Enter submits", "1. submit me", None, None, None),
     )
