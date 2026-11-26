@@ -2,8 +2,8 @@ import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 import { fileURLToPath } from "node:url";
 
-// Only the surrounding services/chips are stand-ins. Composer, its optimistic
-// draft store, suggestions, TextField and the native editing commands are real.
+// The two editors, optimistic draft stores and native editing commands are real.
+// Only the surrounding services and bridge replies are stand-ins.
 const empty = "export const EMPTY = () => null;";
 const mocks: Record<string, string> = {
   "../../store/composer": 'export { model as composer } from "/bench/text-edit/model.ts";',
@@ -15,17 +15,28 @@ const mocks: Record<string, string> = {
   "./ActionDialogs": 'export const actionEntries=()=>({stop:{shown:false,disabled:true}});',
   "./mark-entries": 'export const markReadChip=()=>({active:false}),runMarkRead=()=>{};',
   "./actions-ui": 'export const snapshotOf=()=>({});',
-  "./Activity": 'export const following=()=>true, unseen=()=>0, jumpToLatest=()=>{}, focusTranscript=()=>{};',
+  "./Activity": 'export const following=()=>true, unseen=()=>0, jumpToLatest=()=>{}, focusTranscript=()=>{}, shownSearchPreview=()=>false;',
   "./VoiceControls": empty+'export {EMPTY as VoiceToolbar,EMPTY as VoicePreview};',
   "./ModelSettings": empty+'export {EMPTY as ModelSettingsButton};',
   "./Attachments": empty+'export {EMPTY as AttachmentsChip};',
   "./RecoveryChip": empty+'export {EMPTY as RecoveryChip};',
+  "./CacheChip": empty+'export {EMPTY as CacheChip};',
   "./UsageChips": empty+'export {EMPTY as SessionUsageChip,EMPTY as UsageLimitChip};',
+};
+const taskMocks: Record<string, string> = {
+  "../../store/taskEditor": 'export { taskModel as taskEditor } from "/bench/text-edit/model.ts";',
+  "../../store/taskStart": 'import {createSignal} from "solid-js"; export const [descriptionEditing,setDescriptionEditing]=createSignal();',
+  "../../store/ui": 'export const setMenu=()=>{};',
+  "../../store/actions": 'export const notify=()=>{};',
 };
 export default defineConfig({
   root: fileURLToPath(new URL("../..", import.meta.url)), base: "./",
   plugins: [{ name: "text-edit-fixture-services", enforce: "pre", resolveId(id, importer) {
     if (importer?.endsWith("/ui/sessions/Composer.tsx") && id in mocks) return "\0text-edit:"+id;
-  }, load(id) { if(id.startsWith("\0text-edit:")) return mocks[id.slice(11)]; } }, solid()],
+    if (importer?.endsWith("/ui/screens/TaskInput.tsx") && id in taskMocks) return "\0task-text:"+id;
+  }, load(id) {
+    if (id.startsWith("\0text-edit:")) return mocks[id.slice(11)];
+    if (id.startsWith("\0task-text:")) return taskMocks[id.slice(11)];
+  } }, solid()],
   build: { target: "safari16", rollupOptions: { input: fileURLToPath(new URL("index.html",import.meta.url)) } },
 });

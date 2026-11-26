@@ -170,6 +170,11 @@ const [ready, setReady] = createSignal(false);
 /** True once the lexer loaded, or failed to (then messages show as plain text). */
 export const markdownReady = ready;
 
+/** The same block lexer for synchronous editing guards once startup preloads it. */
+export function lexMarkdown(text: string): Token[] | undefined {
+  return lexer?.lex(text, { gfm: true, breaks: false });
+}
+
 export function loadMarkdown(): Promise<void> {
   return loading ??= import("marked").then(
     (module) => { lexer = module.Lexer; },

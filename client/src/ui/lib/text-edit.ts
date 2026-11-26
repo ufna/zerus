@@ -28,6 +28,7 @@ export function replaceText(editor: TextEditor, value: string, notify = true): b
 }
 
 export const inboundEdit = (editor: TextEditor) => inbound.has(editor);
+export const textComposing = (editor: TextEditor) => composing.has(editor);
 export function setComposing(editor: TextEditor, active: boolean) {
   if (active) composing.add(editor); else composing.delete(editor);
 }

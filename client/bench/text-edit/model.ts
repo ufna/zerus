@@ -1,4 +1,5 @@
 import { createComposer, type ComposerPort } from "../../src/store/composer";
+import { createTaskEditor, type TaskEditorView } from "../../src/store/taskEditor";
 import type { ComposerView } from "../../src/types";
 export const view = (extra: Partial<ComposerView> = {}): ComposerView => ({
   handle: 1, key: "fixture\nclaude/project/test", loaded: true, rev: 0, text_epoch: 1, text: "", position: 0, anchor: 0, question: null, input_visible: true, queue: null,
@@ -27,3 +28,21 @@ const port={open:async()=>state,
 export const model=createComposer(port);
 export const open=async()=>{await model.open({computer:"fixture",key:"run:fixture",name:"claude/project/test",archive_id:null});};
 export const handBack=(text:string)=>{state=view({rev:state.rev+100,text_epoch:state.text_epoch+1,text,anchor:text.length,position:text.length});model.apply(state);};
+
+export const taskSaves: Pick<TaskEditorView, "mode" | "text">[] = [];
+let taskSeed = "", taskHandle = 0;
+let taskState: TaskEditorView;
+export const seedTask = (text: string) => { taskSeed = text; };
+export const taskModel = createTaskEditor({
+  open: async target => taskState = {
+    ...target, handle: ++taskHandle, rev: 0, text: taskSeed, position: taskSeed.length, anchor: taskSeed.length,
+    files: [], error: "", recovery: false, blocked: false, saved: false,
+  },
+  edit: async edit => taskState = { ...taskState, ...edit },
+  pick: async () => taskState,
+  remove: async () => taskState,
+  submit: async () => {
+    taskSaves.push({ mode: taskState.mode, text: taskState.text });
+    return taskState = { ...taskState, saved: true };
+  },
+});
