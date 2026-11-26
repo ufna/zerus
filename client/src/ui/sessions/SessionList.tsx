@@ -11,7 +11,7 @@ import { tr, trNoop } from "../../i18n";
 import { listRows, membersByGroup, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
 import { parentBadgeText,
   SessionCard, ChildCard, CompactCard, ContainerCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
-  emphasis, childStatus, captionText, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
+  emphasis, childStatus, captionText, refusalCaption, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
 } from "./SessionCard";
 import { agentKind, catalog, computerFresh, computerOffline } from "../../store/catalog";
 import { servicePausedEmpty } from "../components/DesktopServiceStatus";
@@ -948,8 +948,10 @@ export function sessionRowName(row: Row | undefined): string | undefined {
   if (row.type === "container") return [row.container.title, row.container.state === "archived" ? tr("Archived") : tr("Ended"), row.container.machine,
     row.team ? tr(row.team.collapsed ? "%1 child sessions, collapsed" : "%1 child sessions, expanded", row.team.total) : ""].filter(Boolean).join(", ");
   const s = row.session;
-  const state = computerOffline(s.computer) ? tr("Offline") : s.status === "ready" && s.draft ? tr("Draft") : captionText(s.caption);
-  return [s.title, row.agentTeamName ? tr("Team: %1", row.agentTeamName) : "", row.agentTeamRole, state, folderOf(s) || s.project, s.machine,
+  const state = s.providerRefusal === "current" ? statusCaption(s, false)
+    : computerOffline(s.computer) ? tr("Offline") : s.status === "ready" && s.draft ? tr("Draft") : captionText(s.caption);
+  const refusal = refusalCaption(s);
+  return [s.title, row.agentTeamName ? tr("Team: %1", row.agentTeamName) : "", row.agentTeamRole, state, refusal === state ? "" : refusal, folderOf(s) || s.project, s.machine,
     row.team ? tr(row.team.collapsed ? "%1 child sessions, collapsed" : "%1 child sessions, expanded", row.team.total) : "",
     s.subagents?.length ? tr("Subagents: %1", s.subagents.length) : ""].filter(Boolean).join(", ");
 }
@@ -970,6 +972,7 @@ function cardDescription(row: Row | undefined): string | undefined {
 function ListRow(props: { id: string; list: RowSource }) {
   const row = () => props.list.byId().get(props.id);
   const top = () => props.list.startOf().get(props.id) ?? 0;
+  const openActivity = () => { setSelectedKey(props.id); setSubagentOpen(undefined); showLatestActivity(); };
   const pulse = () => listRevealPulse()?.row === props.id ? listRevealPulse() : undefined;
   return (
     <div class="vrow" data-type={row()?.type} data-key={props.id} style={{ transform: `translateY(${top()}px)`, height: `${props.list.heightOf(props.id)}px` }}
@@ -1018,10 +1021,10 @@ function ListRow(props: { id: string; list: RowSource }) {
             onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }} onClick={(e) => selectSession(v().session.key, e)}
             onContextMenu={(e) => sessionContextMenu(e, v().session)}
             onDblClick={(e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey) setRowCompact(v().session.key, !compactRows[v().session.key]); }}>
-            <Show when={!v().compactRow} fallback={<CompactCard onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={selectedKey() === v().session.key || !!multi[v().session.key]} onExpand={() => setRowCompact(v().session.key, false)}
+            <Show when={!v().compactRow} fallback={<CompactCard onOpenActivity={openActivity} onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={selectedKey() === v().session.key || !!multi[v().session.key]} onExpand={() => setRowCompact(v().session.key, false)}
               team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)}
               fromParent={v().fromParent} onOpenParent={(key) => { setSelectedKey(key); setRevealing(key); }} />}>
-              <SessionCard onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={(selectedKey() === v().session.key && !subagentOpen()) || !!multi[v().session.key]} expandable={v().expandable}
+              <SessionCard onOpenActivity={openActivity} onCompact={() => setRowCompact(v().session.key, true)} onOpenTeam={() => openSessionTeam(v().session.key)} agentTeamSummary={v().agentTeamSummary} agentTeamName={v().agentTeamName} agentTeamRole={v().agentTeamRole} session={v().session} selected={(selectedKey() === v().session.key && !subagentOpen()) || !!multi[v().session.key]} expandable={v().expandable}
                 expanded={!!expandedChildren[v().session.key]} onToggleChildren={() => setExpandedChildren(v().session.key, !expandedChildren[v().session.key])}
                 team={v().team} onToggleTeam={() => setTeamCollapsed(v().session.key, !v().team!.collapsed)}
                 fromParent={v().fromParent} onOpenParent={(key) => { setSelectedKey(key); setRevealing(key); }} />

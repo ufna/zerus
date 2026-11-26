@@ -395,6 +395,7 @@ fn codex_transcript_file(
         if !advisory && !std::str::from_utf8(line).is_ok_and(|text| {
             text.contains("\"error\"")
                 || text.contains("\"task_started\"")
+                || text.contains("\"turn_started\"")
                 || text.contains("\"task_complete\"")
                 || text.contains("\"turn_complete\"")
         }) {
@@ -420,10 +421,10 @@ fn codex_transcript_file(
         // Current Codex records a failed turn as task_complete with an error;
         // older versions also emit a dedicated native error event.
         let failure = match string(payload, "type") {
-            "task_started" | "turn_started" if advisory => {
+            "task_started" | "turn_started" => {
                 active_turn = input::acceptance::codex_turn(payload).map(|turn| (turn, at));
-                errors.clear();
-                progress = progress.max(at);
+                if advisory { errors.clear(); }
+                if advisory || active_turn.is_some() { progress = progress.max(at); }
                 continue;
             }
             "turn_aborted" if advisory => {
@@ -432,24 +433,22 @@ fn codex_transcript_file(
                 progress = progress.max(at);
                 continue;
             }
-            "task_started" => {
-                progress = progress.max(at);
-                continue;
-            }
             "task_complete" | "turn_complete" => {
+                let matches_start = active_turn.as_ref().is_some_and(|(turn, started)| {
+                    *started < at && input::acceptance::codex_turn(payload).as_ref() == Some(turn)
+                });
+                if advisory || matches_start { active_turn = None; }
                 if advisory {
                     errors.clear();
-                    if active_turn.take().is_none_or(|(turn, started)| {
-                        started >= at || input::acceptance::codex_turn(payload).as_ref() != Some(&turn)
-                    }) {
+                    if !matches_start {
                         progress = progress.max(at);
                         continue;
                     }
                 }
                 if payload["error"].is_null() {
-                    // Older Codex completions omit errors even after failure.
-                    // Only an actual final reply confirms successful progress.
-                    if advisory || !string(payload, "last_agent_message").trim().is_empty() {
+                    // A delayed completion of another turn cannot replace the
+                    // current failure. Older Codex also omits errors on failure.
+                    if advisory || (matches_start && !string(payload, "last_agent_message").trim().is_empty()) {
                         progress = progress.max(at);
                     }
                     continue;
@@ -519,7 +518,7 @@ thread_local! { static TRANSCRIPT_SCANS: std::cell::Cell<usize> = const { std::c
 fn codex_transcript_cached(record: &Value) -> Result<(Vec<Value>, f64)> {
     let path = PathBuf::from(string(record, "transcript"));
     let mut failure = None;
-    let value = scan_cache::cached("codex-provider-errors-v3", &path, string(record, "conversation_id"), || {
+    let value = scan_cache::cached("codex-provider-errors-v4", &path, string(record, "conversation_id"), || {
         codex_transcript(record)
             .map(|(errors, progress)| json!({"errors": errors, "progress": progress}))
             .map_err(|error| failure = Some(error))
@@ -628,6 +627,28 @@ pub(super) fn enrich(record: &Value, output: &mut Value, live: bool) {
     if live && output["process_state"] != "exited" {
         if let Some(error) = error {
             apply(output, error);
+        } else {
+            let earlier = |error: &Value| {
+                error["at"].as_f64().filter(|at| {
+                    error["error_kind"] == "provider_policy" && *at > 0.0 && *at < progress
+                })
+            };
+            let saved = record.get("provider_error");
+            if let Some(at) = errors.iter().chain(saved).filter_map(earlier).max_by(f64::total_cmp) {
+                // Only later main-turn evidence makes a refusal historical.
+                // A live process, heartbeat or child event does not.
+                output["provider_refusal_at"] = json!(at);
+                // A missed Codex hook can leave the exact StopFailure's phase
+                // saved. Later progress does not prove that the session is idle.
+                if saved.and_then(earlier).is_some()
+                    && output["phase"] == "error"
+                    && output["activity"] == "unknown"
+                    && !string(record, "last_error").is_empty()
+                    && record["last_error"] == record["provider_error"]["detail"]
+                {
+                    output["superseded_provider_attention"] = json!(true);
+                }
+            }
         }
     }
     output["provider_errors"] = json!(errors);
@@ -952,6 +973,92 @@ mod tests {
         assert_eq!(output["phase"], "error");
         assert_eq!(output["provider_error"]["error_kind"], "quota");
         assert_eq!(output["activity_summary"], "Usage limit reached");
+    }
+
+    #[test]
+    fn standalone_policy_refusal_stays_current_until_new_main_turn_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join(format!("rollout-{id}.jsonl"));
+        let at = search::timestamp(&json!("2026-10-09T08:00:03Z"));
+        let before = [
+            json!({"type":"session_meta","payload":{"id":id}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T07:59:59Z","payload":
+                {"type":"task_started","turn_id":"old-turn"}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:00Z","payload":
+                {"type":"task_complete","turn_id":"old-turn","last_agent_message":"A separate completed result"}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:01Z","payload":
+                {"type":"task_started","turn_id":"refused-turn"}}),
+            json!({"type":"event_msg","timestamp":"2026-10-09T08:00:03Z","payload":
+                {"type":"task_complete","turn_id":"refused-turn","error":
+                    {"message":"Request blocked","codex_error_info":"cyber_policy"}}}),
+        ].iter().map(|row| row.to_string() + "\n").collect::<String>();
+        std::fs::write(&path, &before).unwrap();
+        let mut record = json!({"agent":"codex","agent_home":temp.path(),"conversation_id":id,
+            "transcript":path,"last_main_progress_at":at-1.0,"last_event_at":at+300.0});
+        let observe = |record: &Value, phase, activity| {
+            let mut output = json!({"name":"codex/fixture/child","tracked":true,"phase":phase,
+                "activity":activity,"process_state":"running"});
+            enrich(record, &mut output, true);
+            (zerus_client_core::view::row(&output), output)
+        };
+        let (row, failed) = observe(&record, "tool", "busy");
+        assert_eq!(row.provider_refusal.as_deref(), Some("current"));
+        assert_eq!(row.provider_refusal_at, Some(at));
+        assert_eq!(row.process_state, "running");
+        assert!(row.needs_action);
+        assert_eq!(failed["provider_error"]["turn_id"], "refused-turn");
+        assert_eq!(super::super::recovery::class(&failed["provider_error"]), "manual");
+
+        let mut unavailable = failed.clone();
+        unavailable["process_state"] = json!("unverified");
+        assert_eq!(zerus_client_core::view::row(&unavailable).caption, "Session availability unverified");
+
+        let complete = |time, turn| json!({"type":"event_msg","timestamp":time,"payload":
+            {"type":"task_complete","turn_id":turn,"last_agent_message":"A completed result"}});
+        let old_result = complete("2026-10-09T08:00:04Z", "old-turn");
+        let duplicate = complete("2026-10-09T08:00:04.500Z", "refused-turn");
+        std::fs::write(&path, format!("{before}{old_result}\n{duplicate}\n")).unwrap();
+        let (still_current, raw) = observe(&record, "tool", "busy");
+        assert_eq!(still_current.provider_refusal.as_deref(), Some("current"));
+        assert_eq!(raw["provider_error"]["turn_id"], "refused-turn");
+
+        let next = json!({"type":"event_msg","timestamp":"2026-10-09T08:00:05Z","payload":
+            {"type":"task_started","turn_id":"next-turn"}});
+        std::fs::write(&path, format!("{before}{next}\n")).unwrap();
+        let (working, current) = observe(&record, "working", "busy");
+        assert_eq!(working.provider_refusal.as_deref(), Some("earlier"));
+        assert_eq!(working.provider_refusal_at, Some(at));
+        assert_eq!(working.status, "working");
+        assert!(!working.needs_action);
+        assert!(current.get("provider_error").is_none());
+        let unrelated = complete("2026-10-09T08:00:08Z", "old-turn");
+        let next_result = complete("2026-10-09T08:00:06Z", "next-turn");
+        std::fs::write(&path, format!("{before}{next}\n{unrelated}\n{next_result}\n")).unwrap();
+        assert_eq!(codex_transcript(&record).unwrap().1, at + 3.0);
+        let (ready, _) = observe(&record, "idle", "idle");
+        assert_eq!(ready.status, "ready");
+        assert!(!ready.needs_action);
+
+        // The exact old StopFailure may still be saved when a native start
+        // arrived but its hook has yet to publish a replacement phase.
+        record["provider_error"] = failed["provider_error"].clone();
+        record["last_error"] = failed["last_error"].clone();
+        let (stale, raw) = observe(&record, "error", "unknown");
+        assert!(raw["superseded_provider_attention"] == true);
+        assert_eq!(stale.caption, "Status unknown");
+        assert!(!stale.needs_action);
+        record["last_error"] = json!("New independent error");
+        let (unrelated, raw) = observe(&record, "error", "unknown");
+        assert!(raw.get("superseded_provider_attention").is_none());
+        assert!(unrelated.needs_action);
+
+        // A genuine ready row which never had policy evidence has no badge.
+        std::fs::write(&path, json!({"type":"session_meta","payload":{"id":id}}).to_string()+"\n").unwrap();
+        record.as_object_mut().unwrap().remove("provider_error");
+        let (ordinary, _) = observe(&record, "idle", "idle");
+        assert_eq!(ordinary.status, "ready");
+        assert!(ordinary.provider_refusal.is_none());
     }
 
     #[test]

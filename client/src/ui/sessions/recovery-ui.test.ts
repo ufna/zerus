@@ -82,3 +82,23 @@ describe("recovery usage notice", () => {
     expect(recoveryUsageNotice(s, details, { ...usage, refresh_error: true }, true, NOW)).toBe("");
   });
 });
+
+it("keeps a provider refusal out of retry even if old recovery metadata still offers it", () => {
+  const policy = { phase: "error", provider_error: { error_kind: "provider_policy", detail: "fixture" }, recovery: waiting() };
+  const view = recoveryView(policy, true, NOW, false, "", "");
+  expect(view.status).toBe("Request blocked by provider");
+  expect(view.help).toContain("Zerus will not retry it.");
+  expect(view.now.visible).toBe(false);
+  expect(view.cancel.visible).toBe(false);
+  expect(view.terminal.visible).toBe(true);
+  expect(view.settingsVisible).toBe(false);
+});
+
+it("suppresses only the superseded failure, leaving a newer inspection refusal visible", () => {
+  const s = { ...session(), providerRefusal: "earlier" as const, providerRefusalAt: 50 };
+  const details = (at?: number) => ({ value: { run_id: "run-1", conversation_id: "conv-1",
+    phase: "error", provider_error: { error_kind: "provider_policy", at } }, settled: true });
+  expect(recoveryInspection(s, details(50)).provider_error).toBeUndefined();
+  expect(recoveryInspection(s, details(51)).provider_error).toBeDefined();
+  expect(recoveryInspection(s, details()).provider_error).toBeDefined();
+});

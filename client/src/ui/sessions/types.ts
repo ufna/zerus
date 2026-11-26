@@ -68,6 +68,8 @@ export interface Session {
   /** The Qt caption for the status (SessionPresentation). */
   caption: string;
   phase?: string;
+  providerRefusal?: "current" | "earlier";
+  providerRefusalAt?: number;
   summary: string;
   unread: boolean;
   /** The reply before a reply in progress hides it; undefined for an older projection. */
