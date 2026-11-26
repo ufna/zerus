@@ -10,11 +10,21 @@ pub(in crate::state) mod activity;
 
 pub(super) fn observe(config: &crate::config::Config, record: &Value) -> Option<Value> {
     let parent = listed(record)?;
+    let after = floor(record, &parent)?;
     let machine = session_graph::caller_machine(config).ok()?;
     if parent["machine"] != machine || !caller_matches(&parent) {
         return None;
     }
-    let observation = Observation::read(record, &parent)?;
+    if !live(record) {
+        return None;
+    }
+    let history = History::open(record)?;
+    let event = provider_errors::codex_policy_notice(record, &history.file)?;
+    let at = event["at"].as_f64().filter(|at| *at >= after)?;
+    if !history.held_by_child() {
+        return None;
+    }
+    let observation = Observation { history, event, at };
 
     let until = Instant::now() + Duration::from_millis(100);
     let _guard = storage::existing_lock_until(&root().join(".lock"), until).ok()??;
@@ -36,19 +46,6 @@ struct Observation {
 }
 
 impl Observation {
-    fn read(record: &Value, parent: &Value) -> Option<Self> {
-        let after = floor(record, parent)?;
-        if !live(record) {
-            return None;
-        }
-        let history = History::open(record)?;
-        let event = provider_errors::codex_policy_notice(record, &history.file)?;
-        let at = event["at"].as_f64().filter(|at| *at >= after)?;
-        history
-            .held_by_child()
-            .then_some(Self { history, event, at })
-    }
-
     /// Called under the state writer. A changed binding or transcript voids
     /// the observation for a later admission.
     fn current(&self, record: &Value) -> bool {
@@ -178,7 +175,7 @@ impl History {
             stamp,
             pid,
         };
-        (history.current() && history.held_by_child()).then_some(history)
+        history.current().then_some(history)
     }
 
     fn current(&self) -> bool {

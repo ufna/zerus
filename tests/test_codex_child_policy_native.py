@@ -1,5 +1,6 @@
 """Private tracked Codex sessions with a terminal policy result from localhost."""
 import datetime
+import fcntl
 import hashlib
 import io
 import json
@@ -351,6 +352,72 @@ class NativeCodexChildPolicy(StartupFixture):
         stream.quiet(self.notices, 3)
         self.assertEqual(self.server.refusal_offers, 1)
         self.assertEqual(stream.close(), 0)
+
+    def test_unchanged_native_refusal_is_retried_after_temporary_process_stop(self):
+        parent = self.start_pair()
+        stream = self.subscribe(parent)
+        stream.next(lambda frame: frame['t'] == 'events')
+        self.server.release_refusal.clear()
+        self.send(CHILD, REFUSE)
+        self.assertTrue(self.server.refusal_ready.wait(10))
+        writer = sqlite3.connect(self.root / 'state/events.sqlite3')
+        paused = False
+        try:
+            writer.execute('BEGIN IMMEDIATE')
+            self.server.release_refusal.set()
+            self.until('The child must record the policy failure', self.child_refusal)
+            child = self.binding(CHILD)
+            os.kill(child['pid'], signal.SIGSTOP)
+            paused = True
+            writer.rollback()
+            stream.quiet(self.notices, 3)
+        finally:
+            writer.close()
+            if paused:
+                self.assertEqual(self.binding(CHILD)['pid'], child['pid'])
+                self.assertEqual(self.binding(CHILD)['process_start'], child['process_start'])
+                os.kill(child['pid'], signal.SIGCONT)
+        [event] = self.notices(stream.next(lambda frame: self.notices(frame)))
+        self.assertEqual(event['child_policy_advisory']['child']['run_id'], child['run_id'])
+        self.assertEqual(self.server.refusal_offers, 1)
+        self.assertEqual(stream.close(), 0)
+
+    def test_parent_death_during_journal_wait_prevents_stale_publication(self):
+        parent = self.start_pair()
+        self.server.release_refusal.clear()
+        self.send(CHILD, REFUSE)
+        self.assertTrue(self.server.refusal_ready.wait(10))
+        writer = sqlite3.connect(self.root / 'state/events.sqlite3')
+        try:
+            writer.execute('BEGIN IMMEDIATE')
+            self.server.release_refusal.set()
+            self.until('The child must record the policy failure', self.child_refusal)
+            self.assertEqual(self.binding(self.name)['pid'], parent['pid'])
+            self.assertEqual(self.binding(self.name)['process_start'], parent['process_start'])
+            # The observer has to take Root before waiting on this fixture's
+            # journal writer. Catch it there, kill the exact disposable
+            # parent, and release SQLite inside the acquisition window.
+            with (self.root / 'state/.lock').open('rb') as root:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try:
+                        fcntl.flock(root, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        os.kill(parent['pid'], signal.SIGKILL)
+                        exited = subprocess.run(['ps', '-p', str(parent['pid']), '-o', 'stat='],
+                                                env=self.env, capture_output=True, text=True, timeout=1)
+                        self.assertTrue(exited.returncode != 0 or exited.stdout.lstrip().startswith('Z'))
+                        writer.rollback()
+                        break
+                    fcntl.flock(root, fcntl.LOCK_UN)
+                    time.sleep(.002)
+                else:
+                    self.fail('The Activity observer never waited for the held journal')
+            self.until('Original parent exit settles', lambda: self.binding(self.name).get('exited_at'))
+            self.assertEqual(self.notices(self.info(self.name)), [])
+            self.assertEqual(self.server.refusal_offers, 1)
+        finally:
+            writer.close()
 
     def test_the_actual_parent_wins_when_another_record_owns_its_label(self):
         parent = self.start_pair()

@@ -491,23 +491,27 @@ fn codex_transcript_file(
 /// Policy completion in the current Codex run, read from its held native file.
 /// The session advisory omits the native refusal detail and ignores log aliases.
 pub(super) fn codex_policy_notice(record: &Value, file: &std::fs::File) -> Option<Value> {
+    scan_codex_policy_notice(record, file).ok().flatten()
+}
+
+pub(super) fn scan_codex_policy_notice(record: &Value, file: &std::fs::File) -> Result<Option<Value>> {
     let (mut errors, native_progress) =
-        codex_transcript_file(file.try_clone().ok()?, string(record, "conversation_id"), true).ok()?;
-    let error = errors.pop()?;
-    let progress = record["last_main_progress_at"].as_f64()?;
+        codex_transcript_file(file.try_clone().map_err(|error| error.to_string())?, string(record, "conversation_id"), true)?;
+    let Some(error) = errors.pop() else { return Ok(None); };
+    let Some(progress) = record["last_main_progress_at"].as_f64() else { return Ok(None); };
     let turn_started = record["turn_started"].as_f64().unwrap_or(0.0);
-    let at = error["at"].as_f64()?;
-    let turn = input::acceptance::codex_turn(&error)?;
+    let Some(at) = error["at"].as_f64() else { return Ok(None); };
+    let Some(turn) = input::acceptance::codex_turn(&error) else { return Ok(None); };
     if error["native_turn_complete"] != true
         || error["error_kind"] != "provider_policy"
         || progress <= 0.0
         || at <= progress.max(native_progress).max(turn_started)
         || at > now()
     {
-        return None;
+        return Ok(None);
     }
-    Some(json!({"kind":"provider_policy","source":"codex_native_transcript",
-        "event_id":error["message_id"],"turn_id":turn,"at":at}))
+    Ok(Some(json!({"kind":"provider_policy","source":"codex_native_transcript",
+        "event_id":error["message_id"],"turn_id":turn,"at":at})))
 }
 
 #[cfg(test)]

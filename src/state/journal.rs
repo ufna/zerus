@@ -269,14 +269,11 @@ pub(super) fn event_db() -> Result<Connection> {
 /// Activity retention can remove a row without making its refusal publish again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn child_policy_notice(
-    db: &mut Connection,
+    tx: &rusqlite::Transaction<'_>,
     parent: &Value,
     id: &str,
     event: &Value,
 ) -> Result<()> {
-    let tx = db
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|error| error.to_string())?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS child_policy_notices_v1 (id TEXT PRIMARY KEY) WITHOUT ROWID;",
     )
@@ -292,7 +289,7 @@ pub(super) fn child_policy_notice(
         )
         .map_err(|error| error.to_string())?;
     }
-    tx.commit().map_err(|error| error.to_string())
+    Ok(())
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -305,22 +302,28 @@ fn child_policy_notice_tombstone_and_event_commit_together() {
     let rows = |db: &Connection| {
         db.query_row("SELECT count(*) FROM events", [], |row| row.get::<_, u64>(0)).unwrap()
     };
+    let publish = |db: &mut Connection| -> Result<()> {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        child_policy_notice(&tx, &parent, "native-event", &notice)?;
+        tx.commit().map_err(|error| error.to_string())
+    };
     let mut db = open();
     db.execute_batch(
         "CREATE TRIGGER fixture_unavailable BEFORE INSERT ON events BEGIN
             SELECT RAISE(ABORT, 'simulated unavailable writer');
          END;",
     ).unwrap();
-    assert!(child_policy_notice(&mut db, &parent, "native-event", &notice).is_err());
+    assert!(publish(&mut db).is_err());
     assert_eq!(rows(&db), 0);
     db.execute_batch("DROP TRIGGER fixture_unavailable;").unwrap();
-    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    publish(&mut db).unwrap();
     drop(db);
     let mut db = open();
-    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    publish(&mut db).unwrap();
     assert_eq!(rows(&db), 1);
     db.execute_batch("DELETE FROM events;").unwrap();
-    child_policy_notice(&mut db, &parent, "native-event", &notice).unwrap();
+    publish(&mut db).unwrap();
     assert_eq!(rows(&db), 0);
 }
 

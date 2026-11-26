@@ -5,6 +5,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 
 const INTERVAL: Duration = Duration::from_secs(2);
 const WRITE_WAIT: Duration = Duration::from_millis(100);
+const UNAVAILABLE_SCAN_RETRY: Duration = Duration::from_secs(10);
 
 /// Only a fresh Codex child with a verified local launch link starts an
 /// observer. The supervisor still waits for and records native exit normally.
@@ -79,7 +80,8 @@ struct Watch(Option<Scan>);
 struct Scan {
     child: Value,
     stamp: (FileIdentity, u64),
-    candidate: Option<Candidate>,
+    notice: Option<Observation>,
+    retry_at: Option<Instant>,
 }
 
 impl Watch {
@@ -94,14 +96,17 @@ impl Watch {
         else {
             return;
         };
-        // Only a new native write or an exact binding change needs another
-        // transcript scan. Writer contention reuses the held observation.
-        if self
-            .0
-            .as_ref()
-            .is_none_or(|scan| scan.stamp != stamp || !same_observation(&scan.child, &child))
-        {
-            let candidate = Candidate::read(&child, &link);
+        // A settled scan needs fresh native bytes or a binding change.
+        // Unreadable history is tried again at a lower rate.
+        if self.0.as_ref().is_none_or(|scan| {
+            scan.stamp != stamp
+                || !same_observation(&scan.child, &child)
+                || scan.retry_at.is_some_and(|at| Instant::now() >= at)
+        }) {
+            let read = scan_child(&child, &link);
+            let retry_at = read
+                .is_err()
+                .then(|| Instant::now() + UNAVAILABLE_SCAN_RETRY);
             self.0 = Some(Scan {
                 child: Value::Object(
                     OBSERVATION_FIELDS
@@ -110,42 +115,49 @@ impl Watch {
                         .collect(),
                 ),
                 stamp,
-                candidate,
+                notice: read.ok().flatten(),
+                retry_at,
             });
         }
         if let Some(scan) = self.0.as_mut() {
             if scan
-                .candidate
+                .notice
                 .as_ref()
                 .is_some_and(|item| item.publish(&scan.child, &link))
             {
-                scan.candidate = None;
+                scan.notice = None;
             }
         }
     }
 }
 
-struct Candidate {
-    observation: Observation,
-    birth: String,
+fn scan_child(child: &Value, parent: &Value) -> Result<Option<Observation>> {
+    let Some(after) = floor(child, parent) else {
+        return Ok(None);
+    };
+    let history = History::open(child).ok_or("Child history is unavailable")?;
+    let Some(event) = provider_errors::scan_codex_policy_notice(child, &history.file)? else {
+        return Ok(None);
+    };
+    let Some(at) = event["at"].as_f64().filter(|at| *at >= after) else {
+        return Ok(None);
+    };
+    Ok(Some(Observation { history, event, at }))
 }
 
-impl Candidate {
-    fn read(child: &Value, parent: &Value) -> Option<Self> {
-        let observation = Observation::read(child, parent)?;
-        let birth = platform::process_identity(observation.history.pid)?.birth;
-        Some(Self { observation, birth })
-    }
-
+impl Observation {
     /// True when this observation was published or is conclusively obsolete.
     /// A busy or unreadable writer is retried as a journal operation only.
     fn publish(&self, child: &Value, link: &Value) -> bool {
         if supervisor::shutdown_requested() {
             return true;
         }
-        if exact_parent(link).is_none() {
+        if exact_parent(link).is_none() || !self.history.held_by_child() {
             return false;
         }
+        let Some(process) = platform::process_identity(self.history.pid) else {
+            return false;
+        };
         let Ok(mut db) = journal::event_db() else {
             return false;
         };
@@ -157,21 +169,31 @@ impl Candidate {
         else {
             return false;
         };
+        // Hooks take Root before the journal. Wait for both in that order,
+        // then refresh the native observation after any journal contention.
+        let Ok(tx) = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) else {
+            return false;
+        };
         let Some(parent) = exact_parent(link) else {
             return false;
         };
-        if !self.observation.current(child)
-            || platform::process_state(self.observation.history.pid, Some(&self.birth))
-                != Ok(platform::ProcessState::Running)
-        {
-            return true;
+        if !self.current(child) {
+            return false;
         }
-        match waits::completed_result_since(link, child, self.observation.at) {
+        match waits::completed_result_since(link, child, self.at) {
             Some(true) => return true,
             None => return false,
             Some(false) => {}
         }
-        let event = &self.observation.event;
+        match platform::process_state(self.history.pid, Some(&process.birth)) {
+            Ok(platform::ProcessState::Running) => {}
+            Ok(platform::ProcessState::Exited) => return true,
+            _ => return false,
+        }
+        if exact_parent(link).is_none() {
+            return false;
+        }
+        let event = &self.event;
         let id = notice_id(child, event);
         let value = json!({
             "type": "Notification", "source": "zerus_child_policy", "origin": "task_notification",
@@ -184,7 +206,7 @@ impl Candidate {
                 "event": event,
             },
         });
-        journal::child_policy_notice(&mut db, &parent, &id, &value).is_ok()
+        journal::child_policy_notice(&tx, &parent, &id, &value).is_ok() && tx.commit().is_ok()
     }
 }
 
@@ -222,15 +244,13 @@ mod tests {
         let mut watch = Watch::default();
         watch.tick(record, &machine);
         let scan = watch.0.unwrap();
-        assert!(
-            scan.candidate.is_none(),
-            "the exact observation must settle"
-        );
+        assert!(scan.notice.is_none(), "the exact observation must settle");
         // Ensure the cold process reached persistence with an eligible event.
         let link = listed(&scan.child).unwrap();
-        let candidate =
-            Candidate::read(&scan.child, &link).expect("native refusal must remain current");
-        let id = notice_id(&scan.child, &candidate.observation.event);
+        let notice = scan_child(&scan.child, &link)
+            .unwrap()
+            .expect("native refusal must remain current");
+        let id = notice_id(&scan.child, &notice.event);
         let db = journal::event_db().unwrap();
         let count: u64 = db
             .query_row(
