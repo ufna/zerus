@@ -42,6 +42,11 @@ pub(super) fn private_dir(path: &Path) -> Result<()> {
 
 pub(super) fn absolute_root() -> Result<PathBuf> {
     private_dir(&root())?;
+    existing_absolute_root()
+}
+
+/// Canonical state location for reads that must not create a withdrawn root.
+pub(super) fn existing_absolute_root() -> Result<PathBuf> {
     crate::platform::canonical(root()).map_err(|e| e.to_string())
 }
 
@@ -397,7 +402,7 @@ pub(super) fn read_selected_metadata(name: &str) -> Result<Value> {
     read_metadata_at(&record_path(name), name)
 }
 
-fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
+pub(super) fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
     let bytes = record_bytes(path, Some(ID_RECORD_BYTES)).map_err(|e| not_found(name, e))?;
     let record = verify_metadata_at(path, name, &bytes)?;
     session_id::verify(&record)?;

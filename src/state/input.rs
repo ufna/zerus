@@ -24,6 +24,8 @@ pub(crate) mod task_refusal;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::state) mod native_send;
+#[cfg(target_os = "linux")]
+mod native_readiness;
 
 /// Only this module's public dispatch constructs this provenance. Internal
 /// submit* callers, including those using Origin::Person, cannot mint it.
@@ -178,12 +180,15 @@ pub(super) fn first_message_summary(record: &Value, live_pane: bool) -> Value {
 
 /// The record's checks before a task input, with their typed refusal
 /// (zerus-63rru.79).
-fn checked_record_gate(name: &str, request: &Request) -> std::result::Result<Value, Gate> {
+fn checked_record_gate(
+    name: &str, request: &Request, process: &mut ProcessCheck,
+) -> std::result::Result<Value, Gate> {
     let record = checked_input_gate(
         name,
         &request.expected_run_id,
         &request.expected_conversation_id,
         true,
+        process,
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
     if request.only_when_idle && (!idle_reminder_ready(&record) || effort::pending_applies(&record)) {
@@ -462,7 +467,7 @@ pub(crate) const PROOF_LIMIT: Duration = Duration::from_secs(40);
 /// toward refusing Clear input, never toward discarding a message being
 /// delivered (zerus-wkj9l.5 item 3).
 pub(crate) fn send_in_flight(record: &Value) -> bool {
-    let root = absolute_root().ok();
+    let root = storage::existing_absolute_root().ok();
     in_flight(record, now(), |request| {
         let path = root.as_ref()?.join("input_receipts").join(format!("{request}.json"));
         // Unavailable evidence keeps the recent proof closed, without following
@@ -502,13 +507,58 @@ fn in_flight(record: &Value, at: f64, receipt: impl FnOnce(&str) -> Option<Value
     }
 }
 
+/// The distinct local CLI command establishes its launch proof once. Later
+/// checks must keep that proof for the same request.
+enum ProcessCheck {
+    Legacy,
+    #[cfg(target_os = "linux")]
+    Verify,
+    #[cfg(target_os = "linux")]
+    Pinned(Box<native_readiness::Witness>),
+}
+
+impl ProcessCheck {
+    fn admit(&mut self, record: &Value) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Verify) {
+            let Some(witness) = native_readiness::Witness::read(record) else {
+                return false;
+            };
+            *self = Self::Pinned(Box::new(witness));
+            return true;
+        }
+        self.recheck(record)
+    }
+
+    fn recheck(&self, record: &Value) -> bool {
+        match self {
+            Self::Legacy => process_alive(record),
+            #[cfg(target_os = "linux")]
+            Self::Verify => false,
+            #[cfg(target_os = "linux")]
+            Self::Pinned(witness) => native_readiness::Witness::read(record).as_ref() == Some(witness.as_ref()),
+        }
+    }
+
+    fn pinned(&self) -> bool {
+        match self {
+            Self::Legacy => false,
+            #[cfg(target_os = "linux")]
+            Self::Verify => false,
+            #[cfg(target_os = "linux")]
+            Self::Pinned(_) => true,
+        }
+    }
+}
+
 fn checked_input(
     name: &str,
     run_id: &str,
     conversation_id: &str,
     allow_working: bool,
 ) -> Result<Value> {
-    checked_input_gate(name, run_id, conversation_id, allow_working).map_err(Gate::reason)
+    checked_input_gate(name, run_id, conversation_id, allow_working, &mut ProcessCheck::Legacy)
+        .map_err(Gate::reason)
 }
 
 /// `checked_input` with its typed refusal (zerus-63rru.79): a record whose
@@ -520,13 +570,14 @@ fn checked_input_gate(
     run_id: &str,
     conversation_id: &str,
     allow_working: bool,
+    process: &mut ProcessCheck,
 ) -> std::result::Result<Value, Gate> {
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label.
     expect(name, run_id, conversation_id)?;
     let mut record = read(name)?;
     acceptance::reconcile_locked(&mut record)?;
-    checked_bound_record_gate(record, run_id, conversation_id, allow_working)
+    checked_bound_record_gate(record, run_id, conversation_id, allow_working, process)
 }
 
 /// The keeper already holds the exact record, Root and SID. Reuse the native
@@ -535,11 +586,13 @@ fn checked_input_gate(
 pub(in crate::state) fn checked_bound_record(
     record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
 ) -> Result<Value> {
-    checked_bound_record_gate(record, run_id, conversation_id, allow_working).map_err(Gate::reason)
+    checked_bound_record_gate(record, run_id, conversation_id, allow_working, &mut ProcessCheck::Legacy)
+        .map_err(Gate::reason)
 }
 
 fn checked_bound_record_gate(
     record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
+    process: &mut ProcessCheck,
 ) -> std::result::Result<Value, Gate> {
     terminating::check_mutation(&record)?;
     if kimi_expiry::active(&record).is_some() && !kimi_expiry::owned(&record) {
@@ -549,7 +602,7 @@ fn checked_bound_record_gate(
     {
         return Err("session identity changed; refresh before sending".into());
     }
-    if !matches(&record, panes_of(&live()?, &record)) || !process_alive(&record) {
+    if !matches(&record, panes_of(&live()?, &record)) || !process.admit(&record) {
         return Err("the exact agent process is no longer running; resume it explicitly".into());
     }
     if claude_approval::current(&record).is_some() {
@@ -1537,6 +1590,23 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if !terminal_outcome && (args.len() != 2 || args[1] != "--json") {
         return Err("usage: hgs send <session> --json (JSON from stdin)".into());
     }
+    dispatch_send(&args[0], terminal_outcome, ProcessCheck::Legacy)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn dispatch_verified(
+    _entry: &crate::cli::VerifiedCodexInput, name: &str, observe: bool,
+) -> Result<i32> {
+    if observe {
+        observe_dispatch_with(name, ProcessCheck::Verify)
+    } else {
+        // Selection remains read-only until the ordinary send owns Root.
+        super::resolve_label_unrepaired(name)?;
+        dispatch_send(name, false, ProcessCheck::Verify)
+    }
+}
+
+fn dispatch_send(name: &str, terminal_outcome: bool, process: ProcessCheck) -> Result<i32> {
     let mut input = Vec::new();
     io::stdin()
         .take((MAX_JSON + 1) as u64)
@@ -1546,25 +1616,22 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("message payload exceeds 29 MiB".into());
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some(result) = native_send::front(&PublicSend(()), &args[0], &input) {
-        println!("{}", result?);
-        return Ok(0);
+    if matches!(process, ProcessCheck::Legacy) {
+        if let Some(result) = native_send::front(&PublicSend(()), name, &input) {
+            println!("{}", result?);
+            return Ok(0);
+        }
     }
-    if terminal_outcome {
-        return match submit_core(&args[0], &input, Origin::Person, true, true, None) {
-            Ok(receipt) => { println!("{receipt}"); Ok(0) }
-            Err(Failure::TerminalRefusal(value)) => {
-                println!("{value}");
-                eprintln!("hgs: Message was not sent: {}", string(&value, "reason"));
-                Ok(1)
-            }
-            Err(Failure::NotOffered(witness)) => Err(witness.reason),
-            Err(Failure::Unknown(error)) => Err(error),
-        };
+    match submit_core(name, &input, Origin::Person, true, terminal_outcome, None, process) {
+        Ok(receipt) => { println!("{receipt}"); Ok(0) }
+        Err(Failure::TerminalRefusal(value)) => {
+            println!("{value}");
+            eprintln!("hgs: Message was not sent: {}", string(&value, "reason"));
+            Ok(1)
+        }
+        Err(Failure::NotOffered(witness)) => Err(witness.reason),
+        Err(Failure::Unknown(error)) => Err(error),
     }
-    let receipt = submit_with(&args[0], &input, Origin::Person, true)?;
-    println!("{receipt}");
-    Ok(0)
 }
 
 /// The observation's stdin: one exact run and conversation of the session
@@ -1592,6 +1659,10 @@ const MAX_OBSERVE_REASON: usize = 1024;
 /// session, whose readiness only its terminal shows, is observed; the CLI's
 /// first disposition (`cli::observe_gate`) is the only caller.
 pub(super) fn observe_dispatch(name: &str) -> Result<i32> {
+    observe_dispatch_with(name, ProcessCheck::Legacy)
+}
+
+fn observe_dispatch_with(name: &str, process: ProcessCheck) -> Result<i32> {
     if !zerus_client_core::desktop::session_resume::observed(name) || name.contains('@') {
         return Err("hgs send --observe reads a local Codex session only".into());
     }
@@ -1614,7 +1685,7 @@ pub(super) fn observe_dispatch(name: &str) -> Result<i32> {
     // Among sessions that share the label, the request's own identities
     // select, as for a send, but read only: no index repair.
     let (ready, reason) =
-        match super::resolve_label_unrepaired(name).and_then(|()| observe(name, &request)) {
+        match observe(name, &request, process) {
             Ok(()) => (true, String::new()),
             Err(error) => (false, error.chars().take(MAX_OBSERVE_REASON).collect()),
         };
@@ -1625,14 +1696,30 @@ pub(super) fn observe_dispatch(name: &str) -> Result<i32> {
 /// The send's own gates before its lock, read only: the record and its
 /// process ([`checked_input`], which verifies a pending resume), then the
 /// empty composer without the send's diagnostic capture.
-fn observe(name: &str, request: &ObserveRequest) -> Result<()> {
-    let record = checked_input(
-        name,
-        &request.expected_run_id,
-        &request.expected_conversation_id,
-        true,
-    )?;
-    checked_terminal(&record, true)
+fn observe(name: &str, request: &ObserveRequest, mut process: ProcessCheck) -> Result<()> {
+    let run = &request.expected_run_id;
+    let conversation = &request.expected_conversation_id;
+    let mut record = observe_record(name, run, conversation, &process)?;
+    acceptance::reconcile_observed(&mut record)?;
+    let record = checked_bound_record_gate(record, run, conversation, true, &mut process)
+        .map_err(Gate::reason)?;
+    checked_terminal(&record, true)?;
+    if process.pinned() && !process.recheck(&record) {
+        return Err("the exact agent process is no longer running; resume it explicitly".into());
+    }
+    Ok(())
+}
+
+fn observe_record(name: &str, run: &str, conversation: &str, process: &ProcessCheck) -> Result<Value> {
+    #[cfg(target_os = "linux")]
+    if matches!(process, ProcessCheck::Verify) {
+        return native_readiness::observation_record(name, run, conversation);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = process;
+    super::resolve_label_unrepaired(name)?;
+    expect(name, run, conversation)?;
+    read(name)
 }
 
 /// Plain text for the session's current run and conversation (task prompts).
@@ -1860,7 +1947,7 @@ enum Origin<'a> {
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
 /// tells a refusal before any input from a possibly delivered ping.
 pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission {
-    match submit_core(name, input, Origin::KeepWarm(id), false, false, None) {
+    match submit_core(name, input, Origin::KeepWarm(id), false, false, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -1887,7 +1974,7 @@ fn submit_admitted(
     retain_refusal: bool,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
 ) -> Result<Value> {
-    submit_core(name, input, origin, retain_refusal, false, admit).map_err(
+    submit_core(name, input, origin, retain_refusal, false, admit, ProcessCheck::Legacy).map_err(
         |failure| match failure {
             Failure::NotOffered(witness) => witness.reason.clone(),
             Failure::Unknown(error) => error,
@@ -1958,7 +2045,7 @@ pub(crate) enum Submission {
 /// `submit` for a task reply that must tell a refusal before any input from
 /// one that may have delivered it.
 pub(super) fn submit_witnessed(name: &str, input: &[u8]) -> Submission {
-    match submit_core(name, input, Origin::Person, false, false, None) {
+    match submit_core(name, input, Origin::Person, false, false, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2129,6 +2216,7 @@ fn submit_core(
     retain_refusal: bool,
     terminal_outcome: bool,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
+    mut process: ProcessCheck,
 ) -> std::result::Result<Value, Failure> {
     let unknown = Failure::Unknown;
     let request: Request =
@@ -2175,7 +2263,13 @@ fn submit_core(
         let dialog = gate.dialog().map(|d| d.name());
         remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)
     };
-    let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
+    #[cfg(target_os = "linux")]
+    if matches!(process, ProcessCheck::Verify)
+        && (request.only_when_idle || !request.expected_compaction_id.is_empty())
+    {
+        return Err(refused(typed, "Verified send accepts only an ordinary message".into()));
+    }
+    let record = checked_record_gate(name, &request, &mut process).map_err(|gate| gated(typed, gate))?;
     // A writer acting at the person's request checks it here, under Root and
     // before anything is typed (zerus-46l1q, review D2): every revocation
     // comes before this send's admission (nothing is sent) or after it.
@@ -2273,7 +2367,7 @@ fn submit_core(
             return Err(refused(typed,"Session identity changed during pre-send compaction".into()));
         }
         kimi_expiry::release(&mut current, &request_id, &pre_send_compaction).map_err(unknown)?;
-        record = checked_record_gate(name,&request).map_err(|gate| gated(typed,gate))?;
+        record = checked_record_gate(name,&request,&mut process).map_err(|gate| gated(typed,gate))?;
         checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
     }
     // Claude and Kimi treat a trailing backslash plus the next Enter as line
@@ -2324,7 +2418,7 @@ fn submit_core(
     };
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(gate) = checked_record_gate(name, &request).and_then(|r| checked_send_gate(&r)) {
+    if let Err(gate) = checked_record_gate(name, &request, &mut process).and_then(|r| checked_send_gate(&r)) {
         cleanup();
         return Err(gated(typed, gate));
     }
@@ -2445,6 +2539,12 @@ fn submit_core(
         if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be pasted.".into());
         }
+        if process.pinned() {
+            checked_terminal(&record, true)?;
+            if !process.recheck(&record) {
+                return Err("agent changed before paste".into());
+            }
+        }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
@@ -2490,10 +2590,13 @@ fn submit_core(
         if string(&record, "agent") == "codex" {
             settle_codex_paste(terminal, pane, &pasted);
         }
-        if !process_alive(&record) || !matches(&record, panes_of(&live()?, &record)) {
+        if !process.recheck(&record) || !matches(&record, panes_of(&live()?, &record)) {
             return Err("agent changed after paste".into());
         }
         checked_terminal(&record, false)?;
+        if process.pinned() && !process.recheck(&record) {
+            return Err("agent changed after paste".into());
+        }
         if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be submitted.".into());
         }

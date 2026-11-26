@@ -142,6 +142,19 @@ pub(super) fn holds_job_with(record: &Value, pid: u32, alive: fn(&Value) -> bool
 /// process runs under, while the job is on that session's conversation. A
 /// command such a job runs proves its session this way, as a hook's event does.
 pub(super) fn background_session() -> Option<Value> {
+    let (sid, job) = calling_background_job()?;
+    background_holder(records().ok()?, &sid, &job)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn background_session_metadata() -> Result<Option<Value>> {
+    let Some((sid, job)) = calling_background_job() else {
+        return Ok(None);
+    };
+    Ok(background_holder(session_index::metadata_records_unrepaired()?, &sid, &job))
+}
+
+fn calling_background_job() -> Option<(String, String)> {
     let sid = nonempty_env("CLAUDE_CODE_SESSION_ID")?;
     let claude: u32 = nonempty_env("CLAUDE_PID")?.parse().ok()?;
     if !runs_under(claude) {
@@ -155,11 +168,15 @@ pub(super) fn background_session() -> Option<Value> {
         .filter(|entry| entry["kind"] == "bg")
         .map(|entry| string(&entry, "jobId").to_owned())
         .filter(|job| !job.is_empty())?;
-    let mut holding = records().ok()?.into_iter().filter(|record| {
+    Some((sid, job))
+}
+
+fn background_holder(records: Vec<Value>, sid: &str, job: &str) -> Option<Value> {
+    let mut holding = records.into_iter().filter(|record| {
         string(record, "agent") == "claude"
             && record["state"] != "archived"
             && string(record, "conversation_id") == sid
-            && parked(record).as_deref() == Some(job.as_str())
+            && parked(record).as_deref() == Some(job)
     });
     match (holding.next(), holding.next()) {
         (Some(record), None) => Some(record),

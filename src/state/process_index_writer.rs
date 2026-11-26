@@ -142,6 +142,11 @@ fn process(pid: u32, identity: &crate::platform::ProcessIdentity) -> anyhow::Res
     Ok(Process { pid, birth })
 }
 
+/// The launch writer's original pin, verified in the current boot and namespaces.
+pub(super) fn original_pin(record: &Value) -> Option<index::pins::Pin> {
+    index::pins::Pin::read(record, &boot().ok()?).ok().flatten()
+}
+
 /// Read the two launch-pinned process states without consulting terminal
 /// presence or interpreting a legacy ps start string as a native birth.
 pub(crate) fn original_process_states(
@@ -150,9 +155,7 @@ pub(crate) fn original_process_states(
     crate::platform::ProcessState,
     Option<crate::platform::ProcessState>,
 )> {
-    let Ok(Some(pin)) = boot().and_then(|boot| index::pins::Pin::read(record, &boot)) else {
-        return None;
-    };
+    let pin = original_pin(record)?;
     let observe = |process: Process| {
         let birth = match process.birth {
             Birth::Linux(ticks) if cfg!(target_os = "linux") => ticks.to_string(),

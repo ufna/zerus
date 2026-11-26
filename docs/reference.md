@@ -2344,6 +2344,20 @@ the job is on its conversation.
 
 ### Sending and attachments
 
+On Linux, `hgs send-verified SESSION --observe --json` checks whether a local,
+established single-conversation Codex session accepts ordinary terminal input.
+Use `hgs send-verified SESSION --json` to send the ordinary message request with
+its exact run and conversation. This route checks the selected private binding,
+both original kernel process identities and the matching tmux pane. It can
+qualify a launch whose saved wall-clock start no longer matches. Observation
+has no input or state effects. The ordinary terminal and receipt checks still
+apply, and uncertain deliveries still require the original receipt.
+
+Use a plain local Codex session name and the direct command. Forwarding,
+session selectors and the receipt-v2 option belong to the established
+`hgs send` routes. Desktop, Teams, mobile and tracked agents use those routes.
+The direct command declines hosted calls and calls with unverified host ancestry.
+
 Enter sends, Shift-Enter inserts a line and Escape releases focus while keeping
 the draft, unless a turn is working. Paste images, drag local files or use the
 attachment button. Attachments collect in one chip in the fixed-height toolbar

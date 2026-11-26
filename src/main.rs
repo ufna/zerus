@@ -129,7 +129,7 @@ fn main() {
     #[cfg(windows)]
     let result = cli::dispatch_at(std::env::args().skip(1).collect(), entered);
     #[cfg(not(windows))]
-    let result = cli::dispatch(std::env::args().skip(1).collect());
+    let result = cli::dispatch_process(std::env::args().skip(1).collect());
     let code = match result {
         Ok(code) => code,
         Err(err) => {

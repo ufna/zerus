@@ -669,6 +669,36 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // Project away only the ordinary Linux launch proof and its extra
+        // checks. The pre-existing composer, receipt and Enter seal remains.
+        for (new, prior) in [
+            ("    mut process: ProcessCheck,\n", ""),
+            (r#"    #[cfg(target_os = "linux")]
+    if matches!(process, ProcessCheck::Verify)
+        && (request.only_when_idle || !request.expected_compaction_id.is_empty())
+    {
+        return Err(refused(typed, "Verified send accepts only an ordinary message".into()));
+    }
+"#, ""),
+            ("    let record = checked_record_gate(name, &request, &mut process)", "    let record = checked_record_gate(name, &request)"),
+            ("    if let Err(gate) = checked_record_gate(name, &request, &mut process)", "    if let Err(gate) = checked_record_gate(name, &request)"),
+            ("        record = checked_record_gate(name,&request,&mut process)", "        record = checked_record_gate(name,&request)"),
+            (r#"        if process.pinned() {
+            checked_terminal(&record, true)?;
+            if !process.recheck(&record) {
+                return Err("agent changed before paste".into());
+            }
+        }
+"#, ""),
+            ("        if !process.recheck(&record) || !matches(&record, panes_of(&live()?, &record)) {", "        if !process_alive(&record) || !matches(&record, panes_of(&live()?, &record)) {"),
+            (r#"        if process.pinned() && !process.recheck(&record) {
+            return Err("agent changed after paste".into());
+        }
+"#, ""),
+        ] {
+            assert_eq!(original.matches(new).count(), 1, "native readiness projection changed");
+            original = original.replacen(new, prior, 1);
+        }
         // The public send's durable negative adds only a retention parameter
         // and routes the same two live witnesses through its publisher. Exact
         // negative retries re-enter the guards and retire before settings input. Keep

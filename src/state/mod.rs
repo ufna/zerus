@@ -1302,6 +1302,13 @@ pub(crate) fn observe_send(name: &str) -> Result<i32> {
     input::observe_dispatch(name)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn send_verified(
+    entry: &crate::cli::VerifiedCodexInput, name: &str, observe: bool,
+) -> Result<i32> {
+    input::dispatch_verified(entry, name, observe)
+}
+
 /// [`resolve_label`] for the send's effect-free observation: the same
 /// candidates and the same deferral to the request's identities as a send
 /// (`LabelGuard::Request`), without the index repair, which may write.
@@ -1636,6 +1643,9 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
 
 /// Compatibility entry point used by `hgs __state` and the legacy hook shim.
 pub fn dispatch(args: &[String]) -> Result<i32> {
+    if args.first().is_some_and(|verb| verb == "send-verified") {
+        return Err(crate::cli::VERIFIED_SEND_USAGE.into());
+    }
     // Every private send, including guarded mobile entries, passes here
     // before provider routing or a native writer. A host never sends for its launcher.
     if args
