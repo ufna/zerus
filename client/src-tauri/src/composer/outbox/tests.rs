@@ -38,11 +38,22 @@ fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> Comp
 
 fn enqueue(c: &Composers, text: &str) -> ComposerView {
     let view = c.current().unwrap();
-    let rev = view.rev + 1;
-    c.edit(view.handle, rev, view.text_epoch, text.into(), 0, 0);
-    let (tx, rx) = oneshot::channel();
-    c.enqueue_outbox(view.handle, rev, view.text_epoch, text, tx);
-    rx.blocking_recv().unwrap().unwrap()
+    let reply = c.send_message(
+        view.handle,
+        view.rev + 1,
+        view.text_epoch,
+        text.into(),
+        0,
+        0,
+    );
+    let SendReply::Accepted {
+        view,
+        waiting: true,
+    } = reply
+    else {
+        panic!("expected a draft accepted into the local queue");
+    };
+    *view
 }
 
 fn settle_next(
@@ -59,6 +70,139 @@ fn settle_next(
     };
     c.tick_outbox(now);
     store.flush();
+}
+
+#[test]
+fn ordinary_send_accepts_a_busy_draft_without_native_input() {
+    for agent in ["codex", "kimi"] {
+        let root = dir("ordinary-send-busy");
+        let (c, fake) = send_hub_on(&drafts(&root));
+        let target = target_session(agent);
+        let view = present(&c, &fake, &target, agent);
+        c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "queued by Send".into(),
+            0,
+            0,
+        );
+        c.0.store.flush();
+        let saved = zerus_client_core::drafts::read_draft(c.0.store.root(), &view.key);
+        assert_eq!(saved.draft.outbox.len(), 1);
+        assert_eq!(saved.draft.outbox[0].text, "queued by Send");
+        assert_eq!(saved.draft.outbox[0].target.name, target.name);
+        assert!(saved.draft.draft.text.is_empty());
+        assert!(lock(&fake.calls).is_empty());
+    }
+}
+
+#[test]
+fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_original() {
+    for agent in ["codex", "kimi"] {
+        let root = dir("ordinary-send-ready-race");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let target = target_session(agent);
+        let view = present(&c, &fake, &target, agent);
+        let idle = details(&target, agent, false, Some(false));
+        lock(&fake.row).phase = Some("idle".into());
+        c.observe(&state(idle.clone()));
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"waiting_for_idle", "proof":"native_input_lock",
+                "request_id":id, "name":name, "run_id":"run-1", "conversation_id":"conv-1"}),
+            cleanup: None,
+        });
+        let reply = c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "first".into(),
+            0,
+            0,
+        );
+        let SendReply::Accepted {
+            view,
+            waiting: false,
+        } = reply
+        else {
+            panic!("ready Send should start its attempt without waiting for the ticker");
+        };
+        let original = &view.waiting_in_zerus[0];
+        assert_eq!(original.state, State::Reserved);
+        let waiting = until(&c, |v| {
+            v.waiting_in_zerus
+                .first()
+                .is_some_and(|m| m.state == State::Waiting)
+        });
+        assert_eq!(waiting.waiting_in_zerus[0].request_id, original.request_id);
+        assert_eq!(waiting.waiting_in_zerus[0].queued_at, original.queued_at);
+        assert_eq!(lock(&fake.calls).len(), 1);
+        assert!(matches!(
+            lock(&fake.calls)[0].1,
+            Action::SendWhenIdle { .. }
+        ));
+
+        let next = enqueue(&c, "second");
+        assert_ne!(next.waiting_in_zerus[1].request_id, original.request_id);
+        assert_eq!(
+            lock(&fake.calls).len(),
+            1,
+            "backlog keeps the second message waiting"
+        );
+
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,
+                "run_id":"run-1","conversation_id":"conv-1"}),
+            cleanup: None,
+        });
+        settle_next(&c, &fake, &store, idle.clone());
+        until(&c, |v| v.waiting_in_zerus.len() == 1);
+        store.flush();
+        settle_next(&c, &fake, &store, idle);
+        until(&c, |v| v.waiting_in_zerus.is_empty());
+        let calls = lock(&fake.calls);
+        assert_eq!(calls[1].2, original.request_id);
+        assert_eq!(calls[2].2, next.waiting_in_zerus[1].request_id);
+        assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+    }
+}
+
+#[test]
+fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
+    for (agent, mismatch, reason) in [
+        ("claude", false, QUEUE_UNAVAILABLE),
+        ("codex", true, QUEUE_TARGET_CHANGED),
+    ] {
+        let root = dir("single-send-unsupported");
+        let (c, fake) = send_hub_on(&drafts(&root));
+        let session = target_session(agent);
+        {
+            let mut row = lock(&fake.row);
+            row.name = session.name.clone();
+            row.agent = agent.into();
+            row.process_state = "running".into();
+            row.phase = Some("tool".into());
+        }
+        let mut busy = details(&session, agent, true, Some(false));
+        if mismatch {
+            busy["run_id"] = json!("replacement-run");
+        }
+        c.open(Some(session));
+        c.observe(&state(busy));
+        let view = until(&c, |v| v.loaded);
+        assert_eq!(view.ordinary_send_block.as_deref(), Some(reason));
+        assert!(matches!(
+            c.send_message(view.handle, view.rev + 1, view.text_epoch, "keep draft".into(), 0, 0),
+            SendReply::Notice { text, .. } if text == reason
+        ));
+        let view = c.current().unwrap();
+        assert_eq!(view.text, "keep draft");
+        assert!(view.waiting_in_zerus.is_empty());
+        assert!(lock(&fake.calls).is_empty());
+    }
 }
 
 #[test]
@@ -86,16 +230,13 @@ fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen
         );
         assert!(lock(&fake.inspected_targets).is_empty());
         let view = c.current().unwrap();
-        assert_eq!(
-            c.send_message(
-                view.handle,
-                view.rev + 1,
-                view.text_epoch,
-                "later edit".into(),
-                0,
-                0
-            ),
-            SendReply::Busy
+        c.edit(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "later edit".into(),
+            0,
+            0,
         );
         c.flush();
         drop(c);
@@ -278,14 +419,30 @@ fn acknowledgement_loss_on_enqueue_cannot_duplicate_a_saved_message_or_its_files
     std::fs::write(&path, b"saved attachment").unwrap();
     c.attach_paths(view.handle, vec![path], Default::default());
     let view = until(&c, |v| v.attachments.len() == 1);
-    let (tx, rx) = oneshot::channel();
+    let rx = c
+        .offer_manual_send(
+            &mut c.lock(),
+            view.handle,
+            view.rev,
+            view.text_epoch,
+            &view.text,
+        )
+        .unwrap()
+        .unwrap();
     drop(rx);
-    c.enqueue_outbox(view.handle, view.rev, view.text_epoch, &view.text, tx);
     let saved = until(&c, |v| v.waiting_in_zerus.len() == 1);
     assert!(saved.attachments.is_empty());
-    let (tx, rx) = oneshot::channel();
-    c.enqueue_outbox(view.handle, view.rev, view.text_epoch, &view.text, tx);
-    assert!(rx.blocking_recv().unwrap().is_err());
+    assert!(matches!(
+        c.send_message(
+            view.handle,
+            view.rev,
+            view.text_epoch,
+            view.text.clone(),
+            0,
+            0
+        ),
+        SendReply::Busy
+    ));
     drop(c);
 
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
@@ -347,11 +504,20 @@ fn enqueue_time_is_saved_with_the_request_and_survives_queue_edits_and_reopen() 
     c.edit(view.handle, rev, view.text_epoch, "same".into(), 4, 4);
     let release = hold(&store);
     *lock(&fake.now) = ENQUEUED;
-    let (tx, rx) = oneshot::channel();
-    c.enqueue_outbox(view.handle, rev, view.text_epoch, "same", tx);
+    let rx = c
+        .offer_manual_send(&mut c.lock(), view.handle, rev, view.text_epoch, "same")
+        .unwrap()
+        .unwrap();
     *lock(&fake.now) = AFTER_WRITE;
     release.send(()).unwrap();
-    let first = rx.blocking_recv().unwrap().unwrap().waiting_in_zerus[0].clone();
+    let SendReply::Accepted {
+        view,
+        waiting: true,
+    } = rx.blocking_recv().unwrap()
+    else {
+        panic!("queue write did not settle");
+    };
+    let first = view.waiting_in_zerus[0].clone();
     assert_eq!(first.queued_at, Some(ENQUEUED));
 
     let second = enqueue(&c, "remove this").waiting_in_zerus[1].clone();

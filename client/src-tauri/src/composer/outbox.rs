@@ -1,12 +1,12 @@
 //! Composer-owned queue. Enqueue writes the editable draft and its new position
 //! in the queue together. Only a durably reserved head can reach native Send.
+use super::send::{Context, SendReply, exact_input_details};
 use super::{Composer, Composers, Hub, MAX_TEXT_BYTES};
 use serde::Serialize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use tauri::State as TauriState;
 use tokio::sync::oneshot;
 use zerus_client_core::attachments::Draft;
-use zerus_client_core::drafts::StoredDraft;
 use zerus_client_core::drafts::outbox::{self, Entry, State};
 use zerus_client_core::send::{BlockFacts, block_reason};
 use zerus_client_core::{Action, Outcome, Target, ViewRow};
@@ -20,6 +20,18 @@ pub(super) fn reserved(c: &Composer) -> bool {
 }
 
 const CHANGED: &str = "The session changed. The queued message was kept in Zerus.";
+const QUEUE_UNAVAILABLE: &str = zerus_client_core::source!(
+    "This session cannot queue messages in Zerus. Wait for the agent to become ready."
+);
+const QUEUE_TARGET_CHANGED: &str =
+    zerus_client_core::source!("The original session changed. The draft is still in the editor.");
+
+pub(super) enum ManualSend {
+    Direct,
+    Wait,
+    TryNow,
+    Blocked(String),
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EntryView {
@@ -29,6 +41,7 @@ pub struct EntryView {
     pub preview: String,
     pub state: State,
     pub target_changed: bool,
+    pub can_check_terminal: bool,
 }
 
 pub(super) fn view(
@@ -50,6 +63,17 @@ pub(super) fn view(
                         && !active.conversation_id.is_empty()
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
+            can_check_terminal: entry.state == State::Unknown
+                && entry.draft_key == key
+                && context.is_some_and(|ctx| {
+                    ctx.online
+                        && !ctx.session.archived()
+                        && ctx.session.subagent.is_none()
+                        && entry.catalog_key == ctx.session.key
+                        && entry.target == target(ctx)
+                        && ctx.row.run_id.as_deref() == Some(&entry.target.run_id)
+                        && ctx.row.conversation_id.as_deref() == Some(&entry.target.conversation_id)
+                }),
         })
         .collect()
 }
@@ -69,52 +93,132 @@ fn queue_target(ctx: &super::send::Context) -> bool {
         && !ctx.session.archived()
         && matches!(ctx.row.agent.as_str(), "codex" | "kimi")
         && ctx.row.process_state == "running"
-        && ctx.reason().is_none()
 }
 
 impl Composers {
-    pub(super) fn offers_outbox(&self, hub: &Hub, key: &str) -> bool {
-        let Some(ctx) = self
-            .context(hub)
-            .filter(|ctx| ctx.key == key && queue_target(ctx))
-        else {
-            return false;
-        };
-        let c = &hub.composers[key];
-        let target = target(&ctx);
-        let busy = ctx
-            .details
-            .as_ref()
-            .is_some_and(|d| d["activity"] == "busy");
-        !target.run_id.is_empty()
-            && !target.conversation_id.is_empty()
-            && (busy || ctx.ordinary_input_held(hub) || !c.outbox.is_empty())
-            && c.outbox.first().is_none_or(|head| {
-                head.target == target
-                    && head.draft_key == key
-                    && head.catalog_key == ctx.session.key
-            })
+    pub(super) fn manual_send(&self, hub: &Hub, ctx: &Context, c: &Composer) -> ManualSend {
+        if ctx.session.subagent.is_some() || ctx.session.archived() {
+            return ManualSend::Direct;
+        }
+        let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);
+        let busy = details["activity"] == "busy"
+            || matches!(
+                ctx.row.phase.as_deref(),
+                Some("tool" | "working" | "compacting")
+            )
+            || details["input_queue"].is_object();
+        let supported = queue_target(ctx);
+        let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
+        let target = target(ctx);
+        let exact = ctx.row.name == target.name
+            && ctx.row.run_id.as_deref() == Some(&target.run_id)
+            && ctx.row.conversation_id.as_deref() == Some(&target.conversation_id)
+            && exact_input_details(&ctx.row, (&target.run_id, &target.conversation_id), details);
+        if waiting {
+            if let Some(reason) = ctx.reason() {
+                return ManualSend::Blocked(reason);
+            }
+            if !supported {
+                return ManualSend::Blocked(QUEUE_UNAVAILABLE.into());
+            }
+            if !exact
+                || c.outbox.first().is_some_and(|head| {
+                    head.target != target
+                        || head.draft_key != ctx.key
+                        || head.catalog_key != ctx.session.key
+                })
+            {
+                return ManualSend::Blocked(QUEUE_TARGET_CHANGED.into());
+            }
+            ManualSend::Wait
+        } else if exact
+            && supported
+            && ctx.reason().is_none()
+            && self.idle_details(&ctx.row, &target, details)
+        {
+            ManualSend::TryNow
+        } else {
+            ManualSend::Direct
+        }
     }
 
-    /// The last editor flush is ordered before this call. Epoch, revision and
-    /// handle protect a newer draft or a selection change during the flush.
-    pub(super) fn enqueue_outbox(
+    /// Choose from the currently selected session under the same lock that
+    /// claims the editable draft. A ready attempt first saves a Reserved head.
+    pub(super) fn offer_manual_send(
         &self,
+        hub: &mut Hub,
         handle: u64,
         rev: u64,
         epoch: u64,
         text: &str,
-        done: oneshot::Sender<Result<super::ComposerView, String>>,
-    ) {
-        let mut hub = self.lock();
-        let result = self.enqueue_locked(&mut hub, handle, rev, epoch, text);
-        let (key, before, stored) = match result {
-            Ok(result) => result,
-            Err(reason) => {
-                let _ = done.send(Err(reason.into()));
-                return;
+    ) -> Result<Option<oneshot::Receiver<SendReply>>, SendReply> {
+        let Some(ctx) = self.context(hub) else {
+            return Ok(None);
+        };
+        let Some(c) = hub.composers.get(&ctx.key).filter(|c| c.handle == handle) else {
+            return Err(SendReply::Busy);
+        };
+        let ready = match self.manual_send(hub, &ctx, c) {
+            ManualSend::Direct => return Ok(None),
+            ManualSend::Wait => None,
+            ManualSend::TryNow => ctx.details.clone(),
+            ManualSend::Blocked(reason) => {
+                return Err(SendReply::Notice {
+                    text: reason,
+                    error: true,
+                });
             }
         };
+        if hub.closed
+            || !c.loaded
+            || c.busy()
+            || c.queue_writing
+            || c.outbox_damaged
+            || reserved(c)
+            || c.uncertain
+            || c.checkpoint.is_some()
+            || c.storage_error.is_some()
+            || c.rev != rev
+            || c.text_epoch != epoch
+            || c.draft.text != text
+            || !c.has_content()
+            || text.len() > MAX_TEXT_BYTES
+            || !self.question_part(hub).1
+        {
+            return Err(SendReply::Busy);
+        }
+        if !outbox::capacity(&c.outbox, text, &c.draft.attachments) {
+            return Err(SendReply::Notice {
+                text: "The local message queue is full. The draft is still in the editor.".into(),
+                error: true,
+            });
+        }
+        let before = c.stored();
+        let mut stored = before.clone();
+        let entry = Entry {
+            target: target(&ctx),
+            request_id: uuid::Uuid::new_v4().to_string(),
+            queued_at: outbox::enqueue_time(self.now()),
+            catalog_key: ctx.session.key,
+            draft_key: ctx.key.clone(),
+            text: text.to_owned(),
+            attachments: c.draft.attachments.clone(),
+            state: if ready.is_some() {
+                State::Reserved
+            } else {
+                State::Waiting
+            },
+        };
+        stored.outbox.push(entry.clone());
+        stored.draft = Draft::default();
+        stored.position = 0;
+        stored.anchor = 0;
+        let key = ctx.key;
+        hub.composers
+            .get_mut(&key)
+            .expect("checked above")
+            .queue_editing = true;
+        let (done, accepted) = oneshot::channel();
         let me = self.clone();
         self.0.store.enqueue_outbox(&key, before, stored.clone(), {
             let key = key.clone();
@@ -139,70 +243,28 @@ impl Composers {
                         c.storage_error = None;
                         c.save_failed = false;
                         hub.prompts.retain(|_, prompt| prompt.key != key);
-                        me.view_of(&hub, &key).ok_or_else(|| BUSY.into())
+                        me.view_of(&hub, &key)
+                            .map_or(SendReply::Busy, |view| SendReply::Accepted {
+                                view: Box::new(view),
+                                waiting: ready.is_none(),
+                            })
                     }
-                    Err(error) => Err(error),
+                    Err(error) => SendReply::Notice {
+                        text: error,
+                        error: true,
+                    },
                 };
+                let dispatch = matches!(view, SendReply::Accepted { .. }) && !hub.closed;
                 drop(hub);
                 me.changed();
                 let _ = done.send(view);
+                if let Some(details) = ready.filter(|_| dispatch) {
+                    let work = me.clone();
+                    (me.0.deps.spawn)(Box::new(move || work.dispatch_head(key, entry, &details)));
+                }
             }
         });
-    }
-
-    fn enqueue_locked(
-        &self,
-        hub: &mut Hub,
-        handle: u64,
-        rev: u64,
-        epoch: u64,
-        text: &str,
-    ) -> Result<(String, StoredDraft, StoredDraft), &'static str> {
-        let Some(ctx) = self.context(hub) else {
-            return Err(BUSY);
-        };
-        let Some(c) = hub.composers.get(&ctx.key) else {
-            return Err(BUSY);
-        };
-        if hub.closed
-            || c.handle != handle
-            || !c.loaded
-            || c.busy()
-            || c.queue_writing
-            || reserved(c)
-            || c.uncertain
-            || c.storage_error.is_some()
-            || c.rev != rev
-            || c.text_epoch != epoch
-            || c.draft.text != text
-            || !c.has_content()
-            || text.len() > MAX_TEXT_BYTES
-            || !self.question_part(hub).1
-            || !self.offers_outbox(hub, &ctx.key)
-        {
-            return Err(BUSY);
-        }
-        if !outbox::capacity(&c.outbox, text, &c.draft.attachments) {
-            return Err("The local message queue is full. The draft is still in the editor.");
-        }
-        let before = c.stored();
-        let mut stored = before.clone();
-        stored.outbox.push(Entry {
-            request_id: uuid::Uuid::new_v4().to_string(),
-            queued_at: outbox::enqueue_time(self.now()),
-            target: target(&ctx),
-            catalog_key: ctx.session.key,
-            draft_key: ctx.key.clone(),
-            text: text.to_owned(),
-            attachments: c.draft.attachments.clone(),
-            state: State::Waiting,
-        });
-        stored.draft = Draft::default();
-        stored.position = 0;
-        stored.anchor = 0;
-        let c = hub.composers.get_mut(&ctx.key).expect("checked above");
-        c.queue_editing = true;
-        Ok((ctx.key, before, stored))
+        Ok(Some(accepted))
     }
 
     pub(super) fn outbox_waiting(hub: &Hub) -> bool {
@@ -279,10 +341,14 @@ impl Composers {
         let Some(row) = self.outbox_row(entry) else {
             return false;
         };
+        self.idle_details(&row, &entry.target, details)
+    }
+
+    fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
         row.phase.as_deref() == Some("idle")
             && super::send::previous_message_pending(
-                &row,
-                (&entry.target.run_id, &entry.target.conversation_id),
+                row,
+                (&target.run_id, &target.conversation_id),
                 details,
             ) == Some(false)
             && details["activity"] == "idle"
@@ -296,8 +362,8 @@ impl Composers {
             && block_reason(
                 &BlockFacts {
                     online: true,
-                    state: row.state,
-                    cmd: row.agent,
+                    state: row.state.clone(),
+                    cmd: row.agent.clone(),
                     ..Default::default()
                 },
                 Some(details),
@@ -344,12 +410,12 @@ impl Composers {
                 drop(hub);
                 me.changed();
                 let work = me.clone();
-                (me.0.deps.spawn)(Box::new(move || work.dispatch_head(key, entry, details)));
+                (me.0.deps.spawn)(Box::new(move || work.dispatch_head(key, entry, &details)));
             }
         });
     }
 
-    fn dispatch_head(&self, key: String, entry: Entry, details: serde_json::Value) {
+    fn dispatch_head(&self, key: String, entry: Entry, details: &serde_json::Value) {
         // Once this reservation has answered, there is only one attempt.
         // With no matching receipt, the queue stops at the original message.
         let ready = {
@@ -360,9 +426,15 @@ impl Composers {
                         head.state == State::Reserved && head.request_id == entry.request_id
                     })
                 })
-                && self.ready(&entry, &details)
         };
-        let outcome = if ready {
+        if !ready {
+            return;
+        }
+        let outcome = if let Some(row) = self.outbox_row(&entry) {
+            if !self.idle_details(&row, &entry.target, details) {
+                self.settle_head(key, entry, None);
+                return;
+            }
             let action = Action::SendWhenIdle {
                 text: entry.text.clone(),
                 attachments: entry.attachments.clone(),
@@ -380,10 +452,11 @@ impl Composers {
                 detail: CHANGED.into(),
             }
         };
-        self.settle_head(key, entry, outcome);
+        self.settle_head(key, entry, Some(outcome));
     }
 
-    fn settle_head(&self, key: String, entry: Entry, outcome: Outcome) {
+    // None means this process retained the reservation and made no native call.
+    fn settle_head(&self, key: String, entry: Entry, outcome: Option<Outcome>) {
         let mut hub = self.lock();
         let Some(c) = hub.composers.get_mut(&key) else {
             return;
@@ -395,7 +468,7 @@ impl Composers {
             return;
         }
         let receipt = match &outcome {
-            Outcome::Done { receipt, .. }
+            Some(Outcome::Done { receipt, .. })
                 if receipt["request_id"] == entry.request_id
                     && receipt["name"] == entry.target.name
                     && receipt["run_id"] == entry.target.run_id
@@ -406,15 +479,16 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
-        let busy = receipt.is_some_and(|receipt| {
-            receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
-        });
+        let busy = outcome.is_none()
+            || receipt.is_some_and(|receipt| {
+                receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
+            });
         if exact {
             c.outbox.remove(0);
         } else {
             c.outbox[0].state = if busy {
                 State::Waiting
-            } else if matches!(outcome, Outcome::Failed { .. }) {
+            } else if matches!(outcome, Some(Outcome::Failed { .. })) {
                 State::Failed
             } else {
                 State::Unknown
@@ -446,7 +520,11 @@ impl Composers {
                             &entry.target.conversation_id,
                             me.now(),
                         );
-                        hub.local.finished(&key, &entry.request_id, &outcome);
+                        hub.local.finished(
+                            &key,
+                            &entry.request_id,
+                            outcome.as_ref().expect("submitted outcome"),
+                        );
                     }
                 }
                 drop(hub);
@@ -454,19 +532,6 @@ impl Composers {
             }
         });
     }
-}
-
-#[tauri::command(rename_all = "snake_case")]
-pub async fn composer_enqueue(
-    state: TauriState<'_, Composers>,
-    handle: u64,
-    rev: u64,
-    epoch: u64,
-    text: String,
-) -> Result<super::ComposerView, String> {
-    let (tx, rx) = oneshot::channel();
-    state.enqueue_outbox(handle, rev, epoch, &text, tx);
-    rx.await.map_err(|_| BUSY.to_owned())?
 }
 
 #[tauri::command(rename_all = "snake_case")]

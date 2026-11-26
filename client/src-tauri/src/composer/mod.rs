@@ -357,6 +357,8 @@ pub struct ComposerView {
     pub waiting_in_zerus: Vec<outbox::EntryView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ordinary_send_block: Option<String>,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
@@ -1843,6 +1845,8 @@ impl Composers {
     pub(crate) fn view_of(&self, hub: &Hub, key: &str) -> Option<ComposerView> {
         let composer = hub.composers.get(key)?;
         let session = send::session_view(self, hub, composer);
+        let context = self.context(hub).filter(|ctx| ctx.key == key);
+        let manual_send = context.as_ref().map(|ctx| self.manual_send(hub, ctx, composer));
         let (question, question_input) = self.question_part(hub);
         let input_visible = question_input
             && session
@@ -1944,12 +1948,12 @@ impl Composers {
                 && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
-            waiting_in_zerus: outbox::view(
-                &composer.outbox,
-                key,
-                self.context(hub).as_ref().filter(|ctx| ctx.key == key),
-            ),
-            offers_outbox: self.offers_outbox(hub, key),
+            waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
+            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait)),
+            ordinary_send_block: match manual_send {
+                Some(outbox::ManualSend::Blocked(reason)) => Some(reason),
+                _ => None,
+            },
             send_label: if composer.sending {
                 zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {

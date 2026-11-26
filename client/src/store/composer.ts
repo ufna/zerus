@@ -64,7 +64,6 @@ export interface ComposerPort {
   attach(handle: number, paths: string[], start: number, end: number): Promise<void>;
   pasteImage(handle: number, png: Uint8Array, start: number, end: number): Promise<void>;
   send(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
-  enqueue(handle: number, rev: number, epoch: number, text: string): Promise<ComposerView>;
   removeWaiting(handle: number, requestId: string): Promise<ComposerView>;
   push(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
   sendNow(queueId: string | null): Promise<boolean>;
@@ -141,6 +140,9 @@ export function statusLine(v: ComposerView | undefined, own: string | undefined,
   if (own) return { text: own, error: true };
   if (!v) return tooLong ? { text: tr(TOO_LONG), error: true } : { text: "", error: false };
   const below = v.status === "" || v.status === TOO_LONG || v.status === v.session_status || v.status === v.unavailable_reason;
+  if (below && hasDraft && v.ordinary_send_block && !v.uncertain && !v.delivery_pending && !tooLong) {
+    return { text: coreText(v.ordinary_send_block), error: false };
+  }
   if (hasDraft && v.earlier_input_held && !v.uncertain && !v.delivery_pending) {
     return { text: tr("%1 %2", tr(DRAFT_KEPT), tr(v.previous_message_pending === true ? EARLIER_INPUT_PENDING : EARLIER_INPUT_UNOBSERVED)),
       error: true, multiline: true };
@@ -236,18 +238,16 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const hasContent = () => text().trim() !== "" || (view()?.attachments.length ?? 0) > 0;
   const ordinaryInputHeld = () => !!view()?.earlier_input_held || view()?.previous_message_pending === true;
   const waitingMessages = () => opening() > 0 ? [] : view()?.waiting_in_zerus ?? [];
-  const offersQueueDraft = () => opening() === 0 && !!view()?.offers_outbox;
-  const queueDraft = () => offersQueueDraft() && (ordinaryInputHeld() || !!view()?.queue || waitingMessages().length > 0);
-  const canQueueDraft = () => offersQueueDraft() && hasContent() && !locked() && !tooLong()
-    && !view()?.uncertain && view()?.input_visible !== false
-    && !waitingMessages().some(row => row.state === "reserved");
-  /** Qt's Send state (MessageComposer.cpp:1185), from Rust's view and the text being typed. */
-  const sendEnabled = () => {
+  const canSubmitDraft = () => {
     const v = view();
-    // A required question card hides Send with the editor (setInputVisible).
-    if (waitingMessages().length > 0 || !v || !v.loaded || !v.available || v.uncertain || ordinaryInputHeld() || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
+    if (!v || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
+  const directSendEnabled = () => canSubmitDraft() && !ordinaryInputHeld() && waitingMessages().length === 0;
+  /** Send chooses between immediate submission and the durable local queue in Rust. */
+  const sendEnabled = () => !view()?.ordinary_send_block && (view()?.offers_outbox
+    ? canSubmitDraft() && waitingMessages()[0]?.state !== "reserved"
+    : directSendEnabled());
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
   const pushEnabled = () => !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
   /** The old session's queue must not remain actionable while its successor opens. */
@@ -390,6 +390,11 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       case "sending":
         if (epoch === at && !v?.sending && !v?.waiting) setStarting(true);
         break;
+      case "accepted":
+        if (opening() > 0 || r.view.handle !== h) break;
+        if (r.view.text_epoch > epoch) apply(r.view);
+        if (r.waiting && r.view.text_epoch === epoch) showHint(tr("Queued in Zerus."));
+        break;
       case "cold": setDialog({ kind: "cold", token: r.token, prompt: r.prompt }); break;
       case "start": setDialog({ kind: "start", token: r.token, question: r.question }); break;
       case "clear_context": openClear(); break;
@@ -427,24 +432,6 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     catch (e) { notices("error", typeof e === "string" ? e : e instanceof Error ? e.message : String(e), true); return false; }
   }
 
-  /** Ordinary Send and push share the flush, handle guard and reply hand-back. */
-  async function queueField() {
-    const h = handle();
-    if (h === undefined || !canQueueDraft()) return;
-    calling.add(h);
-    try {
-      await flush();
-      await Promise.allSettled([...edits]);
-      if (h !== handle() || !offersQueueDraft()) return;
-      const next = await port.enqueue(h, rev, epoch, text());
-      if (h === handle() && opening() === 0 && next.text_epoch > epoch) apply(next);
-    } catch (e) {
-      notices("error", coreText(e instanceof Error ? e.message : String(e)), true);
-    } finally {
-      calling.remove(h);
-    }
-  }
-
   async function removeWaiting(h: number, requestId: string) {
     if (h !== handle() || operationLocked()) return;
     calling.add(h);
@@ -459,7 +446,6 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   }
 
   async function sendField(pushing: boolean) {
-    if (!pushing && queueDraft()) return queueField();
     const h = handle();
     // Under a required question card the editor is hidden and takes no command (setInputVisible).
     if (h === undefined || calling.has(h) || view()?.input_visible === false || (pushing && !pushEnabled())) return;
@@ -467,7 +453,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     // the captured handle (MessageComposer.cpp:837 carries the field's key).
     const queuePush = pushing && (view()?.sending || !hasContent());
     if (locked() && !queuePush) return;
-    if (!queuePush && !sendEnabled()) {
+    if (!queuePush && !(pushing ? directSendEnabled() : sendEnabled())) {
       // Qt shows the status at the editor when there is something to send (MessageComposer.cpp:814-818).
       const status = statusLine(view(), error(), tooLong(), hasContent()).text;
       if (hasContent() && status) showHint(status);
@@ -482,7 +468,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     const captured = { rev, epoch, text: text(), position: selection().end, anchor: selection().start };
     try {
       await flush();
-      if (h !== handle() || opening() > 0 || (!queuePush && ordinaryInputHeld())) {
+      if (h !== handle() || opening() > 0 || (pushing && !queuePush && ordinaryInputHeld())) {
         calling.remove(h);
         return;
       }
@@ -505,7 +491,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   return {
     view, text, selection, dialog, locked, operationLocked, ordinaryInputHeld, sendEnabled, pushEnabled, queue, held: heldNow, hint,
-    offersQueueDraft, queueDraft, canQueueDraft, enqueueDraft: queueField, waitingMessages, removeWaiting,
+    waitingMessages, removeWaiting,
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),
     apply, receive,
@@ -714,7 +700,7 @@ export type ComposerStore = ReturnType<typeof createComposer>;
 
 export const composer = createRoot(() => createComposer({
   open: bridge.composerOpen, edit: bridge.composerEdit, pick: bridge.composerPick, attach: (h, paths, start, end) => bridge.composerAttach(h, paths, start, end), pasteImage: bridge.composerPasteImage,
-  send: bridge.sendMessage, enqueue: bridge.composerEnqueue, removeWaiting: bridge.composerRemoveWaiting, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
+  send: bridge.sendMessage, removeWaiting: bridge.composerRemoveWaiting, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, interruptFailed: bridge.sendInterruptFailed, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
   inboxRemove: bridge.inboxRemove,

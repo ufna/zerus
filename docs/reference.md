@@ -2700,15 +2700,16 @@ when its empty composer is recognized. An unknown busy layout or a draft refuses
 with `agent busy` before submission; wait or inspect Terminal rather than typing
 through that refusal.
 
-Desktop Composer offers **Queue draft** while a live Codex or Kimi
-conversation is busy or still holds earlier input. A busy conversation that
-can already accept a native message also keeps **Send**. **Queue draft** saves
-one message, including its attachments, in **Waiting in Zerus** and clears the
-editable draft. The queue shows each message's original local enqueue time.
-The agent receives no input during that save. The desktop
+**Send** and Enter in Desktop Composer send to a ready agent immediately.
+For a busy live Codex or Kimi conversation, or one with earlier Zerus messages
+waiting, Send saves the message and its attachments in **Waiting in Zerus**
+and clears the editable draft. The queue shows each message's original local
+enqueue time. The agent receives no input during that save. The desktop
 checks the original run and sends in order when it confirms an idle input
 with no earlier message pending. The host checks idle again under its native
-input lock before offering the message. Previously opened queues can drain while
+input lock before offering the message. If it confirms that the agent became
+busy before any input was offered, that same message waits with its original
+request ID. Previously opened queues can drain while
 another session is selected. After restarting the app, open the session to
 load its saved queue. The queue holds up to 16 messages, 80 KiB of text and
 20 MiB of files per session. The queue saves its messages and files separately

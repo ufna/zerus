@@ -932,6 +932,7 @@ export interface WaitingMessage {
   preview: string;
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
+  can_check_terminal?: boolean;
 }
 export interface ComposerView {
   handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
@@ -946,6 +947,7 @@ export interface ComposerView {
   /** A definite refusal is waiting for a fresh release of this exact target. */
   earlier_input_held?: boolean;
   offers_outbox?: boolean;
+  ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
@@ -998,6 +1000,7 @@ export interface StartOption { choice: StartChoice; label: Text; enabled: boolea
 export interface StartQuestion { title: Text; text: Text; informative: Text; options: StartOption[] }
 export type SendReply =
   | { kind: "sending" } | { kind: "busy" } | { kind: "blocked"; reason: string } | { kind: "notice"; text: string; error: boolean }
+  | { kind: "accepted"; view: ComposerView; waiting: boolean }
   | { kind: "cold"; token: number; prompt: ColdPrompt } | { kind: "clear_context"; token: number } | { kind: "start"; token: number; question: StartQuestion };
 export type Answer = { kind: "cold"; action: ColdAction } | { kind: "start"; choice: StartChoice } | { kind: "cancel" };
 /** Where Inspect on a failed local row leads. */
