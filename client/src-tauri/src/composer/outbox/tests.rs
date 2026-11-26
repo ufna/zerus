@@ -230,6 +230,10 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
             row.phase = Some("tool".into());
         }
         let mut busy = details(&session, agent, true, Some(false));
+        if agent == "agy" {
+            busy["send_supported"] = json!(true);
+            busy["send_available"] = json!(true);
+        }
         if reason == QUEUE_TARGET_CHANGED {
             busy["run_id"] = json!("replacement-run");
         }
