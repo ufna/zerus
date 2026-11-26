@@ -157,6 +157,14 @@ function claudePromptMatch(event: ActivityEvent, request: string, prompt: unknow
     && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
 }
 
+function dshPromptMatch(event: ActivityEvent, request: string, message: unknown, conversation: unknown): boolean {
+  return event.type === "UserPromptSubmit" && event.source === "dsh_native"
+    && !event.agent_id && !event.origin && !event.inherited_from
+    && !!request && event.dsh_request_id === request
+    && typeof message === "string" && !!message && event.dsh_message_id === message
+    && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
+}
+
 /** Files are addressed by the original request and native receipt index. */
 export function receiptFiles(id: string, files: unknown): files is EventAttachment[] {
   return Array.isArray(files) && files.length <= 8 && files.every((file, index) =>
@@ -176,7 +184,8 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
   const events = [...given];
   const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.attachments?.length
     && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim()
-    && (receipt.claude_outbox === true || echoMatchesFiles(receipt.submitted_text, receipt.attachments)));
+    && (receipt.claude_outbox === true || receipt.dsh_outbox === true
+      || echoMatchesFiles(receipt.submitted_text, receipt.attachments)));
   const own = (event: ActivityEvent) => event.source !== "hgs_voice" && !childEvent(event) && !event.origin
     && (!event.turn_origin || event.turn_origin === "user") && !event.inherited_from && PROMPTS.has(event.type ?? "");
   const requests = (event: ActivityEvent): string[] => [...new Set([
@@ -189,17 +198,20 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     const request = typeof receipt.message_id === "string" ? receipt.message_id : "";
     const submitted = String(receipt.submitted_text).trim();
     if (!request || receipts.filter(other => other.message_id === request).length !== 1) continue;
-    if (receipt.claude_outbox === true && (!receiptFiles(request, receipt.attachments)
+    const nativeReceipt = receipt.claude_outbox === true || receipt.dsh_outbox === true;
+    if (nativeReceipt && (!receiptFiles(request, receipt.attachments)
       || receipt.attachments.some(file => file.reference !== "" && !/^\[(Image|File) #[1-9][0-9]{0,8}\]$/.test(file.reference ?? "")))) continue;
-    if (receipt.claude_outbox !== true && receipts.filter(other => typeof other.submitted_text === "string"
+    if (!nativeReceipt && receipts.filter(other => typeof other.submitted_text === "string"
       && other.submitted_text.trim() === submitted).length !== 1) continue;
     // Every already bound row reserves its request, including complete rows,
     // local cards and rows that are no longer eligible for body replacement.
     const owners = events.flatMap((event, index) => requests(event).includes(request) ? [index] : []);
     if (owners.length > 1) continue;
-    const exact = receipt.claude_outbox === true
-      ? events.flatMap((event, index) => claudePromptMatch(event, request, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id)
-        && requests(event).every(id => id === request) ? [index] : [])
+    const nativeMatch = (event: ActivityEvent) => receipt.dsh_outbox === true
+      ? dshPromptMatch(event, request, receipt.dsh_message_id, receipt.conversation_id)
+      : claudePromptMatch(event, request, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id);
+    const exact = nativeReceipt
+      ? events.flatMap((event, index) => nativeMatch(event) && requests(event).every(id => id === request) ? [index] : [])
       : owners.length ? owners : events.flatMap((event, index) => own(event) && !opencodePromptId(event)
         && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
         && ownMessageText(event).trim() === submitted ? [index] : []);
@@ -310,6 +322,7 @@ const OUTBOX_SOURCE = "zerus_outbox";
 const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
 const OPENCODE_SOURCE = "opencode_native";
 const CLAUDE_OUTBOX_SOURCE = "zerus_claude_outbox";
+const DSH_OUTBOX_SOURCE = "zerus_dsh_outbox";
 const OPENCODE_SUBMITTED = trNoop("Submitted to OpenCode");
 const agyOffer = (event: ActivityEvent) => event.source === "agy_acp" && event.type === "UserPromptSubmit";
 const agyRequest = (event: ActivityEvent) => typeof event.request_id === "string" && event.request_id
@@ -427,8 +440,13 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
         && claudePromptMatch(e, row.id, row.message_id, row.run_id, row.conversation_id) ? [i] : []);
       if (matches.length === 1) match = matches[0];
     }
+    if (sent && row.source === DSH_OUTBOX_SOURCE) {
+      const matches = source.flatMap((e, i) => eligible(e, i) && e.run_id === row.run_id
+        && dshPromptMatch(e, row.id, row.message_id, row.conversation_id) ? [i] : []);
+      if (matches.length === 1) match = matches[0];
+    }
     const ordinary = (e: ActivityEvent, i: number) => row.source !== OPENCODE_SOURCE
-      && row.source !== CLAUDE_OUTBOX_SOURCE && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);
+      && row.source !== CLAUDE_OUTBOX_SOURCE && row.source !== DSH_OUTBOX_SOURCE && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);
     if (sent && fifo) match = source.findIndex((e, i) => ordinary(e, i)
       && outboxReceiptId(e, row) === row.id);
     if (sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
@@ -465,7 +483,8 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   // receipt. Keep the client's row visible through that short gap; do not
   // invent an identity binding from text. Equal-text sends remain separate.
   const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
-    if (row.source === OUTBOX_SOURCE || row.source === OPENCODE_SOURCE || row.source === CLAUDE_OUTBOX_SOURCE
+    if (row.source === OUTBOX_SOURCE || row.source === OPENCODE_SOURCE
+      || row.source === CLAUDE_OUTBOX_SOURCE || row.source === DSH_OUTBOX_SOURCE
       || event.source === OPENCODE_SOURCE
       || row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
       || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;

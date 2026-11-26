@@ -162,6 +162,24 @@ struct Original {
 }
 
 fn original(state: &Path, source: Source, id: &str) -> std::result::Result<Original, &'static str> {
+    decode_metadata(&original_bytes(state, source, id)?, source, id)
+}
+
+pub(in crate::state) fn dsh_outbox_original(state: &Path, id: &str) -> Result<Option<Value>> {
+    if !uuid(id) {
+        return Err("Invalid DeepSeek outbox request".into());
+    }
+    match original_bytes(state, Source::Dsh, id) {
+        Ok(bytes) => {
+            decode_metadata(&bytes, Source::Dsh, id).map_err(str::to_owned)?;
+            serde_json::from_slice(&bytes).map(Some).map_err(|error| error.to_string())
+        }
+        Err("missing") => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn original_bytes(state: &Path, source: Source, id: &str) -> std::result::Result<Vec<u8>, &'static str> {
     if !state.is_absolute() {
         return Err("source_unavailable");
     }
@@ -197,7 +215,7 @@ fn original(state: &Path, source: Source, id: &str) -> std::result::Result<Origi
         return Err("changed");
     }
     directory.verify().map_err(|_| "source_unavailable")?;
-    decode_metadata(&bytes, source, id)
+    Ok(bytes)
 }
 
 fn decode_metadata(

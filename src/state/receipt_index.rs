@@ -23,6 +23,7 @@ mod question;
 pub(super) use admission::Wait as QuestionAdmission;
 pub(super) use point::{
     claude_outbox_prompt, claude_outbox_status, claude_prompt_uuid, delivery_binding, delivery_receipt,
+    dsh_outbox_original,
     DeliveryBinding, DeliveryQuery,
 };
 // The independently developed recovery consumer stacks on this interface.

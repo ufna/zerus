@@ -24,6 +24,13 @@ class Adapter extends LlmAdapter {
     await new Promise(resolve => setTimeout(resolve, 120));
     const prompt = options.messages.filter(m => m.role === 'user' && m.source?.kind === 'user').at(-1);
     const text = prompt?.content?.filter(b => b.type === 'text').map(b => b.text).join('') ?? '';
+    if (text === 'OUTBOX_HELD_TURN_FIXTURE' && this.holds) {
+      writeFileSync(join(this.holds, 'OUTBOX_HELD_TURN_FIXTURE.started'), '');
+      for (let step = 0; step < 2400 && !existsSync(join(this.holds, 'OUTBOX_HELD_TURN_FIXTURE.release')); step++) {
+        if (options.signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
     if (text.includes('INTERRUPT_WAIT_FIXTURE')) {
       await new Promise((resolve,reject) => {
         const timer=setTimeout(resolve,10000);

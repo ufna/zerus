@@ -21,6 +21,7 @@ pub const MAX_PER_SESSION: usize = 50;
 pub const MAX_SESSIONS: usize = 512;
 pub const OPENCODE_SOURCE: &str = "opencode_native";
 const CLAUDE_OUTBOX_SOURCE: &str = "zerus_claude_outbox";
+const DSH_OUTBOX_SOURCE: &str = "zerus_dsh_outbox";
 /// An original durable FIFO request, which only an exact history receipt can join.
 const OUTBOX_SOURCE: &str = "zerus_outbox";
 
@@ -258,6 +259,8 @@ impl LocalMessages {
             OPENCODE_SOURCE
         } else if entry.target.name.starts_with("claude/") {
             CLAUDE_OUTBOX_SOURCE
+        } else if entry.target.name.starts_with("dsh/") {
+            DSH_OUTBOX_SOURCE
         } else {
             OUTBOX_SOURCE
         };
@@ -392,6 +395,13 @@ impl LocalMessages {
                 {
                     row.message_id = crate::actions::claude_outbox_prompt(receipt).map(str::to_owned);
                 }
+                if row.source.as_deref() == Some(DSH_OUTBOX_SOURCE)
+                    && crate::actions::dsh_outbox_submitted(receipt)
+                    && request == row.id && receipt["run_id"] == row.run_id
+                    && receipt["conversation_id"] == row.conversation_id
+                {
+                    row.message_id = receipt["native_message_id"].as_str().map(str::to_owned);
+                }
                 for (index, file) in row.attachments.iter_mut().enumerate() {
                     file["request_id"] = request.clone();
                     file["index"] = json!(index);
@@ -464,6 +474,22 @@ impl LocalMessages {
                             event["message_id"] == row.id && claude_outbox_echo(row, event, id)
                         })))
                     && events.iter().filter(|event| claude_outbox_echo(row, event, id)).take(2).count() == 1;
+                result.removed += usize::from(shown);
+                return !shown;
+            }
+            if row.source.as_deref() == Some(DSH_OUTBOX_SOURCE) {
+                let Some(id) = row.message_id.as_deref() else { return true; };
+                let exact = |event: &Value| event["dsh_message_id"] == id
+                    && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id;
+                let shown = row.status == Status::Sent
+                    && (row.attachments.is_empty() || details["attachment_messages"].as_array()
+                        .is_some_and(|messages| messages.iter().any(|event| {
+                            event["dsh_outbox"] == true && event["message_id"] == row.id && exact(event)
+                        })))
+                    && events.iter().filter(|event| {
+                        event["type"] == "UserPromptSubmit" && event["source"] == "dsh_native"
+                            && event["dsh_request_id"] == row.id && exact(event)
+                    }).take(2).count() == 1;
                 result.removed += usize::from(shown);
                 return !shown;
             }

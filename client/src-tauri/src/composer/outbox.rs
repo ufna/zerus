@@ -127,11 +127,19 @@ fn target(ctx: &super::send::Context) -> Target {
 }
 
 fn supported_agent(agent: &str) -> bool {
-    matches!(agent, "codex" | "kimi" | "opencode" | "claude")
+    matches!(agent, "codex" | "kimi" | "opencode" | "claude" | "dsh" | "deepseek")
+}
+
+fn dsh_agent(agent: &str) -> bool {
+    matches!(agent, "dsh" | "deepseek")
 }
 
 fn opencode_outbox(entry: &Entry) -> bool {
     entry.target.name.starts_with("opencode/")
+}
+
+fn dsh_outbox(entry: &Entry) -> bool {
+    entry.target.name.starts_with("dsh/")
 }
 
 fn guarded_action(entry: &Entry) -> Action {
@@ -140,12 +148,13 @@ fn guarded_action(entry: &Entry) -> Action {
 
 fn can_probe(entry: &Entry) -> bool {
     entry.state == State::Waiting || entry.state == State::Unknown
-        && (opencode_outbox(entry) || entry.target.name.starts_with("claude/"))
+        && (opencode_outbox(entry) || dsh_outbox(entry) || entry.target.name.starts_with("claude/"))
 }
 
 fn guarded_supported(agent: &str, details: &serde_json::Value) -> bool {
     details["guarded_idle_send"] == true
         && (agent != "claude" || details["claude_outbox_supported"] == true)
+        && (!dsh_agent(agent) || details["dsh_outbox_supported"] == true)
 }
 
 impl Context {
@@ -229,7 +238,8 @@ impl Composers {
                 ctx.row.phase.as_deref(),
                 Some("tool" | "working" | "compacting")
             )
-            || details["input_queue"].is_object();
+            || details["input_queue"].is_object()
+            || dsh_agent(&ctx.row.agent) && details["dsh_outbox_ready"] == false;
         let supported = ctx.outbox_candidate() && ctx.online && ctx.row.process_state == "running";
         if supported && ctx.awaiting_outbox_details {
             return ManualSend::Blocked(
@@ -262,6 +272,7 @@ impl Composers {
             ManualSend::Wait
         } else if exact
             && supported
+            && !dsh_agent(&ctx.row.agent)
             && ctx.reason().is_none()
             && self.idle_details(&ctx.row, &target, details)
         {
@@ -506,15 +517,17 @@ impl Composers {
 
     fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
         guarded_supported(&row.agent, details)
+            && super::send::exact_input_details(row, (&target.run_id, &target.conversation_id), details)
             && row.phase.as_deref() == Some("idle")
-            && super::send::previous_message_pending(
+            && (dsh_agent(&row.agent) || super::send::previous_message_pending(
                 row,
                 (&target.run_id, &target.conversation_id),
                 details,
-            ) == Some(false)
+            ) == Some(false))
             && details["activity"] == "idle"
             && details["phase"] == "idle"
             && details["input_queue"].is_null()
+            && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
             && details["pending_questions_complete"] != false
             && details["pending_questions"]
                 .as_array()
@@ -677,7 +690,13 @@ impl Composers {
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle"
-                    && receipt["proof"] == if opencode_outbox(&entry) { "native_opencode_queue" } else { "native_input_lock" }
+                    && receipt["proof"] == if opencode_outbox(&entry) {
+                        "native_opencode_queue"
+                    } else if dsh_outbox(&entry) {
+                        "native_dsh_idle_guard"
+                    } else {
+                        "native_input_lock"
+                    }
             });
         let mut entries = c.outbox.clone();
         if exact {

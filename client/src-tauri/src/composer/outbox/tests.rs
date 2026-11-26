@@ -22,6 +22,10 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     if agent == "claude" {
         value["claude_outbox_supported"] = json!(true);
     }
+    if dsh_agent(agent) {
+        value["dsh_outbox_supported"] = json!(true);
+        value["dsh_outbox_ready"] = json!(!is_busy);
+    }
     if let Some(pending) = pending {
         value["previous_message_pending"] = json!(pending);
     }
@@ -78,7 +82,7 @@ fn settle_next(
 
 #[test]
 fn ordinary_send_accepts_a_busy_draft_without_native_input() {
-    for agent in ["codex", "kimi", "opencode", "claude"] {
+    for agent in ["codex", "kimi", "opencode", "claude", "dsh"] {
         let root = dir("ordinary-send-busy");
         let (c, fake) = send_hub_on(&drafts(&root));
         let target = target_session(agent);
@@ -177,8 +181,9 @@ fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_o
 #[test]
 fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
     for (agent, reason) in [
-        ("dsh", QUEUE_UNAVAILABLE),
+        ("agy", QUEUE_UNAVAILABLE),
         ("claude", QUEUE_OLD_HOST),
+        ("dsh", QUEUE_OLD_HOST),
         ("codex", QUEUE_TARGET_CHANGED),
     ] {
         let root = dir("single-send-unsupported");
@@ -196,7 +201,9 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
             busy["run_id"] = json!("replacement-run");
         }
         if reason == QUEUE_OLD_HOST {
-            busy.as_object_mut().unwrap().remove("claude_outbox_supported");
+            let capability = if dsh_agent(agent) { "dsh_outbox_supported" } else { "claude_outbox_supported" };
+            busy.as_object_mut().unwrap().remove(capability);
+            busy.as_object_mut().unwrap().remove("dsh_outbox_ready");
         }
         c.open(Some(session));
         c.observe(&state(busy));

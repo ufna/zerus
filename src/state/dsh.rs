@@ -21,6 +21,8 @@ pub(in crate::state) mod host_identity;
 #[cfg(unix)]
 mod shell_identity;
 pub(crate) mod witness;
+mod outbox;
+pub(super) use outbox::{send_when_idle, status as outbox_status, valid_message_id as outbox_message_id};
 mod answer;
 pub(in crate::state) mod dispatch_lock;
 pub(in crate::state) mod retirement;
@@ -1665,8 +1667,16 @@ fn native_events(records: &Value) -> Vec<Value> {
         if typ == "AgentMessage" {
             last_answer = Some(events.len());
         }
-        events.push(json!({"type":typ,"agent_id":"","seq":e["seq"].as_i64().unwrap_or(0)+1,"at":e["time"].as_f64().unwrap_or(0.0)/1000.0,
-            "detail":detail,"tool":tool,"source":"dsh_native","message_id":data["message"]["id"]}));
+        let mut event = json!({"type":typ,"agent_id":"","seq":e["seq"].as_i64().unwrap_or(0)+1,"at":e["time"].as_f64().unwrap_or(0.0)/1000.0,
+            "detail":detail,"tool":tool,"source":"dsh_native","message_id":data["message"]["id"]});
+        if kind == "user/message" && data["source"]["kind"] == "user"
+            && session_id::canonical(string(&data["source"], "rpcId"))
+            && outbox_message_id(string(data, "id"))
+        {
+            event["dsh_request_id"] = data["source"]["rpcId"].clone();
+            event["dsh_message_id"] = data["id"].clone();
+        }
+        events.push(event);
     }
     events
 }
@@ -2088,6 +2098,10 @@ fn inspect_record(name: &str, record: &Value, agent_id: Option<&str>, include_pr
     let mut events = native_events(&inspected["page"]["records"]);
     let process_snapshot=if include_processes { processes::dsh_snapshot(&record,&inspected) } else { Value::Null };
     for event in &mut events {
+        if agent_id.is_none() && event["dsh_request_id"].is_string() {
+            event["conversation_id"] = record["conversation_id"].clone();
+            event["run_id"] = record["run_id"].clone();
+        }
         let source=inspected["page"]["records"].as_array().into_iter().flatten().map(|v|&v["event"]).find(|e|e["seq"]==event["seq"]);
         if let Some(source)=source {
             let call=source["data"].get("callId").or_else(||source["data"]["message"].get("toolCallId"));
@@ -2118,6 +2132,13 @@ fn inspect_record(name: &str, record: &Value, agent_id: Option<&str>, include_pr
     result["history_truncated"] = inspected["page"]["hasMore"].clone();
     result["host_generation"] = inspected["generation"].clone();
     let ping=rpc("ping",json!({})).unwrap_or(Value::Null);
+    if agent_id.is_none() && ping["outboxSend"] == true && ping["generation"] == inspected["generation"]
+        && !string(&ping, "generation").is_empty()
+    {
+        result["guarded_idle_send"] = json!(true);
+        result["dsh_outbox_supported"] = json!(true);
+        result["dsh_outbox_ready"] = json!(inspected["outboxReady"] == true);
+    }
     result["terminal_supported"]=json!(false);
     result["terminal_reason"]=json!(backend::DEEPSEEK_TERMINAL.text());
     let restoring = retirement::pending(&record);

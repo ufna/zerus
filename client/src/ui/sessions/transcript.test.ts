@@ -780,3 +780,27 @@ it("never gives a native queue hook the original Claude file after the typed row
   const projection = createTranscriptProjection();
   expect(projection.build([queued], undefined, [row]).map(item => item.id)).toEqual(["s2", "local-original"]);
 });
+
+it("matches a DeepSeek outbox file only by its native receipt in the same conversation", () => {
+  const event = { type: "UserPromptSubmit", source: "dsh_native", seq: 1, at: 1,
+    dsh_request_id: "original", dsh_message_id: "message-one", run_id: "run",
+    conversation_id: "session-one", detail: "Read [File #1]" } satisfies ActivityEvent;
+  const wrong = { ...event, seq: 2, at: 2, dsh_request_id: "other" };
+  const foreign = { ...event, seq: 3, at: 3, conversation_id: "session-other" };
+  const file = { request_id: "original", index: 0, name: "changes.txt", mime: "text/plain", reference: "[File #1]", bytes: 12 };
+  const receipt = { ...event, dsh_outbox: true, source: "hgs_delivery", message_id: "original",
+    submitted_text: "Read [File #1]", attachments: [file] };
+  const summary = { attachment_messages: [receipt] };
+  const merged = mergeAttachmentMessages([event, wrong, foreign], summary);
+  expect(merged[0]).toMatchObject({ attachment_request_id: "original", attachments: [file] });
+  expect(merged.slice(1)).toEqual([wrong, foreign]);
+  expect(mergeAttachmentMessages([wrong, foreign], summary)).toEqual([wrong, foreign]);
+  const differentNative = { ...event, dsh_message_id: "message-other" };
+  expect(mergeAttachmentMessages([differentNative], summary)).toEqual([differentNative]);
+
+  const row = local("sent", false, { id: "original", source: "zerus_dsh_outbox",
+    message_id: event.dsh_message_id, run_id: event.run_id, conversation_id: event.conversation_id });
+  const projection = createTranscriptProjection();
+  expect(projection.build([event, wrong], undefined, [row]).map(item => item.id)).toEqual(["local-original", "s2"]);
+  expect(projection.build([wrong], undefined, [row]).map(item => item.id)).toEqual(["s2", "local-original"]);
+});
