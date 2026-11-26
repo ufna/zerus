@@ -666,7 +666,7 @@ fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_met
     *lock(&fake.inspected) = Some(details(&session, "codex", false, Some(false)));
     let name = session.name.clone();
     *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
-        receipt: json!({"status": "submitted", "request_id": request, "name": name,
+        receipt: json!({"status": "submitted", "transport": "terminal", "request_id": request, "name": name,
             "run_id": "run-1", "conversation_id": "conv-1", "submitted_at": 1_793_000_104.5}),
         cleanup: None,
     });
@@ -726,6 +726,44 @@ fn a_submitted_text_only_outbox_row_waits_for_exact_history_identity() {
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, std::slice::from_ref(&exact)).removed, 0);
     exact["run_id"] = json!("run-1");
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, &[exact]).removed, 1);
+}
+
+#[test]
+fn a_codex_terminal_acknowledgement_is_status_until_native_history_arrives() {
+    outbox_transport("codex", "terminal", true);
+}
+
+#[test]
+fn the_native_codex_queue_and_kimi_keep_their_outgoing_rows() {
+    outbox_transport("codex", "codex_queue", false);
+    outbox_transport("kimi", "terminal", false);
+}
+
+fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool) {
+    let root = dir("outbox-terminal-handoff");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session(agent);
+    present(&c, &fake, &session, agent);
+    enqueue(&c, "Synthetic native prompt");
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
+        receipt: json!({"status":"submitted", "transport":transport, "request_id":request,
+            "name":name, "run_id":"run-1", "conversation_id":"conv-1"}),
+        cleanup: None,
+    });
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(&c, &fake, &store, details(&session, agent, false, Some(false)));
+    let view = until(&c, |view| view.waiting_in_zerus.is_empty());
+    assert_eq!(view.local.len(), usize::from(!terminal_status));
+    assert_eq!(view.status == "Submitted to terminal", terminal_status);
+    assert!(!view.status_error);
+    assert_eq!(lock(&fake.calls).len(), 1);
+    if terminal_status {
+        c.edit(view.handle, view.rev + 1, view.text_epoch, "New draft".into(), 0, 0);
+        c.edit(view.handle, view.rev + 2, view.text_epoch, String::new(), 0, 0);
+        assert_ne!(c.current().unwrap().status, "Submitted to terminal");
+    }
 }
 
 #[test]

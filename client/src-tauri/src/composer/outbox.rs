@@ -14,6 +14,7 @@ use zerus_client_core::{Action, Outcome, Target, ViewRow};
 
 const CHECK_INTERVAL: f64 = 3.0;
 const BUSY: &str = "The draft could not be queued. Its text is still in the editor.";
+pub(super) const TERMINAL_SUBMITTED: &str = "Submitted to terminal";
 pub(super) fn reserved(c: &Composer) -> bool {
     c.outbox
         .first()
@@ -125,6 +126,10 @@ fn target(ctx: &super::send::Context) -> Target {
 }
 
 impl Context {
+    pub(super) fn terminal_submission_shown(&self, composer: &Composer) -> bool {
+        composer.outbox.is_empty() && composer.last_terminal_submission.as_ref() == Some(&target(self))
+    }
+
     pub(super) fn outbox_candidate(&self) -> bool {
         self.session.subagent.is_none()
             && !self.session.archived()
@@ -597,6 +602,10 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
+        let terminal_only = exact
+            && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
+            && entry.target.name.starts_with("codex/")
+            && entry.attachments.is_empty();
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
@@ -638,7 +647,10 @@ impl Composers {
                     // catalog update during the write keeps the head visible.
                     c.outbox = entries;
                     c.queue_check_at = me.now() + CHECK_INTERVAL;
-                    if exact {
+                    // Codex's plain terminal receipt acknowledges input
+                    // transport. Only the native history can identify a turn.
+                    c.last_terminal_submission = terminal_only.then(|| entry.target.clone());
+                    if exact && !terminal_only {
                         hub.local.sent_from_outbox(
                             &key,
                             &entry,
