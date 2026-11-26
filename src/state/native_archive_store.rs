@@ -247,19 +247,35 @@ impl Store {
         Ok(())
     }
 
+    fn original_id(db: &Connection, record: &Value) -> Result<Option<String>> {
+        sql(db
+            .query_row(
+                "SELECT id FROM archive_rows WHERE name=?1 AND run=?2 AND conversation=?3",
+                params![
+                    record["name"].as_str(),
+                    record["run_id"].as_str(),
+                    record["conversation_id"].as_str()
+                ],
+                |row| row.get(0),
+            )
+            .optional())
+    }
+
+    /// A durable archive and its still-present original binding indicate a
+    /// local transition interrupted before binding retirement.
+    pub(super) fn has_original(&self, record: &Value) -> Result<bool> {
+        let Some(path) = self.existing_path()? else {
+            return Ok(false);
+        };
+        Ok(Self::original_id(&open(&path, false)?, record)?.is_some())
+    }
+
     pub(super) fn publish(&self, record: &Value) -> Result<String> {
         let db = self.writer()?;
         let name = string(record, "name");
         let run = string(record, "run_id");
         let conversation = string(record, "conversation_id");
-        let existing: Option<String> = sql(db
-            .query_row(
-                "SELECT id FROM archive_rows WHERE name=?1 AND run=?2 AND conversation=?3",
-                params![name, run, conversation],
-                |row| row.get(0),
-            )
-            .optional())?;
-        if let Some(id) = existing {
+        if let Some(id) = Self::original_id(&db, record)? {
             let prior = self
                 .by_id(&id)?
                 .ok_or("Native archive changed before publication")?;

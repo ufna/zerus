@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
+import unittest
 
 import test_opencode_context_native as fixture
 import test_opencode_native as native
@@ -154,3 +156,37 @@ class OpenCodeArchive(fixture.OpenCodeContext):
         self.assertEqual(finished['result_target']['run_id'], current['run_id'])
         self.hgs(['inspect', name, '--archive', archive_id], success=False)
         self.assertEqual(self.hgs(['inspect', name])['run_id'], current['run_id'])
+
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'private Unix permissions fault')
+    def test_partial_archive_fences_mutation_and_reuses_the_published_archive(self):
+        row = self.start()
+        name = row['name']
+        binding = self.binding_path(name)
+        original = binding.read_bytes()
+        request = self.payload(row, action='archive')
+        binding.parent.chmod(0o500)
+        try:
+            refused = self.hgs(['session-action', name, '--json'], request)
+        finally:
+            binding.parent.chmod(0o700)
+        self.assertEqual(refused['status'], 'uncertain', refused)
+        self.assertEqual(binding.read_bytes(), original)
+        db_path = self.state / 'opencode/archives-v1.sqlite3'
+        with sqlite3.connect(db_path) as db:
+            records = db.execute('SELECT id FROM archive_rows WHERE name=?', (name,)).fetchall()
+        self.assertEqual(len(records), 1)
+        archive_id = records[0][0]
+        live = self.hgs(['inspect', name])
+        self.assertNotIn('rename', live['allowed_actions'])
+        self.assertNotIn('forget', live['allowed_actions'])
+        self.action(live, 'rename', new_name='opencode/workspace/forbidden-rename', status='failed')
+        self.action(live, 'forget', status='failed')
+        source = self.hgs(['inspect', name, '--archive', archive_id])
+        self.action(source, 'restore', archive_id=archive_id, status='failed')
+        self.assertEqual(self.hgs(['session-action', name, '--json'], request), refused)
+        settled = self.action(live, 'archive')
+        self.assertEqual(settled['result_target']['archive_id'], archive_id)
+        self.assertFalse(binding.exists())
+        self.action(source, 'restore', archive_id=archive_id)
+        self.assertEqual(self.listing()[name]['conversation_id'], row['conversation_id'])

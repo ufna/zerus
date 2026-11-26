@@ -2278,8 +2278,8 @@ fn action_in<N: Native>(
     if let Some(scope) = scope {
         scope.check(record)?;
     }
-    if archives::pending_restore(record) {
-        return Err("Finish the original OpenCode restore before changing this binding".into());
+    if archives::pending_restore(record) || archives::STORE.has_original(record)? {
+        return Err("Finish the original OpenCode Archive or Restore before changing this binding".into());
     }
     let current = own_state(string(record, "name"))?;
     if !current["allowed_actions"]

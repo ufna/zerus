@@ -89,6 +89,9 @@ pub(super) fn decorate(
         actions.retain(|op| op != "rename" && op != "forget" && op != "archive");
         return;
     }
+    if STORE.has_original(record) != Ok(false) {
+        actions.retain(|op| op != "rename" && op != "forget");
+    }
     if !actions.iter().any(|op| op == "archive") {
         return;
     }
@@ -148,8 +151,7 @@ fn verify_idle(
     if active_ancestors(native, &active)?.contains(conversation) {
         return Err(ACTIVE_CHILD.into());
     }
-    if !active.as_object().is_some_and(|rows| rows.is_empty()) && active_sessions(native)? != active
-    {
+    if active_sessions(native)? != active {
         return Err(UNKNOWN_CHILD.into());
     }
     Ok(session)
@@ -287,12 +289,7 @@ pub(in crate::state) fn restore(
         return Err("A live or saved session already uses this name".into());
     }
     if resumed.is_none()
-        && PROVIDER
-            .id_path(string(archived, "session_id"))
-            .is_some_and(|path| {
-                !std::fs::symlink_metadata(path)
-                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-            })
+        && parent_link::read_session(string(archived, "session_id"), name)?.is_some()
     {
         return Err("This OpenCode session identity already has a saved binding".into());
     }
