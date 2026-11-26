@@ -4,6 +4,7 @@ import type { FollowTarget } from "../../store/activity";
 import type { ActivityItem, Session } from "./types";
 import { attachments } from "./transcript";
 import { draftKey } from "../../store/draftKeys";
+import { tr } from "../../i18n";
 
 interface Entry { text: string; exact: boolean }
 const plainTerminal = (text: string) => text
@@ -59,6 +60,28 @@ export function sanitizedQueueText(text: string): string {
       (_whole, instruction: string) => instruction.startsWith("Inspect") ? "[Image]" : "[File]");
 }
 
+// A terminal preview can clip the envelope after its sender or wrap its
+// reference. Display only the declared sender and visible body. Neither the
+// preview nor the sender is used to authorize a queue action.
+const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+const decodeEntities = (text: string) => text.replace(/&(amp|lt|gt|quot|apos);/g, (_, key: string) => entities[key]);
+function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | undefined {
+  if (!text.startsWith('<zerus-message from="')) return undefined;
+  const header = text.slice(0, 4096);
+  const from = /^<zerus-message from="((?:[^&"<>\n]|&(?:amp|lt|gt|quot|apos);){1,1024})"(?:\s+host="([A-Za-z0-9_][A-Za-z0-9_.-]{0,79})")?/.exec(header);
+  const name = from ? decodeEntities(from[1]) : undefined;
+  const sender = name && name.length <= 512 && name.includes("/") && !/[\p{Cc}\p{Cf}]/u.test(name)
+    ? from?.[2] ? tr("%1 on %2", name, from[2]) : name
+    : undefined;
+  const opening = from?.[2] && /^\s+reference="zerus:\/\/session\?[^"<>]*">/.exec(header.slice(from[0].length));
+  // Require the opening tag's own closing quote and bracket. A clipped
+  // attribute, terminal ellipsis or closing tag alone cannot reveal a body.
+  const body = opening && from
+    ? text.slice(from[0].length + opening[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
+    : "";
+  return { sender, body: body ? sanitizedQueueText(decodeEntities(body)) : tr("Message preview unavailable in Terminal") };
+}
+
 interface Receipt { id: string; submitted: string; body: string; files: ActivityItem["attachments"]; metadata: string }
 function receipt(id: unknown, submitted: unknown, body: unknown, files: unknown): Receipt | undefined {
   if (typeof id !== "string" || !id || typeof submitted !== "string" || !canonical(submitted) || typeof body !== "string" || !Array.isArray(files) || files.length > 8) return;
@@ -100,7 +123,8 @@ export function queuedMessages(queue: QueueView, local: readonly LocalMessage[],
   return entries.map((entry, index) => {
     const candidates = receipts.get(entry.text) ?? [];
     const exact = entry.exact && occurrences.get(entry.text) === 1 && candidates.length === 1 ? candidates[0] : undefined;
-    return { id: `queue-${index}`, kind: "user", at: "", body: exact?.body ?? sanitizedQueueText(entry.text), attachments: exact?.files };
+    const preview = exact ? { body: exact.body } : envelopePreview(entry.text) ?? { body: sanitizedQueueText(entry.text) };
+    return { id: `queue-${index}`, kind: "user", at: "", ...preview, attachments: exact?.files };
   });
 }
 

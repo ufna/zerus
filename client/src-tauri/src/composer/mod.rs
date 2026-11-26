@@ -347,6 +347,9 @@ pub struct ComposerView {
     pub status: String,
     pub status_error: bool,
     pub can_send: bool,
+    /// Omitted in inspections that cannot observe the earlier-input guard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_message_pending: Option<bool>,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
@@ -1886,7 +1889,9 @@ impl Composers {
                 && !attachments_blocked
                 && !too_long
                 && !locked
-                && !composer.uncertain,
+                && !composer.uncertain
+                && session.previous_message_pending != Some(true),
+            previous_message_pending: session.previous_message_pending,
             send_label: if composer.sending {
                 zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {

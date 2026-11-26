@@ -89,6 +89,7 @@ const STOPPED: &str = "Session stopped. Send asks whether to resume it or start 
 pub(crate) struct SessionView {
     pub(crate) subagent: Option<SubagentView>,
     pub(crate) available: bool,
+    pub(crate) previous_message_pending: Option<bool>,
     pub(crate) unavailable_reason: String,
     pub(crate) block_reason: Option<String>,
     pub(crate) attachments_available: bool,
@@ -269,6 +270,23 @@ fn native_run<'a>(row: &'a ViewRow, details: Option<&'a Value>) -> &'a str {
         .unwrap_or("")
 }
 
+fn previous_message_pending(row: &ViewRow, details: &Value) -> Option<bool> {
+    let run = text(details, "run_id");
+    let conversation = text(details, "conversation_id");
+    if run.is_empty()
+        || conversation.is_empty()
+        || row.run_id.as_deref() != Some(run)
+        || row.conversation_id.as_deref() != Some(conversation)
+        || text(details, "name") != row.name
+        || text(details, "agent") != row.agent
+        || text(details, "runtime_state") != "live"
+        || text(details, "process_state") != "running"
+    {
+        return None;
+    }
+    details["previous_message_pending"].as_bool()
+}
+
 impl Context {
     /// Only the open child's own inspection, never its parent's state or another child's.
     pub(crate) fn child_details(&self) -> Option<&Value> {
@@ -299,6 +317,16 @@ impl Context {
         } else {
             Some("Loading subagent activity…".into())
         }
+    }
+
+    /// The earlier-input guard on this exact main conversation. It says
+    /// nothing about the delivery of the current draft.
+    pub(crate) fn previous_message_pending(&self) -> Option<bool> {
+        if self.recorded() || self.session.subagent.is_some() {
+            return None;
+        }
+        let details = self.details.as_deref()?;
+        previous_message_pending(&self.row, details)
     }
 
     /// Qt's `recorded`: session data that is not live (`SessionsWindow.cpp:3783`).
@@ -704,6 +732,7 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
     SessionView {
         subagent,
         available,
+        previous_message_pending: ctx.previous_message_pending(),
         unavailable_reason,
         clear: clear_control(hub, &ctx, details),
         block_reason: reason,
@@ -1907,6 +1936,9 @@ impl Composers {
                 error: true,
             });
         }
+        if ctx.previous_message_pending() == Some(true) {
+            return Err(SendReply::Busy);
+        }
         let Some(files) = LocalMessages::stored_files(&row) else {
             return Err(SendReply::Notice {
                 text: UNAVAILABLE.into(),
@@ -1974,6 +2006,7 @@ impl Composers {
             && observed
             && online
             && (self.0.deps.facts)(&ctx.session.computer, &ctx.session.name, &row.run_id).is_none()
+            && previous_message_pending(&now_row, evidence) != Some(true)
             && text(evidence, "run_id") == row.run_id
             && text(evidence, "conversation_id") == row.conversation_id
             && text(evidence, "runtime_state") == "live"
@@ -3825,6 +3858,33 @@ pub(crate) mod tests {
     pub(crate) fn ready() -> Value {
         json!({"tracked": true, "run_id": "run-1", "conversation_id": "conv-1", "runtime_state": "live", "process_state": "running",
                "phase": "idle", "activity": "idle", "compact_context_supported": true, "clear_context_supported": true})
+    }
+
+    #[test]
+    fn exact_earlier_input_observation_blocks_draft_without_locking_the_editor() {
+        let root = dir("earlier-input-observation");
+        let store = drafts(&root);
+        let (c, _) = send_hub_on(&store);
+        let mut details = ready();
+        details["name"] = json!(session().name);
+        details["agent"] = json!("claude");
+        details["previous_message_pending"] = json!(true);
+        let view = opened(&c, details.clone());
+        c.edit(view.handle, 1, view.text_epoch, "person draft".into(), 12, 12);
+        let blocked = until(&c, |v| v.text == "person draft");
+        assert_eq!(blocked.previous_message_pending, Some(true));
+        assert!(!blocked.session_blocks_input);
+        assert!(!blocked.can_send);
+
+        let mut other = details.clone();
+        other["conversation_id"] = json!("other-conversation");
+        c.observe(&state(other));
+        assert_eq!(until(&c, |v| v.previous_message_pending.is_none()).text, "person draft");
+        details["previous_message_pending"] = json!(false);
+        c.observe(&state(details));
+        let released = until(&c, |v| v.previous_message_pending == Some(false));
+        assert!(released.can_send);
+        assert_eq!(released.text, "person draft");
     }
 
     fn child_session() -> SessionRef {

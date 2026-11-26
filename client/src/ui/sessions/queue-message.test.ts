@@ -28,6 +28,21 @@ describe("native queued outgoing presentation", () => {
     expect(queueEntries("foreign first line\nsecond line")).toEqual([{ text: "foreign first line\nsecond line", exact: false }]);
   });
 
+  it("previews full and clipped helper envelopes without adopting authority or disclosing reference attributes", () => {
+    const prefix = '<zerus-message from="kimi/example/helper&amp;test" host="fixture" reference="zerus://session?';
+    const text = `❯ ${prefix}name=fixture\n  &amp;host=fixture">\n  Report &amp; review.\n  </zerus-message>`;
+    const [item] = queuedMessages(queue({ text }), []);
+    expect(item).toMatchObject({ sender: "kimi/example/helper&test on fixture", body: "Report & review." });
+    expect(item.attachments).toBeUndefined();
+    expect(item.local).toBeUndefined();
+    expect(JSON.stringify(item)).not.toContain("zerus://");
+    const [clipped] = queuedMessages(queue({ text: `❯ ${prefix}…` }), []);
+    expect(clipped).toMatchObject({ sender: item.sender, body: "Message preview unavailable in Terminal" });
+    const [unknown] = queuedMessages(queue({ text: '❯ <zerus-message from="kimi/example/hel…' }), []);
+    expect(unknown).toMatchObject({ body: "Message preview unavailable in Terminal" });
+    expect(unknown.sender).toBeUndefined();
+  });
+
   it("uses an exact local send receipt for the original body and guarded attachment card", () => {
     const [item] = queuedMessages(queue(), [local()]);
     expect(item.body).toBe(text);

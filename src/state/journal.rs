@@ -1131,6 +1131,21 @@ pub(super) fn inspection_with(
     }
     keep_warm::visible(&mut output, &record);
     output["tracked"] = json!(true);
+    // Read under the same record lock and after the same acceptance
+    // reconciliation as the ordinary input gate. A missing observation is
+    // different from a live conversation whose earlier input has cleared.
+    if archive_id.is_none()
+        && panes.is_some()
+        && output["process_state"] == "running"
+        && record["run_identity_version"] == 1
+        && AGENTS.contains(&string(&record, "agent"))
+        && !string(&record, "conversation_id").is_empty()
+        && string(&record, "expected_id").is_empty()
+        && string(&record, "error").is_empty()
+        && !pause_active(&record)
+    {
+        output["previous_message_pending"] = json!(input::previous_message_pending(&record));
+    }
     if archive_id.is_some() {
         output["state"] = json!("archived");
         // The same locked predicate as Restore admission. Standing resume

@@ -266,6 +266,7 @@ export function Composer() {
   });
 
   const status = () => composer.status();
+  const sendDraftLabel = () => composer.queue() || status().multiline ? tr("Send draft") : tr("Send");
   const statusDetail = () => {
     const text = status().text, session = v()?.session_status ?? "";
     return session && session !== text ? `${text}\n${session}` : text;
@@ -323,6 +324,9 @@ export function Composer() {
         onBlur={() => { void composer.flush(); }} onKeyDown={onKey} onPaste={onPaste} />
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <DeliveryHistoryHint view={v()} text={composer.text()} shown={input()} />
+      <Show when={input() && status().multiline}>
+        <div class="cmp-draft-status" classList={{ error: status().error }} role="status">{status().text}</div>
+      </Show>
       <div class="cmp-actions" hidden={!input()}>
         <span class="cmp-files">
           <button type="button" class="icon-btn cmp-attach" disabled={!v() || composer.locked() || !v()!.attachments_available} aria-label={tr("Attach files to message")}
@@ -334,7 +338,7 @@ export function Composer() {
         <Show when={reference()} keyed>{(bound) => (
           <Suspense><FileReferenceDialog target={bound.target} insert={(sentence) => insertReference(bound, sentence)} close={() => setReference(undefined)} /></Suspense>
         )}</Show>
-        <Show when={status().text}>
+        <Show when={status().text && !status().multiline}>
           <span class="cmp-status ell" classList={{ error: status().error, waiting: !status().error && !!v()?.waiting }} title={statusDetail()} aria-label={status().text}>{status().text}</span>
         </Show>
         <span class="grow" />
@@ -351,8 +355,8 @@ export function Composer() {
           <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>
         </Show>
-        <button type="button" class="btn primary" aria-label={tr("Send")} disabled={!composer.sendEnabled()} title={v()?.waiting ?? undefined}
-          onClick={() => { void composer.send(); }}>{v() ? trText(v()!.send_label) : tr("Send")}<Icon name="arrow-up" size={13} /></button>
+        <button type="button" class="btn primary" aria-label={sendDraftLabel()} disabled={!composer.sendEnabled()} title={v()?.waiting ?? (status().multiline ? status().text : undefined)}
+          onClick={() => { void composer.send(); }}>{v()?.sending || v()?.waiting ? trText(v()!.send_label) : sendDraftLabel()}<Icon name="arrow-up" size={13} /></button>
       </div>
     </div>
   );

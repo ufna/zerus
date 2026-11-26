@@ -6,7 +6,7 @@ import { suggestions } from "./suggestions";
 import { anyHidden, documentVisibility, type PageVisibility } from "./visibility";
 import type { Timers } from "./terminal";
 import type { Answer, ClearControl, ColdPrompt, ComposerView, InboxRemoveReply, Inspect, SendReply, SessionRef, StartQuestion } from "../types";
-import { sendErrorText } from "../ui/sessions/send-error";
+import { earlierInputDraftStatus, EARLIER_INPUT_PENDING, sendErrorText } from "../ui/sessions/send-error";
 import { trNoop, tr } from "../i18n";
 
 // The open composer (Qt MessageComposer) over the Rust hub. The webview owns
@@ -119,7 +119,7 @@ export type Dialog =
   | { kind: "clear"; control: ClearControl };
 
 /** The status line (Qt's updateControls 1200-1204): text and whether it is in the error colour. */
-export interface StatusLine { text: string; error: boolean }
+export interface StatusLine { text: string; error: boolean; multiline?: boolean }
 
 /**
  * The status line from Rust's view, the composer's own error and the length
@@ -127,13 +127,19 @@ export interface StatusLine { text: string; error: boolean }
  * notice and the attachment reason above the length; the session status and
  * the block reason come after it.
  */
-export function statusLine(v: ComposerView | undefined, own: string | undefined, tooLong: boolean): StatusLine {
+export function statusLine(v: ComposerView | undefined, own: string | undefined, tooLong: boolean, hasDraft = !!(v?.text || v?.attachments.length)): StatusLine {
   if (v?.waiting) return { text: v.status, error: v.status_error };
   if (own) return { text: own, error: true };
   if (!v) return tooLong ? { text: tr(TOO_LONG), error: true } : { text: "", error: false };
   const below = v.status === "" || v.status === TOO_LONG || v.status === v.session_status || v.status === v.unavailable_reason;
+  const definiteDraftStatus = hasDraft && v.status_error && !v.uncertain && !v.delivery_pending
+    ? earlierInputDraftStatus(v.status, v.previous_message_pending) : "";
+  if (definiteDraftStatus) return { text: definiteDraftStatus, error: v.previous_message_pending !== false, multiline: true };
   if (!below) return { text: coreText(v.status), error: v.status_error };
   if (tooLong) return { text: tr(TOO_LONG), error: true };
+  if (hasDraft && v.previous_message_pending === true && !v.uncertain && !v.delivery_pending && v.available && !v.session_status) {
+    return { text: tr(EARLIER_INPUT_PENDING), error: false, multiline: true };
+  }
   // Rust's length check may still see older text: the next item then.
   const text = v.status === TOO_LONG ? v.session_status || v.unavailable_reason : v.status;
   return { text, error: text !== "" && text === v.session_status && v.session_status_error };
@@ -166,10 +172,8 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const [dialog, setDialog] = createSignal<Dialog | undefined>();
   /** The epoch a remove, Undo or refused send waits to see exceeded. */
   const [handBack, setHandBack] = createSignal<number | undefined>();
-  /** The composers whose send or answer call is on its way. */
+  /** The composers whose send, Retry or answer call is on its way. */
   const calling = handleSet();
-  /** The local rows whose Retry is on its way, by composer and row: one click sends one Retry. */
-  const retrying = new Set<string>();
   /** Opens under way: the editor stays read-only, so no key is typed into the composer being left. */
   const [opening, setOpening] = createSignal(0);
   /** Quit has asked for the last text: freeze typing while its bounded handshake runs. */
@@ -221,7 +225,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const sendEnabled = () => {
     const v = view();
     // A required question card hides Send with the editor (setInputVisible).
-    if (!v || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
+    if (!v || !v.loaded || !v.available || v.uncertain || v.previous_message_pending === true || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
@@ -414,7 +418,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     if (locked() && !queuePush) return;
     if (!queuePush && !sendEnabled()) {
       // Qt shows the status at the editor when there is something to send (MessageComposer.cpp:814-818).
-      const status = statusLine(view(), error(), tooLong()).text;
+      const status = statusLine(view(), error(), tooLong(), hasContent()).text;
       if (hasContent() && status) showHint(status);
       return;
     }
@@ -448,7 +452,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   return {
     view, text, selection, dialog, locked, operationLocked, sendEnabled, pushEnabled, queue, held: heldNow, hint,
     /** The status line: Qt's order, with the composer's own error and the typed length. */
-    status: (): StatusLine => statusLine(view(), error(), tooLong()),
+    status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),
     apply, receive,
     async open(session: SessionRef | undefined) {
       if (closing()) return;
@@ -603,21 +607,20 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
      */
     async localRetry(id: string) {
       const h = handle();
-      if (h === undefined) return;
-      const mark = `${h}\n${id}`;
-      if (retrying.has(mark)) return;
-      retrying.add(mark);
+      if (h === undefined || operationLocked() || view()?.previous_message_pending === true) return;
+      calling.add(h);
       let r: SendReply;
       let at = epoch;
       try {
         await flush();
+        if (h !== handle() || opening() > 0 || view()?.previous_message_pending === true) return;
         at = epoch;
         r = await port.localRetry(h, id);
       } catch (e) {
         notices("error", typeof e === "string" ? e : e instanceof Error ? e.message : String(e), true);
         return;
       } finally {
-        retrying.delete(mark);
+        calling.remove(h);
       }
       reply(r, h, at, false);
     },
