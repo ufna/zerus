@@ -6,6 +6,7 @@ import { imageSize } from "./attachment-image";
 import { messageTimeOf } from "../lib/dates";
 import { tr, trNoop } from "../../i18n";
 import { ownMessageText, ownMessageTruncated, restoreOwnMessages } from "./full-own-text";
+import { earlierInputRefusal } from "./send-error";
 
 // A Symbol cannot arrive from a provider's JSON. Only our own local send
 // supplies these immutable-cache preview paths and oriented dimensions.
@@ -293,13 +294,19 @@ export const localFileAvailable = (file: Record<string, unknown>) =>
 /** A failed or pending row's stamp, error line and buttons (ActivityView.cpp:1053-1068). */
 export function localItem(row: LocalMessage, summary?: Record<string, unknown>): LocalItem {
   const failed = row.status === "error";
+  const actions: LocalItem["actions"] = [];
+  if (failed && row.id) {
+    // Uncertain delivery can be checked here. Allow retry stays in the composer.
+    if (!row.uncertain) actions.push("retry");
+    if (row.uncertain || earlierInputRefusal(row.error)) actions.push("inspect");
+    actions.push("delete");
+  }
   return {
     id: row.id,
     stamp: failed && row.uncertain ? tr("Delivery not confirmed") : tr(LOCAL_STAMP[row.status] ?? LOCAL_STAMP.sent),
     error: failed ? row.error : "",
     uncertain: failed && row.uncertain,
-    // A delivery that may have happened is never retried from here: Check, then Allow retry in the composer.
-    actions: failed && row.id ? (row.uncertain ? ["inspect", "delete"] : ["retry", "delete"]) : [],
+    actions,
     inspectLabel: summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
     available: row.attachments.map(localFileAvailable),
   };

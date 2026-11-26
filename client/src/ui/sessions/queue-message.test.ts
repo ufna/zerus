@@ -28,6 +28,21 @@ describe("native queued outgoing presentation", () => {
     expect(queueEntries("foreign first line\nsecond line")).toEqual([{ text: "foreign first line\nsecond line", exact: false }]);
   });
 
+  it("previews full and clipped helper envelopes without adopting authority or disclosing reference attributes", () => {
+    const prefix = '<zerus-message from="kimi/example/helper&amp;test" host="fixture" reference="zerus://session?';
+    const text = `❯ ${prefix}machine=11111111-1111-4111-8111-111111111111&amp;host=fixture\n  &amp;name=kimi%2Fexample%2Fhelper%26test&amp;run=fixture-run">\n  Report &amp; review.\n  </zerus-message>`;
+    const [item] = queuedMessages(queue({ text }), []);
+    expect(item).toMatchObject({ sender: "kimi/example/helper&test on fixture", body: "Report & review." });
+    expect(item.attachments).toBeUndefined();
+    expect(item.local).toBeUndefined();
+    expect(JSON.stringify(item)).not.toContain("zerus://");
+    const [clipped] = queuedMessages(queue({ text: `❯ ${prefix}…` }), []);
+    expect(clipped).toMatchObject({ sender: item.sender, body: "Message preview unavailable in Terminal" });
+    const [unknown] = queuedMessages(queue({ text: '❯ <zerus-message from="kimi/example/hel…' }), []);
+    expect(unknown).toMatchObject({ body: "Message preview unavailable in Terminal" });
+    expect(unknown.sender).toBeUndefined();
+  });
+
   it("uses an exact local send receipt for the original body and guarded attachment card", () => {
     const [item] = queuedMessages(queue(), [local()]);
     expect(item.body).toBe(text);
@@ -115,4 +130,61 @@ describe("native queue receipt source fences", () => {
     expect(queuePresentation(queue(), session, { ...view, local: [] }, stale, summary(), false).items[0].attachments).toBeUndefined();
     expect(queuePresentation(queue(), session, view, stale, summary(), false).items[0].attachments?.[0].request_id).toBe("receipt-one");
   });
+});
+
+
+it("keeps an unattributed native queue preview plain", () => {
+  const [message] = queuedMessages(queue({ text: "❯ A plain queued message" }), []);
+  expect(message.body).toBe("A plain queued message");
+  expect(message.sender).toBeUndefined();
+  expect(message.attachments).toBeUndefined();
+});
+
+it.each([
+  ["different sender", "fixture", "kimi%2Fexample%2Fother"],
+  ["different host", "other-host", "kimi%2Fexample%2Fhelper"],
+  ["invalid encoded identity", "fixture", "kimi%2Fexample%2Fhelper%FF"],
+  ["duplicate decoded identity", "fixture", "kimi%2Fexample%2Fhelper&amp;%6Eame=kimi%2Fexample%2Fhelper"],
+])("drops attribution from a complete envelope with %s", (_reason, host, name) => {
+  const ref = `zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=${host}&amp;name=${name}&amp;conversation=22222222-2222-4222-8222-222222222222`;
+  const [message] = queuedMessages(queue({
+    text: `❯ <zerus-message from="kimi/example/helper" host="fixture" reference="${ref}">\n  Text.\n  </zerus-message>`,
+  }), []);
+  expect(message).toMatchObject({ body: "Text.", sender: undefined, attachments: undefined });
+  expect(message.body).not.toContain("zerus://");
+});
+
+
+it("checks a complete contradicting reference even when the outer host wrapped", () => {
+  const ref = 'zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=another&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture';
+  const [message] = queuedMessages(queue({
+    text: `❯ <zerus-message from="kimi/example/helper" host="fix\n  ture" reference="${ref}">\n  Text.\n  </zerus-message>`,
+  }), []);
+  expect(message).toMatchObject({ body: "Text.", sender: undefined });
+});
+
+
+it.each([
+  ["complete without a reference", '<zerus-message from="kimi/example/helper" host="fixture">'],
+  ["contradicting reference after an extra attribute", '<zerus-message from="kimi/example/helper" host="fixture" extra="x" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fother&amp;run=fixture">'],
+  ["agreeing reference followed by an extra attribute", '<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture" extra="x">'],
+])("leaves a malformed full opening unattributed and display-only (%s)", (_label, header) => {
+  const native = queue({ text: `❯ ${header}\n  Text.\n  </zerus-message>` });
+  const [message] = queuedMessages(native, []);
+  expect(message).toMatchObject({ body: "Text.", sender: undefined, attachments: undefined });
+  expect(message.local).toBeUndefined();
+  expect(native.id).toBe("native-screen-id");
+});
+
+it.each([
+  ['<zerus-message from="kimi/example/helper" ho…', "kimi/example/helper"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" refe…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture"…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111&am…', "kimi/example/helper on fixture"],
+  ['<zerus-message from="kimi/example/helper" host="fixture" extra="unfinished…', undefined],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?unexpected=…', undefined],
+  ['<zerus-message from="kimi/example/helper" host="fixture" reference="unexpected input…', undefined],
+])("attributes only an incomplete recognized opening (%s)", (text, sender) => {
+  const [message] = queuedMessages(queue({ text: `❯ ${text}` }), []);
+  expect(message).toMatchObject({ body: "Message preview unavailable in Terminal", sender, attachments: undefined });
 });

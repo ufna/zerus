@@ -1,4 +1,4 @@
-import { sendErrorText } from "./send-error";
+import { earlierInputRefusal, EARLIER_INPUT_PENDING, sendErrorText } from "./send-error";
 import { OwnMessageBody } from "./OwnMessageBody";
 import { nativeRoute } from "./native-entry";
 import { withoutHeld } from "./held-message";
@@ -461,7 +461,9 @@ function LocalActions(props: { local: LocalItem }) {
       }));
     }
   };
-  const label = (action: LocalItem["actions"][number]) => (action === "retry" ? tr("Retry") : action === "delete" ? tr("Delete") : props.local.inspectLabel);
+  const label = (action: LocalItem["actions"][number]) => (action === "retry"
+    ? (earlierInputRefusal(props.local.error) ? tr("Retry this message") : tr("Retry"))
+    : action === "delete" ? tr("Delete") : props.local.inspectLabel);
   return (
     <div class="act-local-actions">
       <For each={props.local.actions}>{(action) => (
@@ -542,7 +544,12 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
           )}</For>
         </Show>
       </Show>
-      <Show when={it().local?.error}><p class="act-error">{sendErrorText(it().local!.error!)}</p></Show>
+      <Show when={it().local?.error}><p class="act-error">{
+        !it().local!.uncertain && earlierInputRefusal(it().local!.error)
+          ? composer.view()?.previous_message_pending === true ? tr(EARLIER_INPUT_PENDING)
+            : tr("The agent had not confirmed the earlier message.")
+          : sendErrorText(it().local!.error)
+      }</p></Show>
       <Show when={it().code}><pre class="act-code mono">{it().code}</pre></Show>
       <Show when={it().attachments}>
         <div class="act-attachments">

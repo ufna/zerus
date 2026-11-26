@@ -1,27 +1,54 @@
 // @vitest-environment happy-dom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 
-const transport = vi.hoisted(() => ({ enablesTeams: false, parent: vi.fn(async (..._args: unknown[]) => ({} as Record<string, unknown>)) }));
+const transport = vi.hoisted(() => ({
+  enablesTeams: false,
+  language: "en" as "en" | "ru",
+  composer: undefined as ((command: string, args?: Record<string, unknown>) => unknown) | undefined,
+  parent: vi.fn(async (..._args: unknown[]) => ({} as Record<string, unknown>)),
+}));
+vi.mock("../../i18n", async (original) => {
+  const i18n = await original<typeof import("../../i18n")>();
+  const ru = (await import("../../i18n.ru.json")).default;
+  return { ...i18n, tr: (source: string, ...args: (string | number)[]) =>
+    transport.language === "ru" ? i18n.translateWithCatalog(ru, "ru", source, ...args) : i18n.tr(source, ...args) };
+});
 vi.mock("@tauri-apps/api/core", async (original) => {
   const core = await original<typeof import("@tauri-apps/api/core")>();
-  return { ...core, invoke: (command: string, args?: Record<string, unknown>) =>
-    transport.enablesTeams && (command === "teams_hidden" || command === "teams_follow")
-      ? Promise.resolve(undefined) : core.invoke(command, args) };
+  return { ...core, invoke: (command: string, args?: Record<string, unknown>) => {
+    if (transport.composer) return Promise.resolve(transport.composer(command, args));
+    if (transport.enablesTeams && (command === "teams_hidden" || command === "teams_follow")) return Promise.resolve(undefined);
+    return core.invoke(command, args);
+  } };
 });
 
-vi.mock("../../bridge", async (original) => ({
-  ...await original<typeof import("../../bridge")>(),
-  inTauri: () => transport.enablesTeams, setParent: transport.parent,
-  activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
-  terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
-  inspectSession: vi.fn(async () => null), composerOpen: vi.fn(async () => null),
-  sessionFolderStatus: vi.fn(async () => undefined), followTasks: vi.fn(async () => {}),
-  reportDetailInvariant: vi.fn(async () => {}),
-  archivePage: vi.fn(async () => ({ rows: [], next_cursor: "", previous_cursor: null, total: 0, position: 0 })),
-  archivedActivity: vi.fn(async () => ({ events: [], replace_events: true, conversation_id: "archived-conversation", run_id: "archived-run", cleared_conversations: [], cursor: 0, summary: {} })),
-}));
+vi.mock("../../bridge", async (original) => {
+  const bridge = await original<typeof import("../../bridge")>();
+  // Run the real command wrappers through the recorded Tauri IPC, while
+  // keeping unrelated replay-mode subscriptions on their regular test path.
+  const withDesktop = <A extends unknown[], R>(invoke: (...args: A) => R) => (...args: A): R => {
+    if (!transport.composer) return invoke(...args);
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+    try { return invoke(...args); }
+    finally { Reflect.deleteProperty(window, "__TAURI_INTERNALS__"); }
+  };
+  return {
+    ...bridge,
+    composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
+    queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
+    localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
+    inTauri: () => transport.enablesTeams, setParent: transport.parent,
+    activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
+    terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
+    inspectSession: vi.fn(async () => null), composerOpen: vi.fn(async () => null),
+    sessionFolderStatus: vi.fn(async () => undefined), followTasks: vi.fn(async () => {}),
+    reportDetailInvariant: vi.fn(async () => {}),
+    archivePage: vi.fn(async () => ({ rows: [], next_cursor: "", previous_cursor: null, total: 0, position: 0 })),
+    archivedActivity: vi.fn(async () => ({ events: [], replace_events: true, conversation_id: "archived-conversation", run_id: "archived-run", cleared_conversations: [], cursor: 0, summary: {} })),
+  };
+});
 // The actual TerminalTab and its store still mount. Only xterm's canvas/OS
 // renderer is inert in happy-dom; no terminal is connected or receives input.
 vi.mock("@xterm/xterm", () => ({ Terminal: class {
@@ -45,7 +72,8 @@ import { listRows } from "./model";
 import { archive } from "../../store/archive";
 import { clearSearchPreview, setSearchPreview } from "../../store/searchSelection";
 import type { SearchHit } from "../../store/content-search-model";
-import { emptyBatch, type ViewRow } from "../../types";
+import { emptyBatch, type ComposerView, type LocalMessage, type ViewRow } from "../../types";
+import { draftKey } from "../../store/draftKeys";
 import contact from "../../../core/src/teams/fixtures/person-lead-contact.json";
 
 const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
@@ -58,6 +86,7 @@ beforeEach(async () => {
   await settingsReady;
   vi.clearAllMocks();
   vi.mocked(bridge.inspectSession).mockResolvedValue(null);
+  vi.mocked(bridge.composerOpen).mockResolvedValue(null);
   vi.mocked(bridge.sessionFolderStatus).mockResolvedValue(undefined as never);
   await setSetting("processes/enabled", true, { persist: false });
   await setSetting("workspace/inspectorOpen", true, { persist: false });
@@ -72,6 +101,8 @@ afterEach(() => {
   setSelectedKey(undefined); setSubagentOpen(undefined); setStateFilter("all");
   receive({ ...emptyBatch(), replaces: [{ computer: "", rows: [] }] });
   restoreSettings();
+  transport.composer = undefined;
+  transport.language = "en";
 });
 
 function fixtureRow(title = "Fixture"): ViewRow {
@@ -100,6 +131,199 @@ async function open(row: ViewRow, tab: "activity" | "processes" | "terminal" = "
   activity.applyActivity([{ computer: "", key: key.slice(1), kind: "state", payload: { rev: 1, value: { run_id: row.run_id, conversation_id: row.conversation_id, activity: "idle", phase: "idle", activity_summary: "Ready" } } }]);
   return key;
 }
+const queueDraftLabels = {
+  en: { send: "Send draft", queue: "Send queued messages now", retry: "Retry this message", notSent: "Not sent",
+    check: "Check Terminal", allow: "Allow retry", notConfirmed: "Delivery not confirmed",
+    wait: "Your draft is kept. Wait for the agent to accept the earlier message, or check Terminal.",
+    cleared: "The earlier input is no longer pending. Your draft is kept.",
+    unobserved: "Your draft is kept. Check Terminal. Send and Retry stay paused until this host confirms the earlier input cleared. Update hgs on older hosts.",
+    confirmSend: "Send anyway", confirmCompact: "Compact and send",
+    origin: "Sender shown by agent: kimi/example/helper on fixture" },
+  ru: { send: "Отправить черновик", queue: "Отправить сообщения из очереди сейчас",
+    retry: "Повторить отправку сообщения", notSent: "Не отправлено", check: "Проверить терминал",
+    allow: "Разрешить повторную попытку", notConfirmed: "Доставка не подтверждена",
+    wait: "Черновик сохранён. Дождитесь, пока агент примет предыдущее сообщение, или проверьте терминал.",
+    cleared: "Предыдущий ввод больше не ожидает подтверждения. Черновик сохранён.",
+    unobserved: "Черновик сохранён. Проверьте терминал. Отправка и повтор недоступны, пока компьютер не подтвердит, что предыдущий ввод больше не ожидает подтверждения. На старых компьютерах обновите hgs.",
+    confirmSend: "Всё равно отправить", confirmCompact: "Сжать и отправить",
+    origin: "Агент показывает отправителя: kimi/example/helper на fixture" },
+};
+
+it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and refused draft independent in %s", async (lang) => {
+  transport.language = lang;
+  // Happy DOM has no layout. Give the real Activity virtualizer a viewport.
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
+  const labels = queueDraftLabels[lang];
+  const selectedRow = { ...fixtureRow("Synthetic manager"), agent: "kimi", name: "kimi/example/manager",
+    status: "working", caption: "Busy" };
+  const key = draftKey({ computer: "", key: `run:${selectedRow.run_id}`, name: selectedRow.name,
+    session_id: selectedRow.session_id, archive_id: null });
+  // The selected catalog lies one conversation behind the Activity target.
+  const actualConversation = "fixture-current-conversation";
+  const queueId = "synthetic-native-queue", failedId = uuid(99901);
+  const helperBody = "Synthetic helper report.";
+  const draft = "Please summarize the synthetic findings.";
+  const queue: ComposerView["queue"] = {
+    id: queueId, hint: "Steer the agent with the queued messages now", label: "Send now", enabled: true, can_send_now: true,
+    run_id: selectedRow.run_id!, conversation_id: actualConversation,
+    text: '❯ <zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=fixture&amp;name=kimi%2Fexample%2Fhelper&amp;run=fixture-run">\n    '
+      + helperBody + '\n    </zerus-message>',
+  };
+  const detail = "Message was not sent. hgs refused before typing: previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal";
+  const failed: LocalMessage = { id: failedId, text: draft, status: "error", attachments: [], run_id: selectedRow.run_id!,
+    conversation_id: actualConversation, submitted_at: 1, error: detail, uncertain: false,
+    message_id: null, submitted_text: null, source: null, voice: null };
+  const initial: ComposerView = {
+    handle: 117, key, loaded: true, rev: 0, text_epoch: 1, text: "", position: 0, anchor: 0, attachments: [], removed: null,
+    attaching: false, sending: false, waiting: null, uncertain: false, status: "", status_error: false, can_send: false,
+    send_label: { source: "Send" }, available: true, unavailable_reason: "", block_reason: null, attachments_available: true,
+    attachments_reason: "", session_status: "", session_status_error: false, session_blocks_input: false, inspect_error: false,
+    cache: { visible: false, tone: "quiet", label: "", short_label: "" }, cache_warning: "", cache_details: "",
+    context: { visible: false, text: "", tooltip: "", warning: false, tone: "quiet", percent: null, accessible_name: "" },
+    local: [], compacting: false, cancel_send: false, input_visible: true, question: null, queue,
+    clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "",
+      cache_enabled: false, running: false, reason: "", cache_reason: "" },
+    previous_message_pending: false,
+  };
+  vi.mocked(bridge.composerOpen).mockImplementation(async (s) => s?.key === `run:${selectedRow.run_id}` ? initial : null);
+  const commands: Array<[string, Record<string, unknown> | undefined]> = [];
+  let cold = false;
+  transport.composer = (name, args) => {
+    commands.push([name, args]);
+    if (name === "send_message" || name === "local_retry") {
+      if (!cold) return { kind: "sending" };
+      return { kind: "cold", token: 55, prompt: { title: "Fixture cache", text: "", informative: "", choices: [
+        { action: "send", label: labels.confirmSend, enabled: true, tooltip: "" },
+        { action: "compact", label: labels.confirmCompact, enabled: true, tooltip: "" },
+      ] } };
+    }
+    if (name === "send_answer") return { kind: "sending" };
+    if (name === "queue_send_now") return true;
+    if (name === "local_inspect") return { kind: "terminal" };
+    return undefined;
+  };
+  const sentBy = (name: string) => commands.filter(([command]) => command === name).map(([, args]) => args);
+  const button = (text: string) => [...host.querySelectorAll<HTMLButtonElement>("button")]
+    .find((b) => b.textContent?.trim() === text);
+  const draftSend = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
+  const draftState = () => host.querySelector(".cmp-draft-status")?.textContent;
+  const localActions = () => host.querySelector(".act-local-actions");
+  const publish = (update: Partial<ComposerView>) => receive({ ...emptyBatch(), composer: { ...initial, ...update } });
+  const activityKey = await open(selectedRow);
+  activity.applyActivity([{ computer: "", key: activityKey.slice(1), kind: "state",
+    payload: { rev: 2, value: { run_id: selectedRow.run_id, conversation_id: actualConversation,
+      activity: "busy", phase: "working" } } }]);
+  expect(selected()?.conversationId).toBe(selectedRow.conversation_id);
+  const editor = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
+  await vi.waitFor(() => expect(editor().disabled).toBe(false));
+  editor().value = draft;
+  editor().setSelectionRange(draft.length, draft.length);
+  editor().dispatchEvent(new Event("input", { bubbles: true }));
+  expect(draftSend().disabled).toBe(false);
+  draftSend().click();
+  await vi.waitFor(() => expect(sentBy("send_message")).toHaveLength(1));
+  expect(sentBy("send_message")[0]).toMatchObject({ handle: 117, text: draft });
+  await flush();
+
+  const refusal = { text: draft, text_epoch: 2, status: detail, status_error: true, local: [failed], earlier_input_held: true };
+  publish({ ...refusal, previous_message_pending: true });
+  await vi.waitFor(() => expect(localActions()).not.toBeNull());
+  expect(host.querySelector(".act-queue-source")?.textContent).toBe(labels.origin);
+  expect(host.querySelector(".act-queue-text")?.textContent).toContain(helperBody);
+  expect(host.querySelector(".act-queue-text")?.textContent).not.toContain("zerus://");
+  expect(host.textContent).toContain(labels.notSent);
+  expect(draftState()).toBe(labels.wait);
+  expect(editor().value).toBe(draft);
+  expect(editor().readOnly).toBe(false);
+  expect(draftSend().getAttribute("aria-label")).toBe(labels.send);
+  expect(draftSend().disabled).toBe(true);
+  expect(button(labels.retry)?.getAttribute("aria-disabled")).toBe("true");
+  expect(button(labels.check)).toBeDefined();
+  expect(button(labels.allow)).toBeUndefined();
+  publish({ ...refusal, previous_message_pending: true, queue: { ...queue, can_send_now: false, enabled: false } });
+  expect(button(labels.queue)?.disabled).toBe(true);
+  expect(button(labels.queue)?.title).not.toContain(queue.hint);
+  button(labels.queue)!.click();
+  expect(sentBy("queue_send_now")).toEqual([]);
+  publish({ ...refusal, previous_message_pending: true });
+  button(labels.retry)!.click();
+  editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  button(labels.queue)!.click();
+  await vi.waitFor(() => expect(sentBy("queue_send_now")).toEqual([{ queue_id: queueId }]));
+  expect(sentBy("send_message")).toHaveLength(1);
+  expect(sentBy("local_retry")).toEqual([]);
+  expect(editor().value).toBe(draft);
+
+  publish({ ...refusal, previous_message_pending: true, queue: null });
+  expect(button(labels.queue)).toBeUndefined();
+  expect(draftSend().disabled).toBe(true);
+  expect(draftState()).toBe(labels.wait);
+  publish({ ...refusal, previous_message_pending: undefined, queue: null });
+  expect(draftState()).toBe(labels.unobserved);
+  expect(draftSend().disabled).toBe(true);
+  expect(button(labels.retry)?.getAttribute("aria-disabled")).toBe("true");
+  expect(editor().readOnly).toBe(false);
+  draftSend().click();
+  button(labels.retry)!.click();
+  editor().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await flush();
+  expect(sentBy("send_message")).toHaveLength(1);
+  expect(sentBy("local_retry")).toEqual([]);
+
+  const released = { ...refusal, earlier_input_held: false, previous_message_pending: false, queue: null };
+  publish(released);
+  expect(draftState()).toBe(labels.cleared);
+  expect(draftSend().disabled).toBe(false);
+  expect(button(labels.retry)?.getAttribute("aria-disabled")).toBeNull();
+  expect(sentBy("local_retry")).toEqual([]);
+  expect(sentBy("send_message")).toHaveLength(1);
+  cold = true;
+  if (lang === "en") {
+    button(labels.retry)!.click();
+    expect(draftSend().disabled).toBe(true);
+    draftSend().click();
+    await vi.waitFor(() => expect(sentBy("local_retry")).toEqual([{ handle: 117, id: failedId }]));
+    expect(sentBy("send_message")).toHaveLength(1);
+  } else {
+    draftSend().click();
+    expect(button(labels.retry)?.getAttribute("aria-disabled")).toBe("true");
+    button(labels.retry)!.click();
+    await vi.waitFor(() => expect(sentBy("send_message")).toHaveLength(2));
+    expect(sentBy("send_message")[1]).toMatchObject({ handle: 117, text: draft });
+    expect(sentBy("local_retry")).toEqual([]);
+  }
+
+  await vi.waitFor(() => expect(button(labels.confirmSend)?.disabled).toBe(false));
+  publish({ ...refusal, previous_message_pending: undefined, queue: null });
+  expect(button(labels.confirmSend)?.disabled).toBe(true);
+  expect(button(labels.confirmCompact)?.disabled).toBe(true);
+  button(labels.confirmSend)!.click();
+  button(labels.confirmCompact)!.click();
+  await flush();
+  expect(sentBy("send_answer")).toEqual([]);
+  publish(released);
+  expect(button(labels.confirmSend)?.disabled).toBe(false);
+  button(labels.confirmSend)!.click();
+  await vi.waitFor(() => expect(sentBy("send_answer")).toEqual([{ token: 55, answer: { kind: "cold", action: "send" } }]));
+
+  const unknown = { ...failed, id: uuid(99902), uncertain: true, error: "Delivery not confirmed" };
+  publish({ ...released, text_epoch: 3, uncertain: true,
+    status: unknown.error, local: [unknown] });
+  await vi.waitFor(() => expect(button(labels.allow)).toBeDefined());
+  expect(host.textContent).toContain(labels.notConfirmed);
+  expect(button(labels.retry)).toBeUndefined();
+  expect(draftSend().disabled).toBe(true);
+  button(labels.check)!.click();
+  await vi.waitFor(() => expect(sentBy("local_inspect")).toEqual([{ handle: 117, id: unknown.id }]));
+  expect(sentBy("composer_allow_retry")).toEqual([]);
+  await vi.waitFor(() => expect(detailTab()).toBe("terminal"));
+  setDetailTab("activity");
+  await flush();
+  expect(editor().value).toBe(draft);
+});
+
 function expectEmpty() {
   expect(selected()).toBeUndefined();
   expect(host.querySelector(".detail-empty")).not.toBeNull();

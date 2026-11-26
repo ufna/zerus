@@ -4,6 +4,7 @@ import { composer, type Dialog } from "../../store/composer";
 import type { ClearControl, ColdPrompt, StartQuestion } from "../../types";
 import { tr } from "../../i18n";
 import { trText } from "../../text";
+import { EARLIER_INPUT_PENDING, EARLIER_INPUT_UNOBSERVED } from "./send-error";
 
 // The composer's questions, each a modal over the shared dialog styles
 // (ActionDialogs.tsx): "Continue with a cold cache?" (SessionsWindow.cpp
@@ -19,11 +20,15 @@ function ColdDialog(props: { prompt: ColdPrompt }) {
       <div class="dlg-body">
         <div class="confirm-body" id="composer-dlg-body" style={{ "white-space": "pre-wrap" }}>{props.prompt.text}</div>
         <Show when={props.prompt.informative}><div class="dlg-detail" style={{ "white-space": "pre-wrap" }}>{props.prompt.informative}</div></Show>
+        <Show when={composer.ordinaryInputHeld()}>
+          <div class="dlg-detail" role="status">{tr(composer.view()?.previous_message_pending === true ? EARLIER_INPUT_PENDING : EARLIER_INPUT_UNOBSERVED)}</div>
+        </Show>
       </div>
       <div class="dlg-foot">
         <span class="spacer" />
         <For each={props.prompt.choices}>{(choice) => (
-          <button type="button" class="btn" disabled={!choice.enabled} title={choice.tooltip || undefined}
+          <button type="button" class="btn" disabled={!choice.enabled || ((choice.action === "send" || choice.action === "compact") && composer.ordinaryInputHeld())}
+            title={choice.tooltip || undefined}
             onClick={() => { void composer.answer({ kind: "cold", action: choice.action }); }}>{choice.label}</button>
         )}</For>
         <button type="button" class="btn primary" data-initial onClick={() => composer.closeDialog()}>{tr("Cancel")}</button>

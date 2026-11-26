@@ -4,6 +4,7 @@ import type { FollowTarget } from "../../store/activity";
 import type { ActivityItem, Session } from "./types";
 import { attachments } from "./transcript";
 import { draftKey } from "../../store/draftKeys";
+import { tr } from "../../i18n";
 
 interface Entry { text: string; exact: boolean }
 const plainTerminal = (text: string) => text
@@ -59,6 +60,115 @@ export function sanitizedQueueText(text: string): string {
       (_whole, instruction: string) => instruction.startsWith("Inspect") ? "[Image]" : "[File]");
 }
 
+// The same encoded fields and identity bounds as the CLI's session reference.
+const referenceKeys = new Set(["machine", "host", "name", "conversation", "run", "archive", "agent", "session"]);
+const encodedValue = /^(?:[A-Za-z0-9_.~-]|%[0-9a-fA-F]{2})*$/;
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuid = (value: string) => canonicalUuid.test(value) && /[1-9a-f]/.test(value);
+const encoder = new TextEncoder();
+const identity = (value: string) => !/\p{Cc}/u.test(value) && encoder.encode(value).length <= 512;
+const hostName = (value: string) => /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,79}$/.test(value);
+
+function referenceAgrees(uri: string, name: string, host: string): boolean {
+  const prefix = "zerus://session?";
+  if (!uri.startsWith(prefix)) return false;
+  const fields = new Map<string, string>();
+  try {
+    for (const pair of uri.slice(prefix.length).split("&")) {
+      const separator = pair.indexOf("=");
+      if (separator < 0) return false;
+      const key = pair.slice(0, separator), value = pair.slice(separator + 1);
+      if (!encodedValue.test(key) || !encodedValue.test(value)) return false;
+      const decodedKey = decodeURIComponent(key);
+      if (!referenceKeys.has(decodedKey) || fields.has(decodedKey)) return false;
+      fields.set(decodedKey, decodeURIComponent(value));
+    }
+  } catch {
+    return false;
+  }
+  const field = (key: string) => fields.get(key) ?? "";
+  return field("name") === name && field("host") === host && uuid(field("machine"))
+    && !!(field("conversation") || field("run"))
+    && (!field("session") || uuid(field("session")))
+    && ["name", "conversation", "run", "archive", "agent"].every((key) => identity(field(key)));
+}
+
+const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"' };
+const decodeEntities = (text: string) => text.replace(/&(amp|lt|gt|quot);/g, (_, key: string) => entities[key]);
+// Join screen wraps only within metadata. The message body keeps its lines.
+const unwrapAttribute = (value: string) => value.replace(/\n[ \t]*/g, "");
+const xmlAttribute = /^(?:[^&"<>]|&(?:amp|lt|gt|quot);)*$/u;
+
+// A clipped attribute is a prefix of the next canonical field, or an open
+// quoted value. Any closing tag or unexpected field is a structural error.
+function clippedAttribute(tail: string, field: string): string | undefined {
+  const open = `${field}="`;
+  if (open.startsWith(tail)) return "";
+  if (tail.startsWith(open) && !tail.includes('"', open.length)) return tail.slice(open.length);
+  return undefined;
+}
+
+function clippedReference(value: string): boolean {
+  const prefix = "zerus://session?";
+  if (prefix.startsWith(value)) return true;
+  if (!value.startsWith(prefix)) return false;
+  const query = value.slice(prefix.length);
+  const completeQuery = query.replace(/&(?:a|am|amp)?$/, "");
+  const fields = completeQuery.split("&amp;");
+  const seen = new Set<string>();
+  return fields.every((field, index) => {
+    const open = index === fields.length - 1 && completeQuery === query;
+    const separator = field.indexOf("=");
+    if (separator < 0) return open && [...referenceKeys].some((key) => !seen.has(key) && key.startsWith(field));
+    const key = field.slice(0, separator);
+    if (!referenceKeys.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    const value = field.slice(separator + 1);
+    return encodedValue.test(value) || (open && encodedValue.test(value.replace(/%[0-9a-fA-F]?$/, "")));
+  });
+}
+
+// A clipped terminal can show a declared sender without a complete reference.
+// A complete opening must follow the producer's grammar and agree with both
+// labels. These previews never authorize actions or expose reference links.
+function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | undefined {
+  if (!text.startsWith('<zerus-message from="')) return undefined;
+  const header = text.slice(0, 4096);
+  const from = /^<zerus-message from="([^"]*)"(?:\s+host="([^"]*)")?/.exec(header);
+  const unavailable = () => tr("Message preview unavailable in Terminal");
+  if (!from) return { body: unavailable() };
+  const fromAttribute = unwrapAttribute(from[1]);
+  const name = xmlAttribute.test(fromAttribute) ? decodeEntities(fromAttribute) : "";
+  const host = from[2] === undefined ? undefined : unwrapAttribute(from[2]);
+  const rest = header.slice(from[0].length);
+  const opening = /^(?:[^"<>]|"[^"]*")*>/.exec(rest);
+  const clippedTail = !opening && text.length <= header.length
+    ? unwrapAttribute(rest.trimStart()).replace(/(?:…|\.{3})$/, "")
+    : undefined;
+  const reference = opening ? /^\s+reference="([^"]*)">/.exec(rest)
+    : clippedTail === undefined ? null : /^reference="([^"]*)"$/.exec(clippedTail);
+  const validName = identity(name) && name.includes("/") && !/\p{Cf}/u.test(name);
+  let sender: string | undefined;
+  if (validName && host !== undefined && hostName(host) && reference) {
+    const attribute = unwrapAttribute(reference[1]);
+    if (xmlAttribute.test(attribute) && referenceAgrees(decodeEntities(attribute), name, host)) {
+      sender = tr("%1 on %2", name, host);
+    }
+  } else if (validName && clippedTail !== undefined) {
+    if (host === undefined) {
+      const clipped = clippedAttribute(clippedTail, "host");
+      if (clipped === "" || (clipped !== undefined && hostName(clipped))) sender = name;
+    } else if (hostName(host)) {
+      const clipped = clippedAttribute(clippedTail, "reference");
+      if (clipped !== undefined && clippedReference(clipped)) sender = tr("%1 on %2", name, host);
+    }
+  }
+  const body = opening
+    ? text.slice(from[0].length + opening[0].length).replace(/\s*<\/zerus-message>\s*$/, "").trim()
+    : "";
+  return { sender, body: body ? sanitizedQueueText(decodeEntities(body)) : unavailable() };
+}
+
 interface Receipt { id: string; submitted: string; body: string; files: ActivityItem["attachments"]; metadata: string }
 function receipt(id: unknown, submitted: unknown, body: unknown, files: unknown): Receipt | undefined {
   if (typeof id !== "string" || !id || typeof submitted !== "string" || !canonical(submitted) || typeof body !== "string" || !Array.isArray(files) || files.length > 8) return;
@@ -100,7 +210,8 @@ export function queuedMessages(queue: QueueView, local: readonly LocalMessage[],
   return entries.map((entry, index) => {
     const candidates = receipts.get(entry.text) ?? [];
     const exact = entry.exact && occurrences.get(entry.text) === 1 && candidates.length === 1 ? candidates[0] : undefined;
-    return { id: `queue-${index}`, kind: "user", at: "", body: exact?.body ?? sanitizedQueueText(entry.text), attachments: exact?.files };
+    const preview = exact ? { body: exact.body } : envelopePreview(entry.text) ?? { body: sanitizedQueueText(entry.text) };
+    return { id: `queue-${index}`, kind: "user", at: "", ...preview, attachments: exact?.files };
   });
 }
 

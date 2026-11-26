@@ -469,6 +469,52 @@ int main(int argc,char **argv) {
                 self.assertNotEqual(send(dict(payload, request_id=str(uuid.uuid4()))).returncode, 0)
                 self.assertEqual(self.received(), before+keys)
 
+    def test_kimi_queued_peer_and_retained_draft_use_different_input_paths(self):
+        self.tmux("resize-window", "-t", self.pane, "-x", "98", "-y", "52")
+        self.record.update(agent="kimi", run_identity_version=1, activity="busy", phase="working",
+                           supervisor=dict(pid=self.record["pid"], start=self.record["process_start"]),
+                           input_pending_at=time.time(), input_seen_at=0)
+        self.write_record()
+        helper = '<zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?…'
+        box = ' ╭──────────────────╮\r\n │ >                │\r\n ╰──────────────────╯'
+        self.screen('\x1b[2J\x1b[H──────────────────────────────\r\n  ❯ ' + helper
+                    + '\r\n  ↑ to edit · ctrl-s to steer immediately\r\n' + box + '\x1b[5;6H', '5:4')
+        details = self.inspect()
+        self.assertIs(details["previous_message_pending"], True)
+        queue = details["input_queue"]
+        self.assertIn(helper, queue["text"])
+        self.assertTrue(queue["can_send_now"])
+
+        draft = "Please summarize the synthetic findings."
+        refused = self.payload(text=draft)
+        self.assertIn("previous input has not been confirmed", self.send(refused, success=False))
+        self.assert_refusal(refused)
+        self.assertEqual(self.received(), b"")
+
+        push = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                    expected_conversation_id=self.conversation_id, queue_id=queue["id"])
+        result = subprocess.run([str(HGS), "send-now", self.name, "--json"], input=json.dumps(push),
+                                text=True, capture_output=True, env=self.env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: self.received() == b"\x13")
+
+        self.screen('\x1b[2J\x1b[H' + box + '\x1b[2;6H', '5:1')
+        details = self.inspect()
+        self.assertIsNone(details["input_queue"])
+        self.assertIs(details["previous_message_pending"], True)
+        self.record = json.loads(self.record_path.read_text())
+        # The terminal fixture supplies evidence of acceptance independently
+        # of the queue panel disappearing.
+        self.record["input_seen_at"] = self.record["input_pending_at"] + 0.001
+        self.record.update(activity="idle", phase="idle")
+        self.write_record()
+        self.assertIs(self.inspect()["previous_message_pending"], False)
+        self.assertEqual(self.received(), b"\x13")
+        retry = self.send(self.payload(text=draft))
+        self.assertEqual(retry["submitted_text"], draft)
+        self.wait_for(lambda: self.received().endswith(b"\r"))
+        self.assertEqual(self.received(), b"\x13\x1b[200~" + draft.encode() + b"\x1b[201~\r")
+
     def test_resumed_codex_can_send_before_deferred_session_start(self):
         self.resumed_unconfirmed()
         info=self.inspect()

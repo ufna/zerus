@@ -532,6 +532,20 @@ impl Composers {
         if let Some(run) = run {
             hub.local.rebind_run(key, plan.row(), run);
         }
+        // A resumed plan's send belongs to the run returned by resume.
+        let input_identity = hub
+            .composers
+            .get(key)
+            .and_then(|c| c.checkpoint.as_ref())
+            .map(|checkpoint| {
+                (
+                    run.unwrap_or(&checkpoint.run_id).to_owned(),
+                    checkpoint.conversation_id.clone(),
+                )
+            });
+        if let Some((run, conversation)) = input_identity {
+            Self::retain_earlier_input(&mut hub, key, &run, &conversation, &outcome);
+        }
         let detail = hub.local.finished_as_is(key, plan.row(), &outcome);
         if let Some(composer) = hub.composers.get_mut(key) {
             composer.handed = None;

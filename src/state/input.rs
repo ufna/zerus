@@ -418,6 +418,11 @@ impl ResumedSupervisor {
     }
 }
 
+/// Whether the previous ordinary input is still being entered or awaits acceptance.
+pub(super) fn previous_message_pending(record: &Value) -> bool {
+    ordinary_typing(record).is_some() || input_unconfirmed(record)
+}
+
 /// Whether the agent has not confirmed the last input hgs typed (zerus-iitw8).
 /// Only an input-acceptance event (UserPromptSubmit, a queued prompt, a turn or
 /// task start) or hgs's own native proof sets `input_seen_at`; a busy agent's

@@ -273,6 +273,7 @@
   .act-queue-head > svg { color: var(--z-color-muted); flex-shrink: 0; }
   .act-queue-text { max-height: 220px; overflow-y: auto; user-select: text; }
   .act-queue-message { margin-top: 8px; padding-left: 10px; border-left: 2px solid var(--z-color-accent-muted); }
+  .act-queue-source { color: var(--z-color-muted); overflow-wrap: anywhere; }
   .act-queue-message + .act-queue-message { padding-top: 8px; border-top: 1px dashed var(--z-color-border); }
   .act-held-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .act-held-note { margin: 8px 0 0; color: var(--z-color-muted); font-size: 12px; }
@@ -375,6 +376,8 @@
   .cmp-history-hint { margin: 0; padding: 0 12px 4px; color: var(--z-color-muted); font-size: var(--fs-xs); }
 
   /* A disabled Send shows the status at the field for 5 s (Qt's QToolTip there). */
+  .cmp-draft-status { margin: 4px 12px; color: var(--z-color-muted); overflow-wrap: anywhere; }
+  .cmp-draft-status.error { color: var(--z-color-danger); }
   .cmp-hint { position: absolute; z-index: 2; left: 12px; bottom: 46px; max-width: calc(100% - 24px); padding: 4px 8px; border-radius: var(--z-radius-sm);
     border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); color: var(--z-color-text);
     font-size: var(--fs-xs); white-space: pre-line; pointer-events: none; animation: fadeIn var(--z-motion-fast) both; }
