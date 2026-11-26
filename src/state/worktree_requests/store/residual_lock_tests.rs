@@ -62,7 +62,8 @@ fn fixture() {
             write_private(&from, b"");
         }
     });
-    let result = Store::open(root, true);
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let result = Store::for_request(root, &request_id, true, true);
     match case.as_str() {
         "init-success" => {
             assert!(

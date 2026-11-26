@@ -201,6 +201,106 @@ class Worktrees(Repository,unittest.TestCase):
         self.assertEqual((retained/f'{request}.json').read_bytes(),saved)
         self.assertFalse((store/f'{request}.json').exists());self.assertFalse((self.root/'receipt-checkout').exists())
 
+    def test_create_refusal_does_not_settle_an_earlier_request_or_start_git(self):
+        prior = str(uuid.uuid4())
+        original = subprocess.run(self.receipt_create(prior, branch='earlier', destination=self.root/'earlier'),
+                                  env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(original.returncode, 0, original.stderr)
+        state = Path(self.env['HGS_STATE_DIR'])
+        store = state/'worktree-requests'
+        saved = (store/f'{prior}.json').read_bytes()
+        anchor = state/'worktree-requests.identity.json'
+        # Replacing the *real* original directory leaves the outside anchor
+        # intact. Even an empty replacement must never look like no history.
+        actual_anchor = anchor.read_bytes()
+        retained = state/'retained-receipts'
+        store.rename(retained)
+        store.mkdir(mode=0o700)
+        for args in (self.receipt_create(prior, branch='earlier', destination=self.root/'earlier'),
+                     self.receipt_create(str(uuid.uuid4()))):
+            request = args[args.index('--request-id') + 1]
+            create = subprocess.run(args, env=self.env, text=True,
+                                    capture_output=True, timeout=10)
+            self.assertEqual(create.returncode, 1, create.stderr)
+            self.assertTrue(create.stdout, 'the writer must return an invocation-scoped refusal')
+            refusal = json.loads(create.stdout)
+            self.assertEqual(refusal['request_id'], request)
+            self.assertEqual(refusal['status'], 'refused')
+            self.assertEqual(refusal['refusal'], 'receipt_store_identity')
+            self.assertIs(refusal['effects_started'], False)
+            self.assertEqual(refusal['past_outcome'], 'unknown')
+            read = subprocess.run([str(HGS), 'worktrees', 'status', '--request-id', request, '--json'],
+                                  env=self.env, text=True, capture_output=True, timeout=5)
+            self.assertEqual(read.returncode, 1, read.stderr)
+            self.assertEqual(read.stdout, '')
+        self.assertEqual(list(store.iterdir()), [])
+        self.assertEqual((retained/f'{prior}.json').read_bytes(), saved)
+        self.assertEqual(anchor.read_bytes(), actual_anchor)
+        self.assertFalse((self.root/'receipt-checkout').exists())
+        self.assertEqual(self.git('-C', str(self.repo), 'branch', '--list', 'receipt-work'), '')
+        self.assertNotIn(str(self.root/'receipt-checkout'), self.git('-C', str(self.repo), 'worktree', 'list', '--porcelain'))
+
+    def test_incomplete_fresh_recovery_never_reopens_the_matching_old_lane(self):
+        completed = str(uuid.uuid4())
+        original = subprocess.run(self.receipt_create(completed, branch='original', destination=self.root/'original'),
+                                  env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(original.returncode, 0, original.stderr)
+        state = Path(self.env['HGS_STATE_DIR'])
+        old = state/'worktree-requests'
+        original_anchor = (state/'worktree-requests.identity.json').read_bytes()
+        original_receipt = (old/f'{completed}.json').read_bytes()
+        registration = self.git('-C', str(self.repo), 'worktree', 'list', '--porcelain')
+        # Each retained entry alone is evidence of recovery. None of these
+        # partial fixtures establishes APFS custody or authorizes a new ID.
+        for entry in ('worktree-requests-fresh', 'worktree-requests-fresh.identity.json',
+                      'worktree-requests-fresh.apfs-identity.json', 'worktree-requests.fresh-only'):
+            with self.subTest(entry=entry):
+                path = state/entry
+                if path.suffix:
+                    path.write_text('{}')
+                    path.chmod(0o600)
+                else:
+                    path.mkdir(mode=0o700)
+                try:
+                    request = str(uuid.uuid4())
+                    refusal = subprocess.run(self.receipt_create(request), env=self.env, text=True,
+                                             capture_output=True, timeout=10)
+                    self.assertEqual(refusal.returncode, 1, refusal.stderr)
+                    data = json.loads(refusal.stdout)
+                    self.assertEqual((data['request_id'], data['status'], data['past_outcome']), (request, 'refused', 'unknown'))
+                    self.assertIs(data['effects_started'], False)
+                    self.assertFalse((old/f'{request}.lock').exists())
+                    self.assertFalse((old/f'{request}.json').exists())
+                    self.assertFalse((self.root/'receipt-checkout').exists())
+                    self.assertEqual(self.git('-C', str(self.repo), 'worktree', 'list', '--porcelain'), registration)
+                finally:
+                    path.rmdir() if path.is_dir() else path.unlink()
+        self.assertEqual((state/'worktree-requests.identity.json').read_bytes(), original_anchor)
+        self.assertEqual((old/f'{completed}.json').read_bytes(), original_receipt)
+
+    def test_malformed_anchor_refuses_this_invocation_but_status_proves_nothing(self):
+        original = str(uuid.uuid4())
+        created = subprocess.run(self.receipt_create(original, branch='original', destination=self.root/'original'),
+                                 env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(created.returncode, 0, created.stderr)
+        state = Path(self.env['HGS_STATE_DIR'])
+        raw = state/'worktree-requests.identity.json'
+        raw.write_text('{')
+        request = str(uuid.uuid4())
+        failed = subprocess.run(self.receipt_create(request), env=self.env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(failed.returncode, 1, failed.stderr)
+        response = json.loads(failed.stdout)
+        self.assertEqual((response['request_id'], response['status'], response['past_outcome']), (request, 'refused', 'unknown'))
+        self.assertIs(response['effects_started'], False)
+        for id in (request, original):
+            read = subprocess.run([str(HGS), 'worktrees', 'status', '--request-id', id, '--json'],
+                                  env=self.env, text=True, capture_output=True, timeout=5)
+            self.assertEqual((read.returncode, read.stdout), (1, ''))
+        self.assertEqual(raw.read_text(), '{')
+        self.assertFalse((state/'worktree-requests'/f'{request}.lock').exists())
+        self.assertFalse((self.root/'receipt-checkout').exists())
+        self.assertEqual(self.git('-C', str(self.repo), 'branch', '--list', 'receipt-work'), '')
+
     def test_receipt_replays_original_result_and_refuses_changed_arguments(self):
         request=str(uuid.uuid4());args=self.receipt_create(request)
         first=subprocess.run(args,env=self.env,text=True,capture_output=True,timeout=10)

@@ -23,8 +23,9 @@ impl ReceiptRoot {
     }
     pub(crate) fn receipt(&self, id: &str, fingerprint: Option<&str>) -> Result<Option<Value>> {
         token(&["--request-id".into(), id.into()])?;
-        let store = Arc::new(store::Store::acquire_root(
+        let store = Arc::new(store::Store::acquire_for(
             self.0.clone(),
+            id,
             false,
             fingerprint.is_some(),
         )?);
@@ -126,7 +127,7 @@ fn folder() -> PathBuf {
     root().join("worktree-requests")
 }
 fn read(id: &str) -> Result<Option<Value>> {
-    store::Store::observe(&root())?.read(id)
+    store::Store::for_request(&root(), id, false, false)?.read(id)
 }
 
 /// The original receipt for the worktree actor's read-only recovery. A
@@ -143,7 +144,7 @@ fn snapshot(id: &str) -> Result<Value> {
     };
     if value["status"] == "running" {
         // A free original lock proves the worker is gone, not that Git did nothing.
-        let store = Arc::new(store::Store::observe(&root())?);
+        let store = Arc::new(store::Store::for_request(&root(), id, false, false)?);
         if store.observe_lock(id).is_ok() {
             value["status"] = json!("unconfirmed");
         }
@@ -177,7 +178,7 @@ pub(crate) fn fence_in(root: &Path, id: &str, fingerprint: &str) -> Result<Value
     }
     // An absent original store cannot be repaired into absence proof. A newly
     // installed outside-store anchor protects future calls only.
-    let store = Arc::new(store::Store::open(root, false)?);
+    let store = Arc::new(store::Store::for_request(root, id, false, true)?);
     fence_store(store, id, fingerprint)
 }
 fn fence_store(store: Arc<store::Store>, id: &str, fingerprint: &str) -> Result<Value> {
@@ -241,10 +242,45 @@ pub(super) fn control(action: &str, args: &[String]) -> Result<Value> {
     }
     let value = snapshot(&id)?;
     if action == "cancel" && value["status"] == "running" {
-        let store = store::Store::open(&root(), false)?;
+        let store = store::Store::for_request(&root(), &id, false, true)?;
         store.request_cancel(&id)?;
     }
     Ok(value)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn fresh_configured() -> bool {
+    store::Store::fresh_configured(&root()).unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn fresh_control(action: &str, args: &[String]) -> Result<Value> {
+    match (action, args) {
+        ("recover-receipts", [confirm, json]) if confirm == "--start-fresh" && json == "--json" => {
+            if crate::state::session_graph::hosted_agent_call() {
+                return Err("An agent cannot open a separate worktree receipt store".into());
+            }
+            if let Some(refusal) = crate::state::dsh::host_refusal() {
+                return Err(refusal.into());
+            }
+            crate::tasks::person::check().map_err(|error| error.to_string())?;
+            if std::env::var_os("SSH_CONNECTION").is_some() {
+                return Err(
+                    "Open a terminal on this Mac to start a separate worktree receipt store".into(),
+                );
+            }
+            store::Store::activate_fresh(&root())?;
+            Ok(json!({"schema":1,"status":"fresh_ready","past_outcome":"unknown"}))
+        }
+        ("issue-request", [json]) if json == "--json" => {
+            let request_id = store::Store::issue(&root())?;
+            Ok(json!({"schema":1,"status":"issued","request_id":request_id}))
+        }
+        _ => Err(
+            "usage: hgs worktrees recover-receipts --start-fresh --json | issue-request --json"
+                .into(),
+        ),
+    }
 }
 
 /// Runs in-process here: no self-exec to guard.
@@ -312,7 +348,18 @@ fn create_receipt(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&args).map_err(|e| e.to_string())?)
     );
-    let store = Arc::new(store::Store::open(&root(), true)?);
+    let store = match store::Store::for_request(&root(), &id, true, true) {
+        Ok(store) => Arc::new(store),
+        Err(_) if control.is_none() => {
+            // This reply describes only this invocation. No original request
+            // lock, reservation or effect was attempted. It is never written
+            // as a historical receipt and must not settle an earlier result.
+            return Ok(json!({"schema":1,"request_id":id,"status":"refused",
+                "refusal":"receipt_store_identity", "effects_started":false,
+                "past_outcome":"unknown","detail":zerus_client_core::creation::WORKTREE_STORE_REFUSED}));
+        }
+        Err(error) => return Err(error),
+    };
     let guard = match store.lock(&id) {
         Ok(guard) => Arc::new(guard),
         Err(error) => {

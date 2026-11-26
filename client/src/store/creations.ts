@@ -9,7 +9,7 @@ import {
   machineFilter, projectFilter, accountFilter, folderFilter, search, selectedKey, setPage, setRevealing, setSelectedKey, setSubagentOpen, stateFilter,
 } from "./ui";
 import {
-  CARD_LIMIT, NOTICE_LIMIT, RESOLVED, creationOfRow, creationRowId, footerText, newestFirst, noticeOf, placeCreations, shownCards, statusMenu,
+  CARD_LIMIT, NOTICE_LIMIT, RESOLVED, WORKTREE_STORE_REFUSED, creationOfRow, creationRowId, footerText, newestFirst, noticeOf, placeCreations, shownCards, statusMenu,
   type CardScope, type ListScope, type Placement,
 } from "../ui/sessions/creations-ui";
 import type { CreationAction, CreationCard, CreationEvent, GroupingOut, LaunchPlan } from "../types";
@@ -122,9 +122,11 @@ export function createCreations(deps: CreationsDeps) {
 
   function notice(c: CreationCard, known: boolean) {
     const n = noticeOf(c);
-    if (!n || notices.get(c.id) === n.key) return;
-    notices.delete(c.id);
-    notices.set(c.id, n.key);
+    if (!n) return;
+    const key = n.attempt ? `${c.id}/${n.attempt}` : c.id;
+    if (notices.get(key) === n.key) return;
+    notices.delete(key);
+    notices.set(key, n.key);
     if (notices.size > NOTICE_LIMIT) notices.delete(notices.keys().next().value!);
     // A failure that settled before this window started (first seen already
     // failed, last changed earlier) stays on its card; only a failure that happens
@@ -245,7 +247,9 @@ export function createCreations(deps: CreationsDeps) {
   async function act(id: string, action: CreationAction): Promise<void> {
     try { await deps.bridge.creationAction(id, action); } catch (failure) {
       const text = errorText(failure);
-      if (text === RESOLVED || !cards[id]) return;
+      // The persisted card owns this notice and identifies the refused
+      // request. The action reply and card event can arrive in either order.
+      if (text === RESOLVED || text === WORKTREE_STORE_REFUSED || !cards[id]) return;
       deps.notify("error", text, true);
     }
   }

@@ -210,6 +210,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] worktrees create --path REPO --branch NAME --destination PATH [--base HEAD] [--json]
        hgs [@host] worktrees create ... --request-id UUID --receipt --json   durable creation, no replay
        hgs [@host] worktrees status|cancel --request-id UUID --json   original creation receipt
+       hgs worktrees recover-receipts --start-fresh --json   start a separate Mac receipt store for future requests
+       hgs [@host] worktrees issue-request --json   issue an ID in the separate receipt store
        Worktree creation ABI: worktree-requests-v1
        hgs [@host] worktrees review --path PATH [--worktree WORKTREE] [--json]   cleanup verdicts and fingerprints
        hgs [@host] worktrees programs --json   bounded read-only native program manifest (stdin)
@@ -2119,6 +2121,9 @@ pub(crate) fn agent_caller() -> bool {
 /// The refusal of a person-only command an agent would run on another
 /// computer, before anything is forwarded (zerus-ppd26.9).
 fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
+    if command == "worktrees" && args.first().is_some_and(|action| action == "recover-receipts") {
+        return Err(Error::new(1, "Open a terminal on this Mac to start a separate worktree receipt store"));
+    }
     let Some(verb) =
         routed_command(command, args).filter(|verb| PERSON_ONLY_FORWARDED.contains(verb))
     else {

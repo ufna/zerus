@@ -4,7 +4,7 @@ import { createStore } from "solid-js/store";
 import { createCreations, type CreationsDeps } from "./creations";
 import { createNoticeBus, ERROR_NOTICE_MS, type NoticeBus } from "./notices";
 import { toSession } from "./catalog";
-import { RESOLVED, creationRowId, type CardScope, type ListScope } from "../ui/sessions/creations-ui";
+import { RESOLVED, WORKTREE_STORE_REFUSED, creationRowId, type CardScope, type ListScope } from "../ui/sessions/creations-ui";
 import type { CreationCard, CreationEvent, GroupingOut, ViewRow } from "../types";
 import type { Session } from "../ui/sessions/types";
 import type { Row } from "../ui/sessions/model";
@@ -96,6 +96,23 @@ function setup(view: CreationCard[] = [], options: { bus?: NoticeBus; grouping?:
 }
 
 describe("the cards", () => {
+  it.each([false, true])("shows one confirmed worktree-store notice with action reply first: %s", async (replyFirst) => {
+    const initial = card("refused", { state: "worktree" });
+    const t = setup([initial], { refuse: WORKTREE_STORE_REFUSED });
+    await t.started;
+    const refusal: CreationCard = { ...initial, state: "failed", caption: "Creation failed", error: WORKTREE_STORE_REFUSED,
+      worktree_refusal_id: "d3384dcc-df91-440a-816e-e649aa7ba4ea", can_resume: true };
+    if (replyFirst) await t.store.act(refusal.id, "show");
+    t.emit(refusal);
+    t.emit({ ...refusal, updated: Math.floor(Date.now() / 1000) });
+    if (!replyFirst) await t.store.act(refusal.id, "show");
+    expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED]);
+    t.emit({ ...refusal, worktree_refusal_id: "ec423e21-d07b-4649-b972-689822dbb5b6" });
+    t.emit(refusal);
+    expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED, WORKTREE_STORE_REFUSED]);
+    t.dispose();
+  });
+
   const scope = (): ListScope => ({ grouping: grouping([header("alpha")]), members: new Map(), filter: "all", hosts: [], query: "", projects: [], accounts: [], folder: undefined,
     visible: () => true, online: () => true, expanded: () => false, compact: () => false });
   const sessionRow = (s: Session): Row => ({ type: "card", id: s.key, session: s, expandable: false, expanded: false, compactRow: false });

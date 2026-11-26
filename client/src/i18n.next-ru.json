@@ -2860,6 +2860,7 @@
   "Workspace operation was not confirmed: the computer connector returned an invalid workspace reply; verify the matching connector version. Refresh status before continuing.": "Операция с рабочим пространством не подтверждена: коннектор компьютера вернул неверный ответ рабочего пространства; проверьте соответствие версии коннектора. Обновите статус, прежде чем продолжить.",
   "Workspace operation was not confirmed: the computer connector timed out. Refresh status before continuing.": "Операция с рабочим пространством не подтверждена: превышено время ожидания ответа коннектора компьютера. Обновите статус, прежде чем продолжить.",
   "Workspace operation was not confirmed: the workspace request input could not be delivered. Refresh status before continuing.": "Операция с рабочим пространством не подтверждена: не удалось передать данные запроса рабочего пространства. Обновите статус, прежде чем продолжить.",
+  "Worktree creation did not start. Zerus could not verify its worktree records on this computer.": "Создание рабочего дерева не началось. Zerus не смог проверить записи о рабочих деревьях на этом компьютере.",
   "Worktree details": "Подробности рабочего дерева",
   "Worktree panel closed.": "Панель рабочих деревьев закрыта.",
   "Write paths are relative to the repository.": "Пути для записи указываются относительно репозитория.",

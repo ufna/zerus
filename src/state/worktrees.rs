@@ -492,6 +492,10 @@ pub(super) fn catalog_until(path: &Path, refresh: bool, deadline: Instant) -> Va
         Ok(mut snapshot) => {
             snapshot["creation_receipts_v1"] = json!(true);
             let _ = atomic(&path_cache, &snapshot.to_string());
+            #[cfg(target_os = "macos")]
+            if super::worktree_requests::fresh_configured() {
+                snapshot["creation_fresh_receipt_lane"] = json!(true);
+            }
             snapshot
         }
         Err(e) => {
@@ -513,6 +517,19 @@ pub(super) fn catalog_until(path: &Path, refresh: bool, deadline: Instant) -> Va
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let action = args.first().map(String::as_str);
+    if let Some(action @ ("recover-receipts" | "issue-request")) = action {
+        #[cfg(target_os = "macos")]
+        {
+            let value = super::worktree_requests::fresh_control(action, &args[1..])?;
+            println!("{value}");
+            return Ok(0);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = action;
+            return Err("Fresh worktree receipt recovery is available on macOS".into());
+        }
+    }
     if action == Some("program-cleanup-status") {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -623,7 +640,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             },
         };
         println!("{value}");
-        return Ok(0);
+        return Ok(i32::from(action == "create" && value["status"] == "refused"));
     }
     let mut path = None;
     let mut refresh = false;

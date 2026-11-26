@@ -716,6 +716,128 @@ fn a_failed_worktree_without_effects_retires_its_id() {
     assert!(can_resume(&op));
 }
 
+fn store_refusal(request: &str) -> Value {
+    json!({"schema":1,"request_id":request,"status":"refused","refusal":"receipt_store_identity",
+        "effects_started":false,"past_outcome":"unknown"})
+}
+
+#[test]
+fn a_host_refusal_stops_the_new_invocation_but_cannot_settle_prior_unknown_status() {
+    for lost_reply in [false, true] {
+        let mut driver = Driver::loaded();
+        let id = driver.submit(plan(&auto_choices()));
+        driver.flush();
+        let (flight, _) = driver.call();
+        driver.answer(flight, identity("/srv/repo"));
+        let (flight, _) = driver.call();
+        driver.answer(flight, ok(catalog("/srv/repo")));
+        driver.flush();
+        let (flight, call) = driver.call();
+        let Call::CreateWorktree {
+            request_id,
+            branch,
+            common_dir,
+            destination,
+            ..
+        } = call
+        else {
+            panic!("unexpected call {call:?}");
+        };
+        let refusal = store_refusal(&request_id);
+        if lost_reply {
+            driver.answer(flight, fail("connection lost"));
+            driver.flush();
+            let mut restarted = Driver::new();
+            let effects = restarted.creations.load(Journal::Bytes(driver.journal));
+            restarted.take(effects);
+            for reply in [fail("receipt store unavailable"), ok(refusal)] {
+                let effects = restarted.creations.check(&id);
+                restarted.take(effects);
+                let (read, call) = restarted.call();
+                assert!(
+                    matches!(call, Call::WorktreeReceipt { ref action, request_id: ref observed, .. }
+                    if action == "status" && observed == &request_id)
+                );
+                restarted.answer(read, reply);
+                assert_eq!(restarted.state(&id), "unknown");
+                assert_eq!(restarted.op(&id)["worktree_id"], request_id);
+                assert!(restarted.op(&id)["worktree_refusal_id"].is_null());
+                assert!(restarted.creations.resume(&id).is_empty());
+                assert!(restarted.calls.is_empty());
+            }
+            assert!(restarted.launches.is_empty());
+        } else {
+            let exit = Exit::Code {
+                code: 1,
+                stdout: serde_json::to_vec(&refusal).unwrap(),
+                stderr: String::new(),
+            };
+            driver.answer(
+                flight,
+                creation::created(exit, &request_id, &branch, &common_dir, true, &destination),
+            );
+            let operation = driver.op(&id);
+            assert_eq!(operation["state"], "failed");
+            assert_eq!(operation["error"], WORKTREE_STORE_REFUSED);
+            assert_eq!(operation["worktree_refusal_id"], request_id);
+            assert_eq!(operation["worktree_previous"], json!([request_id]));
+            assert!(operation["worktree_id"].is_null());
+            assert!(can_resume(&operation));
+            assert!(driver.launches.is_empty());
+        }
+    }
+}
+
+#[test]
+fn a_fresh_lane_uses_the_host_issued_id_and_persists_it_before_creating() {
+    for stopped in [false, true] {
+        let mut driver = Driver::loaded();
+        let id = driver.submit(plan(&auto_choices()));
+        driver.flush();
+        let (flight, _) = driver.call();
+        driver.answer(flight, identity("/srv/repo"));
+        let (flight, _) = driver.call();
+        let mut catalog = catalog("/srv/repo");
+        catalog["creation_fresh_receipt_lane"] = json!(true);
+        driver.answer(flight, ok(catalog));
+        let (issue, call) = driver.call();
+        assert_eq!(
+            call,
+            Call::IssueWorktree {
+                host: String::new(),
+                expected_machine: MACHINE.into()
+            }
+        );
+        assert!(driver.op(&id)["worktree_id"].is_null());
+        if stopped {
+            let effects = driver.creations.stop(&id);
+            driver.take(effects);
+            driver.flush();
+        }
+        let issued = self::id(191);
+        driver.answer(
+            issue,
+            ok(json!({"schema":1,"status":"issued","request_id":issued})),
+        );
+        assert!(
+            driver.calls.is_empty(),
+            "no create before the durable write"
+        );
+        driver.flush();
+        if stopped {
+            assert!(driver.calls.is_empty());
+            assert_eq!(driver.state(&id), "stopped");
+        } else {
+            let (_, call) = driver.call();
+            assert!(
+                matches!(call, Call::CreateWorktree { request_id, receipt: true, .. } if request_id == issued)
+            );
+            let journal: Value = serde_json::from_slice(&driver.journal).unwrap();
+            assert_eq!(journal["operations"][id]["worktree_id"], issued);
+        }
+    }
+}
+
 #[test]
 fn an_older_hgs_without_receipts_cannot_confirm_a_lost_worktree() {
     let mut driver = Driver::loaded();
