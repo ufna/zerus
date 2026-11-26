@@ -169,8 +169,8 @@ const NOT_A_FILE: &str = "The receipt path holds no regular file";
 const INCOMPLETE: &str = "Session identity is incomplete";
 
 /// The digest both sides compute over message content: each block's type and,
-/// for a text block, its text. The host keeps images as attachment references,
-/// so their bytes are not compared.
+/// for a text block, its text. The host keeps images and files as attachment
+/// references, so their bytes are not compared.
 pub(super) fn content_digest(content: &[Value]) -> String {
     let mut hash = Sha256::new();
     for block in content {
@@ -630,7 +630,9 @@ pub(super) fn submit_with(
         mut receipt,
         content,
         generation,
+        file_generation,
         content_digest,
+        staged,
     } = prepared;
     let path = receipt_path(&binding.request_id);
     // Too little of the deadline left to offer and read: nothing is written.
@@ -639,6 +641,7 @@ pub(super) fn submit_with(
     }
     // The pending marker: from here nothing is refused by HGS and nothing is
     // ever sent again for this request.
+    receipt["attachments"] = staged.keep();
     if let Err(error) = write_marker(&path, &receipt.to_string()) {
         // The write may have failed after its rename (zerus-hfw2s.7): answer by
         // what the store now holds, still under this request's lock.
@@ -648,11 +651,15 @@ pub(super) fn submit_with(
             Err(read) => unknown(UnknownCode::Unseen, &format!("{UNREADABLE}: {read}")),
         };
     }
+    let mut params = json!({"sessionId":record["conversation_id"],"requestId":binding.request_id,
+        "content":content,"mode":"steer"});
+    if let Some(generation) = file_generation {
+        params["generation"] = generation;
+    }
     let sent = rpc(
         &record,
         "send",
-        json!({"sessionId":record["conversation_id"],"requestId":binding.request_id,
-        "content":content,"mode":"steer"}),
+        params,
         budget.remaining().min(Duration::from_secs(35)),
     );
     drop(guard);
@@ -674,7 +681,9 @@ struct Offer {
     receipt: Value,
     content: Vec<Value>,
     generation: Value,
+    file_generation: Option<Value>,
     content_digest: String,
+    staged: attachments::NativeStage,
 }
 
 enum Prepared {
@@ -762,7 +771,7 @@ fn prepare(
             "A task input goes to the session itself, not to a child".into(),
         ));
     }
-    let content = message_content(request).map_err(host)?;
+    let mut content = message_content(request).map_err(host)?;
     if unsafe_content(&content) {
         return Err((NotOfferedCode::UnsafeContent, "The task text mentions a native DeepSeek session (dsh-session:), which the host rewrites".into()));
     }
@@ -784,12 +793,19 @@ fn prepare(
     if readiness["live"] != true {
         return Err(host("Resume this session before sending a message".into()));
     }
+    if has_file_parts(&content) && readiness["generation"] != ping["generation"] {
+        return Err(host("DeepSeek host changed before file preparation".into()));
+    }
+    let staged = attachments::prepare_native(request).map_err(host)?;
+    let file_generation = prepare_files(&record, &readiness, &mut content, |params| {
+        ask(&record, PREPARE_FILES_RPC, params, Duration::from_secs(35)).map_err(|(_, error)| error)
+    })
+    .map_err(host)?;
     let content_digest = content_digest(&content);
     let mut receipt = json!({"request_id":request["request_id"],"name":name,"run_id":record["run_id"],
         "conversation_id":record["conversation_id"],"at":now(),"digest":digest,"witness_version":1,
         "content_digest":content_digest,"digest_scope":DIGEST_SCOPE,"generation":ping["generation"],"text":request["text"],
         "submitted_at":now(),"status":"pending"});
-    receipt["attachments"] = attachments::stage_native(request).map_err(host)?;
     if let Some(target) = session_graph::target_receipt(&record) {
         receipt["graph_target"] = target;
     }
@@ -798,7 +814,9 @@ fn prepare(
         record,
         receipt,
         content,
+        file_generation,
         content_digest,
+        staged,
     }))
 }
 
@@ -1349,6 +1367,54 @@ mod tests {
             "{outcome:?}"
         );
         assert_eq!((calls, receipt(&old)), (vec!["ping".to_owned()], false));
+        for preparation_succeeds in [false, true] {
+            let mut file_request = request("Witnessed file");
+            file_request["attachments"] = json!([{"name":"fixture.txt","mime":"text/plain","data_base64":"dGVzdA=="}]);
+            let request_id = string(&file_request, "request_id");
+            let upload_id = "22222222-3333-4444-8555-666666666666";
+            let prepared_content = vec![
+                json!({"type":"text","text":"Witnessed file"}),
+                json!({"type":"file","receiptId":upload_id}),
+            ];
+            let mut calls = Vec::new();
+            let outcome = submit_with(name, &file_request, Duration::from_secs(5),
+                &mut |_, method, params, _| {
+                    calls.push(method.to_owned());
+                    match method {
+                        "ping" => Ok(witnessing.clone()),
+                        "inspect" => Ok(json!({"generation":"g1","live":true,"fileAttachments":{"root":true,"child":false}})),
+                        "prepare-files" => {
+                            assert!(!receipt(&file_request));
+                            assert_eq!(params["files"], json!([{"data":"dGVzdA==","name":"fixture.txt"}]));
+                            if preparation_succeeds {
+                                Ok(json!({"generation":"g1","sessionId":"session-W","receipts":[upload_id]}))
+                            } else {
+                                Err("File upload refused".into())
+                            }
+                        }
+                        "send" => {
+                            assert!(receipt(&file_request));
+                            assert_eq!(params["generation"], "g1");
+                            assert_eq!(params["content"], json!(prepared_content));
+                            Ok(json!({"accepted":true}))
+                        }
+                        "input-witness" => tracked(vec![insert(), claim(12),
+                            user(15, "m1", Some(request_id), &content_digest(&prepared_content))]),
+                        other => panic!("Unexpected host call {other}"),
+                    }
+                });
+            if preparation_succeeds {
+                assert!(matches!(outcome, Witnessed::Receipt(_)), "{outcome:?}");
+                assert_eq!(calls, ["ping", "inspect", "prepare-files", "send", "input-witness"]);
+            } else {
+                assert!(matches!(outcome, Witnessed::NotOffered { reason, .. } if reason == "File upload refused"));
+                assert_eq!(calls, ["ping", "inspect", "prepare-files"]);
+                assert!(!receipt(&file_request));
+                assert!(!fs::read_dir(root().join("attachments")).unwrap().any(|entry| {
+                    entry.unwrap().file_name().to_string_lossy().starts_with(&format!("native-{request_id}-"))
+                }));
+            }
+        }
         // A native session mention: refused before anything, the host not even asked.
         let mention = request("see dsh-session:session-1");
         let (outcome, calls) = run(

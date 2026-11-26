@@ -21,6 +21,7 @@ class LegacyPermissions(unittest.TestCase):
     cli = native.NativeHarness.cli
     payload = native.NativeHarness.payload
     wait = native.NativeHarness.wait
+    assert_file_refused_before_receipt = native.NativeHarness.assert_file_refused_before_receipt
     tearDownClass = native.NativeHarness.__dict__['tearDownClass']
 
     @classmethod
@@ -107,6 +108,13 @@ class LegacyPermissions(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_host_without_file_capability_refuses_before_receipt(self):
+        self.assertNotIn('fileAttachments', self.rpc('ping'))
+        binding = self.create()
+        request = self.payload(binding, text='Refused older-bridge file marker',
+                               attachments=[dict(name='fixture.txt', mime='text/plain', data_base64='dGVzdA==')])
+        self.assert_file_refused_before_receipt(binding, request, 'does not support file attachments through Zerus')
 
     def test_new_bypass_session_preserves_host_and_other_agents(self):
         self.assertNotIn('accountPermissions', self.rpc('ping'))

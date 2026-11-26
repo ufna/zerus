@@ -9147,6 +9147,18 @@ fresh inspection. `status: submitted` confirms native input delivery, not a mode
 reply. Saved receipts make identical requests idempotent. An uncertain result
 needs manual inspection before another request.
 
+DeepSeek sends supported raster images inline. A root conversation can also
+accept files when its resident adapter advertises native uploads. Zerus checks
+the route and converts those files to session-scoped upload receipts before
+recording a pending send. Continuable child conversations accept inline images,
+and other files are refused before a receipt or prompt is offered. DeepSeek
+send requests support up to eight attachments, 10 MiB each and 20 MiB total.
+If the upload reply is lost, a completed preparation error confirms the
+message was unsent. A lost reply after the pending send is written leaves
+delivery uncertain. The desktop's own 30-second local and 45-second remote
+deadlines can expire before it receives either result. On those timeouts it
+retains the draft as uncertain and waits for explicit review before retrying.
+
 Claude Code attaches a pasted line that is only an image path asynchronously:
 until it has read the image its composer is empty with a `Pasting…` footer, and
 an Enter then submits nothing (zerus-iitw8). For Claude the single Enter
