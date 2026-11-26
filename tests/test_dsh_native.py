@@ -100,6 +100,7 @@ class NativeHarness(unittest.TestCase):
             bridge = cls.root / 'legacy-bridge.mjs'
             source = (REPO / 'src/dsh/bridge.mjs').read_text()
             source = source.replace('accountPermissions: true', 'legacyAdapter: true')
+            source = source.replace('fileAttachments: fileCapabilities(),', '')
             source = source.replace('applyPermissions(handle.agent, permissionMode);', '')
             source = source.replace('applyPermissions(handle.agent, p.permissionMode);', '')
             bridge.write_text(source)
@@ -387,6 +388,116 @@ class NativeHarness(unittest.TestCase):
         saved = self.cli('inspect', b)['attachment_messages'][0]
         self.assertEqual(saved['detail'], text)
         self.assertEqual([f['reference'] for f in saved['attachments']], ['[Image #1]', '[Image #2]'])
+
+    def test_root_file_is_delivered_once_in_composer_order(self):
+        binding = self.create()
+        sid = binding['conversation_id']
+        self.assertEqual(self.rpc('ping')['fileAttachments'], {'root': True, 'child': False})
+        data = b'\x00synthetic file bytes\xff\n'
+        attachment = dict(name='fixture.bin', mime='application/octet-stream', reference='[File #1]',
+                          data_base64=base64.b64encode(data).decode())
+        request = self.payload(binding, text='Read [File #1] after the marker', attachments=[attachment])
+        receipt = self.cli('send', binding, request)
+        self.assertEqual(receipt['status'], 'submitted')
+
+        def native_messages():
+            page = self.rpc('inspect', {'sessionId': sid})['page']
+            return [event['data']['content'] for row in page['records'] if (event := row.get('event', {}))
+                    and event['type'] == 'user/message'
+                    and event['data']['source'].get('rpcId') == request['request_id']]
+
+        [content] = self.wait(native_messages)
+        self.assertEqual(content, [
+            {'type': 'text', 'text': 'Read [File #1]'},
+            {'type': 'file', 'attachment': {
+                'attachmentId': 'sha256:' + hashlib.sha256(data).hexdigest(),
+                'name': 'fixture.bin', 'bytes': len(data)}},
+            {'type': 'text', 'text': ' after the marker'},
+        ])
+        result = subprocess.run(
+            [str(HGS), 'attachment', binding['name'], '--request', request['request_id'], '--index', '0',
+             '--conversation', sid], env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(base64.b64decode(json.loads(result.stdout)['data_base64']), data)
+        facts = self.rpc('input-witness', {'sessionId': sid, 'requestId': request['request_id'],
+                                          'generation': self.rpc('ping')['generation'], 'waitMs': 1000})
+        [witness] = [event for event in facts['events'] if event['type'] == 'user/message'
+                     and event['id'] == facts['messageId'] and event['rpcId'] == request['request_id']]
+        self.assertEqual(witness['digest'], witness_digest(content))
+        self.assertEqual(self.cli('send', binding, request), receipt)
+        self.assertEqual(native_messages(), [content])
+
+    def assert_file_refused_before_receipt(self, binding, request, reason, agent_id=None):
+        result = subprocess.run([str(HGS), 'send', binding['name'], '--json'],
+                                input=json.dumps(request), env=self.env, cwd=REPO, text=True,
+                                capture_output=True, timeout=35)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(reason, result.stderr)
+        self.assertNotIn('delivery uncertain', result.stderr.lower())
+        self.assertEqual(result.stdout, '')
+        self.assertFalse((self.state / 'dsh/receipts' / f"{request['request_id']}.json").exists())
+        self.assertFalse(list((self.state / 'attachments').glob(f"native-{request['request_id']}-*")))
+        params = {'sessionId': binding['conversation_id'], **({'agentId': agent_id} if agent_id else {})}
+        self.assertNotIn(request['text'], json.dumps(self.rpc('inspect', params)['page']['records']))
+
+    def test_root_invalid_and_oversized_files_refuse_before_receipt(self):
+        binding = self.create()
+        for data, reason in (
+            ('!!invalid!!', 'Invalid attachment data'),
+            (base64.b64encode(bytes(10 * 1024 * 1024 + 1)).decode(), 'size limit'),
+        ):
+            with self.subTest(reason=reason):
+                request = self.payload(binding, text='Invalid synthetic file must not reach the inbox',
+                                       attachments=[dict(name='bad.bin', mime='application/octet-stream',
+                                                         data_base64=data)])
+                self.assert_file_refused_before_receipt(binding, request, reason)
+
+    def test_lost_preparation_and_send_replies_have_distinct_delivery_outcomes(self):
+        binding = self.create()
+        sid = binding['conversation_id']
+        files = [dict(name='fixture.txt', mime='text/plain', data_base64='dGVzdA==')]
+        unsent = self.payload(binding, text='Lost only the synthetic upload acknowledgement', attachments=files)
+        request = self.payload(binding, text='Lost the synthetic send acknowledgement', attachments=files)
+        path = self.state / 'dsh/receipts' / f"{request['request_id']}.json"
+        calls = []
+        uploaded = []
+
+        def intercept(message, forward):
+            method = message['method']
+            if method == 'prepare-files':
+                calls.append((method, path.exists()))
+                response = forward(message)
+                uploaded.extend(response['value']['receipts'])
+                return None if len(uploaded) == 1 else response
+            if method == 'send':
+                calls.append((method, path.exists()))
+                calls.append(('native_accepted', forward(message)['value']['accepted']))
+                return None
+            return forward(message)
+
+        with self.archive_rpc_proxy(intercept):
+            self.assert_file_refused_before_receipt(binding, unsent, 'No message was sent.')
+            self.assertEqual(calls, [('prepare-files', False)])
+            self.assertEqual(len(uploaded), 1)
+            result = self.hgs('send', binding['name'], '--json', request=request)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('delivery uncertain', result.stderr.lower())
+            self.assertEqual(json.loads(path.read_text())['status'], 'pending')
+            repeat = self.hgs('send', binding['name'], '--json', request=request)
+            self.assertEqual(repeat.returncode, 1, repeat.stderr)
+            self.assertIn('Delivery uncertain', repeat.stderr)
+        self.assertEqual(calls, [
+            ('prepare-files', False), ('prepare-files', False), ('send', True), ('native_accepted', True),
+        ])
+        self.assertEqual(len(uploaded), 2)
+
+        def received():
+            return [event for row in self.rpc('inspect', {'sessionId': sid})['page']['records']
+                    if (event := row.get('event', {})) and event['type'] == 'user/message'
+                    and event['data']['source'].get('rpcId') == request['request_id']]
+
+        [message] = self.wait(received)
+        self.assertEqual([part['type'] for part in message['data']['content']], ['text', 'file'])
 
     def test_native_provider_failure_attention_and_recovery(self):
         b = self.create()
@@ -834,6 +945,39 @@ class NativeHarness(unittest.TestCase):
             self.rpc('send-child', {'parentSessionId': other['conversation_id'], 'childSessionId': child,
                 'requestId': str(uuid.uuid4()), 'mode': 'continuable', 'delivery': 'steer',
                 'content': [{'type': 'text', 'text': 'wrong parent'}]})
+
+    def test_continuable_child_refuses_files_and_delivers_inline_images(self):
+        parent = self.create()
+        sid = parent['conversation_id']
+        self.cli('send', parent, self.payload(parent, text='SUBAGENT', attachments=[]))
+        data = self.wait(lambda: current if (current := self.cli('inspect', parent))['subagents'] else None)
+        child = next(iter(data['subagents']))
+        native = {'sessionId': sid, 'agentId': child}
+        self.wait(lambda: self.rpc('inspect', native)['childSendSupported'])
+
+        request = self.payload(parent, text='Refused child file marker', agent_id=child,
+                               attachments=[dict(name='fixture.txt', mime='text/plain', data_base64='dGVzdA==')])
+        self.assert_file_refused_before_receipt(parent, request, 'support image attachments only', child)
+        with self.assertRaisesRegex(RuntimeError, 'support image attachments only'):
+            self.rpc('send-child', {'parentSessionId': sid, 'childSessionId': child, 'mode': 'continuable',
+                                   'delivery': 'steer', 'requestId': request['request_id'],
+                                   'content': [{'type': 'file', 'data': 'dGVzdA=='}]})
+
+        image = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII='
+        request = self.payload(parent, text='Child inline image marker', agent_id=child,
+                               attachments=[dict(name='pixel.png', mime='image/png', data_base64=image)])
+        receipt = self.cli('send', parent, request)
+        self.assertEqual(receipt['agent_id'], child)
+        self.assertEqual(self.cli('send', parent, request), receipt)
+
+        def child_messages():
+            return [event['data']['content'] for row in self.rpc('inspect', native)['page']['records']
+                    if (event := row.get('event', {})) and event['type'] == 'user/message'
+                    and any(block.get('text') == request['text'] for block in event['data']['content'])]
+
+        [content] = self.wait(child_messages)
+        self.assertEqual([part['type'] for part in content], ['text', 'image'])
+        self.assertNotIn(request['text'], json.dumps(self.rpc('inspect', {'sessionId': sid})['page']['records']))
 
     def test_real_cli_startup_and_native_browser_authentication(self):
         with tempfile.TemporaryDirectory(prefix='hgs-dsh-launch-', dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')) as directory:

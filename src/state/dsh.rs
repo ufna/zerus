@@ -478,6 +478,10 @@ const HOST_UNAVAILABLE: &str = "DeepSeek host is unavailable; resume the session
 /// end handler, so a request cut short never runs: a definite refusal
 /// (zerus-1wchz, pinned by `the_bridge_runs_only_a_newline_terminated_request`).
 const INCOMPLETE: &str = "The DeepSeek host never received a complete request";
+const PREPARE_FILES_RPC: &str = "prepare-files";
+#[cfg(unix)]
+const FILE_PREPARATION_UNCONFIRMED: &str =
+    "DeepSeek did not confirm attachment preparation. No message was sent.";
 #[cfg(unix)]
 fn rpc(record: &Value, method: &str, params: Value) -> Result<Value> {
     rpc_within(record, method, params, Duration::from_secs(35))
@@ -519,14 +523,32 @@ fn exchange(
         writeln!(socket, "{}", json!({"method":method,"params":params}))
     })()
     .map_err(|e| format!("{INCOMPLETE}: {e}"))?;
+    // Losing the reply to an upload does not lose the reply to a prompt.
+    // This call cannot offer a message, and runs before the pending receipt.
+    let unreadable_reply = |detail: String| {
+        if method == PREPARE_FILES_RPC {
+            FILE_PREPARATION_UNCONFIRMED.to_owned()
+        } else {
+            detail
+        }
+    };
     let mut response = String::new();
     BufReader::new(socket.take(32 * 1024 * 1024))
         .read_line(&mut response)
-        .map_err(|e| format!("Native request delivery uncertain: {e}"))?;
+        .map_err(|e| unreadable_reply(format!("Native request delivery uncertain: {e}")))?;
     let response: Value = serde_json::from_str(&response)
-        .map_err(|e| format!("Invalid native response; delivery uncertain: {e}"))?;
+        .map_err(|e| unreadable_reply(format!("Invalid native response; delivery uncertain: {e}")))?;
     if response["ok"] != true {
-        return Err(string(&response, "error").into());
+        let reason = string(&response, "error");
+        if method == PREPARE_FILES_RPC {
+            // An upload service's own uncertainty must not look like a lost
+            // message acknowledgement to older composers reading stderr.
+            if reason.is_empty() || reason.to_ascii_lowercase().contains("delivery uncertain") {
+                return Err(FILE_PREPARATION_UNCONFIRMED.into());
+            }
+            return Err(format!("DeepSeek attachment preparation failed. No message was sent. {reason}"));
+        }
+        return Err(reason.into());
     }
     Ok(response["value"].clone())
 }
@@ -2336,27 +2358,31 @@ fn interrupt_refusal(error: String) -> String {
     }
 }
 
-/// The native content of a message request: its text, interleaved with its
-/// image attachments and their references, in order.
+/// Text, inline images and files in composer order. Native file receipts are
+/// prepared separately for the exact destination before offering the prompt.
 fn message_content(request: &Value) -> Result<Vec<Value>> {
     let text = string(request, "text");
     if text.len() > 65536 {
         return Err("Message exceeds 64 KiB".into());
     }
-    let files = request["attachments"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let files = match &request["attachments"] {
+        Value::Null => &[][..],
+        Value::Array(files) if files.len() <= 8 => files,
+        Value::Array(_) => return Err("At most 8 attachments are allowed".into()),
+        _ => return Err("Invalid attachments".into()),
+    };
+    if files.iter().any(|file| {
+        !file["name"].as_str().is_some_and(|name| name.len() <= 1024)
+            || !file["mime"].as_str().is_some_and(|mime| !mime.is_empty() && mime.len() <= 255)
+            || !(file["reference"].is_null() || file["reference"].is_string())
+    }) {
+        return Err("Invalid DeepSeek attachment metadata".into());
+    }
     let references = files
         .iter()
         .map(|f| string(f, "reference"))
         .collect::<Vec<_>>();
     attachments::validate_references(&references)?;
-    for file in &files {
-        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
-            return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
-        }
-    }
     let mut content = Vec::new();
     for part in attachments::ordered_parts(text, &references) {
         match part {
@@ -2370,7 +2396,11 @@ fn message_content(request: &Value) -> Result<Vec<Value>> {
                 if !references[index].is_empty() && !text.contains(references[index]) {
                     content.push(json!({"type":"text","text":references[index]}));
                 }
-                content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+                if ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
+                    content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+                } else {
+                    content.push(json!({"type":"file","data":file["data_base64"],"name":file["name"]}));
+                }
             }
         }
     }
@@ -2378,6 +2408,41 @@ fn message_content(request: &Value) -> Result<Vec<Value>> {
         return Err("Message is empty".into());
     }
     Ok(content)
+}
+
+fn has_file_parts(content: &[Value]) -> bool {
+    content.iter().any(|part| part["type"] == "file")
+}
+
+fn prepare_files(
+    record: &Value,
+    capabilities: &Value,
+    content: &mut [Value],
+    prepare: impl FnOnce(Value) -> Result<Value>,
+) -> Result<Option<Value>> {
+    let parts: Vec<_> = content.iter_mut().filter(|part| part["type"] == "file").collect();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let generation = &capabilities["generation"];
+    if capabilities["fileAttachments"]["root"] != true || string(capabilities, "generation").is_empty() {
+        return Err("This DeepSeek host does not support file attachments through Zerus".into());
+    }
+    let files: Vec<_> = parts.iter().map(|part| json!({"data":part["data"],"name":part["name"]})).collect();
+    let answer = prepare(json!({"sessionId":record["conversation_id"],"generation":generation,"files":files}))?;
+    let receipts = answer["receipts"].as_array().filter(|receipts| receipts.len() == parts.len())
+        .ok_or("DeepSeek file preparation did not confirm every attachment")?;
+    if answer["generation"] != *generation || answer["sessionId"] != record["conversation_id"]
+        || receipts.iter().enumerate().any(|(index, receipt)| {
+            !receipt.as_str().is_some_and(session_id::canonical) || receipts[..index].contains(receipt)
+        })
+    {
+        return Err("DeepSeek file preparation did not match this conversation".into());
+    }
+    for (part, receipt) in parts.into_iter().zip(receipts) {
+        *part = json!({"type":"file","receiptId":receipt});
+    }
+    Ok(Some(generation.clone()))
 }
 fn checked_request(record: &Value) -> Result<Value> {
     let mut bytes = Vec::new();
@@ -2607,7 +2672,6 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "send" {
                 let agent_id = string(&request, "agent_id");
                 let text = string(&request, "text");
-                let content = message_content(&request)?;
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
@@ -2633,7 +2697,11 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                     }
                     return Err("Delivery uncertain: this message may already be in DeepSeek. Check Activity before sending it again".into());
                 }
+                let mut content = message_content(&request)?;
                 if !agent_id.is_empty() {
+                    if has_file_parts(&content) {
+                        return Err("DeepSeek child conversations support image attachments only".into());
+                    }
                     let child = inspect(name, Some(agent_id))?;
                     if child["send_supported"] != true {
                         return Err("This child cannot accept messages; it must be continuable with a live parent".into());
@@ -2652,11 +2720,15 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                         "Sign in to DeepSeek in the native UI before sending a message".into(),
                     );
                 }
+                let staged = attachments::prepare_native(&request)?;
+                let file_generation = prepare_files(&record, &readiness, &mut content, |params| {
+                    rpc(&record, PREPARE_FILES_RPC, params)
+                })?;
                 // The Teams actor checked idle for this lead. Queue at the
                 // native turn boundary if a new turn started since that read.
                 let mode = if request["only_when_idle"] == true { "queue" } else { "steer" };
                 receipt["digest"] = json!(digest);
-                receipt["attachments"] = attachments::stage_native(&request)?;
+                receipt["attachments"] = staged.keep();
                 receipt["text"] = json!(text);
                 receipt["submitted_text"] = json!(text);
                 receipt["submitted_at"] = json!(now());
@@ -2669,11 +2741,11 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 }
                 receipt_index::persist(&receipt_path, &receipt)?;
                 if agent_id.is_empty() {
-                    rpc(
-                        &record,
-                        "send",
-                        json!({"sessionId":record["conversation_id"],"requestId":request["request_id"],"content":content,"mode":mode,"expectedCompactionId":request["expected_compaction_id"]}),
-                    )?;
+                    let mut params = json!({"sessionId":record["conversation_id"],"requestId":request["request_id"],"content":content,"mode":mode,"expectedCompactionId":request["expected_compaction_id"]});
+                    if let Some(generation) = file_generation {
+                        params["generation"] = generation;
+                    }
+                    rpc(&record, "send", params)?;
                 } else {
                     rpc(
                         &record,

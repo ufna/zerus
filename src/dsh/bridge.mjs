@@ -25,6 +25,8 @@ const IDENTITY_BYTES = 4096;
 const RESUME_REQUEST = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const RESUME_RECEIPTS = 4096;
 const NATIVE_SESSION = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const FILE_BYTES = 10 * 1024 * 1024;
+const FILE_TOTAL_BYTES = 20 * 1024 * 1024;
 
 // Only an ordinary forever-waiting request of this exact owned root may
 // grant parent routing. Timed waits and typed approval/plan intents stay manual.
@@ -401,6 +403,48 @@ export function apply(ctx, config) {
   const scopedResumes = new Map();
   registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
+  function fileUploadService() {
+    const uploads = ctx.get('fileUploads');
+    return typeof uploads?.upload === 'function' && typeof uploads.resolve === 'function'
+      ? uploads : undefined;
+  }
+  function fileCapabilities() {
+    // The host stores upload receipts only for ordinary sessions. The native
+    // subagent continuation API uses inline images and cannot resolve them.
+    return { root: Boolean(fileUploadService()), child: false };
+  }
+  async function prepareFiles(p) {
+    if (p.generation !== generation) throw new Error('DeepSeek host changed before file preparation');
+    const agent = topLevel(ctx.agents.get(p.sessionId));
+    if (!agent) throw new Error('Resume this session before attaching files');
+    const uploads = fileUploadService();
+    if (!uploads) throw new Error('This DeepSeek host does not support file attachments');
+    if (!Array.isArray(p.files) || p.files.length === 0 || p.files.length > 8)
+      throw new Error('Expected 1 to 8 DeepSeek file attachments');
+    let total = 0;
+    for (const file of p.files) {
+      const data = file?.data;
+      if (typeof data !== 'string' || data.length === 0 || data.length % 4 !== 0
+        || data.length > Math.ceil(FILE_BYTES / 3) * 4 || /[^A-Za-z0-9+/=]/.test(data)
+        || (file.name != null && (typeof file.name !== 'string' || Buffer.byteLength(file.name) > 1024)))
+        throw new Error('Invalid DeepSeek file attachment');
+      const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+      if (data.indexOf('=') !== (padding ? data.length - padding : -1))
+        throw new Error('Invalid DeepSeek file attachment');
+      const size = data.length * 3 / 4 - padding;
+      total += size;
+      if (size > FILE_BYTES || total > FILE_TOTAL_BYTES) throw new Error('DeepSeek file attachments exceed the size limit');
+    }
+    const receipts = [];
+    const signal = AbortSignal.timeout(30_000);
+    for (const { data, name } of p.files) {
+      if (ctx.agents.get(p.sessionId) !== agent) throw new Error('DeepSeek session changed before file preparation');
+      const { receiptId } = await uploads.upload(agent, { data, ...(name ? { name } : {}) }, signal);
+      receipts.push(receiptId);
+    }
+    if (ctx.agents.get(p.sessionId) !== agent) throw new Error('DeepSeek session changed before file preparation');
+    return { generation, sessionId: p.sessionId, receipts };
+  }
   // An end is the host's own lifecycle event, never a failed list/inspect
   // or a turn that finished while its Agent remains alive. Keep bounded
   // evidence only; a pruned or pre-bridge session has an unknown end.
@@ -684,7 +728,7 @@ export function apply(ctx, config) {
     const goal = live ? ctx.goals.get(live) ?? null : baseline.values.goal ?? null;
     const status = await accountStatus();
     const jobs = ctx.get('jobs');
-    return { generation, baseline, page,
+    return { generation, baseline, page, fileAttachments: fileCapabilities(),
       lifecycleActions: agentId ? [] : ["rename", ...(!parentLive ? ["resume", "forget"] : owned.get(sessionId)?.agent === parentLive ? [...(lifecycleIdle ? ["pause"] : []), "forget"] : [])],
       jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => job.kind === 'bash' && job.owner === owner)
         .map(job => ({ ...job, callId:jobCalls.get(job.id)?.callId, controllable: owned.has(sessionId) && Boolean(ctx.agents.get(owner)) }))) : undefined,
@@ -961,6 +1005,7 @@ export function apply(ctx, config) {
       case 'ping': {
         const environment = callEnvironmentInstalled();
         return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
+          fileAttachments: fileCapabilities(),
           inputWitness: true, listJobs: true, teamLifecycle: true,
           shellIdentity: environment, callTokens: environment,
           nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
@@ -1173,13 +1218,31 @@ export function apply(ctx, config) {
         return { stopped: true };
       }
       case 'rename': return api.rename(p);
+      case 'prepare-files': return prepareFiles(p);
       case 'send-child': {
-        const parent = ctx.agents.get(p.parentSessionId);
+        if (p.content?.some(part => part?.type === 'file'))
+          throw new Error('DeepSeek child conversations support image attachments only');
+        const parent = topLevel(ctx.agents.get(p.parentSessionId));
         if (!parent) throw new Error('Resume the parent session before messaging this agent');
-        return ctx.subagents.prompt(p, new AbortController().signal);
+        const signal = new AbortController().signal;
+        // Newer hosts authorize their own RPC at the gateway and accept only
+        // the child ID in prompt(). The private bridge must verify its parent.
+        const baseline = await api.projections({ sessionId: p.parentSessionId }, signal);
+        const child = baseline?.values.subagentCatalog?.find(entry => entry.id === p.childSessionId);
+        if (ctx.agents.get(p.parentSessionId) !== parent || child?.mode !== 'continuable')
+          throw new Error('This child is not continuable with the addressed parent');
+        return ctx.subagents.prompt(p, signal);
       }
       case 'send': return witnessedSend(p, async () => {
-        topLevel(ctx.agents.get(p.sessionId));
+        let agent = topLevel(ctx.agents.get(p.sessionId));
+        const files = p.content?.filter(part => part?.type === 'file') ?? [];
+        if (files.length) {
+          if (p.generation !== generation) throw new Error('DeepSeek host changed after file preparation');
+          const uploads = fileUploadService();
+          if (!agent || !uploads || files.some(part => typeof part.receiptId !== 'string'
+            || uploads.resolve(agent, part.receiptId)?.type !== 'file'))
+            throw new Error('DeepSeek file receipts are not available for this conversation');
+        }
         const compact = compactionPublic(p.sessionId);
         if (p.expectedCompactionId && (compact?.request_id !== p.expectedCompactionId || compact.status !== 'completed'))
           throw new Error('Compaction is not confirmed; message was not sent');
@@ -1188,7 +1251,7 @@ export function apply(ctx, config) {
         // A message consumes the continuation even if another client sent it.
         if (compact) compact.status = 'cancelled';
         recovery.get(p.sessionId)?.finish(undefined);
-        const agent = ctx.agents.get(p.sessionId);
+        if (!files.length) agent = ctx.agents.get(p.sessionId);
         if (!agent) throw new Error('Resume this session before sending a message');
         // Read as list and inspect do. A top-level Agent upstream composed has an
         // installed selection; another one, such as a webhook root, gets none here.
@@ -1196,6 +1259,8 @@ export function apply(ctx, config) {
           : (await api.projections({ sessionId: p.sessionId }, new AbortController().signal))?.values);
         if (needsSignIn(selection, await accountStatus()))
           throw new Error('Sign in to DeepSeek in the native UI before sending a message');
+        if (files.length && ctx.agents.get(p.sessionId) !== agent)
+          throw new Error('DeepSeek session changed after file preparation');
         return api.prompt(p, new AbortController().signal);
       });
       case 'settings': {

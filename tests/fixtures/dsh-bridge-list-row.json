@@ -103,6 +103,10 @@
   "ping": {
     "accountPermissions": true,
     "callTokens": false,
+    "fileAttachments": {
+      "child": false,
+      "root": false
+    },
     "generation": "<generation>",
     "inputWitness": true,
     "listJobs": true,

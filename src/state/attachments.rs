@@ -293,8 +293,29 @@ pub(super) fn wait_result(waiter: &Value, id: &str, after: f64) -> Result<Value>
 }
 
 pub(super) fn stage_native(request: &Value) -> Result<Value> {
+    Ok(prepare_native(request)?.keep())
+}
+
+pub(super) struct NativeStage {
+    files: Value,
+    directory: Option<tempfile::TempDir>,
+}
+
+impl NativeStage {
+    pub fn keep(self) -> Value {
+        if let Some(directory) = self.directory {
+            let _ = directory.keep();
+        }
+        self.files
+    }
+}
+
+pub(super) fn prepare_native(request: &Value) -> Result<NativeStage> {
     if request["attachments"].is_null() {
-        return Ok(json!([]));
+        return Ok(NativeStage {
+            files: json!([]),
+            directory: None,
+        });
     }
     let files = request["attachments"]
         .as_array()
@@ -334,10 +355,10 @@ pub(super) fn stage_native(request: &Value) -> Result<Value> {
         staged
             .push(json!({"name":file["name"],"mime":file["mime"],"path":path,"bytes":bytes.len(),"reference":file["reference"]}));
     }
-    if !staged.is_empty() {
-        let _ = staged_dir.keep();
-    }
-    Ok(json!(staged))
+    Ok(NativeStage {
+        directory: (!staged.is_empty()).then_some(staged_dir),
+        files: json!(staged),
+    })
 }
 /// The creation time a staging request names instead of a run identity: an
 /// untracked session, such as a shell from `hgs sh -d`, has none.
