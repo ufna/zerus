@@ -1,0 +1,470 @@
+use super::*;
+use crate::composer::send::SendReply;
+use crate::composer::send::tests::{Fake, ready, send_hub_on, send_hub_with, state};
+use crate::composer::tests::{dir, drafts, hold, session, until};
+use crate::composer::{ComposerView, Job, SessionRef, lock};
+use serde_json::{Value, json};
+
+fn target_session(agent: &str) -> SessionRef {
+    SessionRef {
+        name: format!("{agent}/sample-project/review"),
+        ..session()
+    }
+}
+
+fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool>) -> Value {
+    let mut value = ready();
+    value["name"] = json!(target.name);
+    value["agent"] = json!(agent);
+    value["activity"] = json!(if is_busy { "busy" } else { "idle" });
+    value["phase"] = json!(if is_busy { "tool" } else { "idle" });
+    if let Some(pending) = pending {
+        value["previous_message_pending"] = json!(pending);
+    }
+    value
+}
+
+fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> ComposerView {
+    let mut row = lock(&fake.row);
+    row.name.clone_from(&target.name);
+    row.agent = agent.into();
+    row.process_state = "running".into();
+    row.phase = Some("tool".into());
+    drop(row);
+    c.open(Some(target.clone()));
+    c.observe(&state(details(target, agent, true, Some(true))));
+    until(c, |view| view.loaded && view.offers_outbox)
+}
+
+fn enqueue(c: &Composers, text: &str) -> ComposerView {
+    let view = c.current().unwrap();
+    let rev = view.rev + 1;
+    c.edit(view.handle, rev, view.text_epoch, text.into(), 0, 0);
+    let (tx, rx) = oneshot::channel();
+    c.enqueue_outbox(view.handle, rev, view.text_epoch, text, tx);
+    rx.blocking_recv().unwrap().unwrap()
+}
+
+fn settle_next(
+    c: &Composers,
+    fake: &Fake,
+    store: &zerus_client_core::drafts::DraftStore,
+    inspected: Value,
+) {
+    *lock(&fake.inspected) = Some(inspected);
+    let now = {
+        let mut clock = lock(&fake.now);
+        *clock += 4.0;
+        *clock
+    };
+    c.tick_outbox(now);
+    store.flush();
+}
+
+#[test]
+fn three_busy_composer_enqueues_survive_restart_and_drain_in_order_to_the_frozen_run() {
+    for agent in ["codex", "kimi"] {
+        let root = dir(&format!("outbox-{agent}"));
+        let store = drafts(&root);
+        let (c, fake) = send_hub_on(&store);
+        let target = target_session(agent);
+        let view = present(&c, &fake, &target, agent);
+        assert_eq!(view.previous_message_pending, Some(true));
+        let ids: Vec<_> = ["same", "same", "last"]
+            .into_iter()
+            .map(|text| {
+                let reply = enqueue(&c, text);
+                assert!(reply.text.is_empty());
+                assert!(!reply.can_send);
+                reply.waiting_in_zerus.last().unwrap().request_id.clone()
+            })
+            .collect();
+        assert_ne!(ids[0], ids[1]);
+        assert!(
+            lock(&fake.calls).is_empty(),
+            "nothing touched native input on enqueue"
+        );
+        assert!(lock(&fake.inspected_targets).is_empty());
+        let view = c.current().unwrap();
+        assert_eq!(
+            c.send_message(
+                view.handle,
+                view.rev + 1,
+                view.text_epoch,
+                "later edit".into(),
+                0,
+                0
+            ),
+            SendReply::Busy
+        );
+        c.flush();
+        drop(c);
+
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let loaded = present(&c, &fake, &target, agent);
+        assert_eq!(loaded.text, "later edit");
+        assert_eq!(loaded.waiting_in_zerus.len(), 3);
+        let other = SessionRef {
+            key: "run:other".into(),
+            name: format!("{agent}/sample-project/other"),
+            ..target.clone()
+        };
+        c.open(Some(other));
+        assert!(until(&c, |view| view.loaded).waiting_in_zerus.is_empty());
+
+        lock(&fake.row).phase = Some("idle".into());
+        let ready = details(&target, agent, false, Some(false));
+        for invalid in [
+            details(&target, agent, false, None),
+            details(&target, agent, false, Some(true)),
+            {
+                let mut wrong = ready.clone();
+                wrong["run_id"] = json!("other");
+                wrong
+            },
+            {
+                let mut queued = ready.clone();
+                queued["input_queue"] = json!({"id": "native"});
+                queued
+            },
+        ] {
+            settle_next(&c, &fake, &store, invalid);
+            assert!(lock(&fake.calls).is_empty());
+        }
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1","conversation_id":"conv-1"}),
+            cleanup: None,
+        });
+        for (index, text) in ["same", "same", "last"].into_iter().enumerate() {
+            settle_next(&c, &fake, &store, ready.clone());
+            // The reservation's callback schedules dispatch, whose settlement
+            // is another durable writer job.
+            store.flush();
+            let calls = lock(&fake.calls);
+            assert_eq!(calls.len(), index + 1);
+            let (bound, action, id) = &calls[index];
+            assert_eq!(
+                (
+                    &bound.name,
+                    bound.run_id.as_str(),
+                    bound.conversation_id.as_str()
+                ),
+                (&target.name, "run-1", "conv-1")
+            );
+            assert_eq!(id, &ids[index]);
+            assert!(matches!(action, Action::SendWhenIdle { text: actual, .. } if actual == text));
+        }
+        let again = present(&c, &fake, &target, agent);
+        assert!(again.waiting_in_zerus.is_empty());
+        assert_eq!(again.text, "later edit");
+    }
+}
+
+#[test]
+fn restart_with_an_original_reservation_blocks_the_next_item_without_replay() {
+    let root = dir("outbox-crash");
+    let store = drafts(&root);
+    let (jobs_tx, jobs_rx) = std::sync::mpsc::channel::<Job>();
+    let (c, fake) = send_hub_with(
+        &store,
+        std::sync::Arc::new(move |job| {
+            jobs_tx.send(job).unwrap();
+        }),
+    );
+    let target = target_session("codex");
+    present(&c, &fake, &target, "codex");
+    let first = enqueue(&c, "original").waiting_in_zerus[0].clone();
+    enqueue(&c, "later");
+    lock(&fake.row).phase = Some("idle".into());
+    *lock(&fake.inspected) = Some(details(&target, "codex", false, Some(false)));
+    let before_save = hold(&store);
+    c.tick_outbox(*lock(&fake.now));
+    jobs_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap()();
+    assert!(
+        jobs_rx.try_recv().is_err(),
+        "no dispatch before durable reservation"
+    );
+    before_save.send(()).unwrap();
+    // Stop after reservation but before the scheduled native call.
+    drop(
+        jobs_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+    );
+    c.flush();
+    assert!(lock(&fake.calls).is_empty());
+    drop(c);
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let view = present(&c, &fake, &target, "codex");
+    assert_eq!(view.waiting_in_zerus[0].request_id, first.request_id);
+    assert_eq!(view.waiting_in_zerus[0].queued_at, first.queued_at);
+    assert_eq!(view.waiting_in_zerus[0].state, State::Unknown);
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(
+        &c,
+        &fake,
+        &store,
+        details(&target, "codex", false, Some(false)),
+    );
+    assert!(lock(&fake.calls).is_empty());
+    assert_eq!(c.current().unwrap().waiting_in_zerus.len(), 2);
+}
+
+#[test]
+fn a_definite_refusal_or_unmatched_receipt_keeps_the_original_and_later_draft() {
+    for failed in [true, false] {
+        let root = dir(if failed {
+            "outbox-failed"
+        } else {
+            "outbox-wrong-receipt"
+        });
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let target = target_session("kimi");
+        present(&c, &fake, &target, "kimi");
+        let first = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
+        enqueue(&c, "next");
+        *lock(&fake.outcome) = Box::new(move |_, _| {
+            if failed {
+                Outcome::Failed {
+                    detail: "native refusal".into(),
+                }
+            } else {
+                Outcome::Done {
+                    receipt: json!({"request_id":"other"}),
+                    cleanup: None,
+                }
+            }
+        });
+        lock(&fake.row).phase = Some("idle".into());
+        settle_next(
+            &c,
+            &fake,
+            &store,
+            details(&target, "kimi", false, Some(false)),
+        );
+        let updated = until(&c, |v| {
+            v.waiting_in_zerus[0].state
+                == if failed {
+                    State::Failed
+                } else {
+                    State::Unknown
+                }
+        });
+        assert_eq!(updated.waiting_in_zerus[0].request_id, first);
+        assert_eq!(updated.waiting_in_zerus[1].preview, "next");
+        settle_next(
+            &c,
+            &fake,
+            &store,
+            details(&target, "kimi", false, Some(false)),
+        );
+        assert_eq!(lock(&fake.calls).len(), 1);
+    }
+}
+
+#[test]
+fn acknowledgement_loss_on_enqueue_cannot_duplicate_a_saved_message_or_its_files() {
+    let root = dir("outbox-lost-ack-files");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    let path = root.join("fixture.txt");
+    std::fs::write(&path, b"saved attachment").unwrap();
+    c.attach_paths(view.handle, vec![path], Default::default());
+    let view = until(&c, |v| v.attachments.len() == 1);
+    let (tx, rx) = oneshot::channel();
+    drop(rx);
+    c.enqueue_outbox(view.handle, view.rev, view.text_epoch, &view.text, tx);
+    let saved = until(&c, |v| v.waiting_in_zerus.len() == 1);
+    assert!(saved.attachments.is_empty());
+    let (tx, rx) = oneshot::channel();
+    c.enqueue_outbox(view.handle, view.rev, view.text_epoch, &view.text, tx);
+    assert!(rx.blocking_recv().unwrap().is_err());
+    drop(c);
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let view = present(&c, &fake, &session, "codex");
+    assert_eq!(view.waiting_in_zerus.len(), 1);
+    lock(&fake.row).phase = Some("idle".into());
+    lock(&fake.row).run_id = Some("replacement".into());
+    let inspected = details(&session, "codex", false, Some(false));
+    settle_next(&c, &fake, &store, inspected.clone());
+    assert!(
+        lock(&fake.calls).is_empty(),
+        "the original name cannot substitute for the run"
+    );
+
+    lock(&fake.row).run_id = Some("run-1".into());
+    let bound = Target {
+        computer: session.computer.clone(),
+        name: session.name.clone(),
+        run_id: "run-1".into(),
+        conversation_id: "conv-1".into(),
+    };
+    *lock(&fake.outcome) = Box::new(move |action, id| {
+        let call = zerus_client_core::actions::invocation(&bound, action, id).unwrap();
+        let stdin: Value = serde_json::from_slice(call.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(stdin["expected_run_id"], "run-1");
+        assert_eq!(stdin["expected_conversation_id"], "conv-1");
+        assert_eq!(stdin["request_id"], id);
+        assert_eq!(stdin["attachments"][0]["name"], "fixture.txt");
+        zerus_client_core::actions::classify(
+            &bound,
+            action,
+            &call,
+            zerus_client_core::Exit::TimedOut,
+        )
+    });
+    settle_next(&c, &fake, &store, inspected);
+    let view = until(&c, |v| v.waiting_in_zerus[0].state == State::Unknown);
+    assert_eq!(view.waiting_in_zerus.len(), 1);
+    let calls = lock(&fake.calls);
+    let Action::SendWhenIdle { attachments, .. } = &calls[0].1 else {
+        panic!("expected guarded Send");
+    };
+    assert_eq!(attachments[0].bytes.as_ref(), b"saved attachment");
+    assert_eq!(calls[0].2, view.waiting_in_zerus[0].request_id);
+}
+
+#[test]
+fn enqueue_time_is_saved_with_the_request_and_survives_queue_edits_and_reopen() {
+    use sha2::{Digest, Sha256};
+
+    const ENQUEUED: f64 = 1_793_000_200.25;
+    const AFTER_WRITE: f64 = ENQUEUED + 20.0;
+    let root = dir("outbox-enqueue-time");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_on(&store);
+    let target = target_session("codex");
+    let view = present(&c, &fake, &target, "codex");
+    let rev = view.rev + 1;
+    c.edit(view.handle, rev, view.text_epoch, "same".into(), 4, 4);
+    let release = hold(&store);
+    *lock(&fake.now) = ENQUEUED;
+    let (tx, rx) = oneshot::channel();
+    c.enqueue_outbox(view.handle, rev, view.text_epoch, "same", tx);
+    *lock(&fake.now) = AFTER_WRITE;
+    release.send(()).unwrap();
+    let first = rx.blocking_recv().unwrap().unwrap().waiting_in_zerus[0].clone();
+    assert_eq!(first.queued_at, Some(ENQUEUED));
+
+    let second = enqueue(&c, "remove this").waiting_in_zerus[1].clone();
+    assert_eq!(second.queued_at, Some(AFTER_WRITE));
+    // A wall-clock correction cannot reorder the FIFO or change its saved times.
+    *lock(&fake.now) = ENQUEUED - 3.0;
+    let third = enqueue(&c, "same").waiting_in_zerus[2].clone();
+    assert_ne!(first.request_id, third.request_id);
+    assert_eq!(third.queued_at, Some(ENQUEUED - 3.0));
+
+    let (tx, rx) = oneshot::channel();
+    c.remove_waiting(view.handle, &second.request_id, tx);
+    let shortened = rx.blocking_recv().unwrap().unwrap();
+    assert_eq!(shortened.waiting_in_zerus, vec![first, third]);
+    c.flush();
+    drop(c);
+
+    let (c, fake) = send_hub_on(&store);
+    let reopened = present(&c, &fake, &target, "codex");
+    assert_eq!(reopened.waiting_in_zerus, shortened.waiting_in_zerus);
+    c.flush();
+    drop(c);
+
+    // Simulate the previous manifest shape by removing just the new
+    // optional field from a genuine saved entry.
+    let key = &reopened.key;
+    let folder = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let path = store.root().join("outbox").join(folder).join("queue.json");
+    let mut raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(raw["entries"][0]["queued_at"], json!(ENQUEUED));
+    raw["entries"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("queued_at");
+    std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+    let (c, fake) = send_hub_on(&store);
+    let legacy = present(&c, &fake, &target, "codex");
+    assert_eq!(legacy.waiting_in_zerus[0].queued_at, None);
+    assert_eq!(
+        legacy.waiting_in_zerus[0].request_id,
+        reopened.waiting_in_zerus[0].request_id
+    );
+    assert_eq!(legacy.waiting_in_zerus[1], reopened.waiting_in_zerus[1]);
+    enqueue(&c, "later");
+    let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(raw["entries"][0].get("queued_at").is_none());
+    assert_eq!(raw["entries"][1]["queued_at"], json!(ENQUEUED - 3.0));
+}
+
+#[test]
+fn host_busy_after_the_observation_releases_only_the_exact_pre_input_reservation() {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let root = dir("outbox-idle-admission");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    present(&c, &fake, &session, "codex");
+    let original = enqueue(&c, "first").waiting_in_zerus[0].clone();
+    enqueue(&c, "later");
+    lock(&fake.row).phase = Some("idle".into());
+    let target = Target {
+        computer: session.computer.clone(),
+        name: session.name.clone(),
+        run_id: "run-1".into(),
+        conversation_id: "conv-1".into(),
+    };
+    let offers = AtomicUsize::new(0);
+    *lock(&fake.outcome) = Box::new(move |action, id| {
+        let inv = zerus_client_core::actions::invocation(&target, action, id).unwrap();
+        assert!(
+            inv.args
+                .windows(2)
+                .any(|pair| pair == ["--when-idle", "--json"])
+        );
+        let input = inv.stdin.as_deref().unwrap();
+        let request: Value = serde_json::from_slice(input).unwrap();
+        assert_eq!(request["only_when_idle"], true);
+        let mut reply = json!({
+            "schema":1, "status":"submitted", "request_id":id, "name":target.name,
+            "run_id":target.run_id, "conversation_id":target.conversation_id,
+        });
+        if offers.fetch_add(1, Ordering::SeqCst) == 0 {
+            reply["status"] = json!("waiting_for_idle");
+            reply["proof"] = json!("native_input_lock");
+            reply["input_sha256"] = json!(format!("{:x}", Sha256::digest(input)));
+        }
+        zerus_client_core::actions::classify(
+            &target,
+            action,
+            &inv,
+            zerus_client_core::Exit::Code {
+                code: 0,
+                stdout: serde_json::to_vec(&reply).unwrap(),
+                stderr: String::new(),
+            },
+        )
+    });
+    let inspected = details(&session, "codex", false, Some(false));
+    settle_next(&c, &fake, &store, inspected.clone());
+    store.flush();
+    let waiting = c.current().unwrap().waiting_in_zerus;
+    assert_eq!(waiting[0], original);
+    assert_eq!(lock(&fake.calls).len(), 1);
+    settle_next(&c, &fake, &store, inspected);
+    store.flush();
+    let waiting = c.current().unwrap().waiting_in_zerus;
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].preview, "later");
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].2, original.request_id);
+    assert_eq!(calls[1].2, original.request_id);
+}

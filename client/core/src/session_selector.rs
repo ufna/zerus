@@ -53,6 +53,7 @@ pub fn confirmed(exit: &Exit) -> bool {
 pub fn selects(action: &Action) -> bool {
     match action {
         Action::Send { .. }
+        | Action::SendWhenIdle { .. }
         | Action::SendNow { .. }
         | Action::Answer { .. }
         | Action::RemoveQueued { .. }

@@ -185,6 +185,7 @@ mod tests {
             digest: "a".repeat(64),
             reason: reason.into(),
             waiting: true,
+            idle_refusal: false,
             dialog: None,
         }
     }
