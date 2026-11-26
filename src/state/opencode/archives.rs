@@ -275,6 +275,16 @@ pub(in crate::state) fn restore(
     } else {
         return Err("A live or saved session already uses this name".into());
     };
+    let home = Path::new(string(archived, "agent_home"));
+    if !home.is_absolute() {
+        return Err("The original OpenCode account binding is unavailable".into());
+    }
+    let existing = PROVIDER.native_identity_locked(string(archived, "conversation_id"), home)?;
+    if existing != resumed {
+        return Err(
+            "This native OpenCode conversation already has a different saved binding".into(),
+        );
+    }
     let service = running_service()?;
     let native = Bounded {
         service: &service,

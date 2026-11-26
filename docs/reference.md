@@ -1458,6 +1458,14 @@ resumes the archived conversation on that host. When the first restore result is
 unclear, Restore checks the original outcome without sending a second resume.
 Other sessions on the host stay available throughout.
 
+OpenCode offers **Archive** for a confirmed idle conversation with no pending
+input, queued messages or running native child. Closing the Terminal client
+leaves the saved conversation available. Archive moves its Zerus binding into
+a separate local store, and Restore rebinds the original native conversation
+and history in its original folder. Neither operation stops the shared
+OpenCode service. **Forget** removes the selected Zerus binding without
+creating an archive and preserves the native history.
+
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
 selection move to the live draft key; machine/project/search scopes stay in
