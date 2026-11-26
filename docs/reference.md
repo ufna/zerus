@@ -4387,8 +4387,9 @@ hgs worktrees recover-receipts --start-fresh --json
 from a terminal on that Mac. This does not adopt, move or rewrite the original
 receipt store. Earlier results stay unconfirmed. A new **Start session** gets
 a new request ID from the Mac. For a standalone CLI creation, obtain that ID
-with `hgs worktrees issue-request --json` before running `worktrees create`
-with it. Keep older IDs for their original result only.
+with `hgs worktrees issue-request --json`, then pass it to `worktrees create`
+with `--request-id UUID --receipt --json`. Keep older IDs for their original
+result only.
 
 **Check result** observes the original clone/worktree request, reads the original
 service launch receipt, or refreshes session evidence. An unknown outcome never

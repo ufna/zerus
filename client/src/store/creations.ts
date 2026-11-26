@@ -245,12 +245,9 @@ export function createCreations(deps: CreationsDeps) {
   async function act(id: string, action: CreationAction): Promise<void> {
     try { await deps.bridge.creationAction(id, action); } catch (failure) {
       const text = errorText(failure);
-      const card = cards[id];
-      if (text === RESOLVED || !card) return;
-      if (text === WORKTREE_STORE_REFUSED && card.worktree_refusal_id && card.error === text) {
-        notice(card, true);
-        return;
-      }
+      // The persisted card owns this notice and identifies the refused
+      // request. The action reply and card event can arrive in either order.
+      if (text === RESOLVED || text === WORKTREE_STORE_REFUSED || !cards[id]) return;
       deps.notify("error", text, true);
     }
   }

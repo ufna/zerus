@@ -96,15 +96,16 @@ function setup(view: CreationCard[] = [], options: { bus?: NoticeBus; grouping?:
 }
 
 describe("the cards", () => {
-  it("shows a confirmed worktree-store refusal once across an action error and repeated card updates", async () => {
+  it.each([false, true])("shows one confirmed worktree-store notice with action reply first: %s", async (replyFirst) => {
     const initial = card("refused", { state: "worktree" });
     const t = setup([initial], { refuse: WORKTREE_STORE_REFUSED });
     await t.started;
     const refusal: CreationCard = { ...initial, state: "failed", caption: "Creation failed", error: WORKTREE_STORE_REFUSED,
       worktree_refusal_id: "d3384dcc-df91-440a-816e-e649aa7ba4ea", can_resume: true };
+    if (replyFirst) await t.store.act(refusal.id, "show");
     t.emit(refusal);
     t.emit({ ...refusal, updated: Math.floor(Date.now() / 1000) });
-    await t.store.act(refusal.id, "show");
+    if (!replyFirst) await t.store.act(refusal.id, "show");
     expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED]);
     t.emit({ ...refusal, worktree_refusal_id: "ec423e21-d07b-4649-b972-689822dbb5b6" });
     expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED, WORKTREE_STORE_REFUSED]);

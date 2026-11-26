@@ -3,7 +3,9 @@
 use super::*;
 use crate::platform::FileIdentity;
 use crate::state::repositories::directory::Directory;
-use std::io::Read;
+use std::io::{Read, Seek};
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests;
 #[cfg(target_os = "macos")]
 mod stable_identity;
 
@@ -66,13 +68,19 @@ fn bytes(directory: &Directory, name: &str, mut file: &File) -> Result<Vec<u8>> 
     if before.1.len() > LIMIT as u64 {
         return Err("Worktree receipt exceeds its limit".into());
     }
+    // A newly published anchor retains the actual writer, whose cursor is at
+    // the end. Reset it instead of replacing that descriptor with a pathname.
+    file.rewind().map_err(|e| e.to_string())?;
     let mut result = Vec::new();
     file.by_ref()
         .take(LIMIT as u64 + 1)
         .read_to_end(&mut result)
         .map_err(|e| e.to_string())?;
     let after = FileIdentity::with_metadata(file).map_err(|e| e.to_string())?;
-    if result.len() > LIMIT || before.0 != after.0 || before.1.len() != after.1.len() {
+    if result.len() as u64 != before.1.len()
+        || before.0 != after.0
+        || before.1.len() != after.1.len()
+    {
         return Err("Worktree receipt changed while reading".into());
     }
     #[cfg(unix)]
@@ -134,8 +142,8 @@ fn stable_anchor(
     legacy_file: &File,
     legacy_bytes: &[u8],
 ) -> Option<Value> {
-    let object = stable_identity::observe(directory.descriptor())?;
-    let state = stable_identity::observe(root.descriptor())?;
+    let object = stable_identity::observe(directory.identity_file())?;
+    let state = stable_identity::observe(root.identity_file())?;
     Some(
         json!({"schema":1,"directory":object,"root":state,"legacy_anchor":stable_identity::observe(legacy_file)?,
         "legacy_sha256":format!("{:x}",Sha256::digest(legacy_bytes))}),

@@ -131,7 +131,7 @@ impl Directory {
     }
 
     #[cfg(target_os = "macos")]
-    pub(in crate::state) fn descriptor(&self) -> &File {
+    pub(in crate::state) fn identity_file(&self) -> &File {
         &self.file
     }
 
