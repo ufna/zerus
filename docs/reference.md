@@ -5414,7 +5414,7 @@ cannot search: no project-wide request is sent, results and counts stay empty,
 and the panel explains how to turn off the session filter explicitly.
 
 Pages come from a local index of task headers in the project's replica folder
-(`task-index-v3.sqlite3`): a disposable cache, never replicated, rebuilt
+(`task-index-v4.sqlite3`): a disposable cache, never replicated, rebuilt
 silently from the task documents when it is missing, damaged or of another
 version, and never a reason for a read to fail. An older hgs that shares the
 state folder keeps its own `task-index-v1.sqlite3` or `task-index-v2.sqlite3`,
@@ -5460,13 +5460,27 @@ on stdin. Set it in Backlog or To do, alongside the executor assignment.
 `technical` is for the coordinator or reviewer. `review-owner REF unspecified`
 clears the assignment. The task details show the reviewer and criterion.
 
-The shared In review stage still includes all reports. On the desktop, its
-cards distinguish **Your decision**, **Coordinator or reviewer next**, and
-**Coordinator to triage**. Older entries with no explicit assignment and
-cancelled or unresolved executions go to triage. The task inspector shows
-the saved criterion. These labels do not accept work or change who may move a
-task to Done. Tasks routed to an Agent Team continue to use that team's review
-policy.
+The shared **In review** stage still includes all reports. The desktop board
+opens **Your decision**, **Technical review** and **Coordinator triage**
+directly. Counts cover the whole selected project, or the current session and
+search when those filters are on. Use **In review** for the combined queue.
+Team-routed tasks follow the team's own review policy. Older entries without
+an assignment and cancelled, conflicting or unconfirmed results remain in
+coordinator triage.
+
+For a settled ordinary report, open **Choose next reviewer** in the task
+inspector. Choose a person or technical review and enter the one-line
+criterion, or return it to coordinator triage. The corresponding CLI is
+`hgs task review-owner REF person|technical|unspecified --expect-revision R`;
+use the task's current `history_revision` from `hgs task get REF --json`.
+The change applies to that report. It leaves the task In review and does
+not change who can accept it. A concurrent edit requires a refreshed read.
+
+For automation, `hgs task list --stage review --limit N --review-lane LANE`
+reports bounded pages and counts. The lanes are `all`, `person`,
+`technical`, `triage` and `team`. The response includes scope-wide
+`review_counts` and echoes `review_lane`. Cursor scope includes the chosen
+lane, session and search.
 
 Both report commands add the report to history. For a managed execution an
 agent uses `hgs task report-attempt REF --attempt UUID`, with the UUID supplied

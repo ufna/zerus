@@ -51,6 +51,16 @@ pub(crate) fn cutover_schema() -> i64 {
     cutover::SCHEMA
 }
 
+/// One map value keeps the reviewer, criterion and report ID together under
+/// concurrent replica writes. Older readers project the two original fields.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct StoredReviewAssignment {
+    #[serde(flatten)]
+    assignment: ReviewAssignment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<String>,
+}
+
 pub struct NewTask<'a> {
     pub project: &'a str,
     pub id: &'a str,
@@ -835,53 +845,58 @@ impl TaskDoc {
         #[cfg(not(feature = "test-without-team"))]
         let (team, team_invalid) = (self.team()?, self.team_invalid());
         #[cfg(not(feature = "test-without-team"))]
-        let review_assignment = if team.is_none() && !team_invalid {
+        let assignment = if team.is_none() && !team_invalid {
             self.review_assignment()
         } else {
             None
         };
         #[cfg(feature = "test-without-team")]
-        let review_assignment = self.review_assignment();
-        Ok((
-            TaskView {
-                uuid: self.uuid.clone(),
-                id: self.id(),
-                project: string(&meta, "project").unwrap_or_default(),
-                schema: self.schema(),
-                writable,
-                created_at: integer(&meta, "created_at").unwrap_or(0),
-                // Documents written before this field existed report their creation.
-                stage_at: integer(&fields, "stage_at")
-                    .or_else(|| integer(&meta, "created_at"))
-                    .unwrap_or(0),
-                author,
-                stage,
-                target,
-                #[cfg(not(feature = "test-without-team"))]
-                team,
-                #[cfg(not(feature = "test-without-team"))]
-                team_invalid,
-                rank: self.rank(),
-                session,
-                worker: match string(&fields, "worker")
-                    .map(|raw| serde_json::from_str(&raw))
-                    .transpose()
-                {
-                    Err(_) if !writable => None,
-                    worker => worker?,
-                },
-                summary: string(&fields, "summary").unwrap_or_default(),
-                review_assignment,
-                cancelled_at: integer(&fields, "cancelled_at"),
-                cancel_reason: string(&fields, "cancel_reason").unwrap_or_default(),
-                title: self.title(),
-                text: self.doc.get_text("text").to_string(),
-                attachments,
-                log,
-                execution,
+        let assignment = self.review_assignment();
+        let mut view = TaskView {
+            uuid: self.uuid.clone(),
+            id: self.id(),
+            project: string(&meta, "project").unwrap_or_default(),
+            schema: self.schema(),
+            writable,
+            created_at: integer(&meta, "created_at").unwrap_or(0),
+            // Documents written before this field existed report their creation.
+            stage_at: integer(&fields, "stage_at")
+                .or_else(|| integer(&meta, "created_at"))
+                .unwrap_or(0),
+            author,
+            stage,
+            target,
+            #[cfg(not(feature = "test-without-team"))]
+            team,
+            #[cfg(not(feature = "test-without-team"))]
+            team_invalid,
+            rank: self.rank(),
+            session,
+            worker: match string(&fields, "worker")
+                .map(|raw| serde_json::from_str(&raw))
+                .transpose()
+            {
+                Err(_) if !writable => None,
+                worker => worker?,
             },
-            ids,
-        ))
+            summary: string(&fields, "summary").unwrap_or_default(),
+            review_assignment: None,
+            cancelled_at: integer(&fields, "cancelled_at"),
+            cancel_reason: string(&fields, "cancel_reason").unwrap_or_default(),
+            title: self.title(),
+            text: self.doc.get_text("text").to_string(),
+            attachments,
+            log,
+            execution,
+        };
+        // A subsequent report needs its own classification. Older queued
+        // assignments do not name a report and remain task-wide.
+        view.review_assignment = assignment
+            .filter(|assignment| assignment.report.as_ref().is_none_or(|report| {
+                view.review_report().and_then(|at| ids.get(at)) == Some(report)
+            }))
+            .map(|assignment| assignment.assignment);
+        Ok((view, ids))
     }
 
     fn log(
@@ -1191,10 +1206,10 @@ impl TaskDoc {
         Ok(())
     }
 
-    fn review_assignment(&self) -> Option<ReviewAssignment> {
-        decode::<ReviewAssignment>(&self.fields(), "review_assignment")
+    fn review_assignment(&self) -> Option<StoredReviewAssignment> {
+        decode::<StoredReviewAssignment>(&self.fields(), "review_assignment")
             .ok()
-            .filter(|assignment| assignment.check().is_ok())
+            .filter(|value| value.assignment.check().is_ok())
     }
 
     pub fn set_review_assignment(
@@ -1211,22 +1226,52 @@ impl TaskDoc {
         if self.team()?.is_some() || self.team_invalid() {
             return Err(Error::new("use the team's review policy for a team task"));
         }
+        self.write_review_assignment(assignment, None, actor, now)
+    }
+
+    /// Metadata only, pinned to the current reported task under the project lock.
+    pub fn classify_review(
+        &mut self,
+        revision: &str,
+        assignment: Option<&ReviewAssignment>,
+        actor: &Actor,
+        now: i64,
+    ) -> Result<()> {
+        if self.revision() != revision {
+            return Err(Error::new("The task changed. Refresh before choosing a reviewer."));
+        }
+        let (view, log_ids) = self.view_with_history_ids()?;
+        let report = view.review_report().and_then(|at| log_ids.get(at))
+            .ok_or_else(|| Error::new("Only a settled ordinary task report can be classified."))?;
+        self.write_review_assignment(assignment, Some(report), actor, now)
+    }
+
+    fn write_review_assignment(
+        &mut self,
+        assignment: Option<&ReviewAssignment>,
+        report: Option<&str>,
+        actor: &Actor,
+        now: i64,
+    ) -> Result<()> {
         if let Some(assignment) = assignment {
             assignment.check()?;
         }
-        if self.review_assignment().as_ref() == assignment
-            && (assignment.is_some() || self.fields().get("review_assignment").is_none())
+        let fields = self.fields();
+        let stored = self.review_assignment();
+        if stored.as_ref().map(|value| &value.assignment) == assignment
+            && stored.as_ref().and_then(|value| value.report.as_deref()) == report.filter(|_| assignment.is_some())
+            && (assignment.is_some() || fields.get("review_assignment").is_none())
         {
             return Ok(());
         }
         let label = match assignment {
             Some(assignment) => {
-                self.fields()
-                    .insert("review_assignment", serde_json::to_string(assignment)?)?;
+                let value = StoredReviewAssignment { assignment: assignment.clone(), report: report.map(str::to_owned) };
+                fields.insert("review_assignment", serde_json::to_string(&value)?)?;
                 format!("{}: {}", assignment.owner.as_str(), assignment.criterion)
             }
             None => {
-                self.fields().delete("review_assignment")?;
+                fields.delete("review_assignment")?;
                 "unspecified".into()
             }
         };

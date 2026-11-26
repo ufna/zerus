@@ -385,6 +385,9 @@ pub fn present(
         "execution",
         "execution_unavailable",
         "review_assignment",
+        "review_lane",
+        "review_editable",
+        "history_revision",
         "team",
         "team_invalid",
     ];

@@ -28,6 +28,17 @@ pub(crate) fn present_review(task: &mut Map<String, Value>) {
         task.insert("team_invalid".into(), json!(true));
     }
 
+    if task.get("review_editable") != Some(&Value::Bool(true))
+        || task.get("stage").and_then(Value::as_str) != Some("review")
+        || task.get("writable") == Some(&Value::Bool(false))
+        || team.is_some()
+        || invalid
+        || task.contains_key("execution_unavailable")
+        || !task.get("history_revision").and_then(Value::as_str).is_some_and(crate::tasks_write::valid_revision)
+    {
+        task.remove("review_editable");
+    }
+
     let assignment = task.remove("review_assignment");
     if team.is_some() || invalid {
         return;

@@ -69,7 +69,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | review-owner REF person|technical|unspecified | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] [--review-lane all|person|technical|triage|team] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | review-owner REF person|technical|unspecified [--expect-revision R] | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -506,8 +506,10 @@ fn view(task: &TaskDoc, project_name: &str, with_log: bool, machines: &Machines)
     if !with_log {
         return label_view(row(task_view, task.revision())?, project_name, false, &[], machines);
     }
-    let dispatch_id = task_view.execution_id();
+    let (dispatch_id, lane, editable) =
+        (task_view.execution_id(), task_view.review_lane(), task_view.review_editable());
     let mut value = serde_json::to_value(task_view).map_err(fail)?;
+    set_review_projection(&mut value, lane, editable, task.revision());
     value["dispatch_id"] = json!(dispatch_id);
     label_view(value, project_name, true, &[], machines)
 }
@@ -518,16 +520,25 @@ fn view(task: &TaskDoc, project_name: &str, with_log: bool, machines: &Machines)
 fn row(mut task_view: zerus_replica::TaskView, history_revision: String) -> Result<Value> {
     let files = std::mem::take(&mut task_view.attachments).iter().map(TaskAttachment::metadata)
         .collect::<std::result::Result<Vec<_>, _>>().map_err(fail)?;
-    let dispatch_id = task_view.execution_id();
+    let (dispatch_id, lane, editable) =
+        (task_view.execution_id(), task_view.review_lane(), task_view.review_editable());
     task_view.log = Vec::new();
     let mut value = serde_json::to_value(task_view).map_err(fail)?;
     value.as_object_mut().expect("a task view is an object").remove("log");
     value["dispatch_id"] = json!(dispatch_id);
     // A note or receipt changes no other list field. Its clock must change
     // the tasks-topic digest so the selected inspector can refresh.
-    value["history_revision"] = json!(history_revision);
+    set_review_projection(&mut value, lane, editable, history_revision);
     if !files.is_empty() { value["attachments"] = json!(files); }
     Ok(value)
+}
+
+fn set_review_projection(value: &mut Value, lane: Option<&str>, editable: bool, revision: String) {
+    value["history_revision"] = json!(revision);
+    if let Some(lane) = lane {
+        value["review_lane"] = json!(lane);
+        value["review_editable"] = json!(editable);
+    }
 }
 
 fn label_view(mut value: Value, project_name: &str, with_log: bool, files: &[Value], machines: &Machines) -> Result<Value> {
@@ -821,6 +832,7 @@ fn list(config: &Config, args: &[String]) -> Result<Value> {
         "--if-revision",
         "--session",
         "--query",
+        "--review-lane",
     ] {
         if option(args, paging)?.is_some() {
             return Err(fail(format!("{paging} needs --stage and --limit")));
@@ -904,6 +916,13 @@ fn paged(
     let filter = searched
         .as_ref()
         .or_else(|| session.as_ref().map(|(scope, _)| scope));
+    let review_lane = option(args, "--review-lane")?
+        .map(index::ReviewLane::parse).transpose()?;
+    if review_lane.is_some() && stage != Stage::Review {
+        return Err(fail("--review-lane needs --stage review"));
+    }
+    let review_scope = review_lane.map(|lane| index::Scope::review(filter.cloned(), lane));
+    let filter = review_scope.as_ref().or(filter);
     let cursor_project = filter.map_or_else(|| id.to_owned(), |scope| scope.cursor_project(id));
     let anchor = match (option(args, "--after")?, option(args, "--before")?) {
         (Some(_), Some(_)) => return Err(fail("use --after or --before, not both")),
@@ -929,6 +948,7 @@ fn paged(
     });
     let mut out = match indexed {
         Some(out) => out,
+        None if review_lane.is_some() => return Err(fail("The review queues are temporarily unavailable.")),
         None => documents_page_in(&store, stage, limit, &anchor, wanted, filter)?,
     };
     if let Some((_, echo)) = session {
@@ -981,11 +1001,36 @@ fn indexed_page_in(index: &mut index::Index, stage: Stage, limit: usize, anchor:
     // revision means this page is unchanged too.
     let page = index.page_in(stage, limit, anchor, filter)?;
     let revision = index.revision()?;
+    let review = filter.and_then(|scope| scope.review_lane().map(|lane| (scope, lane)));
+    let revision = match review {
+        Some((scope, _)) => scope.review_revision(&revision),
+        None => revision,
+    };
     if wanted == Some(revision.as_str()) {
         return Ok(json!({"unchanged": true, "revision": revision}));
     }
-    Ok(page_reply(stage, limit, page.rows, page.position, page.next, page.previous,
-        &index.counts_in(filter)?, index.damaged()?, revision))
+    let mut counts = index.counts_in(filter)?;
+    let damaged = index.damaged()?;
+    let review_counts = match review {
+        Some((scope, lane)) => {
+            let lanes = index.review_counts(scope)?;
+            if lanes.values().sum::<usize>() != counts.get("review").copied().unwrap_or(0) {
+                return Err(index::Failure::Damaged);
+            }
+            if lane != index::ReviewLane::All {
+                counts.insert("review".into(), lanes[lane.as_str()]);
+            }
+            Some((lane, lanes))
+        }
+        None => None,
+    };
+    let mut reply = page_reply(stage, limit, page.rows, page.position, page.next, page.previous,
+        &counts, damaged, revision);
+    if let Some((lane, lanes)) = review_counts {
+        reply["review_lane"] = json!(lane.as_str());
+        reply["review_counts"] = json!(lanes);
+    }
+    Ok(reply)
 }
 
 /// The same page read from every document, for when the index cannot answer.
@@ -1320,8 +1365,24 @@ fn change_guarded(
     wait: Option<std::time::Duration>,
     guard: Option<&cancellation::Guard>,
 ) -> Result<Value> {
+    let review_revision = if action == "review-owner" {
+        option(args, "--expect-revision")?
+    } else {
+        None
+    };
     let review = if action == "review-owner" {
-        review_assignment(args, || stdin_text("review criterion"))?
+        let mut arguments = args.to_vec();
+        if let Some(revision) = review_revision {
+            if revision.len() != 64 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+                return Err(fail("Invalid expected task revision."));
+            }
+            let start = args.iter().position(|arg| arg == "--expect-revision").expect("recognized option");
+            if start < 2 {
+                return Err(fail("--expect-revision must follow the reviewer"));
+            }
+            arguments.drain(start..start + 2);
+        }
+        review_assignment(&arguments, || stdin_text("review criterion"))?
     } else {
         None
     };
@@ -1387,6 +1448,14 @@ fn change_guarded(
         }
     };
     let mut task = find(&store, &r.task)?;
+    if let Some(revision) = review_revision {
+        if task.revision() != revision {
+            return Err(fail("The task changed. Refresh before choosing a reviewer."));
+        }
+        if !task.view().map_err(fail)?.review_editable() {
+            return Err(fail("Only a settled ordinary task report can be classified."));
+        }
+    }
     if (!attempted || team.is_some())
         && action != "start"
         && task.cutover_seal().map_err(fail)?.is_none()
@@ -1491,6 +1560,16 @@ fn change_guarded(
     };
     if action == "edit" && text.as_deref() == Some("") && task.title().is_empty() {
         agent_text("", action, &who)?;
+    }
+    if let Some(revision) = review_revision {
+        let mut admitted = store.admit_until(deadline)
+            .ok_or_else(|| fail("The task is currently busy. Refresh its report and try again."))?;
+        let mut reported = admitted.load_complete(task.uuid()).map_err(fail)?;
+        reported.classify_review(revision, review.as_ref(), &who, now()).map_err(fail)?;
+        admitted.save(&mut reported).map_err(fail)?;
+        drop(admitted);
+        let out = json!({"task": view(&reported, project_name, false, &machines)?});
+        return Ok(with_answer(&who, action, out, 0, ""));
     }
     enrich(&mut task, &machines)?;
     if let Some(expected) = option(args, "--expect-new-session-parent")? {

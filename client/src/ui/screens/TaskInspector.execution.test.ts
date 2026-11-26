@@ -4,14 +4,14 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { taskDetails, type TaskDetail } from "../../store/taskDetails";
 import reviewRows from "./fixtures/task-review-assignment.json";
-const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, read: vi.fn(), setLinkError: (_message: string) => {} }));
+const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, classify: vi.fn(), read: vi.fn(), setLinkError: (_message: string) => {} }));
 vi.mock("../../i18n", async (original) => {
   const module = await original<typeof import("../../i18n")>();
   const catalog = (await import("../../i18n.ru.json")).default;
   return { ...module, tr: (source: string, ...args: import("../../i18n").TranslationArgument[]) =>
     module.translateWithCatalog(catalog, state.locale, source, ...args) };
 });
-vi.mock("../../bridge", () => ({ onTaskExecutors: async () => () => {}, attachmentPin: vi.fn(), attachmentUnpin: vi.fn(), inTauri: () => false, openTaskAttachment: vi.fn(), readTaskDetails: vi.fn() }));
+vi.mock("../../bridge", () => ({ onTaskExecutors: async () => () => {}, attachmentPin: vi.fn(), attachmentUnpin: vi.fn(), inTauri: () => false, openTaskAttachment: vi.fn(), readTaskDetails: vi.fn(), classifyTaskReview: state.classify }));
 vi.mock("../../store/ui", () => ({ selected: () => undefined, setMenu: vi.fn() }));
 vi.mock("../../store/taskBoard", () => ({ writingTask: () => undefined }));
 vi.mock("../../store/taskAssignment", () => ({ openTaskAssignment: vi.fn() }));
@@ -46,7 +46,7 @@ import { taskItem } from "./tasks-ui";
 
 const tick = async () => { for (let n = 0; n < 15; n++) await Promise.resolve(); };
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.setLinkError(""); });
+afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.classify.mockReset(); state.setLinkError(""); });
 function mount(reviewRow?: unknown, projected = false) {
   const task = taskItem(reviewRow ?? { uuid: "task", id: "T-234567", stage: "active", writable: false });
   const execution = reviewRow ? undefined : { requirement: 3, attempts: 1, current: null, conflict: false, has_unknown: true, has_unexplained: false };
@@ -139,4 +139,39 @@ it("keeps the prior review owner hidden across superseded detail reads", async (
   expect(label()).not.toContain("Coordinator or reviewer next");
   pending[1](done); await tick();
   expect(label()).toBeUndefined();
+});
+
+
+it.each([
+  ["en", "Choose next reviewer", "Acceptance criterion", "Save reviewer"],
+  ["ru", "Выбрать следующего проверяющего", "Критерий приёмки", "Сохранить проверяющего"],
+] as const)("classifies a settled ordinary report with its exact revision in %s", async (locale, chooseLabel, criterionLabel, saveLabel) => {
+  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+  const before = { ...details[2], review_lane: "triage", review_editable: true, history_revision: "a".repeat(64) };
+  const after = { ...before, review_lane: "person", history_revision: "b".repeat(64),
+    review_assignment: { owner: "person", criterion: "Read the release output" } };
+  state.project = before.project;
+  state.locale = locale;
+  state.read.mockResolvedValueOnce(before).mockResolvedValue(after);
+  state.classify.mockResolvedValue(undefined);
+  const host = mount(before, true);
+  await tick();
+  const button = (text: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find((item) => item.textContent === text)!;
+  button(chooseLabel).click();
+  const owner = host.querySelector<HTMLSelectElement>(".tv-review-editor select")!;
+  owner.value = "person";
+  owner.dispatchEvent(new Event("change", { bubbles: true }));
+  const field = host.querySelector<HTMLInputElement>(".tv-review-editor input")!;
+  expect(field.closest("label")?.textContent).toContain(criterionLabel);
+  expect(button(saveLabel).disabled).toBe(true);
+  field.value = "Read the release output";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  const form = host.querySelector<HTMLFormElement>(".tv-review-editor")!;
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await tick();
+  expect(state.classify).toHaveBeenCalledExactlyOnceWith(before.project, before.uuid, before.history_revision, "person", "Read the release output");
+  expect(host.querySelector(".tv-review-editor")).toBeNull();
+  expect(host.querySelector(".tv-stage")?.classList.contains("st-review")).toBe(true);
+  expect(host.textContent).toContain("Read the release output");
 });

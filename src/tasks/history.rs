@@ -80,8 +80,10 @@ pub(super) fn materialize(task: &TaskDoc) -> Result<Read> {
             started = true;
         }
     }
+    let (lane, editable) = (view.review_lane(), view.review_editable());
     let log = std::mem::take(&mut view.log);
     let mut header = serde_json::to_value(view).map_err(fail)?;
+    set_review_projection(&mut header, lane, editable, task.revision());
     header["dispatch_id"] = json!(dispatch);
     header["start_confirmed"] = json!(started);
     header.as_object_mut().expect("task").remove("log");
@@ -524,7 +526,7 @@ mod tests {
         a.comment("note", &Actor::Person, 101).unwrap();
         store.save(&mut a).unwrap();
         let good = page(&store, a.uuid(), 80, None, false).unwrap();
-        let path = store.dir().join("task-index-v3.sqlite3");
+        let path = store.dir().join(index::FILE);
         let header = |field: &str, value: Value| {
             let mut h = good.clone();
             for key in ["log", "log_total", "history_next", "history_schema", "ref"] {
