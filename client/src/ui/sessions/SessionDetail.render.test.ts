@@ -650,6 +650,51 @@ it.each(["en", "ru"] as const)("renders only exact OpenCode inbox times in %s", 
   await vi.waitFor(() => expect(shown()).toEqual([expected(7), unavailable, expected(9)]));
 });
 
+it.each(["en", "ru"] as const)("opens ordered OpenCode compaction reports in %s", async (lang) => {
+  transport.language = lang;
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  onTestFinished(() => height.mockRestore());
+  await (await import("./markdown")).loadMarkdown();
+  const row = { ...fixtureRow("Private OpenCode reports"), agent: "opencode", name: "opencode/example/reports" };
+  const key = (await open(row)).slice(1);
+  const native = (type: string, id: string, detail = "", tool = "") => ({
+    type, source: "opencode_native", activity_key: `opencode:${id}`, message_id: id,
+    at: 1793000000, detail, tool,
+  });
+  const tool = native("PreToolUse", "msg_tool:call", "printf output", "shell");
+  const running = native("ToolProgress", "msg_tool:call:result", "", "shell");
+  const summary = "## Objective\nSynthetic work\n\n### Next steps\n- Verify the fixture";
+  const update = (...events: ReturnType<typeof native>[]) => activity.applyActivity([
+    { computer: "", key, kind: "replace", payload: { events } },
+  ]);
+  const reports = () => [...host.querySelectorAll<HTMLElement>(".act-notice")];
+  const button = (index: number) => reports()[index].querySelector("button")!;
+  update(tool, running, native("PreCompact", "msg_compact1"));
+  await vi.waitFor(() => expect(reports()).toHaveLength(1));
+  expect(reports()[0].textContent).toContain(lang === "ru" ? "Сжатие контекста" : "Compacting context");
+  expect(button(0)).toBeNull();
+  const first = reports()[0].id;
+  const toolTitle = lang === "ru" ? "1 вызов инструмента, выполняется: 1" : "1 tool call, 1 running";
+  expect(host.querySelector(".act-tools-head")?.textContent).toContain(toolTitle);
+  const finished = native("PostToolUse", "msg_tool:call:result", "public result", "shell");
+  const completed = native("PostCompact", "msg_compact1", summary);
+  const second = native("PostCompact", "msg_compact2", summary);
+  update(tool, finished, completed, native("AgentMessage", "msg_reply", "After the first report"), second);
+  await vi.waitFor(() => expect(reports()).toHaveLength(2));
+  expect(reports().map(report => report.id)).toEqual([first, "item-kopencode:msg_compact2"]);
+  expect(reports()[0].textContent).toContain(lang === "ru" ? "Контекст сжат" : "Context compacted");
+  expect(reports()[0].querySelector("h2")).toBeNull();
+  button(0).click();
+  await vi.waitFor(() => expect(button(0).getAttribute("aria-expanded"), reports()[0].outerHTML).toBe("true"));
+  await vi.waitFor(() => expect(reports()[0].querySelector("h2")?.textContent, reports()[0].outerHTML).toBe("Objective"));
+  expect(reports()[0].querySelector("h3")?.textContent).toBe("Next steps");
+  expect(reports()[0].querySelector("li")?.textContent).toBe("Verify the fixture");
+  expect(button(0).getAttribute("aria-expanded")).toBe("true");
+  expect(button(1).getAttribute("aria-expanded")).toBe("false");
+  update(tool, finished, completed, native("AgentMessage", "msg_reply", "After the first report"), second);
+  expect(button(0).getAttribute("aria-expanded")).toBe("true");
+});
+
 function expectEmpty() {
   expect(selected()).toBeUndefined();
   expect(host.querySelector(".detail-empty")).not.toBeNull();

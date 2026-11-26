@@ -932,6 +932,14 @@ fn parent_view(
         detail == Detail::Full,
     )?;
     let mut result = normalize(record, Some(&observed));
+    if detail == Detail::Full {
+        history::decorate_live_shell(
+            service,
+            record,
+            &observed.page.messages,
+            &mut result["events"],
+        );
+    }
     if detail != Detail::Listing {
         attachments::decorate(record, "", &mut result);
         result["voice_messages"] =

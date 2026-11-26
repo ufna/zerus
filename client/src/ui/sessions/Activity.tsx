@@ -650,8 +650,10 @@ function Item(props: {
     return (
       <div class="act-notice" id={`item-${it.id}`} classList={{ open: open(), inherited: !!it.inherited }}>
         <div class="row"><Icon name="bot" size={13} /><b>{it.title}</b><Show when={it.sender}><span class="muted">{tr("from %1", it.sender!)}</span></Show><span class="grow" /><span class="act-time">{it.at}</span></div>
-        <button class="link" onClick={toggleOpen}>{open() ? tr("▾ Hide report") : tr("▸ Show report")}</button>
-        <Show when={open()}><div class="act-notice-body act-body"><Body text={it.body ?? ""} /></div></Show>
+        <Show when={it.body}>{body => <>
+          <button type="button" class="link" aria-expanded={open()} onClick={toggleOpen}>{open() ? tr("▾ Hide report") : tr("▸ Show report")}</button>
+          <Show when={open()}><div class="act-notice-body act-body"><Body text={body()} /></div></Show>
+        </>}</Show>
       </div>
     );
   return (
