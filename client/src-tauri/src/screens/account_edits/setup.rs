@@ -394,7 +394,8 @@ impl Screens {
                         return Err(account_actions::CHANGED.into());
                     }
                     let (program, call) = host.binding.antigravity_terminal(&self.0.hgs, &catalog)?;
-                    notices.extend(setup_terminal(dir, &program, &call.args)?);
+                    let mut terminal = Launcher::new(crate::desk::terminal_settings(dir));
+                    notices.extend(terminal.open_program(&program, &call.args)?);
                 }
                 SetupKind::Add if !request.saved.is_empty() => {
                     let saved = host

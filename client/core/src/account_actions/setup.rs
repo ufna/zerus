@@ -1,31 +1,27 @@
 //! Account setup uses the same catalog revision and physical-computer guard.
 use super::{run_catalog, Binding, CHANGED, MAX_MEMBERS};
-use crate::{
-    actions::Invocation,
-    terminal_launch::{Desktop, System},
-    ComputerId,
-};
+use crate::{actions::Invocation, terminal_launch::System, ComputerId};
 use serde_json::{json, Value};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 pub const ANTIGRAVITY_LOGIN_MARKER: &str = "antigravity-native-login-v1";
 
-fn antigravity_program(hgs: &Path) -> Option<PathBuf> {
+fn antigravity_program(hgs: &Path) -> Option<String> {
     let selected = if hgs.file_name() == Some(hgs.as_os_str()) {
-        PathBuf::from(System.find(hgs.to_str()?)?)
+        System::find_path(hgs.to_str()?)?
     } else {
         hgs.to_path_buf()
     };
     // Configured terminals start in the user's home. Resolve a relative
     // override in the desktop's directory before the help probe and launch.
-    std::path::absolute(selected).ok()
+    let program = std::path::absolute(selected).ok()?;
+    // Terminal commands are UTF-8. Never turn an unrepresentable path into
+    // a different executable path by substituting replacement characters.
+    program.into_os_string().into_string().ok()
 }
 
 /// Resolve and verify the binary that will forward the interactive command.
-pub fn antigravity_forwarder(hgs: &Path) -> Option<PathBuf> {
+pub fn antigravity_forwarder(hgs: &Path) -> Option<String> {
     let program = antigravity_program(hgs)?;
     let call = Invocation {
         args: vec!["--help".into()],
@@ -33,7 +29,7 @@ pub fn antigravity_forwarder(hgs: &Path) -> Option<PathBuf> {
         timeout: Duration::from_secs(5),
         request_id: None,
     };
-    matches!(crate::run::run_limited(&program, &call, &[], 64 * 1024),
+    matches!(crate::run::run_limited(Path::new(&program), &call, &[], 64 * 1024),
         Ok(crate::Exit::Code { code: 0, stdout, .. })
             if String::from_utf8_lossy(&stdout).lines().any(|line| line.trim() == ANTIGRAVITY_LOGIN_MARKER))
     .then_some(program)
@@ -124,7 +120,7 @@ impl Host {
         &self,
         hgs: &Path,
         catalog: &Value,
-    ) -> Result<(PathBuf, Invocation), String> {
+    ) -> Result<(String, Invocation), String> {
         let call = self.antigravity_login(catalog)?;
         let program = if self.computer.is_local() {
             antigravity_program(hgs).ok_or("Could not resolve the local hgs executable.")?
@@ -314,12 +310,20 @@ mod tests {
         assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
         help(&format!("       {ANTIGRAVITY_LOGIN_MARKER}"), 0);
         let (program, _) = peer.antigravity_terminal(&hgs, &catalog).unwrap();
-        assert!(program.is_absolute());
-        assert_eq!(program, hgs);
+        assert!(Path::new(&program).is_absolute());
+        assert_eq!(Path::new(&program), hgs);
         help("older executable", 0);
         assert!(peer.antigravity_terminal(&hgs, &catalog).is_err());
         let local = Host::capture(ComputerId::local(), machine.into(), &catalog).unwrap();
         assert!(local.antigravity_terminal(&hgs, &catalog).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_terminal_refuses_an_executable_path_it_cannot_preserve() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let hgs = Path::new(OsStr::from_bytes(b"/fixture/\xffhgs"));
+        assert!(antigravity_program(hgs).is_none());
     }
 
     #[test]
