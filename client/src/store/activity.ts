@@ -47,8 +47,16 @@ const OLDER_SPAN = 200;
 /** A read that brings nothing older within this time counts as empty. */
 const OLDER_TIMEOUT_MS = 4000;
 
+/** An OpenCode user message keeps the same identity from inbox through history. */
+export function opencodePromptId(e: ActivityEvent): string | undefined {
+  return e.source === "opencode_native" && e.type === "UserPromptSubmit" && !e.agent_id
+    && typeof e.message_id === "string" && /^msg_[a-zA-Z0-9_-]{1,124}$/.test(e.message_id) ? e.message_id : undefined;
+}
+
 /** A stable identity for an event: its journal seq, else its own keys. */
 export function eventKey(e: ActivityEvent): string {
+  const opencode = opencodePromptId(e);
+  if (opencode) return `p:opencode:${opencode}`;
   if (typeof e.seq === "number" && e.seq > 0) return `s${e.seq}`;
   const voice = e.voice && typeof e.voice.id === "string" ? e.voice.id : "";
   if (e.source === "hgs_voice" && (voice || e.message_id)) return `v${voice || e.message_id}`;
@@ -56,6 +64,20 @@ export function eventKey(e: ActivityEvent): string {
   if (e.message_id && (e.source === "codex_transcript" || e.source === "claude_transcript" || e.source === "kimi_wire")) return `p${e.source}:${e.type}:${e.message_id}`;
   if (e.source === "hgs_delivery" && e.message_id) return `r${e.message_id}`;
   return `t${e.type ?? ""}:${e.at ?? ""}:${(e.detail ?? "").slice(0, 48)}`;
+}
+
+function withOpenCodeProof(previous: ActivityEvent | undefined, incoming: ActivityEvent): ActivityEvent {
+  if (!previous
+    || (incoming.run_id !== undefined && previous.run_id !== undefined && incoming.run_id !== previous.run_id)
+    || (incoming.conversation_id !== undefined && previous.conversation_id !== undefined && incoming.conversation_id !== previous.conversation_id)
+    || (incoming.request_id !== undefined && previous.request_id !== undefined && incoming.request_id !== previous.request_id)) return incoming;
+  // A later-arriving inbox snapshot cannot move a witnessed history message
+  // back into the inbox. Keep a request annotation only for this native ID.
+  const row = previous.delivery_state === undefined && incoming.delivery_state !== undefined
+    ? previous : incoming;
+  const other = row === previous ? incoming : previous;
+  return row.request_id === undefined && typeof other.request_id === "string" && other.request_id
+    ? { ...row, request_id: other.request_id } : row;
 }
 
 /** An event's journal seq, when it has one (above 0). */
@@ -313,7 +335,12 @@ export function createActivity(port: ActivityPort) {
         switch (out.kind) {
           case "events": {
             const { events: list } = payloadEvents(out.payload);
-            for (const e of list) { byKey.set(eventKey(e), e); resuming?.incoming.set(eventKey(e), e); }
+            for (const e of list) {
+              const key = eventKey(e);
+              const row = opencodePromptId(e) ? withOpenCodeProof(byKey.get(key), e) : e;
+              byKey.set(key, row);
+              resuming?.incoming.set(key, row);
+            }
             if (resuming) { resuming.page = true; settleResume(); }
             changed = true;
             older = true;
@@ -322,7 +349,11 @@ export function createActivity(port: ActivityPort) {
           }
           case "replace": {
             const { events: list } = payloadEvents(out.payload);
-            const incoming = new Map(list.map((e) => [eventKey(e), e]));
+            const incoming = new Map<string, ActivityEvent>();
+            for (const e of list) {
+              const key = eventKey(e);
+              incoming.set(key, opencodePromptId(e) ? withOpenCodeProof(incoming.get(key) ?? byKey.get(key), e) : e);
+            }
             if (resuming) {
               resuming.incoming = incoming;
               resuming.page = list.length > 0;
@@ -341,10 +372,12 @@ export function createActivity(port: ActivityPort) {
             const rev = typeof p.rev === "number" ? p.rev : 0;
             if ((revs.get(p.id) ?? -1) >= rev) break;
             revs.set(p.id, rev);
-            const existing = [...byKey.entries()].find(([, e]) => e.id === p.id || e.activity_key === p.id);
-            const key = existing ? existing[0] : `i${p.id}`;
-            byKey.set(key, p.event);
-            if (resuming) { resuming.incoming.set(key, p.event); resuming.page = true; settleResume(); }
+            const native = opencodePromptId(p.event);
+            const existing = native ? undefined : [...byKey.entries()].find(([, e]) => e.id === p.id || e.activity_key === p.id);
+            const key = native ? eventKey(p.event) : existing?.[0] ?? `i${p.id}`;
+            const row = native ? withOpenCodeProof(byKey.get(key), p.event) : p.event;
+            byKey.set(key, row);
+            if (resuming) { resuming.incoming.set(key, row); resuming.page = true; settleResume(); }
             changed = true;
             break;
           }

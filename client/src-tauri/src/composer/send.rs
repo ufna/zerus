@@ -1766,6 +1766,11 @@ impl Composers {
                 &delivery.run,
                 &delivery.conversation,
                 now,
+                delivery
+                    .session
+                    .name
+                    .starts_with("opencode/")
+                    .then_some(local_messages::OPENCODE_SOURCE),
             );
             hub.queue.pusher.dispatched(
                 &delivery.key,
@@ -2004,6 +2009,11 @@ impl Composers {
     /// still the delivery under way.
     fn ended(&self, delivery: &Delivery, ok: bool, detail: &str, uncertain: bool) {
         let revision = Some(delivery.revision);
+        let detail = if ok && delivery.session.name.starts_with("opencode/") {
+            zerus_client_core::source!("Submitted to OpenCode")
+        } else {
+            detail
+        };
         self.finish(
             &delivery.key,
             revision,
@@ -2073,7 +2083,7 @@ impl Composers {
             } else {
                 composer.error = !ok;
                 composer.uncertain = uncertain;
-                composer.notice = if ok {
+                composer.notice = if ok && detail.is_empty() {
                     "Submitted to terminal".into()
                 } else {
                     detail.to_owned()

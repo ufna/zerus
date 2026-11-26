@@ -1,5 +1,5 @@
 import type { ActivityEvent, LocalMessage, Reply } from "../../types";
-import { eventKey } from "../../store/activity";
+import { eventKey, opencodePromptId } from "../../store/activity";
 import type { ActivityItem, InboxItem, LocalItem, MediaMessage, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
 import type { RouteActivity } from "../../store/questionRouteActivity";
 import { imageSize } from "./attachment-image";
@@ -277,6 +277,8 @@ function recordedContext(summary: Record<string, unknown> | undefined): Transcri
 
 const PROMPTS = new Set(["UserPromptSubmit", "UserPromptQueued", "TurnStarted"]);
 const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
+const OPENCODE_SOURCE = "opencode_native";
+const OPENCODE_SUBMITTED = trNoop("Submitted to OpenCode");
 const agyOffer = (event: ActivityEvent) => event.source === "agy_acp" && event.type === "UserPromptSubmit";
 const agyRequest = (event: ActivityEvent) => typeof event.request_id === "string" && event.request_id
   ? JSON.stringify([event.run_id, event.conversation_id, event.request_id]) : "";
@@ -317,7 +319,8 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
   }
   return {
     id: row.id,
-    stamp: failed && row.uncertain ? tr("Delivery not confirmed") : tr(LOCAL_STAMP[row.status] ?? LOCAL_STAMP.sent),
+    stamp: failed && row.uncertain ? tr("Delivery not confirmed")
+      : tr(row.status === "sent" && row.source === OPENCODE_SOURCE ? OPENCODE_SUBMITTED : LOCAL_STAMP[row.status] ?? LOCAL_STAMP.sent),
     error: failed ? row.error : "",
     uncertain: failed && row.uncertain,
     actions,
@@ -376,8 +379,19 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       claimed.add(agy);
       continue;
     }
-    const ordinary = (e: ActivityEvent, i: number) => eligible(e, i) && !agyOffer(e);
-    if (sent) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
+    if (sent && row.source === OPENCODE_SOURCE) {
+      match = source.findIndex((e, i) => {
+        const native = opencodePromptId(e);
+        return !!native && eligible(e, i)
+          && (e.run_id === undefined || e.run_id === row.run_id)
+          && (e.conversation_id === undefined || e.conversation_id === row.conversation_id)
+          && (e.request_id === undefined || e.request_id === row.id)
+          && (row.message_id && row.message_id !== row.id ? row.message_id === native : e.request_id === row.id);
+      });
+    }
+    const ordinary = (e: ActivityEvent, i: number) => row.source !== OPENCODE_SOURCE
+      && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);
+    if (sent && match < 0) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
     if (sent && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
       && !!(e.message_id || e.attachment_request_id) && [row.id, row.message_id].some(id => !!id && (e.message_id === id || e.attachment_request_id === id)));
     if (sent && match < 0 && row.attachments.length) {
@@ -411,7 +425,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   // receipt. Keep the client's row visible through that short gap; do not
   // invent an identity binding from text. Equal-text sends remain separate.
   const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
-    if (row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
+    if (event.source === OPENCODE_SOURCE || row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
       || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
     const raw = event.detail ?? "";
     if (!echoMatchesFiles(raw, row.attachments as ActivityEvent["attachments"])) return false;
@@ -800,11 +814,21 @@ export function createTranscriptProjection() {
   return {
     reset() { recent.clear(); bindings.clear(); },
     build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
+      const independent = new Set(local.filter(row => row.source === OPENCODE_SOURCE && row.status === "error")
+        .map(row => `local-${row.id}`));
+      // An early exact echo can share a pending row's key. A later failed or
+      // uncertain local result needs its own row, while native history stays.
+      if (independent.size) {
+        for (const [key, alias] of bindings) if (independent.has(alias)) bindings.delete(key);
+      }
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
       const present = new Set(local.map(row => row.id));
       const bound = new Set(bindings.values());
-      const missing = [...recent.values()].filter(row => !present.has(row.id) && row.status !== "error" && row.source !== "hgs_voice");
+      const missing = [...recent.values()].filter(row => !present.has(row.id) && row.status !== "error" && row.source !== "hgs_voice"
+        // A retired in-flight row has no receipt identity. If Rust removed
+        // it against native history, redisplaying it would duplicate that history.
+        && (row.source !== OPENCODE_SOURCE || row.status === "sent"));
       // A confirmed local receipt can leave Rust's view one batch before its
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
