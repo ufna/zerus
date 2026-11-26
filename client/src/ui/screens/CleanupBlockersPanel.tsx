@@ -16,6 +16,7 @@ export function CleanupBlockersPanel(props: {
   blockers: Blockers;
   /** The fresh read of this folder's blockers; the recorded groups show meanwhile. */
   live?: "loading" | "ready" | "failed";
+  stopMessage?: string;
   /** The live session uniquely matched on this folder's computer, if any. */
   session: (name: string) => Session | undefined;
   open: (name: string) => void;
@@ -32,6 +33,7 @@ export function CleanupBlockersPanel(props: {
     const step = b().next;
     switch (step.kind) {
       case "unknown": return tr("The removal result is unknown and will not be retried. Inspect the folder before deciding what to do next.");
+      case "observe_stop": return props.stopMessage;
       case "archive": return tr("Removal waits until these sessions stop using the folder. Archive them, then choose Check again.");
       case "force": return tr("Some programs did not stop. Review them and choose Force stop only if you are sure.");
       case "close_programs": return tr("Close these programs, then choose Check again. Zerus never stops them on its own.");
@@ -44,7 +46,7 @@ export function CleanupBlockersPanel(props: {
     }
   };
   const checking = () => !unknown() && (props.live === "loading" || props.live === "failed");
-  const any = () => unknown() || checking() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
+  const any = () => next() || checking() || b().sessions.length || b().programCount || b().hidden || b().untracked || b().changes || b().other.length || props.notes.length;
   return <Show when={any()}>
     <section class="bc-blockers" aria-label={tr("Why this folder was kept")}>
       <Show when={next()}>
@@ -61,7 +63,7 @@ export function CleanupBlockersPanel(props: {
           <div class="bc-group"><h4 class="bc-group-title">{tr("Other Zerus sessions use this folder")}</h4>
             <ul class="bc-list"><For each={b().sessions}>{(name) => <li><span class="ell" title={name}>{name}</span>
               <button class="btn small" disabled={!props.session(name)} onClick={() => props.open(name)}>{tr("Open")}</button>
-              <button class="btn small" disabled={props.disabled || !props.session(name)} onClick={() => props.archive([name])}>{tr("Archive…")}</button></li>}</For></ul>
+              <Show when={b().next.kind !== "observe_stop"}><button class="btn small" disabled={props.disabled || !props.session(name)} onClick={() => props.archive([name])}>{tr("Archive…")}</button></Show></li>}</For></ul>
           </div>
         </Show>
         <Show when={b().programCount || b().hidden}>

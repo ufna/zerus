@@ -4738,6 +4738,14 @@ proof, never renderer, manual or background requests. If the selected route
 cannot support this pipeline, removal remains available through the existing
 separately guarded folder review rather than an alternate CLI selection.
 
+When the program stop is unconfirmed, **Check again** in **Remove working
+folders** reads the recorded stop result if its exact request is still
+available. It also checks which programs and sessions currently use the
+recorded checkout on its original computer. This inspection leaves the
+folder and its cleanup records in place. A recovered stop result remains
+informational. No stop, Force, removal, Restore or consent follows from
+this check.
+
 A checkout with uncommitted or untracked files can also have such access
 denials. Its review then offers both consents (`discardable_with_process_consent`
 beside the discard and process fingerprints, while `discardable` stays false for

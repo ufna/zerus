@@ -399,6 +399,9 @@ impl Stopped {
     pub(crate) fn report(&self) -> Result<&Report, &str> {
         self.attempt.result.as_ref().map_err(String::as_str)
     }
+    pub(crate) fn stop_input(&self) -> &Input {
+        &self.attempt.input
+    }
     pub(crate) fn current(&self) -> bool {
         self.continuation.current()
     }

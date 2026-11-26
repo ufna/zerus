@@ -99,7 +99,8 @@ pub(super) fn command(args: &[String]) -> Result<Value> {
     while i < args.len() {
         match args[i].as_str() {
             "--json" => {},
-            key @ ("--path" | "--common-dir" | "--file" | "--offset") => {
+            "--blockers-only" if options.insert("--blockers-only", "").is_none() => {},
+            key @ ("--path" | "--common-dir" | "--file" | "--offset" | "--recorded-machine" | "--owner-id") => {
                 i += 1;
                 let value = args.get(i).filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
                     .ok_or_else(|| format!("{key} needs a path"))?;
@@ -109,6 +110,26 @@ pub(super) fn command(args: &[String]) -> Result<Value> {
         }
         i += 1;
     }
+    let blocker_owner = if options.contains_key("--blockers-only") {
+        let machine = options.get("--recorded-machine").ok_or("--recorded-machine is required")?;
+        let owner = options.get("--owner-id").ok_or("--owner-id is required")?;
+        if options.contains_key("--file") || options.contains_key("--offset")
+            || !zerus_client_core::creation::canonical_uuid(machine)
+            || !zerus_client_core::creation::canonical_uuid(owner)
+        {
+            return Err("Invalid recorded worktree identity.".into());
+        }
+        let config = crate::config::Config::load().map_err(|error| error.to_string())?;
+        if super::session_action::status_machine(&config)? != *machine {
+            return Err("The worktree belongs to another computer.".into());
+        }
+        Some(*owner)
+    } else {
+        if options.contains_key("--recorded-machine") || options.contains_key("--owner-id") {
+            return Err("Recorded worktree identity is only used with --blockers-only.".into());
+        }
+        None
+    };
     let path = Path::new(options.get("--path").ok_or("--path is required")?);
     let common = Path::new(
         options
@@ -130,6 +151,18 @@ pub(super) fn command(args: &[String]) -> Result<Value> {
         || resolve(&["rev-parse", "--path-format=absolute", "--git-common-dir"])? != common
     {
         return Err("Repository changed. Refresh the worktree list.".into());
+    }
+    if let Some(owner) = blocker_owner {
+        let still_owned = || super::worktree_lifecycle::owned(&common, &path)
+            .is_some_and(|receipt| receipt["id"] == owner);
+        if !still_owned() {
+            return Err("The original working folder no longer matches.".into());
+        }
+        let blockers = super::worktree_cleanup::observe_blockers(&path, Instant::now() + Duration::from_secs(5));
+        if !still_owned() {
+            return Err("The original working folder changed during inspection.".into());
+        }
+        return Ok(json!({"state":"ok","path":path,"common_dir":common,"review":blockers}));
     }
     if let Some(file) = options.get("--file") {
         return Ok(
@@ -208,4 +241,31 @@ pub(super) fn command(args: &[String]) -> Result<Value> {
         );
     }
     Ok(data)
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "driven by a private CLI observation fixture"]
+fn seed_pending_removal_for_observation() {
+    let Some(directory) = std::env::var_os("ZERUS_OBSERVATION_FIXTURE").map(PathBuf::from) else {
+        return;
+    };
+    assert_eq!(root(), directory.join("state"));
+    let checkout = directory.join("working-folder");
+    let common = directory.join("checkout-source/.git");
+    assert!(checkout.join("keep.txt").is_file());
+    let request = super::worktree_maintenance::Removal {
+        path: checkout.to_str().unwrap().into(),
+        common_dir: common.to_str().unwrap().into(),
+        branch: "kept-branch".into(),
+        head: "a".repeat(40),
+        fingerprint: "a".repeat(64),
+        request_id: uuid::Uuid::new_v4().to_string(),
+        reserved_at: now(),
+        status: "pending".into(),
+        detail: String::new(),
+        volumes: None,
+    };
+    super::worktree_maintenance::reserve_removal(&request).unwrap();
+    assert_eq!(super::worktree_maintenance::removal_count(&common).unwrap(), 1);
 }

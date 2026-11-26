@@ -193,6 +193,7 @@ pub(super) async fn confirm(
                 dismissed: false,
                 program_review_pending: true,
                 program_retirement: None,
+                unconfirmed_stop: None,
                 lookup_only: false,
                 physically_released: false,
                 source: Some(capture.target.clone()),
@@ -242,6 +243,7 @@ pub(super) fn stop_and_publish<A: PipelineApp>(
 /// back (zerus-1y897.8).
 pub(super) struct Unconfirmed {
     pub(super) held: Option<ProgramJob>,
+    pub(super) original: Option<Box<zerus_client_core::worktree_programs::stop::Input>>,
 }
 /// Waits for the stop's own phase to settle while its source is current. A
 /// stop that cannot settle is never closed or dropped here: it stays held,
@@ -255,6 +257,7 @@ pub(super) fn settle(mut stopped: programs::Stopped) -> Result<programs::Stopped
         }
     }
     Err(Unconfirmed {
+        original: Some(Box::new(stopped.stop_input().clone())),
         held: Some(ProgramJob::Stopped(Box::new(stopped))),
     })
 }
@@ -266,6 +269,7 @@ pub(super) fn stop_original(
     match continuation.normal() {
         Ok(stopped) => settle(stopped),
         Err((continuation, _)) => Err(Unconfirmed {
+            original: None,
             held: Some(ProgramJob::Original(continuation)),
         }),
     }
@@ -305,6 +309,7 @@ pub(super) fn publish<A: PipelineApp>(
 pub(super) fn record_stop(job: &mut Job, stopped: Result<programs::Stopped, Unconfirmed>) -> bool {
     job.busy = false;
     job.phase = "checking";
+    let unconfirmed_detail = zerus_client_core::source!("The program stop is unconfirmed.");
     let (detail, live) = match stopped {
         Ok(stopped) => {
             if stopped.reviewable_refusal() {
@@ -316,25 +321,28 @@ pub(super) fn record_stop(job: &mut Job, stopped: Result<programs::Stopped, Unco
                 Ok(report) if report.state == StopState::Complete => zerus_client_core::source!("Programs have stopped. Checking the working folder…"),
                 Ok(report) if report.state == StopState::Incomplete => zerus_client_core::source!("Some programs are still running. Review them before choosing Force stop."),
                 Ok(report) if report.state == StopState::Refused => "The program list changed or could not be checked. Review the working folder again.",
-                _ => zerus_client_core::source!("The program stop is unconfirmed. Check the original result before continuing."),
+                _ => {
+                    job.lookup_only = true;
+                    job.unconfirmed_stop = Some(super::stop_check::Unconfirmed {
+                        original: Some(Box::new(stopped.stop_input().clone())),
+                    });
+                    unconfirmed_detail
+                }
             };
             job.programs = Some(ProgramJob::Stopped(Box::new(stopped)));
             (detail, true)
         }
         Err(unconfirmed) => {
             job.program_retirement = Some(ProgramRetirement::StopUnconfirmed);
-            // An unconfirmed stop never offers Check again, Force or consent
-            // (zerus-1y897.8). Whatever custody its producer handed back stays
-            // held until the watcher's physical_retirement() releases it.
+            // Fresh removal review, Force and consent stay closed (zerus-1y897.8).
+            // Hold custody until the watcher proves physical retirement.
             job.lookup_only = true;
             let live = unconfirmed.held.is_some();
+            job.unconfirmed_stop = Some(super::stop_check::Unconfirmed {
+                original: unconfirmed.original,
+            });
             job.programs = unconfirmed.held;
-            (
-                zerus_client_core::source!(
-                    "The program stop is unconfirmed. Check the original result before continuing."
-                ),
-                live,
-            )
+            (unconfirmed_detail, live)
         }
     };
     for entry in &mut job.cleanup.entries {
@@ -633,6 +641,7 @@ pub(super) fn confirm_force(
         // A refused confirmation keeps the previous stop's custody, as a
         // stop: the offer itself is never confirmed again.
         Err((offer, _)) => Err(Unconfirmed {
+            original: None,
             held: Some(ProgramJob::Stopped(Box::new(offer.cancel()))),
         }),
     }
