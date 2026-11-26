@@ -1,3 +1,4 @@
+import { OutboxBody, OutboxHeader, OutboxScope } from "./OutboxMessage";
 import { earlierInputRefusal, EARLIER_INPUT_PENDING, sendErrorText } from "./send-error";
 import { OwnMessageBody } from "./OwnMessageBody";
 import { nativeRoute } from "./native-entry";
@@ -50,7 +51,7 @@ import { createOwnMessageNavigation, setOwnMessageNavigation } from "./own-messa
 export { Body } from "./MarkdownBody";
 import { activityAll, activityFlow, activityRange, measureActivityRows, activitySelectionIndexes, activitySelectionText, activityText, activityTexts, activityVirtualOffset, selectActivityAll, selectionCoversActivity } from "./activity-virtual";
 import { captionText, statusOf } from "./SessionCard";
-import type { ActivityItem, ItemAttachment, LocalItem, MediaMessage, Session, TranscriptItem } from "./types";
+import type { ActivityItem, ItemAttachment, LocalItem, MediaMessage, OutboxItem, Session, TranscriptItem } from "./types";
 import { lazyView } from "../lazy-view";
 import { LazyBoundary } from "../lazy-boundary";
 // The File reference dialog opens on demand, outside the entry chunk (zerus-ycycu).
@@ -658,19 +659,22 @@ function Item(props: {
       <ToolRow item={it} open={open()} onToggle={toggleOpen} shown={(index) => props.shown?.(index)}
         onMore={(index) => props.onMore?.(index)} process={props.process} />
     }>
-      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} classList={{ inherited: !!it.inherited }}>
+      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} classList={{ inherited: !!it.inherited, "act-outbox": !!it.outbox }}>
         <header>
           <b>{it.label ?? (it.kind === "user" ? tr("You") : it.kind === "agent" ? tr("Agent") : it.sender ?? "Zerus")}</b>
-          {/* A local row's stamp stands in for the time and the receipt (ActivityView.cpp:1053-1055). */}
-          <Show when={it.local} fallback={<span class="act-time">{it.at}</span>}>
-            {(l) => <span class="act-stamp" classList={{ failed: !!l().error || l().uncertain }}>{l().stamp}</span>}
-          </Show>
+          <Show when={it.outbox} fallback={
+            <Show when={it.local} fallback={<span class="act-time">{it.at}</span>}>
+              {(l) => <span class="act-stamp" classList={{ failed: !!l().error || l().uncertain }}>{l().stamp}</span>}
+            </Show>
+          }>{(queued) => <OutboxHeader item={queued()} />}</Show>
           <Show when={it.kind === "user" && it.receipt}><span class="act-receipt"><Show when={!it.receiptUnconfirmed}><Icon name="check" size={11} /></Show>{it.receipt}</span></Show>
           <span class="grow" />
           <Show when={it.kind === "agent" && !it.excerpt}><button class="icon-btn small act-copy" title={tr("Copy as Markdown")} onClick={() => copyText(it.body ?? "", tr("The reply is on the clipboard"))}><Icon name="copy" size={12} /></button></Show>
         </header>
         {/* A fork's inherited row belongs to its source: never this session's attachments. */}
-        <EchoBody item={it} scope={rowScope(it, props.scope)} />
+        <Show when={it.outbox} fallback={<EchoBody item={it} scope={rowScope(it, props.scope)} />}>
+          {(queued) => <OutboxBody item={queued()} />}
+        </Show>
       </article>
     </Show>
   );
@@ -796,6 +800,19 @@ export function ActivityView(props: { source?: ActivitySource }) {
   // Items keep their identity while events append, including across the virtual window.
   const [view, setView] = createStore<{ items: TranscriptItem[]; expired: boolean; loaded: boolean; pane: ReturnType<typeof paneStates>; tool: string }>({ items: [], expired: false, loaded: false, pane: paneStates(source(), s()), tool: "" });
   const local = createMemo(() => localRows(source(), s()), undefined, { equals: (a, b) => a === b || (a.length === 0 && b.length === 0) });
+  const outbox = createMemo((): readonly OutboxItem[] => {
+    const row = s(), view = composer.view();
+    if (!row || !view?.loaded || source().readOnly || row.state === "archived" || subagentOpen()
+      || view.subagent || source().target()?.id !== row.key) return [];
+    const key = draftKey({ computer: row.computer, key: row.catalogKey, name: row.name, session_id: row.sessionId ?? null, archive_id: null });
+    if (view.key !== key) return [];
+    return composer.waitingMessages().map((item) => ({
+      ...item,
+      handle: view.handle,
+      can_check_terminal: item.can_check_terminal === true && !!item.run_id && !!item.conversation_id
+        && item.run_id === row.runId && item.conversation_id === row.conversationId,
+    }));
+  });
   const project = createActivityProjections();
   const displayTarget = () => source().displayKey?.() ?? source().target()?.id;
   // The service's submitted question routes of the live local session, never
@@ -809,7 +826,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   }
   const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
     subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
-      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession()))));
+      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox()));
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;
@@ -1225,8 +1242,8 @@ export function ActivityView(props: { source?: ActivitySource }) {
     });
     onCleanup(() => cancelAnimationFrame(frame));
   });
-  createEffect(on(local, (rows) => {
-    const sends = newLocalSends(sendIds, rows.map((row) => row.id));
+  createEffect(on([local, outbox], ([rows, queued]) => {
+    const sends = newLocalSends(sendIds, [...rows.map((row) => row.id), ...queued.map((row) => row.request_id)]);
     sendIds = sends.baseline;
     if (sends.added.length) jumpToLatest();
   }));
@@ -1262,6 +1279,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const inboxScope = createInboxRemoveScope(inboxPorts);
   return (
     <InboxScope.Provider value={inboxScope}>
+    <OutboxScope.Provider value={{ rows: outbox, done: () => { focusTranscript(); } }}>
     <ActivitySession.Provider value={fileSession}>
     <ActivityLayoutHeld.Provider value={layoutHeld}>
     <div class="activity" style={{ position: "relative" }}>
@@ -1398,6 +1416,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     </div>
     </ActivityLayoutHeld.Provider>
     </ActivitySession.Provider>
+    </OutboxScope.Provider>
     </InboxScope.Provider>
   );
 }

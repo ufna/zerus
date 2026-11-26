@@ -31,7 +31,6 @@ import { jumpButton } from "./search-hit";
 import { OwnMessageNavigation } from "./OwnMessageNavigation";
 import type { ChipTone } from "../../types";
 import { tr } from "../../i18n";
-import { WaitingMessages } from "./WaitingMessages";
 import { CacheChip } from "./CacheChip";
 import { trText } from "../../text";
 import { machineCards } from "../../store/machines";
@@ -318,7 +317,6 @@ export function Composer() {
         </Show>
         <SessionUsageChip />
       </div>
-      <WaitingMessages />
       <VoicePreview voice={voice} />
       <TextArea ref={editor} historyKey={handedBack()} class="cmp-editor" hidden={!input()} style={{ height: `${editorHeight() * contentScale()}px` }} aria-label={tr("Message to selected agent")}
         placeholder={suggestion() || tr("Message this agent…")} readOnly={composer.locked()} disabled={!v()} value={composer.text()} title={editorTip()}

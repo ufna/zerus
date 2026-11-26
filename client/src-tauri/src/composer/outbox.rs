@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use tauri::State as TauriState;
 use tokio::sync::oneshot;
-use zerus_client_core::attachments::Draft;
+use zerus_client_core::attachments::{Attachment, AttachmentInfo, Draft};
 use zerus_client_core::drafts::outbox::{self, Entry, State};
 use zerus_client_core::send::{BlockFacts, block_reason};
 use zerus_client_core::{Action, Outcome, Target, ViewRow};
@@ -59,9 +59,13 @@ pub(super) enum ManualSend {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EntryView {
     pub request_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queued_at: Option<f64>,
     pub preview: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentInfo>,
     pub state: State,
     pub target_changed: bool,
     pub can_check_terminal: bool,
@@ -76,8 +80,18 @@ pub(super) fn view(
         .iter()
         .map(|entry| EntryView {
             request_id: entry.request_id.clone(),
+            run_id: entry.target.run_id.clone(),
+            conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at,
-            preview: entry.text.chars().take(140).collect(),
+            preview: {
+                let mut text = entry.text.trim().chars();
+                let mut preview: String = text.by_ref().take(240).collect();
+                if text.next().is_some() {
+                    preview.push('…');
+                }
+                preview
+            },
+            attachments: entry.attachments.iter().map(Attachment::info).collect(),
             state: entry.state,
             target_changed: entry.draft_key != key
                 || context.is_some_and(|ctx| {
@@ -587,10 +601,11 @@ impl Composers {
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
             });
+        let mut entries = c.outbox.clone();
         if exact {
-            c.outbox.remove(0);
+            entries.remove(0);
         } else {
-            c.outbox[0].state = if busy {
+            entries[0].state = if busy {
                 State::Waiting
             } else if matches!(outcome, Some(Outcome::Failed { .. })) {
                 State::Failed
@@ -600,7 +615,7 @@ impl Composers {
         }
         c.queue_writing = true;
         let me = self.clone();
-        self.0.store.save_outbox(&key, c.outbox.clone(), {
+        self.0.store.save_outbox(&key, entries.clone(), {
             let key = key.clone();
             move |saved| {
                 let mut hub = me.lock();
@@ -610,25 +625,25 @@ impl Composers {
                     .expect("queue write keeps the draft");
                 c.queue_writing = false;
                 if let Err(error) = saved {
+                    if exact {
+                        // The on-disk reservation is still held. A failed
+                        // write never makes an offered request eligible again.
+                        c.outbox[0].state = State::Unknown;
+                    } else {
+                        c.outbox = entries;
+                    }
                     c.storage_error = Some(error);
                 } else {
+                    // Publish the pending-to-sent handoff together. A
+                    // catalog update during the write keeps the head visible.
+                    c.outbox = entries;
                     c.queue_check_at = me.now() + CHECK_INTERVAL;
                     if exact {
-                        hub.local.sending(
+                        hub.local.sent_from_outbox(
                             &key,
-                            &entry.request_id,
-                            None,
-                            &entry.text,
-                            &[],
-                            &entry.target.run_id,
-                            &entry.target.conversation_id,
-                            me.now(),
-                            None,
-                        );
-                        hub.local.finished(
-                            &key,
-                            &entry.request_id,
+                            &entry,
                             outcome.as_ref().expect("submitted outcome"),
+                            me.now(),
                         );
                     }
                 }

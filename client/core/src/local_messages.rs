@@ -9,6 +9,7 @@
 //! and the voice composer's `messageChanged`).
 use crate::actions::Outcome;
 use crate::attachments::StoredFile;
+use crate::drafts::outbox::Entry;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -19,6 +20,8 @@ pub const MAX_PER_SESSION: usize = 50;
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
 pub const OPENCODE_SOURCE: &str = "opencode_native";
+/// An original durable FIFO request, which only an exact history receipt can join.
+const OUTBOX_SOURCE: &str = "zerus_outbox";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -232,14 +235,56 @@ impl LocalMessages {
         now: f64,
         source: Option<&str>,
     ) {
-        let attachments = files_value(files);
+        self.record_sending(
+            key,
+            request_id,
+            retry_id,
+            text,
+            files_value(files),
+            run_id,
+            conversation_id,
+            source,
+            now,
+        );
+    }
+
+    /// A submitted FIFO entry appears through the same outgoing row and
+    /// receipt projection as an ordinary message. Its file metadata comes
+    /// from the original entry. It has no editable-draft or cache path.
+    pub fn sent_from_outbox(&mut self, key: &str, entry: &Entry, outcome: &Outcome, now: f64) {
+        let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
+        self.record_sending(
+            key,
+            &entry.request_id,
+            None,
+            &entry.text,
+            files,
+            &entry.target.run_id,
+            &entry.target.conversation_id,
+            Some(OUTBOX_SOURCE),
+            now,
+        );
+        self.finished(key, &entry.request_id, outcome);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_sending(
+        &mut self,
+        key: &str,
+        request_id: &str,
+        retry_id: Option<&str>,
+        text: &str,
+        attachments: Vec<Value>,
+        run_id: &str,
+        conversation_id: &str,
+        source: Option<&str>,
+        now: f64,
+    ) {
         let rows = self.rows.entry(key.to_owned()).or_default();
         rows.retain(|row| {
             !(row.status == Status::Error
                 && (Some(row.id.as_str()) == retry_id
-                    || (source != Some(OPENCODE_SOURCE)
-                        && row.text == text
-                        && row.attachments == attachments)))
+                    || (source.is_none() && row.text == text && row.attachments == attachments)))
         });
         rows.push(LocalMessage {
             id: request_id.into(),
@@ -426,6 +471,16 @@ impl LocalMessages {
             if listed("attachment_messages", &row.message_id) {
                 result.removed += 1;
                 return false;
+            }
+            if row.source.as_deref() == Some(OUTBOX_SOURCE) {
+                let shown = events.iter().any(|event| {
+                    event["type"] == "UserPromptSubmit" && event["source"] == "hgs_delivery"
+                        && event["message_id"] == row.id
+                        && event.get("run_id").is_none_or(|value| *value == row.run_id)
+                        && event.get("conversation_id").is_none_or(|value| *value == row.conversation_id)
+                });
+                result.removed += usize::from(shown);
+                return !shown;
             }
             // A file card stays until the durable attachment metadata arrives.
             if !row.attachments.is_empty() {

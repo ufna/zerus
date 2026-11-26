@@ -640,6 +640,95 @@ fn a_definite_refusal_or_unmatched_receipt_keeps_the_original_and_later_draft() 
 }
 
 #[test]
+fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_metadata() {
+    use crate::composer::send::tests::{held_spawn, next_job};
+
+    let root = dir("outbox-activity-settlement");
+    let store = drafts(&root);
+    let (spawn, jobs) = held_spawn();
+    let (c, fake) = send_hub_with(&store, spawn);
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    let path = root.join("fixture.txt");
+    std::fs::write(&path, b"queued file").unwrap();
+    c.attach_paths(view.handle, vec![path], Default::default());
+    next_job(&jobs)();
+    let draft = until(&c, |view| view.attachments.len() == 1);
+    let queued = enqueue(&c, &draft.text);
+    let original = &queued.waiting_in_zerus[0];
+    assert_eq!(original.attachments[0].name, "fixture.txt");
+    assert_eq!(original.attachments[0].bytes, 11);
+    let projected = serde_json::to_value(original).unwrap();
+    assert!(projected["attachments"][0].get("data_base64").is_none());
+    assert!(projected["attachments"][0].get("path").is_none());
+
+    lock(&fake.row).phase = Some("idle".into());
+    *lock(&fake.inspected) = Some(details(&session, "codex", false, Some(false)));
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
+        receipt: json!({"status": "submitted", "request_id": request, "name": name,
+            "run_id": "run-1", "conversation_id": "conv-1", "submitted_at": 1_793_000_104.5}),
+        cleanup: None,
+    });
+    c.tick_outbox(1_793_000_104.0);
+    next_job(&jobs)();
+    store.flush();
+    let release = hold(&store);
+    next_job(&jobs)();
+    let writing = c.current().unwrap();
+    assert!(writing.local.is_empty());
+    assert_eq!(writing.waiting_in_zerus[0].state, State::Reserved);
+    assert_eq!(writing.waiting_in_zerus[0].request_id, original.request_id);
+
+    release.send(()).unwrap();
+    store.flush();
+    let sent = c.current().unwrap();
+    assert!(sent.waiting_in_zerus.is_empty());
+    assert_eq!(sent.local.len(), 1);
+    assert_eq!(sent.local[0].id, original.request_id);
+    assert_eq!(sent.local[0].attachments[0]["name"], "fixture.txt");
+    assert_eq!(sent.local[0].attachments[0]["request_id"], original.request_id);
+    assert!(sent.local[0].attachments[0].get("local_path").is_none());
+    assert_eq!(sent.local[0].submitted_at, 1_793_000_104.5);
+}
+
+#[test]
+fn a_submitted_text_only_outbox_row_waits_for_exact_history_identity() {
+    let root = dir("outbox-equal-text-history");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    present(&c, &fake, &session, "codex");
+    let text = "equal text sent on an earlier turn too";
+    let view = enqueue(&c, text);
+    let id = view.waiting_in_zerus[0].request_id.clone();
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
+        receipt: json!({"status": "submitted", "request_id": request, "name": name,
+            "run_id": "run-1", "conversation_id": "conv-1", "submitted_at": 1_793_000_104.5}),
+        cleanup: None,
+    });
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(&c, &fake, &store, details(&session, "codex", false, Some(false)));
+    let sent = until(&c, |view| view.waiting_in_zerus.is_empty() && view.local.len() == 1);
+    let same_text = json!({"type": "UserPromptSubmit", "detail": text, "seq": 41, "at": 1_793_000_103.5});
+    let session_details = details(&session, "codex", false, Some(false));
+    let mut hub = c.lock();
+    let ignored = hub.local.reconcile(&sent.key, &session_details, std::slice::from_ref(&same_text));
+    assert_eq!(ignored.removed, 0, "an earlier equal-text prompt is not the FIFO receipt");
+    assert_eq!(hub.local.rows(&sent.key)[0].id, id);
+    assert_eq!(hub.local.rows(&sent.key)[0].source.as_deref(), Some("zerus_outbox"));
+
+    let mut exact = same_text;
+    exact["source"] = json!("hgs_delivery");
+    exact["message_id"] = json!(id);
+    exact["run_id"] = json!("unrelated-run");
+    assert_eq!(hub.local.reconcile(&sent.key, &session_details, std::slice::from_ref(&exact)).removed, 0);
+    exact["run_id"] = json!("run-1");
+    assert_eq!(hub.local.reconcile(&sent.key, &session_details, &[exact]).removed, 1);
+}
+
+#[test]
 fn acknowledgement_loss_on_enqueue_cannot_duplicate_a_saved_message_or_its_files() {
     let root = dir("outbox-lost-ack-files");
     let store = drafts(&root);

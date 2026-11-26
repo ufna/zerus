@@ -38,6 +38,7 @@ vi.mock("../../bridge", async (original) => {
   return {
     ...bridge,
     composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
+    composerRemoveWaiting: withDesktop(bridge.composerRemoveWaiting),
     runAction: withDesktop(bridge.runAction),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
     localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
@@ -403,6 +404,9 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
 
 it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in %s", async (lang) => {
   transport.language = lang;
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
   const row = { ...fixtureRow("Busy fixture"), status: "working", caption: "Busy" };
   const key = draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name,
     session_id: row.session_id, archive_id: null });
@@ -420,11 +424,21 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   };
   vi.mocked(bridge.composerOpen).mockImplementation(async (s) => s?.key === `run:${row.run_id}` ? initial : null);
   const commands: string[] = [];
+  const removals: Array<Record<string, unknown> | undefined> = [];
+  let removedView: ComposerView | undefined;
   const localQueue: NonNullable<ComposerView["waiting_in_zerus"]> = [];
   transport.composer = (name, args) => {
     commands.push(name);
+    if (name === "composer_remove_waiting") {
+      removals.push(args);
+      return removedView;
+    }
     if (name !== "send_message") return undefined;
-    localQueue.push({ request_id: uuid(99000 + localQueue.length), preview: String(args?.text), state: "waiting" });
+    const index = localQueue.length;
+    localQueue.push({ request_id: uuid(99000 + index), preview: String(args?.text), state: "waiting",
+      run_id: row.run_id!, conversation_id: row.conversation_id!,
+      queued_at: index < 2 ? new Date(2026, 10, 26, 14, 8, 9 + index).getTime() / 1000 : undefined,
+      attachments: index === 0 ? [{ name: "queue-fixture.txt", mime: "text/plain", reference: "", bytes: 9 }] : [] });
     return { kind: "accepted", waiting: true, view: { ...initial,
       rev: Number(args?.rev), text_epoch: Number(args?.epoch) + 1, waiting_in_zerus: [...localQueue] } };
   };
@@ -463,17 +477,86 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   expect(commands.filter(name => name === "send_message")).toHaveLength(3);
   expect(commands).not.toContain("composer_enqueue");
   expect(commands).not.toContain("queue_send_now");
-  expect(host.querySelector(".cmp-draft-status summary")?.textContent).toBe(lang === "ru" ? "Ждут отправки в Zerus (3)" : "Waiting in Zerus (3)");
+  const waitingRows = () => [...host.querySelectorAll(".act-scroll article.act-outbox")];
+  const visibleOrder = () => waitingRows().map(item => item.id);
+  await vi.waitFor(() => expect(waitingRows()).toHaveLength(3));
+  expect(visibleOrder()).toEqual(localQueue.map(item => `item-local-${item.request_id}`));
+  expect(waitingRows().map(item => item.querySelector(".act-outbox-preview")?.textContent)).toEqual(["same", "same", "third"]);
+  expect(waitingRows()[0].querySelector(".act-outbox-files")?.textContent).toContain("queue-fixture.txt");
+  const firstTime = waitingRows()[0].querySelector("time")!;
+  expect(firstTime.dateTime).toBe(new Date(localQueue[0].queued_at! * 1000).toISOString());
+  expect(firstTime.textContent).toContain("14:08:09");
+  expect(waitingRows()[1].querySelector("time")?.textContent).toContain("14:08:10");
+  expect(waitingRows()[2].querySelector("time")).toBeNull();
+  expect(waitingRows()[0].querySelector(".act-stamp")?.textContent?.trim()).toBe(lang === "ru" ? "В очереди Zerus" : "Queued in Zerus");
+  expect(host.querySelector(".cmp-draft-status summary")).toBeNull();
   expect(host.querySelector(".cmp-hint")?.textContent).toBe(lang === "ru" ? "Поставлено в очередь Zerus." : "Queued in Zerus.");
-  receive({ ...emptyBatch(), composer: { ...initial, text_epoch: 5, waiting_in_zerus: [
-    { ...localQueue[0], state: "unknown", can_check_terminal: true }, ...localQueue.slice(1),
-  ] } });
-  host.querySelector<HTMLDetailsElement>(".cmp-draft-status")!.open = true;
-  const check = [...host.querySelectorAll("button")].find(button => button.textContent?.trim() === labels.check);
+
+  editor().value = "fourth draft still editable";
+  editor().dispatchEvent(new Event("input", { bubbles: true }));
+  const confirmed: LocalMessage = {
+    id: localQueue[0].request_id, text: "same", status: "sent", attachments: localQueue[0].attachments ?? [],
+    run_id: row.run_id!, conversation_id: row.conversation_id!, submitted_at: localQueue[0].queued_at! + 5,
+    error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: "zerus_outbox", voice: null,
+  };
+  const firstId = waitingRows()[0].id;
+  const staged = { ...initial, text_epoch: 4, waiting_in_zerus: localQueue.slice(1), local: [confirmed] };
+  receive({ ...emptyBatch(), composer: staged });
+  await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  const sent = [...host.querySelectorAll(".act-scroll article")].filter(item => item.id === firstId);
+  expect(sent).toHaveLength(1);
+  expect(sent[0].classList.contains("act-outbox")).toBe(false);
+  expect(sent[0].textContent).toContain("queue-fixture.txt");
+  expect(editor().value).toBe("fourth draft still editable");
+  expect(editor().readOnly).toBe(false);
+
+  const held = { ...staged, waiting_in_zerus: [
+    { ...localQueue[1], state: "unknown" as const, can_check_terminal: true }, localQueue[2],
+  ] };
+  receive({ ...emptyBatch(), composer: held });
+  const removeButton = () => waitingRows().at(-1)?.querySelector<HTMLButtonElement>(".act-outbox-actions .icon-btn");
+  const confirm = () => host.querySelector<HTMLButtonElement>(".act-outbox-confirm button:last-child");
+  removeButton()!.click();
+  const staleConfirmation = confirm()!;
+  expect(staleConfirmation).not.toBeNull();
+
+  const other = fixtureRow("Other session");
+  const otherKey = draftKey({ computer: "", key: `run:${other.run_id}`, name: other.name,
+    session_id: other.session_id, archive_id: null });
+  const reopened = { ...held, handle: held.handle + 2, text: "fourth draft still editable" };
+  vi.mocked(bridge.composerOpen).mockImplementation(async (selection) =>
+    selection?.key === `run:${row.run_id}` ? reopened
+      : selection?.key === `run:${other.run_id}` ? { ...initial, handle: initial.handle + 1, key: otherKey } : null);
+  await open(other);
+  expect(waitingRows()).toHaveLength(0);
+  expect(confirm()).toBeNull();
+  staleConfirmation.click();
+  expect(removals).toHaveLength(0);
+
+  await open(row);
+  await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  expect(confirm()).toBeNull();
+  expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`));
+  removeButton()!.click();
+  expect(confirm()).not.toBeNull();
+  removedView = { ...reopened, waiting_in_zerus: [reopened.waiting_in_zerus[0]] };
+  confirm()!.click();
+  await vi.waitFor(() => expect(waitingRows()).toHaveLength(1));
+  expect(removals).toEqual([{ handle: reopened.handle, request_id: localQueue[2].request_id }]);
+  expect(editor().value).toBe("fourth draft still editable");
+  const checkTerminal = () => [...host.querySelectorAll<HTMLButtonElement>(".act-scroll button")]
+    .find(button => button.textContent?.trim() === labels.check);
+  put({ ...row, conversation_id: "successor-conversation" });
+  await vi.waitFor(() => expect(checkTerminal()).toBeUndefined());
+  await open(row);
+  await vi.waitFor(() => expect(checkTerminal()).toBeDefined());
+  const check = checkTerminal();
   expect(check).toBeDefined();
+  expect(waitingRows()[0].querySelector(".act-stamp")?.textContent?.trim()).toBe(labels.notConfirmed);
   check!.click();
   await vi.waitFor(() => expect(detailTab()).toBe("terminal"));
   expect(commands.filter(name => name === "send_message")).toHaveLength(3);
+
 });
 
 const submissionLifecycleCases = [

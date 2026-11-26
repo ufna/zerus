@@ -931,9 +931,14 @@ export type InboxRemoveReply = { outcome: "removed" | "changed" | "busy" } | { o
 export interface HeldMessageView { request_id: string; text: string; attachments: string[] }
 export interface WaitingMessage {
   request_id: string;
+  /** Original route, retained while another run or conversation is selected. */
+  run_id?: string;
+  conversation_id?: string;
   /** Unix seconds from the original desktop enqueue. */
   queued_at?: number;
   preview: string;
+  /** Metadata only. Waiting file bytes never leave the native outbox. */
+  attachments?: Pick<AttachmentView, "name" | "mime" | "reference" | "bytes">[];
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
   can_check_terminal?: boolean;

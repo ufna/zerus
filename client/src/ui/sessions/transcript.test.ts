@@ -647,3 +647,37 @@ describe("tool rows (ActivityView.cpp:1105-1140, zerus-5wmh.13.8.1)", () => {
     expect(performance.now() - started).toBeLessThan(2000);
   });
 });
+
+
+it("keeps equal queued texts distinct and hands one exact receipt to the same Activity key", () => {
+  const rows = createTranscriptProjection();
+  const one = { request_id: "queue-one", handle: 4, preview: "same text", state: "unknown", queued_at: 200 } as const;
+  const two = { ...one, request_id: "queue-two", state: "waiting", queued_at: 199 } as const;
+  const ordinary = { type: "UserPromptSubmit", detail: "same text", seq: 1, at: 150 };
+  const receipt = { ...ordinary, seq: 2, at: 205, source: "hgs_delivery", message_id: one.request_id };
+  const now = rows.build([ordinary, receipt], undefined, [], [], [one, two]);
+  expect(now.map(item => item.id)).toEqual(["s1", "local-queue-one", "local-queue-two"]);
+  expect(now[1]).toMatchObject({ outbox: { state: "unknown" } });
+  const settled = rows.build([ordinary, receipt], undefined, [], [], [two]);
+  expect(settled.map(item => item.id)).toEqual(now.map(item => item.id));
+  expect(settled[1]).toMatchObject({ kind: "user", body: "same text", receipt: "Sent" });
+  expect(settled[1]).not.toHaveProperty("outbox");
+  rows.reset();
+  expect(rows.build([receipt]).map(item => item.id)).not.toContain("local-queue-one");
+});
+
+
+it("does not give an earlier equal-text native prompt the later FIFO request's identity", () => {
+  const projection = createTranscriptProjection();
+  const pending = { request_id: "request-b", handle: 9, preview: "repeat", state: "reserved", queued_at: 5000 } as const;
+  const earlier = { seq: 41, type: "UserPromptSubmit", source: "codex_transcript", detail: "repeat", at: 5000 };
+  const submitted = local("sent", false, { id: pending.request_id, source: "zerus_outbox",
+    text: "repeat", submitted_at: 5001, message_id: pending.request_id });
+  const ids = (items: ReturnType<typeof projection.build>) => items.map(item => item.id);
+  expect(ids(projection.build([earlier], undefined, [], [], [pending]))).toEqual(["s41", "local-request-b"]);
+  expect(ids(projection.build([earlier], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
+  const late = { ...earlier, seq: 42, at: 5002 };
+  expect(ids(projection.build([earlier, late], undefined, [submitted]))).toEqual(["s41", "local-request-b", "s42"]);
+  const exact = { ...late, source: "hgs_delivery", message_id: submitted.id };
+  expect(ids(projection.build([earlier, exact], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
+});

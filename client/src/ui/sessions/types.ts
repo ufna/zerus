@@ -234,6 +234,9 @@ export interface LocalItem {
   available: boolean[];
 }
 
+/** The open composer that owns the exact queued request's actions. */
+export type OutboxItem = import("../../types").WaitingMessage & { handle: number };
+
 export interface InboxItem {
   state: "queued" | "not_delivered";
   messageId: string;
@@ -295,6 +298,7 @@ export interface ActivityItem {
   label?: string;
   /** A local message row (this app's send) and its buttons. */
   local?: LocalItem;
+  outbox?: OutboxItem;
   /** An OpenCode inbox message (ActivityView.cpp:1036-1087): its native id, the run and conversation it was shown under, and whether the session offers Remove for it. */
   inbox?: InboxItem;
   /** Codex question replies the message holds, shown as Question and Your answer blocks (ActivityView.cpp:347-363). */
