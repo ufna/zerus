@@ -3,6 +3,8 @@ use crate::platform::ExitInfo;
 use std::time::{Duration, Instant};
 
 mod archive_source;
+#[cfg(target_os = "linux")]
+pub(super) mod native;
 
 fn required_env(name: &str) -> Result<String> {
     nonempty_env(name).ok_or_else(|| format!("missing {name} in tracked agent launch"))
@@ -539,7 +541,13 @@ pub(super) fn pausable(record: &Value, resumed_idle: impl FnOnce() -> bool) -> b
             || resumed_idle())
 }
 
-fn pause_check(name: &str, snapshot: &Snapshot) -> Result<Value> {
+struct PauseTarget {
+    record: Value,
+    #[cfg(target_os = "linux")]
+    witness: Option<super::native_launch::Witness>,
+}
+
+fn pause_check(name: &str, snapshot: &Snapshot, _explicit: bool) -> Result<PauseTarget> {
     let record = read(name)?;
     terminating::check_mutation(&record)?;
     if !matches(&record, panes_of(snapshot, &record)) {
@@ -555,11 +563,26 @@ fn pause_check(name: &str, snapshot: &Snapshot) -> Result<Value> {
             "{name}: agent is busy or unconfirmed; wait for its answer before pausing"
         ));
     }
-    if !process_alive(&record) {
+    let legacy_alive = process_alive(&record);
+    #[cfg(target_os = "linux")]
+    let witness = if !legacy_alive && _explicit {
+        native::observe(&record, native::Operation::Pause)
+    } else {
+        None
+    };
+    #[cfg(target_os = "linux")]
+    let alive = legacy_alive || witness.is_some();
+    #[cfg(not(target_os = "linux"))]
+    let alive = legacy_alive;
+    if !alive {
         return Err(format!("{name}: tracked process is no longer present"));
     }
     pause_recipe(&record)?;
-    Ok(record)
+    Ok(PauseTarget {
+        record,
+        #[cfg(target_os = "linux")]
+        witness,
+    })
 }
 
 fn pause_recipe(record: &Value) -> Result<()> {
@@ -627,17 +650,29 @@ pub(super) fn unconfirmed_fresh(record: &Value) -> bool {
         })
 }
 
-fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()> {
+fn pause_one(target: &mut PauseTarget, scope: Option<&session_action::Scope>) -> Result<()> {
+    let record = &target.record;
+    #[cfg(target_os = "linux")]
+    let original = target.witness.take().map(native::Original::pin).transpose()?;
     let name = string(record, "name");
     {
         let _guard = lock(None)?;
         let current = read(name)?;
         terminating::check_mutation(&current)?;
         if let Some(scope)=scope {scope.check(&current)?;}
+        #[cfg(target_os = "linux")]
+        let alive = if let Some(original) = &original {
+            original.recheck(&current, native::Operation::Pause, Some(&record["pausing"]))?;
+            true
+        } else {
+            process_alive(&current)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let alive = process_alive(&current);
         if current["run_id"] != record["run_id"]
             || !safe_to_pause(&current)
             || !matches(&current, panes_of(&live()?, record))
-            || !process_alive(&current)
+            || !alive
         {
             return Err("session changed while pausing".into());
         }
@@ -651,6 +686,14 @@ fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()
         // Windows the pane's supervisor raises Ctrl+Break for the group it
         // shares with this agent, as spec D11 decides.
         if let Some(scope)=scope {scope.changing();}
+        #[cfg(target_os = "linux")]
+        if let Some(original) = &original {
+            original.check_terminal(crate::platform::ProcessState::Running)?;
+            original.request_exit()?;
+        } else {
+            backend::current().request_exit(string(&current, "pane"), pid as u32)?;
+        }
+        #[cfg(not(target_os = "linux"))]
         backend::current().request_exit(string(&current, "pane"), pid as u32)?;
     }
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -658,16 +701,20 @@ fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()
         let snapshot = live()?;
         // The terminal the pause checked, never another under the label.
         let panes = panes_of(&snapshot, record);
-        if panes.is_none()
+        let terminal_ended = panes.is_none()
             || panes
                 .map(|panes| {
                     panes.len() == 1 && panes[0].0 == string(record, "pane") && panes[0].1 == "1"
                 })
-                .unwrap_or(false)
-        {
+                .unwrap_or(false);
+        #[cfg(target_os = "linux")]
+        let exited = original.as_ref().map_or(Ok(true), native::Original::child_exited)?;
+        #[cfg(not(target_os = "linux"))]
+        let exited = true;
+        if terminal_ended && exited {
             break panes.is_some();
         }
-        if !matches(record, panes) {
+        if !terminal_ended && !matches(record, panes) {
             return Err("session changed while pausing".into());
         }
         if Instant::now() >= deadline {
@@ -701,7 +748,14 @@ fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()
             })
             .unwrap_or(false)
         {
-            backend::current().kill_pane(string(record, "pane"))?;
+            let kill_legacy_pane = || backend::current().kill_pane(string(record, "pane"));
+            #[cfg(target_os = "linux")]
+            match &original {
+                Some(original) => original.close_dead_pane(record),
+                None => kill_legacy_pane(),
+            }?;
+            #[cfg(not(target_os = "linux"))]
+            kill_legacy_pane()?;
         }
     }
     if let Some(scope)=scope {scope.result(name,string(record,"run_id"),string(record,"conversation_id"),None);} else {println!("hgs: paused {name}");}
@@ -712,6 +766,9 @@ pub(super) fn pause(names: &[String], dry: bool) -> Result<i32> { pause_scoped(n
 
 pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     let snapshot = live()?;
+    // Verified Pause requires the initiating run and conversation. An ID-only
+    // command could select a newer run after a same-session relaunch.
+    let explicit = scope.is_some() && names.len() == 1 && names != ["--all"];
     // `--all` is every session whose own terminal is live (P3b): a terminal
     // with no record is not a session to pause.
     let names: Vec<String> = if names == ["--all"] {
@@ -726,12 +783,13 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
     } else {
         names.to_vec()
     };
-    let mut saved: Vec<Value> = names
+    let mut saved: Vec<PauseTarget> = names
         .iter()
-        .map(|name| pause_check(name, &snapshot))
+        .map(|name| pause_check(name, &snapshot, explicit))
         .collect::<Result<_>>()?;
     if dry {
-        for record in &saved {
+        for target in &saved {
+            let record = &target.record;
             println!(
                 "hgs: would pause {} ({})",
                 string(record, "name"),
@@ -743,7 +801,8 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
     let owner = json!({"pid": std::process::id(), "start": process_start(std::process::id())});
     {
         let _guard = lock(None)?;
-        for record in &saved {
+        for target in &saved {
+            let record = &target.record;
             let current = read(string(record, "name"))?;
             terminating::check_mutation(&current)?;
             if let Some(scope)=scope {scope.check(&current)?;}
@@ -753,17 +812,26 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
                     string(record, "name")
                 ));
             }
+            #[cfg(target_os = "linux")]
+            if let Some(witness) = &target.witness {
+                if native::observe(&current, native::Operation::Pause).as_ref() != Some(witness) {
+                    return Err("Session changed while checking; retry pause".into());
+                }
+            }
         }
-        for record in &mut saved {
+        for target in &mut saved {
+            let record = &mut target.record;
             if let Some(scope)=scope {scope.changing();}
             record["pausing"] = owner.clone();
             write(record)?;
         }
     }
     let mut failures = Vec::new();
-    for record in &saved {
+    for target in &mut saved {
+        let result = pause_one(target, scope);
+        let record = &target.record;
         let name = string(record, "name");
-        if let Err(error) = pause_one(record, scope) {
+        if let Err(error) = result {
             failures.push(format!("{name}: {error}"));
         }
         let cleanup: Result<()> = (|| {

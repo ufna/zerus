@@ -12,7 +12,7 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
         }
         _ => return Err("usage: hgs terminate <session> [--expected-run-id ID]".into()),
     };
-    let original = {
+    let (original, verified, had_terminal) = {
         let _guard = lock(None)?;
         let record = read(name)?;
         terminating::check_mutation(&record)?;
@@ -27,6 +27,20 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
         // The session's own terminal (P3b), never another under its label;
         // a terminal another session's launch holds is not this session's.
         let own = terminal_live(&snapshot, &record)?;
+        #[cfg(target_os = "linux")]
+        let verified = if own && scope.is_some() && !forget && record["agent"] == "codex"
+            && record["run_identity_version"] == 1 && !process_alive(&record)
+        {
+            // Original process exit alone cannot identify the currently
+            // hosted pane. tmux can respawn it under the same ID and run.
+            let witness = lifecycle::native::observe(&record, lifecycle::native::Operation::Terminate)
+                .ok_or("Could not verify the exact session processes; terminal kept")?;
+            Some(lifecycle::native::Original::pin(witness)?)
+        } else {
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
+        let verified = ();
         if let Some(panes) = panes_of(&snapshot, &record).filter(|_| own) {
             if panes.len() != 1
                 || panes[0].0 != string(&record, "pane")
@@ -35,13 +49,19 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
             {
                 return Err("session terminal identity changed; refresh before terminating".into());
             }
-            let target = backend::current()
-                .pane_info(
+            let resolve_terminal = || {
+                backend::current().pane_info(
                     backend::Target::Pane(string(&record, "pane")),
                     &[backend::PaneField::SessionId],
-                )?
-                .value()
-                .to_owned();
+                ).map(|info| info.value().to_owned())
+            };
+            #[cfg(target_os = "linux")]
+            let target = match &verified {
+                Some(original) => original.terminal_session_id().to_owned(),
+                None => resolve_terminal()?,
+            };
+            #[cfg(not(target_os = "linux"))]
+            let target = resolve_terminal()?;
             if !target
                 .strip_prefix('$')
                 .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
@@ -52,21 +72,36 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
                 // Pin the tmux instance, never resolve a reusable name a second time.
                 // The writer lock prevents a concurrent HGS rename/relaunch here.
                 if let Some(scope)=scope {scope.changing();}
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                #[cfg(target_os = "linux")]
+                let owned = match &verified {
+                    Some(original) => processes::Termination::prepare_verified(&record, original).map(Some),
+                    None => processes::Termination::prepare(&record),
+                }.map_err(|error| format!("Could not verify session processes; terminal kept: {error}"))?;
+                #[cfg(target_os = "macos")]
                 let owned = processes::Termination::prepare(&record)
                     .map_err(|error| format!("Could not verify session processes; terminal kept: {error}"))?;
+                #[cfg(target_os = "linux")]
+                if let Some(original) = &verified {
+                    original.kill_terminal(&record)?;
+                } else {
+                    backend::current().kill_session(backend::Target::Session(&target))?;
+                }
+                #[cfg(not(target_os = "linux"))]
                 backend::current().kill_session(backend::Target::Session(&target))?;
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 if let Some(owned) = owned { owned.finish()
                     .map_err(|error| format!("Terminal closed, but process shutdown was not confirmed; worktree kept: {error}"))?; }
             }
-        } else if process_alive(&record) {
-            return Err(
-                "tracked agent is running without its expected terminal; no process was stopped"
-                    .into(),
-            );
+        } else {
+            if process_alive(&record) {
+                return Err(
+                    "tracked agent is running without its expected terminal; no process was stopped"
+                        .into(),
+                );
+            }
+            require_exit_without_terminal(&record, scope, forget)?;
         }
-        record
+        (record, verified, own)
     };
     if dry {
         println!("hgs: would terminate and archive {name}");
@@ -77,7 +112,7 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
     // A Windows session host first pauses the agent for up to 10 s, then closes
     // its console, which leaves another 5 s (spec D11).
     let deadline = Instant::now() + Duration::from_secs(if cfg!(windows) { 20 } else { 10 });
-    while process_alive(&original) {
+    while termination_pending(&original, &verified)? {
         if Instant::now() >= deadline {
             return Err(
                 "terminal closed, but the agent has not exited; its saved binding was kept".into(),
@@ -158,6 +193,9 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
     if terminal_live(&live()?, &record)? || process_alive(&record) {
         return Err("session is still running; its saved binding was kept".into());
     }
+    if !had_terminal {
+        require_exit_without_terminal(&record, scope, forget)?;
+    }
     if let Some(scope)=scope {scope.changing();}
     if forget {
         storage::remove_record(&record)?;
@@ -172,6 +210,43 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
     super::worktree_lifecycle::after_archive(&record, &id);
     if let Some(scope)=scope {scope.result_record(&archived);} else {println!("hgs: terminated and archived {name} ({id})");}
     Ok(0)
+}
+
+#[cfg(target_os = "linux")]
+fn termination_pending(record: &Value, original: &Option<lifecycle::native::Original>) -> Result<bool> {
+    original.as_ref().map_or_else(|| Ok(process_alive(record)), |pin| pin.child_exited().map(|exited| !exited))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn termination_pending(record: &Value, _: &()) -> Result<bool> {
+    Ok(process_alive(record))
+}
+
+fn require_exit_without_terminal(record: &Value, scope: Option<&session_action::Scope>, forget: bool) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // A running-row confirmation with a missing terminal may have lost
+        // its original pane without either recorded process exiting. A wall
+        // stamp mismatch, unavailable launch pin or occupied PID proves no
+        // exit here. The exact, already-ended binding remains archivable.
+        if scope.is_some() && !forget && record["agent"] == "codex"
+            && record["run_identity_version"] == 1
+        {
+            use crate::platform::ProcessState::Exited;
+            let exited = process_index_writer::original_pin(record).is_some_and(|pin| {
+                [pin.child.pid, pin.supervisor.pid].into_iter()
+                    .all(|pid| crate::platform::process_state(pid, None) == Ok(Exited))
+            });
+            if !exited {
+                return Err("Could not confirm the original session exited without its terminal; binding kept".into());
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (record, scope, forget);
+    }
+    Ok(())
 }
 
 /// Whether `snapshot` still lists the terminal `terminal` with a pane of run

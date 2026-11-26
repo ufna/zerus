@@ -85,19 +85,39 @@ pub(super) fn hold(args: &[String]) -> Result<i32> {
     holding::run(args)
 }
 
-fn original(capture: &Capture) -> Result<Value> {
+struct Original {
+    record: Value,
+    #[cfg(target_os = "linux")]
+    witness: Option<super::native_launch::Witness>,
+}
+
+fn original(capture: &Capture) -> Result<Original> {
     let record = read_bounded(&capture.target.name, 1 << 20)?;
     if record["name"] != capture.target.name
         || record["run_id"] != capture.target.run_id
         || record["conversation_id"] != capture.target.conversation_id
-        || !process_alive(&record)
         || record["worktree_owner"]["id"] != capture.owner_id
         || record["worktree_owner"]["path"] != capture.root
         || record["worktree_owner"]["common_dir"] != capture.common_dir
     {
         return Err(INVALID.into());
     }
-    Ok(record)
+    let legacy_alive = process_alive(&record);
+    #[cfg(target_os = "linux")]
+    let witness = if legacy_alive {
+        None
+    } else {
+        Some(lifecycle::native::observe(&record, lifecycle::native::Operation::Terminate).ok_or(INVALID)?)
+    };
+    #[cfg(not(target_os = "linux"))]
+    if !legacy_alive {
+        return Err(INVALID.into());
+    }
+    Ok(Original {
+        record,
+        #[cfg(target_os = "linux")]
+        witness,
+    })
 }
 
 fn owner(capture: &Capture) -> Result<Value> {
@@ -200,9 +220,9 @@ fn discover_presented(
     let configuration = zerus_desktop_migration::configuration(&config.state, &config.dir)
         .map_err(|e| e.to_string())?;
     let boot = boot()?;
-    let record = original(&capture)?;
+    let original_record = original(&capture)?;
     let ownership = owner(&capture)?;
-    if record["worktree_owner"] != ownership {
+    if original_record.record["worktree_owner"] != ownership {
         return Err(INVALID.into());
     }
     let scope = Scope::open(Path::new(&capture.root), deadline).map_err(|e| e.to_string())?;
@@ -221,9 +241,13 @@ fn discover_presented(
     }
     // Optional PRESENTATION sampling shares the original discovery budget and
     // brackets its existing census. It never changes membership or authority.
-    let pair = present
-        .then(|| presentation::Pair::before(&record, deadline))
-        .flatten();
+    let pair = present.then(|| {
+        #[cfg(target_os = "linux")]
+        if let Some(witness) = &original_record.witness {
+            return presentation::Pair::before_verified(&original_record.record, deadline, witness);
+        }
+        presentation::Pair::before(&original_record.record, deadline)
+    }).flatten();
     let programs = worktree_membership::programs(&scope, deadline).map_err(|e| e.to_string())?;
     let manifest = wire::Manifest {
         abi: wire::ABI.into(),
@@ -239,13 +263,17 @@ fn discover_presented(
     // No discovery result is published after expiry, ownership replacement,
     // a new original run/conversation, or a changed native checkout object.
     let current_record = original(&manifest.capture)?;
-    if current_record["worktree_owner"] != ownership
+    if current_record.record["worktree_owner"] != ownership
         || owner(&manifest.capture)? != ownership
         || !manifest.valid(now() as u64)
     {
         return Err(INVALID.into());
     }
-    let display = pair.and_then(|pair| pair.finish(&current_record, &manifest, deadline));
+    #[cfg(target_os = "linux")]
+    if current_record.witness != original_record.witness {
+        return Err(INVALID.into());
+    }
+    let display = pair.and_then(|pair| pair.finish(&current_record.record, &manifest, deadline));
     scope.current(deadline).map_err(|e| e.to_string())?;
     Ok((manifest, scope, display))
 }

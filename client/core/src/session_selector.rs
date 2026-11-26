@@ -4,7 +4,7 @@
 //! acts only while the name still belongs to that session. Reads, polls,
 //! history, status, watch, terminal input and read marks keep their name and
 //! run form until an O(1) label index exists.
-use crate::actions::{invocation, prepend_alias, Action, Exit, Invocation, Target};
+use crate::actions::{Action, Exit, Invocation, Target, invocation, prepend_alias};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -89,9 +89,21 @@ pub fn selected_invocation(
     request_id: &str,
     session_id: Option<&str>,
 ) -> Result<Invocation, String> {
-    let mut call = invocation(target, action, request_id)?;
-    if let Some(id) = session_id.filter(|id| selects(action) && crate::creation::canonical_uuid(id))
+    let id = session_id.filter(|id| selects(action) && crate::creation::canonical_uuid(id));
+    if cfg!(target_os = "linux")
+        && id.is_some()
+        && matches!(action, Action::Pause)
+        && target.computer.is_empty()
+        && target.name.starts_with("codex/")
+        && !target.run_id.is_empty()
+        && !target.conversation_id.is_empty()
     {
+        // Pause recovery is concurrent with a relaunch of this same session
+        // ID. The scoped envelope selects the exact displayed run.
+        return crate::actions::scoped_lifecycle_invocation(target, "pause", request_id, 45, 45);
+    }
+    let mut call = invocation(target, action, request_id)?;
+    if let Some(id) = id {
         let at = after_name(target);
         if call.args.get(at - 1) == Some(&target.name) {
             call.args
@@ -223,8 +235,8 @@ impl Answers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::classify;
     use crate::Outcome;
+    use crate::actions::classify;
     use serde_json::Value;
 
     const ID: &str = "3f2a9c1d-0b4e-4d6a-9c1d-2e3f4a5b6c7d";
@@ -492,6 +504,33 @@ mod tests {
                 assert!(!refused(&t, &plain, &exit(1, b"", &text)));
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_codex_pause_carries_the_selected_run_and_conversation() {
+        let mut t = target("");
+        t.name = "codex/project/private".into();
+        let call = selected_invocation(&t, &Action::Pause, "request", Some(ID)).unwrap();
+        assert_eq!(call.args, ["session-action", &t.name, "--json"]);
+        let input: serde_json::Value =
+            serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(input["action"], "pause");
+        assert_eq!(input["expected_run_id"], t.run_id);
+        assert_eq!(input["expected_conversation_id"], t.conversation_id);
+        let before = serde_json::to_vec(&serde_json::json!({
+            "status": "failed", "name": t.name, "request_id": "request",
+            "run_id": t.run_id, "conversation_id": t.conversation_id, "error": "Run changed"
+        }))
+        .unwrap();
+        assert_eq!(
+            classify(&t, &Action::Pause, &call, exit(0, &before, "")),
+            Outcome::Failed {
+                detail: "Run changed".into()
+            }
+        );
+        let legacy = selected_invocation(&t, &Action::Pause, "request", None).unwrap();
+        assert_eq!(legacy.args, ["pause", &t.name]);
     }
 
     #[test]

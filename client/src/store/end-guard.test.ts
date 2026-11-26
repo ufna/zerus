@@ -71,6 +71,7 @@ function rows(...views: [string, Partial<ViewRow>?][]) {
 
 beforeEach(() => {
   mocked.runAction.mockReset();
+  mocked.terminationCleanupCancel.mockClear();
   mocked.runAction.mockResolvedValue(done());
   scheduled.length = 0;
 });
@@ -96,6 +97,33 @@ describe("the app's end actions always carry a delay reference", () => {
       { target: target(tracked), action: { kind: "terminate" }, state: "running" },
       { target: target(plain), action: { kind: "kill" }, state: "running" },
     ]);
+  });
+
+  it("admits confirmed Terminate only for the same verified original", async () => {
+    const [tag] = rows(["drifted"]);
+    const sessionId = "00000000-0000-4000-8000-000000000102";
+    const name = `codex/p/${tag}`;
+    const ready = (withProof: boolean) => applyBatch({ ...emptyBatch(), upserts: [{
+      computer: "", key: `run:${tag}`, row: view(tag, {
+        name, agent: "codex", process_state: "unverified", session_id: sessionId,
+        native_readiness: withProof ? {
+          version: 1, session_id: sessionId, run_id: `run-${tag}`, conversation_id: `conv-${tag}`, terminate: true,
+        } : undefined,
+      }),
+    }] });
+    ready(true);
+    const opened = snapshotOf(listed(tag));
+    expect((await end(opened, "kill")).outcome).toBe("failed");
+    ready(false);
+    expect((await end(opened, "terminate", "fixture-cleanup-offer")).outcome).toBe("failed");
+    expect(mocked.terminationCleanupCancel).toHaveBeenCalledExactlyOnceWith("fixture-cleanup-offer");
+    expect(calls()).toEqual([]);
+    expect(scheduled).toEqual([]);
+
+    ready(true);
+    expect((await end(opened, "terminate")).outcome).toBe("done");
+    expect(calls()).toEqual([[name, "terminate", { id: "delay-1", index: 0 }]]);
+    expect(scheduled[0]).toEqual([{ target: { ...target(tag), name }, action: { kind: "terminate" }, state: "running" }]);
   });
 
   it("the Forget saved session confirmation (zerus-sa9qn.27)", async () => {

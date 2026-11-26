@@ -37,6 +37,31 @@ describe("menuState change", () => {
     expect(menu.stop.enabled).toBe(false);
     expect(menu.end).toMatchObject({ enabled: false, reason: "Session availability unverified" });
   });
+  it("enables only the exact native lifecycle capability of the current run", () => {
+    const sessionId = "00000000-0000-4000-8000-000000000101";
+    const proof = { version: 1 as const, session_id: sessionId, run_id: "r1", conversation_id: "c1" };
+    const drifted = (capability: Partial<Record<"pause" | "stop" | "terminate", true>>, run = "r1") =>
+      row({
+        name: "codex/proj/a", agent: "codex", tracked: true, session_id: sessionId,
+        run_id: run, process_state: "unverified", activity: "busy", allowed_actions: [],
+        native_readiness: { ...proof, ...capability },
+      });
+    const inspected = details({ phase: "working", interrupt_supported: true, turn_started: 20, allowed_actions: [] });
+    const pause = menuState(snapshotOf(drifted({ pause: true })), true, false, details({ allowed_actions: [] }));
+    expect(pause.change.enabled).toBe(true);
+    expect(pause.stop.enabled).toBe(false);
+    expect(pause.end.enabled).toBe(false);
+    const terminate = menuState(drifted({ terminate: true }), true, false, inspected);
+    expect(terminate.end.enabled).toBe(true);
+    expect(terminate.change.enabled).toBe(false);
+    expect(terminate.stop.enabled).toBe(false);
+    const stop = menuState(drifted({ stop: true }), true, false, inspected);
+    expect(stop.stop.enabled).toBe(true);
+    expect(stop.end.enabled).toBe(false);
+    expect(menuState(drifted({ stop: true }), false, false, inspected).stop.enabled).toBe(false);
+    const replaced = menuState(drifted({ pause: true, stop: true, terminate: true }, "r2"), true, false, inspected);
+    expect(replaced.change.enabled || replaced.stop.enabled || replaced.end.enabled).toBe(false);
+  });
   it("resumes a paused resumable session", () => {
     expect(menuState(row({ state: "paused" }), true, false).change).toMatchObject({ label: "Resume session", enabled: true });
     expect(menuState(row({ state: "paused", resumable: false }), true, false).change.enabled).toBe(false);
