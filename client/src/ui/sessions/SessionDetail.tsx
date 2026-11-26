@@ -31,6 +31,7 @@ import { markEntry } from "./mark-entries";
 import { followViewedReplies } from "./viewed-reply";
 import { Composer } from "./Composer";
 import { QueuePanel } from "./QueuePanel";
+import { PendingZerusSubmission } from "./PendingZerusSubmission";
 import { HeldMessage } from "./HeldMessage";
 import { onCommand } from "../../store/shortcuts";
 import { composer } from "../../store/composer";
@@ -337,7 +338,7 @@ export function SessionDetail() {
                           <p class="qcard-body">{tr("Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.")}</p>
                           <div class="qcard-actions"><button class="btn small" onClick={() => nativeRoute(selected())()}>{tr("Sign in to DeepSeek…")}</button></div>
                         </div></div></Show>
-                        <HeldMessage /><QueuePanel /><QuestionSlot />
+                        <HeldMessage /><PendingZerusSubmission /><QueuePanel /><QuestionSlot />
                       </Show>
                       <div class="cmp-col"><Composer /></div>
                     </div>

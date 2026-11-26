@@ -315,6 +315,38 @@ pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
     stored_receipt(record)
 }
 
+/// The latest unaccepted Zerus submission, independent of Terminal's queue.
+/// The exact pending request locates its durable guarded-send receipt. A
+/// sender envelope is a declaration inside that receipt's original input.
+pub(in crate::state) fn pending_zerus_submission(record: &Value) -> Option<Value> {
+    if string(record, "input_pending_digest").is_empty()
+        || string(record, "input_pending_text_sha256").is_empty()
+    {
+        return None;
+    }
+    let receipt = pending_receipt_of(record)?;
+    if receipt["status"] != "submitted"
+        || !receipt["delivery"].is_null()
+        || receipt["conversation_id"] != record["conversation_id"]
+        || receipt["first_message"] != false
+        || !receipt["origin"].is_null()
+    {
+        return None;
+    }
+    let at = receipt["submitted_at"].as_f64()?;
+    if !(at > 0.0 && at <= 8.64e12) {
+        return None;
+    }
+    let text = receipt["text"].as_str()?;
+    let (sender, _, _) = crate::session_reference::sender_message(text)?;
+    let files = receipt["attachments"].as_array()?;
+    if files.len() > 8 || attachments::terminal_text(text, files) != receipt["submitted_text"] {
+        return None;
+    }
+    Some(json!({"request_id":receipt["request_id"],"run_id":receipt["run_id"],
+        "conversation_id":receipt["conversation_id"],"submitted_at":at,"sender":sender}))
+}
+
 fn bound_receipt(record: &Value, bootstrap: bool) -> Option<Value> {
     let receipt = stored_receipt(record)?;
     (receipt["conversation_id"] == record["conversation_id"]

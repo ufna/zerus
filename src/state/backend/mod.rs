@@ -465,6 +465,16 @@ pub(crate) trait TerminalBackend: Sync {
     fn capture(&self, _pane: &str, _mode: Capture) -> Result<Vec<u8>> {
         Err(UNSUPPORTED.into())
     }
+    /// Optional display capture with a deadline and a hard output limit.
+    fn capture_until(
+        &self,
+        _pane: &str,
+        _mode: Capture,
+        _until: std::time::Instant,
+        _bytes: usize,
+    ) -> Result<Vec<u8>> {
+        Err(UNSUPPORTED.into())
+    }
     /// Make the window of `pane` `rows` tall, keeping its width, only while no
     /// client views it and no window option of its own fixes its size. The
     /// window still takes the size of the next client that attaches. False when

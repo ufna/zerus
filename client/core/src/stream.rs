@@ -1271,6 +1271,9 @@ impl Supervisor {
             let outcome = self.pump();
             self.close();
             if matches!(outcome, Outcome::Resnapshot | Outcome::Replaced) {
+                for change in self.state.activity_transport_lost(&self.computer) {
+                    self.emit(change);
+                }
                 self.status(ComputerStatus::Probing);
                 continue;
             }

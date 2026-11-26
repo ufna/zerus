@@ -696,6 +696,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     if (role) {
       let receipt: string | undefined;
       let inbox: InboxItem | undefined;
+      let displayTime = at;
       // OpenCode reports its inbox: a waiting message is queued, and after
       // Stop it stays there, not delivered, until it is sent or removed
       // (ActivityView.cpp:1036-1038, 1072-1087).
@@ -706,6 +707,10 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
         const allowed = Array.isArray(summary?.allowed_actions) && summary.allowed_actions.includes("remove_queued");
         inbox = { state: delivery, messageId, run: String(summary?.run_id ?? ""), conversation: String(summary?.conversation_id ?? ""),
           removable: delivery === "not_delivered" && !!messageId && allowed };
+        const stamp = e.queued_at;
+        displayTime = e.source === "opencode_native" && /^msg_[a-zA-Z0-9_-]{1,124}$/.test(messageId)
+          && !!inbox.conversation && !!inbox.run && typeof stamp === "number" && stamp > 0 && stamp <= 8.64e12
+          ? tr("Queued at %1", timeText(stamp)) : tr("Queue time unavailable");
       } else if (role === "user") {
         let accepted = e.type !== "UserPromptQueued";
         for (let j = i + 1; !accepted && j < events.length; j++) {
@@ -719,7 +724,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       // Qt's order: a queued prompt first, then an answer (ActivityView.cpp:1036-1038).
       const label = role !== "user" ? undefined : e.type === "UserPromptQueued" ? tr("You (queued)")
         : e.type === "QuestionAnswered" || replies ? tr("You (answer)") : undefined;
-      items.push({ id, kind: role === "user" ? "user" : "agent", at, body: role === "user" ? ownMessageText(e) : e.detail ?? "",
+      items.push({ id, kind: role === "user" ? "user" : "agent", at: displayTime, body: role === "user" ? ownMessageText(e) : e.detail ?? "",
         ...(role === "user" ? { bodyTruncated: ownMessageTruncated(e) } : {}),
         echoBody: typeof e.attachment_echo === "string" ? e.attachment_echo : undefined,
         attachments: attachments(e), receipt, label, replies, ...(inbox ? { inbox } : {}) });

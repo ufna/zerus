@@ -190,6 +190,86 @@ class NativeBusyCodex(codex.NativeCodexInput):
         finally:
             release.touch()
 
+    def test_clipped_peer_preview_and_exact_submission_are_independent(self):
+        import test_sender_envelope
+        import test_watch
+
+        release = self.root / 'tool-release'
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'call_busy': {'tool_name': 'Bash'}},
+                turn_started=time.time(), run_identity_version=1,
+                supervisor=dict(pid=self.record['pid'], start=self.record['process_start']))
+            self.write_record()
+            terminal_send(self, FIRST)
+            self.wait_for(lambda: FIRST in self.screen() and 'Messages to be submitted' in self.screen())
+            inspect = lambda: codex.test_input.InputTransport.inspect(self)
+            self.assertNotIn('pending_zerus_submission', inspect())
+
+            sender = test_sender_envelope.SenderEnvelope.sender(self)
+            body = '\n'.join(f'Private helper report line {n}.' for n in range(20))
+            request = self.payload(text=body, attachments=[{
+                'name': 'private-fixture.txt', 'mime': 'text/plain',
+                'data_base64': base64.b64encode(b'Private fixture attachment').decode(),
+            }])
+            receipt = self.send(request)
+            self.wait_for(lambda: '↳ <zerus-message from="claude/graph/source"' in self.screen())
+            first = inspect()
+            queue = first['input_queue']
+            self.assertIn('…', queue['text'])
+            self.assertNotIn('Private helper report line 19.', queue['text'])
+            self.assertIn(FIRST, queue['text'])
+            self.assertNotIn('entry_times', queue)
+            exact = first['pending_zerus_submission']
+            self.assertEqual(exact, dict(request_id=request['request_id'], run_id=self.run_id,
+                conversation_id=self.conversation_id, submitted_at=receipt['submitted_at'], sender=sender['name']))
+            self.assertEqual(self.send(request), receipt)
+            self.assertEqual(inspect()['pending_zerus_submission'], exact)
+            draft = 'Different private draft after the helper submission.'
+            self.assertIn('previous input has not been confirmed',
+                          self.send(self.payload(text=draft), success=False))
+            self.assertNotIn(draft, self.screen())
+            self.assertEqual(inspect()['pending_zerus_submission'], exact)
+            stream = test_watch.Stream(self)
+            stream.send(op='subscribe', topic='activity', session=dict(
+                name=self.name, run_id=self.run_id, conversation_id=self.conversation_id))
+            frame = stream.next(lambda value: value['t'] == 'state' and value['topic'] == 'activity')
+            watched = frame['value']
+            self.assertEqual(watched['pending_zerus_submission'], exact)
+            self.assertEqual(watched['input_queue'], queue)
+            self.assertEqual(stream.close(), 0)
+            evidence = os.environ.get('HGS_TEST_SUBMISSION_WIRE')
+            if evidence:
+                Path(evidence).write_text(json.dumps({key:watched[key] for key in
+                    ('name', 'agent', 'run_id', 'conversation_id', 'activity', 'phase',
+                     'previous_message_pending', 'input_queue', 'pending_zerus_submission')}))
+            # An uncertain original cannot supply a display timestamp, even
+            # while the exact same native preview is visible.
+            path = self.state / 'input_receipts' / (request['request_id'] + '.json')
+            original = path.read_bytes()
+            try:
+                path.write_text(json.dumps(dict(receipt, status='in_progress', delivery='uncertain')))
+                self.assertNotIn('pending_zerus_submission', inspect())
+                changed = receipt['text'].replace('Private helper report line 0.', 'Different fixture body.')
+                self.assertNotEqual(changed, receipt['text'])
+                path.write_text(json.dumps(dict(receipt, text=changed)))
+                self.assertNotIn('pending_zerus_submission', inspect())
+            finally:
+                path.write_bytes(original)
+            release.touch()
+            self.wait_for(lambda: 'Private helper report line 19.' in self.screen()
+                and 'Messages to be submitted' not in self.screen())
+            # This private native fixture does not register acceptance hooks.
+            # Publish the confirmed input to its own record explicitly and
+            # verify that later inspection drops the pending receipt.
+            settled = json.loads(self.record_path.read_text())
+            settled['input_seen_at'] = time.time()
+            self.record_path.write_text(json.dumps(settled))
+            self.assertNotIn('pending_zerus_submission', inspect())
+        finally:
+            release.touch()
+
 
 @unittest.skipUnless(claude.native.CLAUDE, 'Set HGS_CLAUDE_TEST_BIN for the private busy Claude contract')
 class NativeBusyClaude(claude.NativeClaudeInput):
