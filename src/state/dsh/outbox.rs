@@ -59,8 +59,8 @@ impl Query {
         Ok(())
     }
 
-    fn waiting(&self, name: &str) -> Value {
-        json!({"schema":1,"status":"waiting_for_idle","proof":WAIT_PROOF,
+    fn before_offer(&self, name: &str, status: &str) -> Value {
+        json!({"schema":1,"status":status,"proof":WAIT_PROOF,
             "request_id":self.request_id,"name":name,"run_id":self.expected_run_id,
             "conversation_id":self.expected_conversation_id,"input_sha256":self.input_sha256})
     }
@@ -249,7 +249,13 @@ pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
     // Reads and attachment preparation cannot offer a prompt. If the host is
     // unavailable at this point the original request is still safe to hold.
     let waiting = || {
-        println!("{}", query.waiting(name));
+        println!("{}", query.before_offer(name, "waiting_for_idle"));
+        Ok(0)
+    };
+    let refusal = |reason: String| {
+        let mut receipt = query.before_offer(name, "not_offered");
+        receipt["reason"] = json!(reason);
+        println!("{receipt}");
         Ok(0)
     };
     let Ok(readiness) = rpc_within(
@@ -267,12 +273,25 @@ pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
     if readiness["ready"] != true {
         return waiting();
     }
-    let mut content = message_content(&request)?;
-    let staged = attachments::prepare_native(&request)?;
-    let attachment_ids = attachment_ids(&content)?;
-    prepare_files(&record, &readiness, &mut content, |params| {
-        rpc_within(&record, PREPARE_FILES_RPC, params, Duration::from_secs(12))
-    })?;
+    let prepared = (|| {
+        let mut content = message_content(&request)?;
+        let staged = attachments::prepare_native(&request)?;
+        let attachment_ids = attachment_ids(&content)?;
+        prepare_files(&record, &readiness, &mut content, |params| {
+            rpc_within(&record, PREPARE_FILES_RPC, params, Duration::from_secs(12))
+        })?;
+        Ok::<_, String>((content, staged, attachment_ids))
+    })();
+    let (content, staged, attachment_ids) = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason)
+            if [FILE_PREPARATION_UNCONFIRMED, HOST_UNAVAILABLE].contains(&reason.as_str())
+                || reason.starts_with(INCOMPLETE) =>
+        {
+            return waiting();
+        }
+        Err(reason) => return refusal(reason),
+    };
     let mut receipt = json!({
         "request_id":query.request_id,"name":name,"run_id":query.expected_run_id,
         "conversation_id":query.expected_conversation_id,"transport":"native_dsh","status":"pending",

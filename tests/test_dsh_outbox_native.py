@@ -1,5 +1,6 @@
 """Guarded Desktop outbox against the sealed official DeepSeek harness."""
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
@@ -191,3 +192,78 @@ class NativeDeepSeekOutbox(native.NativeHarness):
         self.assertEqual(proof['status'], 'submitted')
         self.assertEqual(event['data']['content'][1]['attachment']['attachmentId'],
                          'sha256:' + hashlib.sha256(base64.b64decode(encoded)).hexdigest())
+
+    def test_offer_still_waits_when_work_starts_inside_native_image_admission(self):
+        binding = self.create()
+        conversation = binding['conversation_id']
+        gate = self.root / 'holds' / 'OUTBOX_IMAGE_ADMISSION_HOLD'
+        gate.touch()
+        encoded = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAADklEQVR4nGP4DwYMEAoAU7oL9ZisIGcAAAAASUVORK5CYII='
+        guarded = self.payload(binding, text='Inspect [Image #1]', only_when_idle=True, attachments=[
+            {'name': 'fixture.png', 'mime': 'image/png', 'reference': '[Image #1]', 'data_base64': encoded},
+        ])
+        host_work = str(uuid.uuid4())
+        earlier = str(uuid.uuid4())
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            sent = pool.submit(self.guarded, binding, guarded)
+            try:
+                self.wait(lambda: gate.with_suffix('.resolving').exists())
+                for request, mode, text in [(host_work, 'steer', 'OUTBOX_HELD_TURN_FIXTURE'),
+                                            (earlier, 'queue', 'Earlier native fixture activity')]:
+                    result = self.rpc('send', {'sessionId': conversation, 'requestId': request,
+                                               'mode': mode, 'content': [{'type': 'text', 'text': text}]})
+                    self.assertTrue(result['accepted'])
+                self.assertFalse(self.rpc('outbox-state', {'sessionId': conversation})['ready'])
+                gate.unlink()
+                result = sent.result(timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
+                self.assertEqual(self.native_messages(binding, guarded['request_id']), [])
+            finally:
+                gate.unlink(missing_ok=True)
+                (self.root / 'holds/OUTBOX_HELD_TURN_FIXTURE.release').touch()
+        self.wait(lambda: self.native_messages(binding, earlier))
+        self.wait(lambda: self.rpc('outbox-state', {'sessionId': conversation})['ready'])
+        self.assertEqual(self.native_messages(binding, guarded['request_id']), [])
+
+    def test_lost_file_preparation_reply_is_a_bound_pre_offer_wait(self):
+        binding = self.create()
+        guarded = self.payload(binding, text='Read [File #1]', only_when_idle=True,
+                               attachments=[{'name': 'fixture.txt', 'mime': 'text/plain', 'reference': '[File #1]',
+                                             'data_base64': 'dGVzdA=='}])
+        calls = []
+
+        def intercept(request, forward):
+            calls.append(request['method'])
+            if request['method'] == 'prepare-files':
+                result = forward(request)
+                self.assertTrue(result['ok'], result)
+                return None
+            return forward(request)
+
+        with self.archive_rpc_proxy(intercept):
+            wait = self.guarded(binding, guarded)
+            self.assertEqual(wait.returncode, 0, wait.stderr)
+            receipt = json.loads(wait.stdout)
+            self.assertEqual(receipt['status'], 'waiting_for_idle')
+            self.assertEqual(receipt['input_sha256'], hashlib.sha256(json.dumps(guarded).encode()).hexdigest())
+        self.assertEqual(calls, ['outbox-state', 'prepare-files'])
+        self.assertFalse((self.state / 'dsh/receipts' / f"{guarded['request_id']}.json").exists())
+        self.assertEqual(self.native_messages(binding, guarded['request_id']), [])
+        forwarded = self.guarded(binding, guarded)
+        if forwarded.returncode:
+            forwarded = self.wait(lambda: proof if (proof := self.outbox_status(binding, guarded)).returncode == 0 else None)
+        self.assertEqual(json.loads(forwarded.stdout)['status'], 'submitted')
+        self.assertEqual(len(self.native_messages(binding, guarded['request_id'])), 1)
+
+        invalid = self.payload(binding, text='Invalid [File #1]', only_when_idle=True,
+                               attachments=[{'name': 'invalid.txt', 'mime': 'text/plain', 'reference': '[File #1]',
+                                             'data_base64': 'this is not base64!'}])
+        self.wait(lambda: self.rpc('outbox-state', {'sessionId': binding['conversation_id']})['ready'])
+        rejected = self.guarded(binding, invalid)
+        self.assertEqual(rejected.returncode, 0, rejected.stderr)
+        receipt = json.loads(rejected.stdout)
+        self.assertEqual(receipt['status'], 'not_offered')
+        self.assertIn('attachment data', receipt['reason'].lower())
+        self.assertEqual(receipt['request_id'], invalid['request_id'])
+        self.assertFalse((self.state / 'dsh/receipts' / f"{invalid['request_id']}.json").exists())

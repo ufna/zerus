@@ -17,6 +17,12 @@ class Adapter extends LlmAdapter {
     const gate = candidate && existsSync(candidate + '.entered') && candidate;
     if (gate && existsSync(gate)) writeFileSync(gate + '.resolving', '');
     for (let i = 0; gate && existsSync(gate) && i < 300; i++) await new Promise(resolve => setTimeout(resolve, 50));
+    const outboxGate = model === 'test-a' && this.holds && join(this.holds, 'OUTBOX_IMAGE_ADMISSION_HOLD');
+    if (outboxGate && existsSync(outboxGate)) {
+      writeFileSync(outboxGate + '.resolving', '');
+      for (let i = 0; existsSync(outboxGate) && i < 300; i++)
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
     return { provider,id:model,name:model,inputModalities: model === 'test-b' ? ['text'] : ['text','image'],
     reasoning:{efforts:[{id:'off',name:'Off'},{id:'high',name:'High'}],defaultEffort:'high'} }; }
   async *stream(options) {

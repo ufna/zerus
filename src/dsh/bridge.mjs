@@ -716,6 +716,62 @@ export function apply(ctx, config) {
     return { sessionId, generation,
       ready: outboxReady(ctx.agents.get(sessionId), sessionId), fileAttachments: fileCapabilities() };
   }
+  const outboxAdmission = new AsyncLocalStorage();
+  const followupGuards = new WeakMap();
+  function outboxWait(p) {
+    return { status: 'waiting_for_idle', proof: 'native_dsh_idle_guard',
+      requestId: p.requestId, sessionId: p.sessionId, generation };
+  }
+  // The official controller awaits image and attachment admission before
+  // calling followup. Keep that controller, its file receipts and deduplication.
+  // Check this RPC at the synchronous insertion seam. Other clients keep the
+  // original method, including calls while this one awaits native preparation.
+  async function outboxPrompt(agent, p) {
+    let entry = followupGuards.get(agent);
+    if (!entry) {
+      const old = Object.getOwnPropertyDescriptor(agent, 'followup');
+      const original = agent.followup;
+      if (typeof original !== 'function' || (old && !('value' in old)))
+        throw new Error('DeepSeek native outbox admission is unavailable');
+      const guarded = function (message, ...args) {
+        const scope = outboxAdmission.getStore();
+        if (scope?.agent === this && scope.active) {
+          scope.active = false;
+          if (rpcIdOf(message) !== scope.requestId) throw new Error('DeepSeek outbox request identity changed');
+          if (ctx.agents.get(scope.sessionId) !== this || !outboxReady(this, scope.sessionId)) {
+            scope.waiting = true;
+            throw new Error('DeepSeek became busy before the outbox offer');
+          }
+          const compact = compactionPublic(scope.sessionId);
+          if (compact) compact.status = 'cancelled';
+          recovery.get(scope.sessionId)?.finish(undefined);
+        }
+        return Reflect.apply(original, this, [message, ...args]);
+      };
+      Object.defineProperty(agent, 'followup', old
+        ? { ...old, value: guarded } : { configurable: true, writable: true, value: guarded });
+      entry = { old, guarded, users: 0 };
+      followupGuards.set(agent, entry);
+    }
+    if (agent.followup !== entry.guarded) throw new Error('DeepSeek native outbox admission changed');
+    entry.users++;
+    const scope = { agent, sessionId: p.sessionId, requestId: p.requestId, active: true, waiting: false };
+    try {
+      return await outboxAdmission.run(scope, () => api.prompt(p, new AbortController().signal));
+    } catch (error) {
+      if (scope.waiting) return outboxWait(p);
+      throw error;
+    } finally {
+      scope.active = false;
+      if (--entry.users === 0) {
+        if (agent.followup === entry.guarded) {
+          if (entry.old) Object.defineProperty(agent, 'followup', entry.old);
+          else delete agent.followup;
+        }
+        followupGuards.delete(agent);
+      }
+    }
+  }
   async function inspect(request) {
     const { sessionId, agentId } = request;
     let baseline = await api.projections({ sessionId }, new AbortController().signal);
@@ -1286,11 +1342,8 @@ export function apply(ctx, config) {
         if (files.length && ctx.agents.get(p.sessionId) !== agent)
           throw new Error('DeepSeek session changed after file preparation');
         if (outbox) {
-          if (ctx.agents.get(p.sessionId) !== agent || !outboxReady(agent, p.sessionId))
-            return { status: 'waiting_for_idle', proof: 'native_dsh_idle_guard',
-              requestId: p.requestId, sessionId: p.sessionId, generation };
-          if (compact) compact.status = 'cancelled';
-          recovery.get(p.sessionId)?.finish(undefined);
+          if (ctx.agents.get(p.sessionId) !== agent || !outboxReady(agent, p.sessionId)) return outboxWait(p);
+          return outboxPrompt(agent, p);
         }
         return api.prompt(p, new AbortController().signal);
       });

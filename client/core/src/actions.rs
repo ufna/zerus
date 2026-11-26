@@ -1838,8 +1838,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     let dsh = target.name.starts_with("dsh/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
-        if receipt["schema"] == 1
-            && receipt["status"] == "waiting_for_idle"
+        let exact_pre_offer = receipt["schema"] == 1
             && receipt["proof"] == if opencode {
                 "native_opencode_queue"
             } else if dsh {
@@ -1853,9 +1852,14 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             && receipt["conversation_id"] == target.conversation_id
             && invocation.stdin.as_deref().is_some_and(|input| {
                 receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
-            })
-        {
+            });
+        if exact_pre_offer && receipt["status"] == "waiting_for_idle" {
             return done(receipt, None);
+        }
+        if dsh && exact_pre_offer && receipt["status"] == "not_offered"
+            && let Some(reason) = receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty())
+        {
+            return failed(reason);
         }
         if opencode
             && (receipt["transport"] != "native_opencode"
