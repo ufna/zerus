@@ -699,6 +699,19 @@ mod tests {
             assert_eq!(original.matches(new).count(), 1, "native readiness projection changed");
             original = original.replacen(new, prior, 1);
         }
+        // Desktop's guarded wait distinguishes a known busy refusal from
+        // other pre-input refusals. Keep the original submission seal.
+        for (guarded, prior) in [
+            ("        idle_refusal: false,\n", ""),
+            ("        let idle_refusal = matches!(gate, Gate::NotIdle);\n", ""),
+            (r#"        let mut witness = witness(gate.reason(), waiting, dialog);
+        witness.idle_refusal = idle_refusal;
+        remember_send_refusal(typed, witness, retain_refusal, terminal_outcome)
+"#, "        remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)\n"),
+        ] {
+            assert_eq!(original.matches(guarded).count(), 1, "guarded wait projection changed");
+            original = original.replacen(guarded, prior, 1);
+        }
         // The public send's durable negative adds only a retention parameter
         // and routes the same two live witnesses through its publisher. Exact
         // negative retries re-enter the guards and retire before settings input. Keep
@@ -882,6 +895,12 @@ mod tests {
             assert_eq!(original.matches(witnessed).count(), 1, "{witnessed}");
             original = original.replacen(witnessed, reviewed, 1);
         }
+        let claude_outbox = r#"    if agent == "claude" && request.only_when_idle {
+        receipt["claude_outbox"] = json!(true);
+    }
+"#;
+        assert_eq!(original.matches(claude_outbox).count(), 1);
+        original = original.replacen(claude_outbox, "", 1);
         // zerus-46l1q review D2: a writer at the person's request checks it
         // under Root before anything is typed; project that addition away.
         let admit = "    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,\n";

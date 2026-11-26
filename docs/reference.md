@@ -2709,16 +2709,17 @@ with `agent busy` before submission; wait or inspect Terminal rather than typing
 through that refusal.
 
 **Send** and Enter in Desktop Composer send to a ready agent immediately.
-For a busy live Codex, Kimi or supported OpenCode conversation, or one with earlier Zerus messages
+For a busy live Codex, Claude, Kimi or supported OpenCode conversation, or one with earlier Zerus messages
 waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
 outgoing row with **Queued in Zerus**, its original local enqueue time, and
 its attachments. The agent receives no input during that save. The desktop
 checks the original run and sends in order when it confirms an idle input
-with no earlier message pending. For Codex and Kimi, the host checks idle again
+with no earlier message pending. For Codex, Claude and Kimi, the host checks idle again
 under its native input lock before offering the message. OpenCode checks the
 exact conversation and makes a queue-only offer. Any messages already parked
-in the OpenCode inbox keep their order. If the host confirms that the agent became
+in the OpenCode inbox keep their order. Claude's existing native queue also
+keeps its order while Desktop waits. If the host confirms that the agent became
 busy before any input was offered, that same message waits with its original
 request ID. Queueing requires guarded Send support from the computer running
 the session. A ready session on an older computer still uses ordinary Send.
@@ -2732,6 +2733,10 @@ The native queue shown in Activity has its own **Send now** action. It
 operates only on the native queue already shown there. A refused or unknown
 delivery pauses the Zerus queue at that message. For OpenCode, Zerus can check
 the original native message and settle the original receipt without another offer.
+For Claude, a final original receipt can settle a lost command response. Activity
+matches the original request and Claude's typed prompt ID to link the outgoing
+row and its files. A native queue hook can reuse the active prompt ID, so it
+keeps its own Activity row.
 Check Activity or Terminal before deciding whether to remove an unknown message
 from the Zerus queue. A new run or a renamed session cannot inherit the earlier
 run's delivery.

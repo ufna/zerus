@@ -1834,6 +1834,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     use sha2::{Digest, Sha256};
 
     let opencode = target.name.starts_with("opencode/");
+    let claude = target.name.starts_with("claude/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         if receipt["schema"] == 1
@@ -1859,6 +1860,11 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
+        if claude && !(claude_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+            receipt["digest"] == format!("{:x}", Sha256::digest(input))
+        })) {
+            return uncertain("The original Claude Send is unconfirmed.");
+        }
     }
     let started = !matches!(exit, Exit::StartFailed(_));
     match classify_send(target, invocation, None, exit) {
@@ -1867,19 +1873,21 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
     }
 }
 
-/// Read one original guarded OpenCode offer by its exact stdin hash.
-pub fn opencode_outbox_status(
+/// Read one original guarded offer by its exact stdin hash.
+pub fn outbox_status(
     target: &Target,
     action: &Action,
     request_id: &str,
 ) -> Result<Invocation, String> {
     use sha2::{Digest, Sha256};
 
-    if !target.name.starts_with("opencode/") || !matches!(action, Action::SendWhenIdle { .. }) {
-        return Err("Expected an original OpenCode outbox request.".into());
+    if !(target.name.starts_with("opencode/") || target.name.starts_with("claude/"))
+        || !matches!(action, Action::SendWhenIdle { .. })
+    {
+        return Err("Expected an original outbox request.".into());
     }
     let original = invocation(target, action, request_id)?;
-    let input = original.stdin.ok_or("The original OpenCode input is unavailable.")?;
+    let input = original.stdin.ok_or("The original outbox input is unavailable.")?;
     let mut args = vec!["delivery".into(), "outbox-status".into(), target.name.clone(), "--json".into()];
     let remote = prepend_alias(&mut args, &target.computer);
     let query = json!({"request_id": request_id, "expected_run_id":target.run_id,
@@ -1890,18 +1898,37 @@ pub fn opencode_outbox_status(
     })
 }
 
-pub fn opencode_outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
+fn claude_outbox_submitted(receipt: &Value) -> bool {
+    receipt["claude_outbox"] == true && receipt["transport"] == "terminal"
+        && matches!(receipt["native"].as_str(), Some("transcript" | "queue"))
+}
+
+pub fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
+    if !claude_outbox_submitted(receipt) || receipt["native"] != "transcript"
+        || !receipt["native_input"]["uuid"].as_str().is_some_and(crate::creation::canonical_uuid)
+    {
+        return None;
+    }
+    receipt["native_input"]["prompt_id"].as_str().filter(|id| crate::creation::canonical_uuid(id))
+}
+
+pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
     let Exit::Code { code: 0, stdout, .. } = exit else { return None };
     if stdout.len() > 8192 { return None; }
     let receipt: Value = serde_json::from_slice(&stdout).ok()?;
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
-    (receipt["schema"] == 1 && receipt["status"] == "submitted"
-        && receipt["proof"] == "native_opencode_receipt" && receipt["transport"] == "native_opencode"
+    let provider = if target.name.starts_with("claude/") {
+        receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
+    } else {
+        target.name.starts_with("opencode/") && receipt["proof"] == "native_opencode_receipt"
+            && receipt["transport"] == "native_opencode"
+            && receipt["native_message_id"].as_str().is_some_and(native_message_id)
+    };
+    (provider && receipt["schema"] == 1 && receipt["status"] == "submitted"
         && receipt["request_id"].as_str() == query.request_id.as_deref()
         && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
         && receipt["name"] == target.name && receipt["run_id"] == target.run_id
-        && receipt["conversation_id"] == target.conversation_id
-        && receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        && receipt["conversation_id"] == target.conversation_id)
         .then_some(receipt)
 }
 
@@ -2154,6 +2181,31 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_outbox_submission_requires_the_original_input_digest() {
+        use sha2::{Digest, Sha256};
+
+        let target = Target {
+            name: "claude/sample/review".into(),
+            computer: String::new(),
+            run_id: "run".into(),
+            conversation_id: "conversation".into(),
+        };
+        let action = Action::SendWhenIdle { text: "same prompt".into(), attachments: vec![] };
+        let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
+        let invocation = invocation(&target, &action, request).unwrap();
+        let input = invocation.stdin.as_deref().unwrap();
+        let digest = format!("{:x}", Sha256::digest(input));
+        let accepted = |digest: &str| Exit::Code {
+            code: 0, stderr: String::new(),
+            stdout: serde_json::to_vec(&json!({"claude_outbox":true,"transport":"terminal",
+              "native":"queue","status":"submitted","request_id":request,"name":target.name,
+              "run_id":target.run_id,"conversation_id":target.conversation_id,"digest":digest})).unwrap(),
+        };
+        assert!(matches!(classify(&target, &action, &invocation, accepted(&digest)), Outcome::Done { .. }));
+        assert!(matches!(classify(&target, &action, &invocation, accepted(&"0".repeat(64))), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn opencode_restore_names_the_archive_and_classifies_only_the_original_receipt() {
         let mut target = target("fixture-peer");

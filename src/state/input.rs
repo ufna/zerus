@@ -192,7 +192,9 @@ fn checked_record_gate(
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
     if request.only_when_idle {
-        if !idle_reminder_ready(&record) {
+        if !idle_reminder_ready(&record)
+            || (record["agent"] == "claude" && input_queue::claude_waiting(&record).unwrap_or(true))
+        {
             return Err(Gate::NotIdle);
         }
         if effort::pending_applies(&record) {
@@ -2525,6 +2527,9 @@ fn submit_core(
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
     if queued {
         receipt["transport"] = json!("codex_queue");
+    }
+    if agent == "claude" && request.only_when_idle {
+        receipt["claude_outbox"] = json!(true);
     }
     if pre_send_compaction.is_object() {
         receipt["pre_send_compaction"] = pre_send_compaction;

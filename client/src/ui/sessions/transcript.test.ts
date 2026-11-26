@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTranscript, createActivityProjections, localFileAvailable, mergeLocal, createTranscriptProjection, toolPreview, TOOL_PREVIEW_SCAN } from "./transcript";
+import { buildTranscript, mergeAttachmentMessages, createActivityProjections, localFileAvailable, mergeLocal, createTranscriptProjection, toolPreview, TOOL_PREVIEW_SCAN } from "./transcript";
 import type { ActivityEvent, EventAttachment, LocalMessage } from "../../types";
 import type { ActivityItem, MediaMessage } from "./types";
 import { cardTarget, rowScope } from "./attachment-card";
@@ -722,4 +722,61 @@ it("hands an OpenCode outbox row to its exact native prompt without merging equa
   const onlyLocal = projection.build([otherRequest], undefined, [], [], [first, second]);
   expect(onlyLocal).toHaveLength(3);
   expect(onlyLocal[1]).toMatchObject({ id: "local-first", outbox: { state: "unknown" } });
+});
+
+it("keeps equal Claude prompts separate and attaches each outbox file only to its exact hook", () => {
+  const text = 'Inspect [File #1] (Read the attached file at "/root/attachments/message-X1/01-patch.txt")';
+  const file = { request_id: "first", index: 0, reference: "[File #1]", mime: "text/plain", name: "patch.txt", bytes: 5 };
+  const first = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation", seq: 1, at: 1,
+    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", claude_outbox_request_id: "first", detail: text };
+  const second = { ...first, seq: 2, at: 2, claude_prompt_id: "02cbc28b-d40b-4cf8-a97a-d67d458d745a", claude_outbox_request_id: "second" };
+  const receipt = { type: "UserPromptSubmit", source: "hgs_delivery", message_id: "first",
+    submitted_text: text, detail: "Inspect [File #1]", attachments: [file], claude_outbox: true,
+    claude_prompt_id: first.claude_prompt_id, conversation_id: first.conversation_id, run_id: first.run_id };
+  const events = mergeAttachmentMessages([first, second], { attachment_messages: [receipt] });
+  expect(events).toHaveLength(2);
+  expect(events[0]).toMatchObject({ attachment_request_id: "first", attachments: [file] });
+  expect(events[1]).toEqual(second);
+  const withoutId = { ...receipt, claude_prompt_id: undefined };
+  expect(mergeAttachmentMessages([second], { attachment_messages: [withoutId] })).toEqual([second]);
+
+  const row = local("sent", false, { id: "first", source: "zerus_claude_outbox", text: receipt.detail,
+    message_id: first.claude_prompt_id, run_id: first.run_id, conversation_id: first.conversation_id });
+  const projection = createTranscriptProjection();
+  expect(projection.build([first, second], undefined, [row]).map(item => item.id)).toEqual(["local-first", "s2"]);
+  expect(projection.build([second], undefined, [row])).toHaveLength(2);
+});
+
+it("uses the exact Claude prompt to render files even when the author reordered their references", () => {
+  const text = '[File #2] (Read the attached file at "/root/attachments/message-X1/02-two.txt") then [File #1] (Read the attached file at "/root/attachments/message-X1/01-one.txt")';
+  const files = ["one.txt", "two.txt"].map((name, index) => ({ request_id: "original", index,
+    reference: `[File #${index + 1}]`, mime: "text/plain", name, bytes: 3 }));
+  const event = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation",
+    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", claude_outbox_request_id: "original", detail: text };
+  const receipt = { ...event, source: "hgs_delivery", message_id: "original", submitted_text: text,
+    detail: "[File #2] then [File #1]", attachments: files, claude_outbox: true };
+  const [rendered] = mergeAttachmentMessages([event], { attachment_messages: [receipt] });
+  expect(rendered).toMatchObject({ attachment_request_id: "original", attachments: files, detail: receipt.detail });
+  const mismatched = { ...receipt, attachments: [{ ...files[0], request_id: "other" }, files[1]] };
+  expect(mergeAttachmentMessages([event], { attachment_messages: [mismatched] })).toEqual([event]);
+});
+
+it("never gives a native queue hook the original Claude file after the typed row leaves the page", () => {
+  const text = 'Inspect [File #1] (Read the attached file at "/root/attachments/message-X1/01-patch.txt")';
+  const event = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation",
+    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", claude_outbox_request_id: "original",
+    seq: 1, at: 1, detail: text } satisfies ActivityEvent;
+  const queued = { ...event, seq: 2, at: 2, claude_outbox_request_id: undefined };
+  const file = { request_id: "original", index: 0, name: "patch.txt", mime: "text/plain", reference: "[File #1]", bytes: 5 };
+  const receipt = { ...event, source: "hgs_delivery", message_id: "original", submitted_text: text,
+    detail: "Inspect [File #1]", attachments: [file], claude_outbox: true };
+  const summary = { attachment_messages: [receipt] };
+  expect(mergeAttachmentMessages([queued], summary)).toEqual([queued]);
+  const [original, next] = mergeAttachmentMessages([event, queued], summary);
+  expect(original).toMatchObject({ attachment_request_id: "original", attachments: [file] });
+  expect(next).toEqual(queued);
+  const row = local("sent", false, { id: "original", source: "zerus_claude_outbox",
+    message_id: event.claude_prompt_id, run_id: event.run_id, conversation_id: event.conversation_id });
+  const projection = createTranscriptProjection();
+  expect(projection.build([queued], undefined, [row]).map(item => item.id)).toEqual(["s2", "local-original"]);
 });

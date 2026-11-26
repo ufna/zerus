@@ -411,6 +411,9 @@ export const isEmptyBatch = (b: Batch) =>
 /** One Activity event as `inspect` returns it; unknown fields are kept. */
 export interface ActivityEvent {
   seq?: number;
+  claude_prompt_id?: string;
+  claude_outbox_request_id?: string;
+  claude_outbox?: boolean;
   type?: string;
   source?: string;
   detail?: string;

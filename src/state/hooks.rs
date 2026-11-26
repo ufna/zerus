@@ -2033,7 +2033,8 @@ fn track(name: String, token: String, mut event: Value, output: &mut StartOutput
     if record["input_seen_at"] != seen_before {
         input::acceptance::record_native_context(&mut record, &event);
     }
-    if record["input_seen_at"] != seen_before || first_context {
+    let claude_outbox_request = input::acceptance::claim_claude_outbox_hook(&mut record, &event, &seen_before);
+    if record["input_seen_at"] != seen_before || first_context || claude_outbox_request.is_some() {
         write(&mut record)?;
     }
     if resumed_clear_end {
@@ -2056,7 +2057,7 @@ fn track(name: String, token: String, mut event: Value, output: &mut StartOutput
             journal::log_event(&record, &clear)?;
         }
     }
-    journal::log_event(&record, &event)?;
+    journal::log_event_with_claude_outbox(&record, &event, claude_outbox_request.as_deref())?;
     if clear_boundary && successor.is_none() {
         if let Some(mut clear) = clear_context::event(&record) {
             clear["hook_event_name"] = json!("SessionCleared");
