@@ -391,6 +391,12 @@ fn kimi_completion_logged(db: &Connection, record: &Value, id: u64) -> Result<bo
 }
 
 pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
+    log_event_with_claude_outbox(record, event, None)
+}
+
+pub(super) fn log_event_with_claude_outbox(
+    record: &Value, event: &Value, request: Option<&str>,
+) -> Result<()> {
     // Kimi's heartbeat and Claude's model switch change state, not Activity;
     // the model selector shows the switch.
     if ["SessionHeartbeat", "PostModelSwitch"].contains(&string(event, "hook_event_name")) {
@@ -429,6 +435,9 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
         && receipt_index::claude_prompt_uuid(string(event, "prompt_id"))
     {
         data["claude_prompt_id"] = event["prompt_id"].clone();
+        if let Some(request) = request {
+            data["claude_outbox_request_id"] = json!(request);
+        }
         data["conversation_id"] = record["conversation_id"].clone();
     }
     if let Some(id) = kimi_turn_id(record, event) {

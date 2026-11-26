@@ -636,6 +636,7 @@ impl LocalMessages {
 
 fn claude_outbox_echo(row: &LocalMessage, event: &Value, id: &str) -> bool {
     event["type"] == "UserPromptSubmit" && event["claude_prompt_id"] == id
+        && event["claude_outbox_request_id"] == row.id
         && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
         && event["agent_id"].as_str().unwrap_or("").is_empty()
         && event["origin"].as_str().unwrap_or("").is_empty()

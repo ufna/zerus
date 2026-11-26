@@ -412,6 +412,7 @@ export const isEmptyBatch = (b: Batch) =>
 export interface ActivityEvent {
   seq?: number;
   claude_prompt_id?: string;
+  claude_outbox_request_id?: string;
   claude_outbox?: boolean;
   type?: string;
   source?: string;

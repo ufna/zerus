@@ -2734,7 +2734,9 @@ operates only on the native queue already shown there. A refused or unknown
 delivery pauses the Zerus queue at that message. For OpenCode, Zerus can check
 the original native message and settle the original receipt without another offer.
 For Claude, a final original receipt can settle a lost command response. Activity
-uses Claude's typed prompt ID to link the outgoing row and its files.
+matches the original request and Claude's typed prompt ID to link the outgoing
+row and its files. A native queue hook can reuse the active prompt ID, so it
+keeps its own Activity row.
 Check Activity or Terminal before deciding whether to remove an unknown message
 from the Zerus queue. A new run or a renamed session cannot inherit the earlier
 run's delivery.

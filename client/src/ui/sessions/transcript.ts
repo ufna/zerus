@@ -148,9 +148,10 @@ function echoMatchesFiles(text: string, files: ActivityEvent["attachments"]): bo
   });
 }
 
-function claudePromptMatch(event: ActivityEvent, prompt: unknown, run: unknown, conversation: unknown): boolean {
+function claudePromptMatch(event: ActivityEvent, request: string, prompt: unknown, run: unknown, conversation: unknown): boolean {
   return event.type === "UserPromptSubmit" && !event.agent_id && !event.origin && !event.inherited_from
     && (!event.turn_origin || event.turn_origin === "user")
+    && !!request && event.claude_outbox_request_id === request
     && typeof prompt === "string" && !!prompt && event.claude_prompt_id === prompt
     && typeof run === "string" && !!run && event.run_id === run
     && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
@@ -197,7 +198,7 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     const owners = events.flatMap((event, index) => requests(event).includes(request) ? [index] : []);
     if (owners.length > 1) continue;
     const exact = receipt.claude_outbox === true
-      ? events.flatMap((event, index) => claudePromptMatch(event, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id)
+      ? events.flatMap((event, index) => claudePromptMatch(event, request, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id)
         && requests(event).every(id => id === request) ? [index] : [])
       : owners.length ? owners : events.flatMap((event, index) => own(event) && !opencodePromptId(event)
         && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
@@ -423,7 +424,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
     }
     if (sent && row.source === CLAUDE_OUTBOX_SOURCE) {
       const matches = source.flatMap((e, i) => eligible(e, i)
-        && claudePromptMatch(e, row.message_id, row.run_id, row.conversation_id) ? [i] : []);
+        && claudePromptMatch(e, row.id, row.message_id, row.run_id, row.conversation_id) ? [i] : []);
       if (matches.length === 1) match = matches[0];
     }
     const ordinary = (e: ActivityEvent, i: number) => row.source !== OPENCODE_SOURCE

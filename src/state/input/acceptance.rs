@@ -315,6 +315,43 @@ pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
     stored_receipt(record)
 }
 
+/// Claim the first matching native hook while this exact guarded request
+/// still owns Terminal's input. A queued hook can reuse the current turn's
+/// Claude prompt ID, so that ID alone cannot identify the Activity row.
+pub(in crate::state) fn claim_claude_outbox_hook(
+    record: &mut Value,
+    event: &Value,
+    previously_seen: &Value,
+) -> Option<String> {
+    let request = super::input_typing(record)?;
+    let pending = record["input_pending_at"].as_f64()?;
+    if record["agent"] != "claude"
+        || event["hook_event_name"] != "UserPromptSubmit"
+        || event["session_id"] != record["conversation_id"]
+        || !string(event, "agent_id").is_empty()
+        || !receipt_index::claude_prompt_uuid(string(event, "prompt_id"))
+        || record["claude_outbox_hook_request"] == request
+        || !previously_seen.as_f64().is_some_and(|at| at < pending)
+        || !record["input_seen_at"].as_f64().is_some_and(|at| at > pending)
+    {
+        return None;
+    }
+    let receipt = pending_receipt_of(record)?;
+    if receipt["request_id"] != request
+        || receipt["claude_outbox"] != true
+        || receipt["status"] != "in_progress"
+        || receipt["conversation_id"] != record["conversation_id"]
+        || !event["prompt"].as_str().is_some_and(|prompt| {
+            journal::pasted_text(prompt).trim() == string(&receipt, "submitted_text")
+        })
+    {
+        return None;
+    }
+    let request = request.to_owned();
+    record["claude_outbox_hook_request"] = json!(request);
+    Some(request)
+}
+
 /// The latest unaccepted Zerus submission, independent of Terminal's queue.
 /// The exact pending request locates its durable guarded-send receipt. A
 /// sender envelope is a declaration inside that receipt's original input.
