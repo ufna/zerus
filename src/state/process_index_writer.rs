@@ -33,7 +33,7 @@ fn hash(bytes: impl AsRef<[u8]>) -> String {
     format!("{:x}", Sha256::digest(bytes.as_ref()))
 }
 
-fn boot() -> anyhow::Result<String> {
+pub(super) fn boot() -> anyhow::Result<String> {
     static BOOT: OnceLock<String> = OnceLock::new();
     let base = match BOOT.get() {
         Some(value) => value.clone(),

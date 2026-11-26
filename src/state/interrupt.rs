@@ -25,6 +25,10 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let uncertain =
         |e: String| format!("Interrupt delivery uncertain: {e}. Check Terminal before retrying");
     expect(&args[0], &request.expected_run_id, &request.expected_conversation_id)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if agy::named(&args[0]) {
+        return agy_interrupt(&args[0], &request, uuid);
+    }
     // A native DeepSeek RPC belongs only to its stable conversation. Wait for
     // that guard before taking any machine-wide metadata/receipt lock.
     let dsh_session=if dsh::exists(&args[0]) {Some(dsh::dispatch_lock::acquire(&args[0])?.0)} else {None};
@@ -73,6 +77,33 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         receipt["confirmed"]=json!(settle_claude(&record,seen));
     }
     println!("{receipt}");Ok(0)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn agy_interrupt(name: &str, request: &Request, id: uuid::Uuid) -> Result<i32> {
+    let (record, path) = {
+        let _guard = agy::state_guard()?;
+        let record = agy::inspect(name)?;
+        if record["run_id"] != request.expected_run_id || record["conversation_id"] != request.expected_conversation_id
+            || record["turn_started"].as_f64() != Some(request.expected_turn_started)
+            || record["interrupt_supported"] != true
+        {
+            return Err("The Antigravity session or turn changed; nothing was stopped".into());
+        }
+        let path = absolute_root()?.join("interrupt_receipts").join(format!("{id}.json"));
+        if path.exists() { return Err("This interrupt was already attempted; inspect the original session".into()); }
+        atomic(&path, &json!({"status":"in_progress","name":name,"run_id":request.expected_run_id,
+            "conversation_id":request.expected_conversation_id}).to_string())?;
+        (record, path)
+    };
+    agy::interrupt(&record, request.expected_turn_started)?;
+    let receipt = json!({"status":"submitted","confirmed":true,"request_id":id.to_string(),
+        "name":name,"run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id});
+    agy::state_guard()
+        .and_then(|_guard| atomic(&path, &receipt.to_string()))
+        .map_err(|_| "Antigravity confirmed cancellation, but its receipt did not settle; inspect the original session")?;
+    println!("{receipt}");
+    Ok(0)
 }
 
 // Claude prints this line when Escape stops a turn, and sends no hook.

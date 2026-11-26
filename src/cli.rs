@@ -1924,7 +1924,7 @@ fn bound_terminal(session: &str) -> Result<Option<(String, String)>> {
 /// Commands that start a session, one list for the hosted forwarding refusal,
 /// the claimed-parent gate (`fork` takes no `--parent`) and the forwarded
 /// parent link; with `--parent` a launch names its parent.
-const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "fork"];
+const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "agy", "fork"];
 
 /// Why forwarding `command` to another computer is refused for a resident
 /// DeepSeek host's tool call (`HGS_AGENT=dsh`) without its hosted proof, or
@@ -3748,6 +3748,32 @@ fn launch(
     let command_name = basename(command);
     if state::parent_link::claimed_launch() && !matches!(command_name.as_str(), "claude" | "codex" | "kimi" | "dsh" | "opencode") {
         return Err(Error::new(1, "--parent is available for Claude, Codex, Kimi, DeepSeek and OpenCode launches"));
+    }
+    if command_name == "agy" {
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        return Err(Error::new(1, "Antigravity sessions are available on Linux and macOS"));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            if options.account.as_deref().is_some_and(|id| id != state::agy::ACCOUNT)
+                || options.resume || options.resume_id.is_some() || !options.extra.is_empty()
+                || options.fresh || options.remote_control || options.model.is_some() || options.effort.is_some()
+            {
+                return Err(Error::new(1, "Use native-agy and the saved Zerus session for Antigravity resume"));
+            }
+            let project = if project == "/" { "root".into() } else { sanitize(&project) };
+            let tag = if options.tag.is_empty() { "main" } else { &options.tag };
+            if let Some(problem) = zerus_client_core::actions::tag_problem(tag) {
+                return Err(Error::new(1, problem));
+            }
+            let name = format!("agy/{project}/{tag}");
+            let result = state::agy::launch(&name, &directory, options.launch_id.as_deref(), options.dry)
+                .map_err(|error| Error::new(1, error))?;
+            if !options.dry {
+                record_native_launch(options.launch_id.as_deref(), &name);
+            }
+            println!("{result}");
+            return Ok(0);
+        }
     }
     if command_name=="opencode" {
         if options.account.as_deref().is_some_and(|id|id!="native-opencode") {return Err(Error::new(1,"Choose native-opencode; separate OpenCode profiles are not supported"));}

@@ -4,6 +4,8 @@
 //! the original helper: an upgrade must never orphan a saved conversation.
 mod answer_channel;
 mod agent_hint;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) mod agy;
 mod archive;
 mod record_source;
 pub(crate) mod archive_catalog;
@@ -593,6 +595,11 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget(), #[cfg(target_os = "linux")] readiness_until: native_launch::catalog_deadline() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if record["backend"] == "agy" {
+            sessions.push(agy::row(&record, false));
+            continue;
+        }
         // An archive written before its binding was removed wins, as before.
         // Consult only this preview so older archives never add listing I/O.
         if archive::equivalent(&record, archived) { continue; }
@@ -1751,6 +1758,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     {
         return end_children::dispatch(command, args);
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if command == "agy-worker" {
+        return agy::run_worker(args);
+    }
     if command == "worktrees" {
         return worktrees::dispatch(args);
     }
@@ -1869,6 +1880,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
             "hgs send --observe is taken only as `hgs send <codex session> --observe --json`"
                 .into(),
         );
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
+        return agy::dispatch(command, name, rest);
     }
     // The Composer's automatic offer must reach the terminal input lock.
     // Provider routes that do not implement this admission cannot take it.

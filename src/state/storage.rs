@@ -412,13 +412,21 @@ pub(super) fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
 /// Structural proof for bytes retained by recovery's original read. Selection
 /// is checked by public metadata readers; it never leaks into a different
 /// historical transaction through ambient caller state.
+pub(super) fn binding_agent(record: &Value) -> bool {
+    let agent = string(record, "agent");
+    AGENTS.contains(&agent)
+        || (agent == "agy" && record["backend"] == "agy"
+            && string(record, "name").starts_with("agy/")
+            && record["account_id"] == "native-agy")
+}
+
 pub(super) fn verify_metadata_at(path: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
     let record: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("{name}: invalid saved binding: {e}"))?;
     if !record.is_object()
         || record["version"] != 1
         || string(&record, "name") != name
-        || !AGENTS.contains(&string(&record, "agent"))
+        || !binding_agent(&record)
     {
         return Err(format!("{name}: invalid saved binding"));
     }
@@ -531,7 +539,7 @@ pub(super) fn verify_at(path: &Path, name: &str, bytes: &[u8]) -> Result<Value> 
     if !record.is_object()
         || record["version"] != 1
         || string(&record, "name") != name
-        || !AGENTS.contains(&string(&record, "agent"))
+        || !binding_agent(&record)
     {
         return Err(format!("{name}: invalid saved binding"));
     }
