@@ -25,6 +25,7 @@ import { AttachmentsChip } from "./Attachments";
 import { RecoveryChip } from "./RecoveryChip";
 import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
 import { allowRetryShown, moveFocusOff } from "./composer-ui";
+import { AGY_DELIVERY_UNCONFIRMED } from "./send-error";
 import { focusTranscript, following, jumpToLatest, shownSearchPreview, unseen } from "./Activity";
 import { jumpButton } from "./search-hit";
 import { OwnMessageNavigation } from "./OwnMessageNavigation";
@@ -349,7 +350,8 @@ export function Composer() {
             disabled={composer.operationLocked()} onClick={() => { void composer.refresh(); }}><Icon name="refresh-cw" size={17} /></button>
         </Show>
         <Show when={allowRetryShown(v(), composer.operationLocked())}>
-          <button type="button" class="btn ghost" title={tr("Check the terminal before sending again to avoid a duplicate message")}
+          <button type="button" class="btn ghost" title={s()?.agent === "agy" ? tr(AGY_DELIVERY_UNCONFIRMED)
+            : tr("Check the terminal before sending again to avoid a duplicate message")}
             onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />{tr("Allow retry")}</button>
         </Show>
         <Show when={!child()}><ModelSettingsButton /></Show>

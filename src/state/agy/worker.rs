@@ -104,11 +104,14 @@ fn event(record: &mut Value, kind: &str, text: &str, id: &Value) {
     if !record["agy_events"].is_array() {
         record["agy_events"] = json!([]);
     }
+    let mut event = json!({"seq":seq,"type":kind,"at":at,"detail":clipped(text,EVENT_BYTES),
+        "request_id":id,"source":"agy_acp","run_id":record["run_id"],
+        "conversation_id":record["conversation_id"]});
+    if kind == "UserPromptSubmit" {
+        event["delivery_state"] = json!("unconfirmed");
+    }
     let events = record["agy_events"].as_array_mut().expect("event ring");
-    events.push(
-        json!({"seq":seq,"type":kind,"at":at,"detail":clipped(text,EVENT_BYTES),
-        "request_id":id,"source":"agy_acp"}),
-    );
+    events.push(event);
     if events.len() > EVENT_COUNT {
         events.drain(0..events.len() - EVENT_COUNT);
     }
@@ -210,13 +213,23 @@ impl Owner {
         Ok(None)
     }
 
-    fn confirmed(turn: &mut Turn) -> Result<()> {
+    fn confirmed(record: &mut Value, turn: &mut Turn) -> Result<()> {
         if turn.receipt["status"] != "submitted" {
             turn.receipt["status"] = json!("submitted");
             save_receipt(&turn.receipt)?;
             if let Some(mut stream) = turn.client.take() {
                 let _ = respond(&mut stream, &turn.receipt);
             }
+            edit(record, |record| {
+                if let Some(offer) = record["agy_events"].as_array_mut().and_then(|events| {
+                    events.iter_mut().rev().find(|event| {
+                        event["type"] == "UserPromptSubmit"
+                            && event["request_id"] == turn.receipt["request_id"]
+                    })
+                }) {
+                    offer["delivery_state"] = json!("submitted");
+                }
+            })?;
         }
         Ok(())
     }
@@ -235,7 +248,7 @@ impl Owner {
                 let chunk = string(&update["content"], "text");
                 turn.text
                     .push_str(clipped(chunk, EVENT_BYTES.saturating_sub(turn.text.len())));
-                Self::confirmed(turn)?;
+                Self::confirmed(&mut self.record, turn)?;
             }
         }
         let Some(reply) = Client::reply(frame, turn.id)? else {
@@ -256,7 +269,7 @@ impl Owner {
             Reply::Refusal | Reply::AuthRequired => (false, false),
         };
         if settled {
-            Self::confirmed(&mut turn)?;
+            Self::confirmed(&mut self.record, &mut turn)?;
         } else if turn.receipt["status"] != "submitted" {
             turn.receipt["status"] = json!("uncertain");
             save_receipt(&turn.receipt)?;

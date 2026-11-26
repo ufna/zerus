@@ -87,6 +87,11 @@ pub enum Inspect {
     Refresh {
         notice: String,
     },
+    /// Refresh the exact followed Antigravity Activity.
+    Activity {
+        run_id: String,
+        conversation_id: String,
+    },
 }
 
 /// Inspect for a failed row: DeepSeek's Native UI, else Terminal when the
@@ -94,10 +99,6 @@ pub enum Inspect {
 pub fn inspect(cmd: &str, terminal: bool, machine: &str) -> Inspect {
     if cmd == "dsh" {
         Inspect::NativeUi
-    } else if cmd == "agy" {
-        Inspect::Refresh {
-            notice: crate::source!("Refreshing Activity. Check the recorded messages before retrying.").into(),
-        }
     } else if terminal {
         Inspect::Terminal
     } else {
@@ -368,6 +369,31 @@ impl LocalMessages {
                 result.removed += usize::from(shown);
                 return !shown;
             }
+            if details["backend"] == "agy" {
+                // AGY records the offer before ACP confirms it. Text and time
+                // never establish delivery or clear a draft in this adapter.
+                let exact = |event: &&Value| {
+                    event["source"] == "agy_acp"
+                        && !row.id.is_empty()
+                        && event["request_id"] == row.id
+                        && event.get("run_id").is_none_or(|run| *run == row.run_id)
+                        && event
+                            .get("conversation_id")
+                            .is_none_or(|id| *id == row.conversation_id)
+                };
+                let shown = (row.status == Status::Sent || row.uncertain)
+                    && events.iter().filter(exact).any(|event| {
+                        event["type"] == "UserPromptSubmit"
+                            && (event["delivery_state"] == "submitted"
+                                || (event.get("delivery_state").is_none()
+                                    && events
+                                        .iter()
+                                        .filter(exact)
+                                        .any(|reply| reply["type"] == "AgentMessage")))
+                    });
+                result.removed += usize::from(shown);
+                return !shown;
+            }
             let failed = row.status == Status::Error;
             if listed("attachment_messages", &row.message_id) {
                 result.removed += 1;
@@ -387,7 +413,8 @@ impl LocalMessages {
                 matches!(
                     event["type"].as_str(),
                     Some("UserPromptSubmit" | "UserPromptQueued" | "TurnStarted")
-                ) && event["agent_id"].as_str().unwrap_or("").is_empty()
+                ) && event["source"] != "agy_acp"
+                    && event["agent_id"].as_str().unwrap_or("").is_empty()
                     && event["at"].as_f64().unwrap_or(0.0) >= row.submitted_at - 2.0
                     && !detail.is_empty()
                     && if failed {
@@ -517,6 +544,58 @@ mod tests {
 
     fn send(messages: &mut LocalMessages, id: &str, text: &str, files: &[StoredFile]) {
         messages.sending(KEY, id, None, text, files, "run-1", "conv-1", 100.0);
+    }
+
+    #[test]
+    fn antigravity_offer_and_other_request_proof_keep_the_uncertain_row() {
+        let mut messages = LocalMessages::default();
+        send(&mut messages, "current", "identical prompt", &[]);
+        messages.finished(
+            KEY,
+            "current",
+            &Outcome::Uncertain {
+                detail: "missing proof".into(),
+            },
+        );
+        let details = json!({"backend":"agy","run_id":"run-1","conversation_id":"conv-1"});
+        let offer = json!({"source":"agy_acp","type":"UserPromptSubmit","request_id":"current",
+            "delivery_state":"unconfirmed","detail":"identical prompt","at":100});
+        let other = json!({"source":"agy_acp","type":"UserPromptSubmit","request_id":"prior",
+            "delivery_state":"submitted","detail":"identical prompt","at":100});
+        let error = json!({"source":"agy_acp","type":"ProviderError","request_id":"current"});
+        let mut wrong_run = offer.clone();
+        wrong_run["run_id"] = json!("other-run");
+        wrong_run["delivery_state"] = json!("submitted");
+        let mut wrong_conversation = offer.clone();
+        wrong_conversation["conversation_id"] = json!("other-conversation");
+        wrong_conversation["delivery_state"] = json!("submitted");
+        let mut legacy = offer.clone();
+        legacy.as_object_mut().unwrap().remove("delivery_state");
+        for events in [
+            [
+                offer.clone(),
+                other.clone(),
+                error.clone(),
+                wrong_run,
+                wrong_conversation,
+            ]
+            .as_slice(),
+            [legacy, other, error].as_slice(),
+        ] {
+            let result = messages.reconcile(KEY, &details, events);
+            assert_eq!(result.removed, 0);
+            assert!(result.delivered.is_empty());
+            assert_eq!(messages.rows(KEY)[0].id, "current");
+            assert!(messages.rows(KEY)[0].uncertain);
+        }
+        let mut confirmed = offer;
+        confirmed["delivery_state"] = json!("submitted");
+        let result = messages.reconcile(KEY, &details, &[confirmed]);
+        assert_eq!(result.removed, 1);
+        assert!(
+            result.delivered.is_empty(),
+            "Activity does not clear the draft"
+        );
     }
 
     /// zerus-5wmh.66.4.9.3: a row sent to the run a receipted resume returned

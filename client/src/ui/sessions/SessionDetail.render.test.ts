@@ -1013,7 +1013,7 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   transport.composer = (command, args) => {
     if (command === "local_inspect") {
       inspections.push(args);
-      return { kind: "refresh", notice: "Refreshing Activity. Check the recorded messages before retrying." };
+      return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
     }
     if (command === "send_message") {
       sendCalls.push(args);
@@ -1067,17 +1067,36 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     conversation_id: row.conversation_id ?? "", submitted_at: 1, error: "Delivery is not confirmed. Review Activity before retrying.",
     uncertain: true, message_id: null, submitted_text: null, source: null, voice: null,
   };
+  const earlier = { seq: 1, type: "UserPromptSubmit", source: "agy_acp", detail: "Earlier Antigravity prompt", delivery_state: "submitted" };
+  const offer = { seq: 3, type: "UserPromptSubmit", source: "agy_acp", detail: unknown.text, request_id: unknownId,
+    run_id: row.run_id, conversation_id: row.conversation_id, delivery_state: "unconfirmed" };
+  receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [earlier, reply, offer], cursor: 3 } }] });
   receive({ ...emptyBatch(), composer: { ...view, rev: 2, available: true, uncertain: true, local: [unknown],
     status: unknown.error, status_error: true } });
   const localButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".act-local-actions button")];
   const checkLabel = lang === "ru" ? "Проверить активность" : "Check Activity";
   await vi.waitFor(() => expect(localButtons().map(button => button.textContent)).toContain(checkLabel));
   expect(localButtons()).toHaveLength(2); // Inspect and Delete, with no ordinary Retry
+  const userRows = () => [...host.querySelectorAll(".act-msg.k-user")];
+  expect(userRows()).toHaveLength(2);
+  expect(userRows()[0].querySelector(".act-receipt")?.textContent).toBe(lang === "ru" ? "Отправлено" : "Sent");
+  expect(userRows()[1].querySelector(".act-stamp")?.textContent).toBe(lang === "ru" ? "Доставка не подтверждена" : "Delivery not confirmed");
+  expect(userRows()[1].querySelector(".act-receipt")).toBeNull();
+  const guidance = lang === "ru" ? "Доставка не подтверждена. Перед повторной попыткой проверьте активность." : unknown.error;
+  expect(userRows()[1].querySelector(".act-error")?.textContent).toBe(guidance);
+  expect(host.querySelector(".cmp-status")?.getAttribute("aria-label")).toBe(guidance);
   expect(sendDraft().disabled).toBe(true);
   sendDraft().click();
+  host.querySelector(".cmp-editor")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   expect(sendCalls).toHaveLength(1);
+  vi.mocked(bridge.activityPort.follow).mockClear();
   localButtons().find(button => button.textContent === checkLabel)!.click();
   await vi.waitFor(() => expect(inspections).toEqual([{ handle: view.handle, id: unknownId }]));
+  await vi.waitFor(() => expect(bridge.activityPort.follow).toHaveBeenCalledExactlyOnceWith({
+    computer: "", key, name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, after: undefined, tail: 100,
+  }));
+  expect(activity.events()).toEqual([earlier, reply, offer]);
+  expect(sendCalls).toHaveLength(1);
   expect(detailTab()).toBe("activity");
   expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
   const stop = await openMenu(labels.stop);

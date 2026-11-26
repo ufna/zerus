@@ -2363,10 +2363,23 @@ impl Composers {
         let hub = self.lock();
         let ctx = self.context(&hub)?;
         hub.composers.get(&ctx.key).filter(|c| c.handle == handle)?;
-        hub.local
+        let row = hub
+            .local
             .rows(&ctx.key)
             .iter()
             .find(|row| row.id == id && row.status == Status::Error)?;
+        if ctx.facts.cmd == "agy" {
+            let (run, conversation) = ctx.action_identity();
+            return (ctx.online
+                && !run.is_empty()
+                && !conversation.is_empty()
+                && row.run_id == run
+                && row.conversation_id == conversation)
+                .then(|| Inspect::Activity {
+                    run_id: row.run_id.clone(),
+                    conversation_id: row.conversation_id.clone(),
+                });
+        }
         let facts = TerminalFacts {
             cmd: ctx.facts.cmd.clone(),
             terminal_supported: ctx.row.terminal_supported,
@@ -6249,7 +6262,12 @@ pub(crate) mod tests {
         let calls = sent(&fake);
         assert_eq!(local.id, calls[0].2);
         assert_eq!(local.error, "Delivery is not confirmed. Review Activity before retrying.");
-        assert!(matches!(c.inspect_local(v.handle, &local.id), Some(Inspect::Refresh { .. })));
+        assert!(
+            matches!(c.inspect_local(v.handle, &local.id), Some(Inspect::Activity { run_id, conversation_id })
+                if run_id == "run-1" && conversation_id == "conv-1")
+        );
+        assert_eq!(c.inspect_local(v.handle, "earlier-request"), None);
+        assert_eq!(c.inspect_local(v.handle + 1, &local.id), None);
         assert_eq!(c.retry(v.handle, &local.id), SendReply::Busy);
         assert_eq!(c.send_message(v.handle, 2, v.text_epoch, draft.into(), 0, 0), SendReply::Busy);
         assert_eq!(sent(&fake).len(), 1);

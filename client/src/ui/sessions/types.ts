@@ -288,6 +288,7 @@ export interface ActivityItem {
   sender?: string;
   /** Receipt line under a user message ("Sent", "Queued at this time"). */
   receipt?: string;
+  receiptUnconfirmed?: boolean;
   /** Operational group that contains an attention event (approval, failure). */
   warn?: boolean;
   /** A header other than "You" or "Agent" (recorded context, answers). */
