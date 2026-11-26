@@ -49,6 +49,9 @@ pub enum Request {
     DeferredSend {
         intent: Box<super::deferred_send::Intent>,
     },
+    VerifiedSend {
+        intent: Box<super::verified_send::Intent>,
+    },
     DeferredAnswer {
         intent: Box<super::deferred_answer::Intent>,
     },
@@ -163,6 +166,7 @@ impl Request {
             Self::TaskMessage { intent } => &intent.request_id,
             Self::TaskMessageInputRelease { release } => &release.release_id,
             Self::DeferredSend { intent } => &intent.request_id,
+            Self::VerifiedSend { intent } => &intent.send.request_id,
             Self::DeferredAnswer { intent } => &intent.request_id,
             Self::TeamPersonDecide { intent } => &intent.plan.request_id,
             Self::TeamPersonPlanPiece { piece } => &piece.request_id,
@@ -194,6 +198,7 @@ impl Request {
             Self::TaskMessage { .. } => "task_message",
             Self::TaskMessageInputRelease { .. } => "task_message_input_release",
             Self::DeferredSend { .. } => "deferred_send",
+            Self::VerifiedSend { .. } => "verified_send",
             Self::DeferredAnswer { .. } => "deferred_answer",
             Self::TeamPersonDecide { .. } => "team_person_decide",
             Self::TeamPersonPlanPiece { .. } => "team_person_plan_piece",
@@ -225,6 +230,7 @@ impl Request {
             Self::TaskMessage { intent } => intent.as_ref().clone().verify().is_ok(),
             Self::TaskMessageInputRelease { release } => release.valid(),
             Self::DeferredSend { intent } => intent.as_ref().clone().verify().is_ok(),
+            Self::VerifiedSend { intent } => intent.valid(),
             Self::DeferredAnswer { intent } => intent.as_ref().clone().verify().is_ok(),
             Self::TeamPersonDecide { intent } => intent.valid(),
             Self::TeamPersonPlanPiece { piece } => piece.valid(),
@@ -422,6 +428,7 @@ impl Cache {
                 | Request::TaskMessage { .. }
                 | Request::TaskMessageInputRelease { .. }
                 | Request::DeferredSend { .. }
+                | Request::VerifiedSend { .. }
                 | Request::DeferredAnswer { .. }
                 | Request::TeamPersonDecide { .. }
                 | Request::TeamPersonPlanPiece { .. }
@@ -644,6 +651,14 @@ impl Responder {
                 }
                 Some(super::ownership::Mode::Service)
             }
+            Request::VerifiedSend { intent } => {
+                if self.ownership_mode.get() != Some(&super::ownership::Mode::Service)
+                    || self.configuration.get() != Some(&intent.send.scope.configuration)
+                {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                Some(super::ownership::Mode::Service)
+            }
             Request::DeferredAnswer { intent } => {
                 if self.ownership_mode.get() != Some(&super::ownership::Mode::Service)
                     || self.configuration.get() != Some(&intent.scope.configuration)
@@ -853,6 +868,24 @@ mod tests {
                 categories: None,
             },
         }
+    }
+
+    #[test]
+    fn verified_send_registration_requires_service_ownership_mode() {
+        use crate::desktop::{ownership::Mode, verified_send};
+        let request = Envelope {
+            abi: ABI.into(),
+            attempt: id(1),
+            request: Request::VerifiedSend {
+                intent: Box::new(verified_send::tests::intent(b"private file")),
+            },
+        };
+        let cache = Cache::default();
+        for mode in [None, Some(Mode::Native)] {
+            assert!(matches!(cache.prepare_with_mode(request.clone(), mode),
+                Err(err) if err.kind() == io::ErrorKind::PermissionDenied));
+        }
+        assert!(cache.prepare_with_mode(request, Some(Mode::Service)).is_ok());
     }
 
     #[test]

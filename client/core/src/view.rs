@@ -148,6 +148,8 @@ pub struct ViewRow {
     pub resumable: bool,
     pub activity: String,
     pub process_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_readiness: Option<crate::desktop::verified_send::Readiness>,
     /// `process_work.count`, -1 when unknown.
     pub background: i64,
     /// Listed optional-question count for the card, None while unknown. Catalog
@@ -1432,6 +1434,11 @@ pub fn row(value: &Value) -> ViewRow {
             .unwrap_or(false),
         activity: session.activity.to_owned(),
         process_state: session.process_state.to_owned(),
+        native_readiness: value.get("native_readiness").and_then(|proof| {
+            serde_json::from_value::<crate::desktop::verified_send::Readiness>(proof.clone())
+                .ok()
+                .filter(|proof| proof.matches(text(value, "session_id"), text(value, "run_id"), text(value, "conversation_id")))
+        }),
         background: session.background,
         optional_question_count: (notify.optional_count >= 0).then_some(notify.optional_count),
         archive_id: some(text(value, "archive_id")),

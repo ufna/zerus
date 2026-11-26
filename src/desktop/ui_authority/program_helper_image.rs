@@ -17,6 +17,7 @@ const REQUIRED: i32 =
 const IMAGE_BYTES: u64 = 256 << 20;
 const COMMAND: [&str; 3] = ["worktrees", "program-stop", "--json"];
 const CLEANUP_COMMAND: [&str; 3] = ["worktrees", "program-cleanup", "--json"];
+const VERIFIED_SEND_COMMAND: [&str; 3] = ["desktop", "verified-send", "--json"];
 #[derive(PartialEq, Eq)]
 struct Object {
     device: u64,
@@ -89,6 +90,9 @@ impl OwnImage {
     }
     pub(super) fn capture_cleanup(until: Instant) -> Result<Self> {
         Self::capture_command(until, &CLEANUP_COMMAND)
+    }
+    pub(super) fn capture_verified_send(until: Instant) -> Result<Self> {
+        Self::capture_command(until, &VERIFIED_SEND_COMMAND)
     }
     // Expected argv is selected only by the two fixed native entry points.
     // No request/body field can select self mode, PID, FD, path or image.

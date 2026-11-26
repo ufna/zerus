@@ -485,6 +485,15 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn verified_send_source(&self, source: &(String, u64, u64)) -> bool {
+        let snapshot = self.snapshot();
+        snapshot.connected && snapshot.verified_send_supported
+            && self.notification_scope("").is_some_and(|scope| {
+                source == &(scope.epoch, scope.incarnation, scope.generation)
+            })
+    }
+
     pub(crate) fn notification_receipt(
         &self,
         target: &zerus_client_core::actions::Target,

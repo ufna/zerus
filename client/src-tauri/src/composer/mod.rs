@@ -748,6 +748,7 @@ pub(crate) struct Shared {
     opened: Condvar,
     /// The selected desktop service's deferred send route, if any.
     pub(crate) deferred: Mutex<Option<Arc<handed::DeferredRoute>>>,
+    pub(crate) verified_send: Mutex<Option<Arc<handed::VerifiedRoute>>>,
     /// The selected service's compact-to-send route: Linux and macOS in
     /// desktop-service mode only.
     pub(crate) compact: Mutex<Option<Arc<handed::CompactRoute>>>,
@@ -811,6 +812,7 @@ impl Composers {
             draft_listener: Default::default(),
             opened: Condvar::new(),
             deferred: Mutex::new(None),
+            verified_send: Mutex::new(None),
             compact: Mutex::new(None),
             resume: Mutex::new(None),
             answer_route: Mutex::new(None),

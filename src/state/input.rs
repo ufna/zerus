@@ -25,7 +25,7 @@ pub(crate) mod task_refusal;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::state) mod native_send;
 #[cfg(target_os = "linux")]
-mod native_readiness;
+pub(super) mod native_readiness;
 
 /// Only this module's public dispatch constructs this provenance. Internal
 /// submit* callers, including those using Origin::Person, cannot mint it.
@@ -526,7 +526,7 @@ impl ProcessCheck {
     fn admit(&mut self, record: &Value) -> bool {
         #[cfg(target_os = "linux")]
         if matches!(self, Self::Verify) {
-            let Some(witness) = native_readiness::Witness::read(record) else {
+            let Some(witness) = native_readiness::witness(record) else {
                 return false;
             };
             *self = Self::Pinned(Box::new(witness));
@@ -541,7 +541,7 @@ impl ProcessCheck {
             #[cfg(target_os = "linux")]
             Self::Verify => false,
             #[cfg(target_os = "linux")]
-            Self::Pinned(witness) => native_readiness::Witness::read(record).as_ref() == Some(witness.as_ref()),
+            Self::Pinned(witness) => native_readiness::witness(record).as_ref() == Some(witness.as_ref()),
         }
     }
 
@@ -1636,6 +1636,33 @@ pub(super) fn dispatch_verified(
         super::resolve_label_unrepaired(name)?;
         dispatch_send(name, false, false, ProcessCheck::Verify)
     }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn send_desktop_verified(permit: &crate::desktop::verified_send::Permit)
+    -> Result<zerus_client_core::desktop::verified_send::Reply>
+{
+    use zerus_client_core::desktop::verified_send::{Outcome, Reply};
+    let intent = permit.intent()?;
+    let plan = intent.verify().map_err(str::to_owned)?;
+    let named = native_readiness::observation_record(&plan.session, &plan.run_id, &plan.conversation_id);
+    let outcome = match named {
+        Ok(record) if record["session_id"] == intent.session_id => {
+            session_id::select_guarded_route(&plan.session, &intent.session_id, &plan.run_id,
+                &plan.conversation_id, storage::in_id_layout(&record));
+            match submit_core(&plan.session, intent.send.original.as_bytes(), Origin::Person,
+                true, false, Some(&|| permit.intent().map(|_| ())), ProcessCheck::Verify)
+            {
+                Ok(_) => Outcome::Submitted,
+                Err(Failure::NotOffered(witness)) => Outcome::Refused {
+                    reason: witness.reason.chars().take(MAX_OBSERVE_REASON).collect(),
+                },
+                Err(Failure::Unknown(_) | Failure::TerminalRefusal(_)) => Outcome::Unknown,
+            }
+        }
+        _ => Outcome::Refused { reason: "session identity changed; refresh before sending".into() },
+    };
+    Ok(Reply { request_id: plan.request_id, run_id: plan.run_id, conversation_id: plan.conversation_id, outcome })
 }
 
 fn dispatch_send(

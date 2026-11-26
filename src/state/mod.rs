@@ -46,6 +46,8 @@ pub(crate) use hooks::{codex_hook_definition, codex_hook_group, install_codex_ho
 mod hook_caller;
 pub(crate) mod hook_health;
 mod input;
+#[cfg(target_os = "linux")]
+mod native_launch;
 pub(crate) use input::dialog_clause;
 // Its only callers are the Teams actor's tests, which run on Linux and macOS.
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -588,7 +590,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks, None)?) } else { None };
     let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
     // Archive preparation does not consume the live question-indexing budget.
-    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
+    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget(), #[cfg(target_os = "linux")] readiness_until: native_launch::catalog_deadline() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
         // An archive written before its binding was removed wins, as before.
@@ -653,6 +655,8 @@ struct Shared<'a> {
     route_outcomes: Option<&'a question_route_outcomes::Reader>,
     /// Bounds question indexing for the whole listing.
     budget: std::time::Instant,
+    #[cfg(target_os = "linux")]
+    readiness_until: std::time::Instant,
 }
 
 /// The row of a live session whose pane runs its saved binding `record`.
@@ -692,6 +696,10 @@ fn live_display_row(
     let mut summary = journal::summary(&record, true);
     if summary["process_state"] == "exited" && catalog_process_unverified(&record) {
         summary["process_state"] = json!(zerus_client_core::view::PROCESS_UNVERIFIED);
+        #[cfg(target_os = "linux")]
+        if let Some(readiness) = native_launch::catalog_readiness(&record, shared.readiness_until) {
+            summary["native_readiness"] = json!(readiness);
+        }
         if let Some(actions) = summary["allowed_actions"].as_array_mut() {
             actions.retain(|action| action != "pause" && action != "terminate");
         }
@@ -1307,6 +1315,13 @@ pub(crate) fn send_verified(
     entry: &crate::cli::VerifiedCodexInput, name: &str, observe: bool,
 ) -> Result<i32> {
     input::dispatch_verified(entry, name, observe)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn send_desktop_verified(permit: &crate::desktop::verified_send::Permit)
+    -> Result<zerus_client_core::desktop::verified_send::Reply>
+{
+    input::send_desktop_verified(permit)
 }
 
 /// [`resolve_label`] for the send's effect-free observation: the same
