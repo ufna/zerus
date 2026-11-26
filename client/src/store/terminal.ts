@@ -25,7 +25,7 @@ const openCodeIdentity = (computer: string, run?: string, conversation?: string)
   run && conversation ? JSON.stringify([computer, run, conversation]) : undefined;
 
 export interface TerminalPort {
-  connect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (message: TerminalEvent) => void): Promise<TerminalConnected>;
+  connect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (message: TerminalEvent) => void, rebindGeneration?: number): Promise<TerminalConnected>;
   write(view: string, generation: number, bytes: Uint8Array): Promise<void>;
   resize(view: string, generation: number, cols: number, rows: number): Promise<void>;
   ack(view: string, generation: number): void;
@@ -89,6 +89,12 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   const [status, setStatus] = createSignal("");
   const [texts, setTexts] = createSignal<TerminalStatus | undefined>();
   const [openCodeAttach, setOpenCodeAttach] = createSignal<string>();
+  const [selecting, setSelecting] = createSignal(false);
+  let targetRequest = 0;
+  // A live remount changes the output sink, while the same opened client
+  // still owns its eventual exit. A fresh connect gets a new owner.
+  type OpenCodeClient = { key: string; generation?: number };
+  let openCodeClient: OpenCodeClient | undefined;
   let target: TerminalTarget | undefined;
   let provider: "opencode" | undefined;
   // This window can observe its own client. Another application's attach is
@@ -128,14 +134,14 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   let lastResize = Number.NEGATIVE_INFINITY;
   let resizeTimer: (() => void) | undefined;
 
-  const ready = () => !!target && !!texts()?.available;
+  const ready = () => !selecting() && !!target && !!texts()?.available;
   const imageBinding = (t: TerminalTarget | undefined) => JSON.stringify(t && [t.computer, t.name, t.run_id, t.conversation_id]);
 
-  interface Restore { next: boolean; parsing: boolean; connected?: TerminalConnected; cols: number; rows: number; openCode?: string }
+  interface Restore { next: boolean; parsing: boolean; connected?: TerminalConnected; cols: number; rows: number; client?: OpenCodeClient }
   const restored = (mine: number, restore: Restore) => {
     if (mine !== serial || restore.parsing || !restore.connected) return;
-    if (restore.openCode) closedOpenCode.delete(restore.openCode);
-    setOpenCodeAttach(restore.openCode);
+    if (restore.client) closedOpenCode.delete(restore.client.key);
+    setOpenCodeAttach(restore.client?.key);
     setPhase("connected");
     setStatus(restore.connected.status);
     // The view may have been resized while its history was being parsed.
@@ -144,8 +150,11 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   };
 
   const handler = (mine: number, restore: Restore) => (m: TerminalEvent) => {
-    if (mine !== serial) return;
-    if (m instanceof ArrayBuffer || ArrayBuffer.isView(m)) {
+    const bytesEvent = m instanceof ArrayBuffer || ArrayBuffer.isView(m);
+    const ownsFinish = !bytesEvent && m.kind === "finished" && !!restore.client
+      && restore.client === openCodeClient && restore.client.generation !== undefined;
+    if (mine !== serial && !ownsFinish) return;
+    if (bytesEvent) {
       const view = m as ArrayBufferView;
       const bytes = m instanceof ArrayBuffer ? new Uint8Array(m) : new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
       // xterm calls back in a later task: use the generation current by then.
@@ -171,8 +180,8 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
       return;
     }
     if (m.kind === "finished") {
-      const key = restore.openCode;
-      const cleanClose = key && m.code === 0 && (restore.connected || openCodeAttach() === key);
+      const key = restore.client?.key;
+      const cleanClose = key && m.code === 0 && restore.client?.generation !== undefined;
       if (cleanClose) {
         closedOpenCode.delete(key);
         closedOpenCode.add(key);
@@ -181,6 +190,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
       serial++;
       generation = 0;
       rustHolds = false;
+      openCodeClient = undefined;
       setOpenCodeAttach(undefined);
       setPhase("idle");
       setStatus(cleanClose ? OPENCODE_TERMINAL_CLOSED : m.status);
@@ -188,10 +198,13 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   };
 
   /** Connects, or rebinds the running attach after the view was mounted again. */
-  async function connect() {
+  async function connect(automatic = false) {
     if (!ready() || !screen || phase() === "connecting" || visibility.hidden()) return;
+    const key = openCodeKey(), rebinding = phase() === "connected";
+    if (automatic && key && (openCodeClosed() || (!rebinding && openCodeClient?.key === key))) return;
+    const previous = rebinding && key && openCodeClient?.key === key ? openCodeClient : undefined;
+    const rebind = automatic ? previous?.generation : undefined;
     const mine = ++serial;
-    const rebinding = phase() === "connected";
     setPhase("connecting");
     if (!rebinding) setStatus(texts()!.connecting);
     screen.reset();
@@ -199,21 +212,31 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     const { cols, rows } = screen.size();
     const sent = target!;
     const ticket = ++issued;
-    const restore: Restore = { next: false, parsing: false, cols, rows, openCode: openCodeKey() };
+    const client = rebind !== undefined ? previous : key ? { key } : undefined;
+    const restore: Restore = { next: false, parsing: false, cols, rows, client };
+    openCodeClient = client;
     rustHolds = true;
     try {
-      const c = await queue(() => port.connect(VIEW, sent, cols, rows, handler(mine, restore)));
-      if (mine !== serial) return;
+      const c = await queue(() => rebind !== undefined && mine !== serial
+        ? Promise.resolve(undefined)
+        : port.connect(VIEW, sent, cols, rows, handler(mine, restore), rebind));
+      if (!c || mine !== serial) return;
       generation = c.generation;
+      if (client) client.generation = c.generation;
       // xterm parses asynchronously. The connect IPC can resolve before its
       // replay callback; keeping Connecting rejects every historical reply.
       restore.connected = c;
       restored(mine, restore);
       for (; owed > 0; owed--) port.ack(VIEW, generation);
-
     } catch (error) {
-      if (ticket === issued) rustHolds = false;
       if (mine !== serial) return;
+      if (rebind === undefined) {
+        if (ticket === issued) rustHolds = false;
+        openCodeClient = undefined;
+      }
+      // A failed rebind issues no new client. Its original finish can still
+      // arrive and refine the status. Another view mount cannot auto-launch.
+      generation = 0;
       setOpenCodeAttach(undefined);
       setPhase("idle");
       setStatus(message(error));
@@ -234,6 +257,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     const mine = ++serial;
     generation = 0;
     owed = 0;
+    openCodeClient = undefined;
     setOpenCodeAttach(undefined);
     setPhase("idle");
     const text = await hangUp();
@@ -242,10 +266,11 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   }
 
   /** Drops the view's state at once so nothing reaches the attach; Rust still holds it until the next retarget or disconnect (`rustHolds`). */
-  function leaveSession() {
+  function dropView() {
     serial++;
     generation = 0;
     owed = 0;
+    openCodeClient = undefined;
     setOpenCodeAttach(undefined);
     setPhase("idle");
   }
@@ -282,7 +307,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     void disconnect();
   });
 
-  const showConnection = () => { if (!openCodeClosed()) void connect(); };
+  const showConnection = () => { void connect(true); };
 
   return {
     phase, status, ready,
@@ -297,36 +322,49 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     generation: () => generation,
     /** The selected session's target and texts (on every change of either). */
     async setTarget(next: TerminalTarget | undefined, nextTexts: TerminalStatus | undefined, nextProvider?: "opencode") {
+      const request = ++targetRequest;
+      const current = () => request === targetRequest;
       if (imageBinding(next) !== imageBinding(target)) imageRevision++;
-      setTexts(nextTexts);
-      if (!next || !nextTexts) { await disconnect(); target = undefined; provider = undefined; setStatus(""); return; }
-      // The core normally retargets by run. OpenCode also binds the native
-      // conversation, whose known replacement must not reuse an old client.
+      if (!next || !nextTexts) {
+        setSelecting(true); setTexts(undefined);
+        await disconnect();
+        if (current()) { target = undefined; provider = undefined; setSelecting(false); setStatus(""); }
+        return;
+      }
+      // The core also retires an exact known replacement native conversation
+      // before retargeting. While selection is unsettled, Connect cannot use
+      // the last committed target's identity with the latest row's controls.
       const otherConversation = provider === "opencode" && nextProvider === "opencode"
         && target?.computer === next.computer && target.run_id === next.run_id
         && !!target.conversation_id && !!next.conversation_id && target.conversation_id !== next.conversation_id;
-      // Input stops reaching the previous session before the await.
-      const dropped = (changedTarget(target, next) || otherConversation) && phase() !== "idle";
-      if (dropped) leaveSession();
+      const displaced = changedTarget(target, next) || otherConversation || selecting();
+      if (displaced) setSelecting(true);
+      if (displaced && phase() !== "idle") dropView();
+      setTexts(nextTexts);
       const ticket = issued;
-      if (otherConversation && rustHolds) await hangUp();
-      const changed = await queue(() => port.retarget(VIEW, next)) || otherConversation;
+      let changed: boolean | undefined;
+      try {
+        changed = await queue(() => current() ? port.retarget(VIEW, next) : Promise.resolve(undefined));
+      } catch (error) {
+        if (current()) { setSelecting(true); setStatus(message(error)); }
+        return;
+      }
+      if (!current() || changed === undefined) return;
       target = next;
       provider = nextProvider;
-      if (changed) {
+      setSelecting(false);
+      if (changed || otherConversation) {
         if (ticket === issued) rustHolds = false;
-        serial++;
-        generation = 0;
-        setPhase("idle");
+        dropView();
         screen?.reset();
         setStatus(!nextTexts.available ? nextTexts.reason : openCodeClosed() ? OPENCODE_TERMINAL_CLOSED : nextTexts.idle);
       }
       if (!nextTexts.available) {
-        if (phase() !== "idle" || rustHolds) { leaveSession(); await hangUp(); }
-        setStatus(nextTexts.reason);
+        if (phase() !== "idle" || rustHolds) { dropView(); await hangUp(); }
+        if (current()) setStatus(nextTexts.reason);
         return;
       }
-      if (screen && phase() === "idle" && (changed || dropped || rustHolds)) showConnection();
+      if (screen && phase() === "idle" && (changed || displaced || rustHolds)) showConnection();
     },
     /** The tab shows `s`: connect (Qt's currentChanged), or redraw a running attach. */
     show(s: Screen) {
@@ -338,7 +376,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     opened() { held = false; },
     /** The Sessions page was left: disconnect, and coming back does not connect (Qt's page switch). */
     async leavePage() { held = true; await disconnect(); },
-    leaveSession,
+    leaveSession() { targetRequest++; setSelecting(true); dropView(); },
     texts,
     /** The tab hides; the attach keeps running. */
     hide() {

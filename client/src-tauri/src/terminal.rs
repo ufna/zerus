@@ -112,7 +112,7 @@ pub struct TerminalTarget {
     pub name: String,
     pub run_id: String,
     pub machine: String,
-    /// Image staging data only; it never changes attach/reconnect selection.
+    /// Also binds the native OpenCode conversation when both targets know it.
     #[serde(default)]
     pub conversation_id: Option<String>,
 }
@@ -277,7 +277,7 @@ struct Delivery {
     sink: Arc<dyn Sink>,
     delivered: VecDeque<u8>,
     unacked: usize,
-    /// The attach was stopped: nothing more is delivered, nothing is waited for.
+    /// The attach ended or was stopped; its sink cannot be rebound.
     closed: bool,
 }
 
@@ -352,13 +352,21 @@ impl Terminals {
         }
     }
 
+    fn changed_target(&self, old: &TerminalTarget, next: &TerminalTarget) -> bool {
+        terminal::target_changed(&self.core(old), &self.core(next))
+            || (old.name.starts_with("opencode/")
+                && next.name.starts_with("opencode/")
+                && matches!((&old.conversation_id, &next.conversation_id), (Some(a), Some(b))
+                    if !a.is_empty() && !b.is_empty() && a != b))
+    }
+
     /// The view's target after `next`: a kept run when the target did not change.
     fn remember(&self, view: &str, next: &TerminalTarget) -> (bool, TerminalTarget) {
         let mut targets = lock(&self.0.targets);
         let previous = targets.get(view).cloned();
         let changed = previous
             .as_ref()
-            .is_none_or(|old| terminal::target_changed(&self.core(old), &self.core(next)));
+            .is_none_or(|old| self.changed_target(old, next));
         let mut kept = next.clone();
         if let Some(old) = previous.filter(|_| !changed) {
             kept.run_id = terminal::kept_run(&self.core(&old), &self.core(next));
@@ -410,7 +418,7 @@ impl Terminals {
         let _one = lock(&self.0.connecting);
         let (changed, target) = self.remember(view, &target);
         if !changed {
-            if let Some(connected) = self.rebind(view, &target, &sink, (cols, rows)) {
+            if let Some(connected) = self.rebind(view, &target, &sink, (cols, rows), None) {
                 return Ok(connected);
             }
         }
@@ -459,22 +467,51 @@ impl Terminals {
         })
     }
 
+    /// A live remount may take over its own sink. Only an ordinary Connect
+    /// may create a client if the old generation already exited.
+    fn rebind_only(
+        &self,
+        view: &str,
+        target: &TerminalTarget,
+        size: (u16, u16),
+        generation: u64,
+        sink: Arc<dyn Sink>,
+    ) -> Result<Connected, String> {
+        if !self.0.allowed {
+            return Err(crate::actions::REPLAY_NEEDS_HGS.into());
+        }
+        let _one = lock(&self.0.connecting);
+        self.rebind(view, target, &sink, size, Some(generation))
+            .ok_or_else(|| "Terminal is no longer attached. Select Connect to reopen.".to_owned())
+    }
+
     fn rebind(
         &self,
         view: &str,
         target: &TerminalTarget,
         sink: &Arc<dyn Sink>,
         size: (u16, u16),
+        generation: Option<u64>,
     ) -> Option<Connected> {
         let mut views = lock(&self.0.views);
         let open = views.get_mut(view)?;
+        if generation.is_some_and(|id| {
+            open.generation != id || self.changed_target(&open.target, target)
+                || open.target.conversation_id != target.conversation_id
+        }) {
+            return None;
+        }
+        let pipe = Arc::clone(&open.pipe);
+        let mut delivery = lock(&pipe.delivery);
+        if delivery.closed {
+            return None;
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             open.image_epoch = Arc::new(());
         }
         self.keep_target(open, target.clone());
         open.set_size(size.0, size.1);
-        let mut delivery = lock(&open.pipe.delivery);
         let replay: Vec<u8> = delivery.delivered.iter().copied().collect();
         delivery.unacked = usize::from(!replay.is_empty());
         if !replay.is_empty() {
@@ -508,10 +545,12 @@ impl Terminals {
                 let Some(code) = finished else { return };
                 let message = json!({"kind": "finished", "code": code, "status": texts::finished(code, &machine)});
                 {
-                    let delivery = lock(&pipe.delivery);
+                    let mut delivery = lock(&pipe.delivery);
                     if delivery.closed {
                         return;
                     }
+                    delivery.closed = true;
+                    pipe.acked.notify_all();
                     delivery.sink.message(message.to_string());
                 }
                 let ended = {
@@ -1032,10 +1071,18 @@ pub async fn terminal_connect(
     cols: u16,
     rows: u16,
     on_event: Channel,
+    rebind_generation: Option<u64>,
 ) -> Result<Connected, String> {
     let terminals = state.inner().clone();
-    blocking(move || terminals.connect(&view, target, cols, rows, Arc::new(ChannelSink(on_event))))
-        .await?
+    blocking(move || {
+        let sink = Arc::new(ChannelSink(on_event));
+        if let Some(generation) = rebind_generation {
+            terminals.rebind_only(&view, &target, (cols, rows), generation, sink)
+        } else {
+            terminals.connect(&view, target, cols, rows, sink)
+        }
+    })
+    .await?
 }
 
 /// Input as a raw body: `x-zerus-view` and `x-zerus-generation` name the attach.
@@ -2621,6 +2668,44 @@ print(json.dumps(value))
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(t.disconnect("main"), None);
+    }
+
+    #[test]
+    fn a_renderer_remount_takes_only_the_existing_open_code_client() {
+        let _tree = crate::PROCESS_TREE.read().unwrap();
+        let t = terminals();
+        let mut target = target("run-1");
+        target.name = "opencode/fixture/first".into();
+        target.conversation_id = Some("ses_one".into());
+        let original = Arc::new(Collect::default());
+        let first = t.connect("main", target.clone(), 80, 24, original.clone()).unwrap();
+        hello(&t, first.generation, &original);
+        let rebound = Arc::new(Collect::default());
+        let same = t
+            .rebind_only("main", &target, (80, 24), first.generation, rebound.clone())
+            .unwrap();
+        assert!(same.reused);
+        assert_eq!(same.generation, first.generation);
+        let mut replacement = target.clone();
+        replacement.conversation_id = Some("ses_two".into());
+        assert!(t
+            .rebind_only("main", &replacement, (80, 24), first.generation, rebound.clone())
+            .is_err());
+        t.write("main", first.generation, b"exit 0\r").unwrap();
+        until(&t, first.generation, &rebound, |sink| {
+            sink.messages().iter().any(|m| m["kind"] == "finished")
+        });
+        // A finish is emitted after the sink has closed, even if the native
+        // cleanup has not yet removed the old generation from the map.
+        assert!(t
+            .rebind_only("main", &target, (80, 24), first.generation, rebound.clone())
+            .is_err());
+        assert!(t.generation("main").is_none_or(|generation| generation == first.generation));
+        let next = t.connect("main", target, 80, 24, Arc::new(Collect::default())).unwrap();
+        assert_ne!(next.generation, first.generation);
+        assert!(!next.reused);
+        assert!(t.retarget("main", &replacement));
+        assert!(t.generation("main").is_none());
     }
 
     fn ack_all(t: &Terminals, generation: u64, sink: &Collect) {

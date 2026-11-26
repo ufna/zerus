@@ -194,8 +194,14 @@ export function TerminalTab() {
   const reconnectTip = () => available()
     ? openCode() ? tr("Reconnect terminal") : tr("Reconnect terminal. The session keeps running")
     : reason();
-  const status = () => terminal.status() === OPENCODE_TERMINAL_CLOSED
-    ? tr("Terminal closed. Select Connect to reopen.") : terminal.status();
+  const status = () => {
+    const text = terminal.status();
+    if (text === OPENCODE_TERMINAL_CLOSED) return tr("Terminal closed. Select Connect to reopen.");
+    if (text === "Terminal is no longer attached. Select Connect to reopen.") {
+      return tr("Terminal is no longer attached. Select Connect to reopen.");
+    }
+    return text;
+  };
   return (
     <div class="term-tab">
       <div class="term-bar">

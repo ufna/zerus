@@ -4205,6 +4205,7 @@
   "Terminal input activity is unknown.": "Неизвестно, печатают ли в терминале.",
   "Terminal input activity is unknown; nothing was submitted": "Неизвестно, печатают ли в терминале, ничего не отправлено",
   "Terminal input queue is full; wait before pasting more text.": "Очередь ввода терминала заполнена; подождите, прежде чем вставлять больше текста.",
+  "Terminal is no longer attached. Select Connect to reopen.": "Терминал отключён. Нажмите «Подключить», чтобы открыть его снова.",
   "Terminal is unavailable for this session.": "Терминал недоступен для этой сессии.",
   "Terminal uses this key to copy and paste.": "Терминал использует эту клавишу для копирования и вставки.",
   "Terminal.app": "Terminal.app",

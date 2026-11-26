@@ -73,6 +73,7 @@ import { openCleanup, closeCleanup } from "../../store/terminationCleanup";
 import { machineMeta } from "../../store/testing";
 import { listRows } from "./model";
 import { archive } from "../../store/archive";
+import { terminal } from "../../store/terminal";
 import { clearSearchPreview, setSearchPreview } from "../../store/searchSelection";
 import type { SearchHit } from "../../store/content-search-model";
 import { emptyBatch, type ComposerView, type LocalMessage, type ViewRow } from "../../types";
@@ -134,6 +135,31 @@ async function open(row: ViewRow, tab: "activity" | "processes" | "terminal" = "
   activity.applyActivity([{ computer: "", key: key.slice(1), kind: "state", payload: { rev: 1, value: { run_id: row.run_id, conversation_id: row.conversation_id, activity: "idle", phase: "idle", activity_summary: "Ready" } } }]);
   return key;
 }
+
+it("ignores an outdated OpenCode terminal status for the same selected row", async () => {
+  const row = { ...fixtureRow(), name: "opencode/example/terminal-status", agent: "opencode" };
+  const key = put(row);
+  const status = { supported: true, available: false, reason: "Current fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" };
+  let resolveOld!: (result: typeof status) => void;
+  vi.mocked(bridge.terminalStatus)
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+    .mockResolvedValueOnce(status);
+  const setTarget = vi.spyOn(terminal, "setTarget");
+  onTestFinished(() => setTarget.mockRestore());
+
+  setSelectedKey(key);
+  await flush();
+  expect(resolveOld).toBeTypeOf("function");
+  expect(put({ ...row, conversation_id: "new-conversation" })).toBe(key);
+  await flush();
+  expect(setTarget).toHaveBeenLastCalledWith(expect.objectContaining({ conversation_id: "new-conversation" }), status, "opencode");
+  const targetCalls = setTarget.mock.calls.length;
+
+  resolveOld({ ...status, reason: "Outdated fixture" });
+  await flush();
+  expect(setTarget).toHaveBeenCalledTimes(targetCalls);
+});
+
 const queueDraftLabels = {
   en: { send: "Send", queue: "Send queued messages now", retry: "Retry this message", notSent: "Not sent",
     check: "Check Terminal", allow: "Allow retry", notConfirmed: "Delivery not confirmed",

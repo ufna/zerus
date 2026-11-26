@@ -2275,6 +2275,7 @@
   "Terminal closed. Select Connect to reopen.": "Терминал закрыт. Нажмите «Подключить», чтобы открыть его снова.",
   "Terminal input activity is unknown.": "Неизвестно, печатают ли в терминале.",
   "Terminal input activity is unknown; nothing was submitted": "Неизвестно, печатают ли в терминале, ничего не отправлено",
+  "Terminal is no longer attached. Select Connect to reopen.": "Терминал отключён. Нажмите «Подключить», чтобы открыть его снова.",
   "Terminal is unavailable for this session.": "Терминал недоступен для этой сессии.",
   "Terminate and remove working folder": "Завершение сессии и удаление рабочей папки",
   "Terminate cancelled": "Завершение отменено",

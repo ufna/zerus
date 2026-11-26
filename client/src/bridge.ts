@@ -885,11 +885,11 @@ export function onLaunchAccountsChanged(listener: (computer: ComputerId) => void
 
 const DESKTOP_TERMINAL = "Terminal needs the desktop app.";
 
-export async function terminalConnect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (m: TerminalEvent) => void): Promise<TerminalConnected> {
+export async function terminalConnect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (m: TerminalEvent) => void, rebindGeneration?: number): Promise<TerminalConnected> {
   if (!inTauri()) throw DESKTOP_TERMINAL;
   const channel = new Channel<TerminalEvent>();
   channel.onmessage = onEvent;
-  return invoke<TerminalConnected>("terminal_connect", { view, target, cols, rows, on_event: channel });
+  return invoke<TerminalConnected>("terminal_connect", { view, target, cols, rows, on_event: channel, rebind_generation: rebindGeneration });
 }
 export async function terminalWrite(view: string, generation: number, bytes: Uint8Array): Promise<void> {
   if (!inTauri()) return;
