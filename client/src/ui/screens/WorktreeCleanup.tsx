@@ -4,7 +4,7 @@ import { setPage, setSelectedKey, setDetailTab } from "../../store/ui";
 import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import { MachineLabel } from "../components/MachineLabel";
 import { Icon } from "../lib/icons";
-import type { Inspection } from "../../store/terminationCleanup";
+import type { Inspection, ProgramStopResult } from "../../store/terminationCleanup";
 import { terminationCleanupInspect } from "../../bridge";
 import { cleanup, cleanupDialog, closeCleanup, clearCleanupResults, dismissCleanup, groupCleanupRows, checkCleanup, removeCleanup, emptyConsents, type CleanupRow } from "../../store/terminationCleanup";
 import { activityLabel } from "../../store/backgroundTasks";
@@ -16,12 +16,24 @@ import { programReviewMessage } from "../sessions/program-review";
 import { cleanupBlockers } from "./cleanup-blockers";
 import { ArchiveSessionsDialog, CleanupBlockersPanel } from "./CleanupBlockersPanel";
 
-const labels = { removed: "Removed", kept: "Kept", review: "Review", unknown: "Unknown", ready: "Ready", checking: activityLabel("checking"), removing: activityLabel("removing"), stopping: activityLabel("stopping") };
+const labels = { removed: "Removed", review: "Review", unknown: "Unknown", ready: "Ready", checking: activityLabel("checking"), removing: activityLabel("removing"), stopping: activityLabel("stopping") };
+
+function stopResult(result: ProgramStopResult | undefined, hasRequest: boolean) {
+  switch (result ?? (hasRequest ? "unconfirmed" : "request_unavailable")) {
+    case "request_unavailable": return tr("The original stop request is unavailable.");
+    case "receipt_missing": return tr("There is no recorded result for the original stop.");
+    case "status_unavailable": return tr("Zerus could not read the original stop result.");
+    case "unconfirmed": return tr("The program stop is unconfirmed.");
+    case "complete": return tr("The original program stop completed. The folder was kept.");
+    case "incomplete": return tr("Some programs were still running after the original stop. The folder was kept.");
+    case "refused": return tr("The original program stop was refused. The folder was kept.");
+  }
+}
 /** setup-batch-cleanup, Terminate variant. Opening displays recorded outcomes. */
 export default function WorktreeCleanup() {
   let dialog!: HTMLDialogElement;
   const origin = cleanupDialog()?.origin;
-  const [selected, setSelected] = createSignal(cleanupDialog()?.selected ?? cleanup().rows[0]?.id);
+  const [selected, setSelected] = createSignal(cleanupDialog()?.selected);
   const [details, setDetails] = createSignal(false);
   const [consents, setConsents] = createSignal(emptyConsents());
   const [inspect, setInspect] = createSignal<CleanupRow>();
@@ -31,29 +43,39 @@ export default function WorktreeCleanup() {
   const [archived, setArchived] = createSignal<{ folder: string; count: number }>();
   const folders = createMemo(() => groupCleanupRows(cleanup().rows));
   const currentFolder = () => folders().find((folder) => folder.rows.some((row) => row.id === selected())) ?? folders()[0];
-  const current = () => currentFolder()?.primary;
+  const current = () => {
+    const folder = currentFolder();
+    return folder?.rows.some((row) => row.program_stop_check)
+      ? folder.rows.find((row) => row.id === selected()) ?? folder.primary
+      : folder?.primary;
+  };
+  const retainedStop = () => current()?.program_stop_check;
   // Read-only current blocker evidence never updates native removal fingerprints.
   // A plain signal, not a resource: a pending read must never suspend the
   // review (App.tsx wraps it in Suspense). One read runs at a time; a reply
   // lands only while its exact row, revision and path are still selected.
   const liveKey = createMemo(() => {
     const row = current();
-    return row && !row.busy && ["kept", "review"].includes(row.status) ? JSON.stringify([row.id, cleanup().revision, row.path]) : undefined;
+    return row && !row.busy && (retainedStop()?.can_check ?? ["kept", "review"].includes(row.status))
+      ? JSON.stringify([row.id, cleanup().revision, row.path]) : undefined;
   });
-  const [live, setLive] = createSignal<{ key: string; state: "loading" | "ready" | "failed"; review?: Inspection["review"] }>();
+  const [live, setLive] = createSignal<{ key: string; state: "loading" | "ready" | "failed"; review?: Inspection["review"]; stop?: ProgramStopResult }>();
   let reading = false, disposed = false;
-  const read = () => {
+  const read = (checkStop = false) => {
     const key = liveKey();
     if (!key || reading || disposed) return;
     const [id, , path] = JSON.parse(key) as [string, number, string];
     reading = true;
-    const settle = (result: { state: "ready" | "failed"; review?: Inspection["review"] }) => {
+    setLive({ key, state: "loading" });
+    const settle = (result: { state: "ready" | "failed"; review?: Inspection["review"]; stop?: ProgramStopResult }) => {
       reading = false;
       if (liveKey() === key) setLive({ key, ...result });
       else read(); // The selection moved on; read the row selected now.
     };
-    terminationCleanupInspect(id).then(
-      (inspection) => settle(inspection.path === path ? { state: "ready", review: inspection.review } : { state: "failed" }),
+    (retainedStop() ? terminationCleanupInspect(id, "", 0, checkStop) : terminationCleanupInspect(id)).then(
+      (inspection) => settle(inspection.path === path
+        ? { state: inspection.inspection_failed ? "failed" : "ready", review: inspection.review, stop: inspection.program_stop_result ?? undefined }
+        : { state: "failed" }),
       () => settle({ state: "failed" }));
   };
   createEffect(() => {
@@ -63,7 +85,24 @@ export default function WorktreeCleanup() {
   onCleanup(() => { disposed = true; });
   const liveState = () => { const current = live(); return current && current.key === liveKey() ? current : undefined; };
   const liveReview = () => { const current = liveState(); return current?.state === "ready" ? current.review : undefined; };
-  const blockers = createMemo(() => cleanupBlockers(currentFolder()?.rows ?? [], liveReview()));
+  const blockers = createMemo(() => {
+    const rows = currentFolder()?.rows ?? [];
+    const exact = current();
+    return cleanupBlockers(rows.filter((row) => row.status === "unknown" ||
+      (exact?.program_stop_check ? row.id === exact.id : !row.program_stop_check)), liveReview());
+  });
+  const canCheckStop = () => !!retainedStop()?.can_check && blockers().next.kind === "observe_stop" && liveState()?.state !== "loading";
+  const stopMessage = () => {
+    const stop = retainedStop();
+    if (!stop) return undefined;
+    const helper = current()?.program_retirement === "holder_unavailable" ? tr("The retained program helper is unavailable.") : undefined;
+    const action = !stop.can_check || liveState()?.state === "failed"
+      ? tr("Zerus cannot verify this folder on its original computer. Open Worktrees to inspect it there.")
+      : stop.has_request
+        ? tr("Choose Check again to read the original stop result and see which programs use the folder now.")
+        : tr("Choose Check again to see which programs use the folder now.");
+    return [stopResult(liveState()?.stop, stop.has_request), helper, action].filter(Boolean).join(" ");
+  };
   const blockerIndex = createMemo(() => {
     const computers = new Set(currentFolder()?.rows.map((row) => row.computer));
     const names = new Set(blockers().sessions);
@@ -82,10 +121,15 @@ export default function WorktreeCleanup() {
   };
   const targets = createMemo(() => folders().filter((folder) => folder.status !== "unknown" && folder.primary.ready));
   const consented = () => (!cleanup().required.local_files || consents().local_files) && (!cleanup().required.discard_changes || consents().discard_changes) && (!cleanup().required.unchecked_processes || consents().unchecked_processes);
-  const retirementHint = (row: CleanupRow) => ["expired", "source_unavailable", "holder_unavailable", "offer_unavailable"].includes(row.program_retirement ?? "") ? programReviewMessage(row.program_retirement) : undefined;
+  const retirementHint = (row: CleanupRow) => !row.program_stop_check && ["expired", "source_unavailable", "holder_unavailable", "offer_unavailable"].includes(row.program_retirement ?? "") ? programReviewMessage(row.program_retirement) : undefined;
   // The mockup's one-line Result: the outcome and a short cause; the full
   // recorded reasons stay in the tooltip and the blocker groups below.
-  const resultHint = (rows: CleanupRow[]) => rows.some((row) => row.sessions?.length) ? tr("Other Zerus sessions use this folder")
+  const stopHint = (row: CleanupRow) => {
+    const result = current()?.id === row.id ? liveState()?.stop : undefined;
+    return result ? stopResult(result, true) : tr("The program stop is unconfirmed.");
+  };
+  const resultHint = (rows: CleanupRow[], row: CleanupRow) => row.program_stop_check && !rows.some((member) => member.status === "unknown") ? stopHint(row)
+    : rows.some((row) => row.sessions?.length) ? tr("Other Zerus sessions use this folder")
     : rows.some((row) => row.processes?.length) ? tr("Running programs use this folder")
     : rows.flatMap((row) => [...row.reason.split("\n"), retirementHint(row) ?? ""]).map((line) => line.trim()).find(Boolean) ?? "";
   const notes = () => [...new Set(currentFolder()?.rows.map(retirementHint).filter((hint): hint is string => !!hint) ?? [])];
@@ -104,29 +148,42 @@ export default function WorktreeCleanup() {
         <p class="muted">{tr("Conversations and branches are kept. Removing a working folder permanently deletes its local files.")}</p>
         <table class="su-table bc-table"><thead><tr><th>{tr("Folder / branch")}</th><th>{tr("Computer")}</th><th>{tr("Size")}</th><th>{tr("Result")}</th></tr></thead><tbody><For each={folders()}>{(folder) => { const row = folder.primary; return (
           <tr classList={{ on: currentFolder()?.key === folder.key }} onClick={() => setSelected(row.id)} title={row.path}>
-            <td><div class="ell"><b>{row.label}</b></div><div class="mono dim ell">{row.branch}</div><For each={folder.sources}>{(source) => <div class="hint cleanup-source">{source.name}</div>}</For></td><td><MachineLabel alias={row.machine} class="mbadge" /></td><td class="tabular">{row.size}</td>
-            <td title={[...new Set(folder.rows.flatMap((member) => [member.reason, retirementHint(member)]).filter(Boolean))].join("\n")}><div class="bc-result" data-outcome={folder.status}><Show when={folder.status === "checking" || folder.status === "removing"}><Icon name="loader-circle" size={12} class="su-spin" /></Show><b>{labels[folder.status]}</b><Show when={folder.status !== "removed"}><span class="hint ell wtc-reason">{resultHint(folder.rows)}</span></Show></div></td>
+            <td><div class="ell"><b>{row.label}</b></div><div class="mono dim ell">{row.branch}</div>
+              <Show when={folder.rows.length > 1 && folder.rows.some((member) => member.program_stop_check)}
+                fallback={<For each={folder.sources}>{(source) => <div class="hint cleanup-source">{source.name}</div>}</For>}>
+                <For each={folder.rows.filter((member) => member.source)}>{(member) =>
+                  <button type="button" class="btn small cleanup-source" aria-pressed={current()?.id === member.id} onClick={(event) => {
+                    event.stopPropagation(); setSelected(member.id);
+                  }}>{member.source!.name}</button>
+                }</For>
+              </Show>
+            </td><td><MachineLabel alias={row.machine} class="mbadge" /></td><td class="tabular">{row.size}</td>
+            <td title={[...new Set(folder.rows.flatMap((member) => [member.program_stop_check ? stopHint(member) : member.reason, retirementHint(member)]).filter(Boolean))].join("\n")}><div class="bc-result" data-outcome={folder.status}><Show when={folder.status === "checking" || folder.status === "removing"}><Icon name="loader-circle" size={12} class="su-spin" /></Show><b>{folder.status === "kept" ? tr("Kept") : labels[folder.status]}</b><Show when={folder.status !== "removed"}><span class="hint ell wtc-reason">{resultHint(folder.rows, currentFolder()?.key === folder.key ? current() ?? row : row)}</span></Show></div></td>
           </tr>
         ); }}</For></tbody></table>
         <div class="row bc-actions">
-          <Show when={currentFolder()?.rows.find((row) => row.can_remove_anyway)}>{(row) => <button class="btn small danger" disabled={cleanup().busy || anyCleanupRestore()} onClick={() => setManual(row())}>{tr("Remove anyway…")}</button>}</Show>
-          <button class="btn small" disabled={cleanup().busy || anyCleanupRestore() || !current()?.can_check} onClick={() => { const row = current(); if (row) void checkCleanup(row.id); }}>{tr("Check again")}</button>
-          <For each={currentFolder()?.rows.filter((row) => row.can_force)}>{(row) => <button class="btn small danger" disabled={cleanup().busy || anyCleanupRestore()} onClick={() => setForce(row)} title={row.source?.name ?? row.label}>{tr("Force stop…")}<Show when={(currentFolder()?.rows.filter((member) => member.can_force).length ?? 0) > 1}>{" "}<span class="ell bc-name">{row.source?.name ?? row.label}</span></Show></button>}</For>
+          <Show when={!retainedStop() && currentFolder()?.rows.find((row) => row.can_remove_anyway)}>{(row) => <button class="btn small danger" disabled={cleanup().busy || anyCleanupRestore()} onClick={() => setManual(row())}>{tr("Remove anyway…")}</button>}</Show>
+          <button class="btn small" disabled={retainedStop() ? !canCheckStop() : cleanup().busy || anyCleanupRestore() || !current()?.can_check} onClick={() => {
+            const row = current();
+            if (retainedStop()) { if (canCheckStop()) read(true); }
+            else if (row?.can_check) void checkCleanup(row.id);
+          }}>{tr("Check again")}</button>
+          <For each={retainedStop() ? [] : currentFolder()?.rows.filter((row) => row.can_force)}>{(row) => <button class="btn small danger" disabled={cleanup().busy || anyCleanupRestore()} onClick={() => setForce(row)} title={row.source?.name ?? row.label}>{tr("Force stop…")}<Show when={(currentFolder()?.rows.filter((member) => member.can_force).length ?? 0) > 1}>{" "}<span class="ell bc-name">{row.source?.name ?? row.label}</span></Show></button>}</For>
           <button class="btn small" disabled={!current() || cleanup().busy || anyCleanupRestore()} onClick={() => setInspect(current())}>{tr("View files and commits…")}</button>
           <For each={currentFolder()?.rows.filter((row) => row.restore)}>{(row) => <button class="btn small primary" disabled={cleanup().busy || cleanupRestoring(row.restore!)} onClick={() => void restoreCleanupRow(row)} title={row.source?.name ?? row.label}><Icon name="play" size={13} />{tr("Restore session")}<Show when={(currentFolder()?.rows.filter((member) => member.restore).length ?? 0) > 1}>{" "}<span class="ell bc-name">{row.source?.name ?? row.label}</span></Show></button>}</For>
           <Show when={currentFolder()?.rows.every((row) => row.can_dismiss && !row.busy && !row.can_force)}><button class="btn small" disabled={anyCleanupRestore()} onClick={dismissCurrent}>{tr("Dismiss")}</button></Show>
           <button class="btn small" classList={{ on: details() }} aria-pressed={details()} onClick={() => setDetails(!details())}>{tr("Details")}</button><span class="grow" />
         </div>
         <Show when={current() && !current()!.busy && !["removed", "checking", "removing", "stopping"].includes(currentFolder()?.status ?? "removed")}>
-          <CleanupBlockersPanel blockers={blockers()} live={liveState()?.state} session={blockerSession} open={openBlocker} archive={(names) => setArchiving(names)} viewFiles={() => setInspect(current())}
+          <CleanupBlockersPanel blockers={blockers()} live={liveState()?.state} stopMessage={stopMessage()} session={blockerSession} open={openBlocker} archive={(names) => setArchiving(names)} viewFiles={() => setInspect(current())}
             notes={notes()} archived={archivedCount()} disabled={cleanup().busy || anyCleanupRestore()} />
         </Show>
         <Show when={details()}><For each={currentFolder()?.rows}>{(row) => <pre class="bc-details mono">{row.details}</pre>}</For></Show>
-        <div class="bc-consent">
+        <Show when={!retainedStop()}><div class="bc-consent">
           <Show when={targets().length && cleanup().required.local_files}><label class="check"><input type="checkbox" checked={consents().local_files} disabled={cleanup().busy} onChange={(e) => setConsents({ ...consents(), local_files: e.currentTarget.checked })} />{tr("Delete the local files outside Git too")}</label></Show>
           <Show when={targets().length && cleanup().required.discard_changes}><label class="check"><input type="checkbox" checked={consents().discard_changes} disabled={cleanup().busy} onChange={(e) => setConsents({ ...consents(), discard_changes: e.currentTarget.checked })} />{tr("Permanently discard uncommitted and untracked files")}</label></Show>
           <Show when={targets().length && cleanup().required.unchecked_processes}><label class="check" title={tr("Accept this uncertainty for this folder for five minutes. Known programs and sessions using the folder still prevent removal.")}><input type="checkbox" checked={consents().unchecked_processes} disabled={cleanup().busy} onChange={(e) => setConsents({ ...consents(), unchecked_processes: e.currentTarget.checked })} />{tr("Remove even if some running programs cannot be checked")}</label></Show>
-        </div>
+        </div></Show>
         <Show when={cleanup().cleaning ?? cleanup().busy}><progress aria-label={tr("Removing working folders")} /></Show>
         </Show>
       </div>
@@ -134,7 +191,7 @@ export default function WorktreeCleanup() {
         <span class="bc-summary tabular" role="status">{summary()}<Show when={cleanup().unknown}><span class="warn bc-note">{tr("An unknown result will not be retried.")}</span></Show></span>
         <span class="grow" />
         <Show when={cleanup().can_clear}><button type="button" class="btn" disabled={anyCleanupRestore()} title={tr("Folders and archives are kept. Unfinished program stops and unknown outcomes stay in review.")} onClick={() => void clearCleanupResults()}>{tr("Clear settled results")}</button></Show>
-        <Show when={targets().length}><button type="button" class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>{tr("Remove %1 folders", targets().length)}</button></Show>
+        <Show when={!retainedStop() && targets().length}><button type="button" class="btn solid-danger" disabled={cleanup().busy || anyCleanupRestore() || !consented()} onClick={() => void removeCleanup(consents())}>{tr("Remove %1 folders", targets().length)}</button></Show>
         <button type="button" class="btn primary" autofocus onClick={closeCleanup}>{tr("Close")}</button>
       </div>
     </dialog>
