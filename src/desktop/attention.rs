@@ -389,7 +389,7 @@ impl Runtime {
                 // An actual historic row still consumes its initial baseline.
                 if current_key.is_none()
                     && view.state == "running"
-                    && view.process_state != "exited"
+                    && zerus_client_core::view::process_may_be_live(&view.process_state)
                 {
                     continue;
                 }

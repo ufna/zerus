@@ -52,7 +52,7 @@ fn matches_launch(intent: &Value, id: &str, row: &zerus_client_core::ViewRow) ->
 }
 fn ready_for_task(row: &zerus_client_core::ViewRow) -> bool {
     row.state == "running"
-        && row.process_state != "exited"
+        && zerus_client_core::view::process_may_be_live(&row.process_state)
         && !row.needs_action
         && row.run_id.as_deref().is_some_and(|id| !id.is_empty())
 }

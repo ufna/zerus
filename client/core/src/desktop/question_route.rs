@@ -99,7 +99,7 @@ fn printable_name(value: &str) -> bool {
 
 fn running(row: &Value) -> bool {
     ["", "running"].contains(&row["state"].as_str().unwrap_or(""))
-        && row["process_state"] != "exited"
+        && crate::view::process_may_be_live(row["process_state"].as_str().unwrap_or(""))
 }
 /// The agents whose `hgs send` types into the terminal and writes the CLI's
 /// input receipt: the only parents a route sends to.

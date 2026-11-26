@@ -2,16 +2,17 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type ViteDevServer } from "vite";
 import solid from "vite-plugin-solid";
 import type { Session, Subagent } from "./types";
+import russian from "../../i18n.ru.json";
 
 // Render the actual JSX in Node without adding a DOM dependency. Only the
-// stateful application stores and English translation are isolated; the card,
+// stateful application stores and translation loading are isolated; the card,
 // status/chip selectors and icons are production modules.
 const entry = "\0session-card-render";
 const stores = "\0session-card-stores";
 const translations = "\0session-card-i18n";
 const marks = "\0session-card-marks";
 let server: ViteDevServer | undefined;
-let render: (compact: boolean, session: Session, online?: boolean, team?: { total: number; working: number; collapsed: boolean; needsYou?: number; asking?: number; errors?: number }) => string;
+let render: (compact: boolean, session: Session, online?: boolean, team?: { total: number; working: number; collapsed: boolean; needsYou?: number; asking?: number; errors?: number }, language?: "en" | "ru") => string;
 let renderChild: (parent: Session, child: Subagent) => string;
 
 beforeAll(async () => {
@@ -36,16 +37,22 @@ beforeAll(async () => {
         if (id === marks) return `export const sessionMark = (s) => s.accountId === "claude-a1"
           ? {key: "work", label: "Work", letter: "W", emoji: "", glyph: "W", isEmoji: false, color: "#2b97ff", ink: "#10151b", provider: "claude", machine: "arch"}
           : undefined;`;
-        if (id === translations) return `export const trNoop = s => s;
-          export const tr = (s, ...args) => s.replace(/%(\\d+)/g, (_, n) => String(args[n - 1]));`;
+        if (id === translations) return `export const locale = {language: "en"};
+          const russian = ${JSON.stringify(russian)};
+          export const trNoop = s => s;
+          export const tr = (s, ...args) => (locale.language === "ru" ? russian[s] ?? s : s).replace(/%(\\d+)/g, (_, n) => String(args[n - 1]));`;
         if (id === entry) return `import {createComponent} from 'solid-js';
           import {renderToString} from 'solid-js/web';
           import {SessionCard, CompactCard, ChildCard} from '/src/ui/sessions/SessionCard.tsx';
           import {state} from '${stores}';
-          export const render = (compact, session, online = true, team = undefined) => {
+          import {locale} from '${translations}';
+          export const render = (compact, session, online = true, team = undefined, language = 'en') => {
             state.online = online;
-            return renderToString(() => createComponent(compact ? CompactCard : SessionCard,
-              {session, selected: false, expandable: false, expanded: false, onToggleChildren() {}, onExpand() {}, team}));
+            locale.language = language;
+            try {
+              return renderToString(() => createComponent(compact ? CompactCard : SessionCard,
+                {session, selected: false, expandable: false, expanded: false, onToggleChildren() {}, onExpand() {}, team}));
+            } finally { locale.language = 'en'; }
           };
           export const renderChild = (parent, child) => renderToString(() => createComponent(ChildCard,
             {parent, child, first: true, last: true, selected: false}));`;
@@ -84,6 +91,21 @@ describe("the compact row's tooltip (Qt SessionCardDelegate.h:125-138, SessionLi
   it("gives a name once when the title is the name", () => {
     const html = render(true, row({ title: "codex/project/reviewer", caption: "Ready" }));
     expect(attribute(html, "sc-title", "title")).toBe("codex/project/reviewer\nReady\nCodex");
+  });
+  it("shows an unavailable process honestly in full and compact rows in English and Russian", () => {
+    const session = row({ processState: "unverified", status: "error", caption: "Session availability unverified" });
+    const translated = russian["Session availability unverified"];
+    expect(translated).not.toBe(session.caption);
+    for (const compact of [false, true]) {
+      const html = render(compact, session);
+      expect(html).toContain("Session availability unverified");
+      expect(html).not.toContain("Agent exited");
+      expect(html).not.toContain("Ready");
+      const localized = render(compact, session, true, undefined, "ru");
+      expect(text(localized)).toContain(translated);
+      expect(localized).not.toContain(session.caption);
+      if (compact) expect(attribute(localized, "sc-title", "title")).toContain(translated);
+    }
   });
 });
 

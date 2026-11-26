@@ -289,6 +289,7 @@ describe("the followed session (SessionsWindow.cpp:3783-3784)", () => {
     expect(processTarget(session({ state: "archived", archiveId: "a-1" }), facts)).toMatchObject({ live: false, archive_id: "a-1" });
     expect(processTarget(session({ state: "paused" }), facts).live).toBe(false);
     expect(processTarget(session({ processState: "exited" }), facts).live).toBe(false);
+    expect(processTarget(session({ processState: "unverified" }), facts).live).toBe(false);
     expect(processTarget(session(), { ...facts, inspectFailed: true }).live).toBe(false);
   });
 

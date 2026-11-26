@@ -291,7 +291,7 @@ fn suppressed_child(baseline: &Map<String, Value>, child: &crate::view::ChildFac
 
 /// `SessionPresentation::optionalQuestionCount`.
 fn optional_count(row: &ViewRow) -> i64 {
-    if row.state != "running" || row.process_state == "exited" || row.notify.optional_count < 0 {
+    if row.state != "running" || !crate::view::process_may_be_live(&row.process_state) || row.notify.optional_count < 0 {
         0
     } else {
         row.notify.optional_count
@@ -528,7 +528,7 @@ impl Pass<'_, '_> {
             }
         }
         if row.state != "running"
-            || row.process_state == "exited"
+            || !crate::view::process_may_be_live(&row.process_state)
             || row.activity == "unknown"
             || (facts.conversation_state == "ended" && row.activity != "idle")
             || facts.subagent_source == "hook_profiles"
@@ -574,7 +574,7 @@ impl Pass<'_, '_> {
             ids: Vec<String>,
             unknown: bool,
         }
-        let live = |row: &ViewRow| row.state == "running" && row.process_state != "exited";
+        let live = |row: &ViewRow| row.state == "running" && crate::view::process_may_be_live(&row.process_state);
         let rows = self.host.rows;
         let mut optional: BTreeMap<String, Optional> = BTreeMap::new();
         for row in rows.values() {

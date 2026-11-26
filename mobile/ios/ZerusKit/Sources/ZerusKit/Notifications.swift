@@ -658,7 +658,7 @@ public enum NotificationCatalogParser {
                                                    target: target, title: clean(SessionFilters.label(session).nonEmpty ?? session.title, "Session"),
                                                    machine: clean(machine.name, "Computer"), kind: kind, identity: identity, idle: value.string("activity") == "idle",
                                                    online: machine.online,
-                                                   live: SessionFilters.state(session) == "running" && value.string("process_state") != "exited",
+                                                   live: SessionFilters.state(session) == "running" && SessionFilters.processMayBeLive(value.string("process_state")),
                                                    conversation: session.target.conversation, optional: optional,
                                                    suppressed:SessionNotificationPreferences.suppressed(value,session.target,kind:kind,optional:optional),
                                                    notificationPreference:SessionNotificationPreferences.parse(value,session.target),

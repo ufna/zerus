@@ -136,6 +136,9 @@ pub async fn task_start(
             .row(&input.target.computer, &input.catalog_key)
             .ok_or("The selected session is unavailable.")?;
         crate::task_details::assignment_target(&row, &input.target, &input.session_id)?;
+        if row.process_state == zerus_client_core::view::PROCESS_UNVERIFIED {
+            return Err("Session availability unverified".into());
+        }
         if !pump.online(&input.target.computer)
             || row.state != "running"
             || row.process_state == "exited"

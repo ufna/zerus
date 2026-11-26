@@ -1,6 +1,6 @@
 import type { Details } from "../../types";
 import type { BatchConfirmation } from "./selection";
-import type { Session } from "./types";
+import { processMayBeLive, type Session } from "./types";
 import { tr, trNoop } from "../../i18n";
 
 // Which session actions are offered and with which words, after the Qt
@@ -120,14 +120,16 @@ const NO_REASON = trNoop("This native adapter does not support this action in th
 const WORKING = ["working", "tool", "compacting"];
 
 /** NativeSessionCapabilities::action: details win, then reported actions, then the agent. */
-export function allowedOp(s: Pick<ActionRow, "allowed" | "cmd">, op: string, details?: Details): boolean {
+export function allowedOp(s: Pick<ActionRow, "allowed" | "cmd"> & Partial<Pick<ActionRow, "processState">>, op: string, details?: Details): boolean {
+  if (op === "terminate" && s.processState === "unverified") return false;
   if (details?.allowed_actions) return details.allowed_actions.includes(op);
   if (s.allowed !== undefined) return s.allowed.split(" ").includes(op);
   return s.cmd !== "opencode" || op === "rename" || op === "forget";
 }
 
 const reasonFor = (s: ActionRow, op: "archive" | "terminate" | "forget" | "restore", details?: Details) =>
-  details?.action_reasons?.[op]
+  (op === "terminate" && s.processState === "unverified" ? trNoop("Session availability unverified") : undefined)
+  || details?.action_reasons?.[op]
   || (op === "archive" ? s.archiveReason : op === "terminate" ? s.terminateReason : op === "restore" ? s.restoreReason : s.forgetReason)
   || NO_REASON;
 
@@ -152,7 +154,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   // native Pause capability may offer its existing exact-process stop path.
   const firstTurnPause = !s.conversationId && !details?.conversation_id
     && (details?.allowed_actions != null ? details.allowed_actions.includes("pause") : s.allowed?.split(" ").includes("pause") === true);
-  const canPause = running && s.processState !== "exited" && (firstTurnPause
+  const canPause = running && processMayBeLive(s.processState) && (firstTurnPause
     || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)));
   // Restore (Qt canChange 5302-5304). The client's right-click selects the row
   // first, so its context menu is Qt's selected-row case, which reuses the
@@ -179,7 +181,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
 
   // Stop follows the inspected turn (Qt's m_details); without details it stays off.
   const phase = details?.phase || s.phase || "";
-  const working = WORKING.includes(phase) && running;
+  const working = WORKING.includes(phase) && running && s.processState !== "unverified";
   const interruptible = !!details?.interrupt_supported;
   const stop: MenuState["stop"] = {
     visible: working,

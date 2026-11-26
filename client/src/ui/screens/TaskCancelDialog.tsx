@@ -3,6 +3,7 @@ import { Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { taskCancellation, setTaskCancellation, confirmTaskCancellation } from "../../store/taskCancel";
 import { orderedRows, computerOffline } from "../../store/catalog";
 import { taskSessions, sessionLabel } from "./tasks-ui";
+import { processMayBeLive } from "../sessions/types";
 import { Icon } from "../lib/icons";
 import { tr } from "../../i18n";
 
@@ -13,7 +14,7 @@ export default function TaskCancelDialog() {
   const [reason, setReason] = createSignal("");
   const find = createMemo(() => taskSessions(orderedRows()));
   const session = () => find()(pending.task.executor);
-  const running = () => { const s = session(); return !!s && !computerOffline(s.computer) && s.state === "running" && s.processState !== "exited"; };
+  const running = () => { const s = session(); return !!s && !computerOffline(s.computer) && s.state === "running" && processMayBeLive(s.processState); };
   const working = () => session()?.status === "working";
   const worker = () => pending.task.worker || sessionLabel(pending.task.executor) || "its session";
   const close = () => { if (taskCancellation() === pending) setTaskCancellation(undefined); };

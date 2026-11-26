@@ -31,7 +31,7 @@ pub fn candidate(computer: &str, row: &ViewRow) -> Option<Candidate> {
     let provider = row.notify.cmd.as_str();
     if !row.tracked
         || row.state != "running"
-        || row.process_state == "exited"
+        || !crate::view::process_may_be_live(&row.process_state)
         || !matches!(provider, "claude" | "opencode" | "dsh")
     {
         return None;
@@ -73,7 +73,7 @@ pub fn same(target: &Candidate, row: &ViewRow) -> bool {
         && row.created == target.created
         && row.state == "running"
         && row.tracked
-        && row.process_state != "exited"
+        && crate::view::process_may_be_live(&row.process_state)
         && row.notify.cmd == target.provider
         && row.run_id.as_deref() == Some(&target.target.run_id)
         && row.conversation_id.as_deref() == Some(&target.target.conversation_id)

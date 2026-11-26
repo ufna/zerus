@@ -30,6 +30,13 @@ describe("menuState change", () => {
   });
   it("does not pause a working one", () => expect(menuState(row({ activity: "busy" }), true, false).change.enabled).toBe(false));
   it("does not pause an exited process", () => expect(menuState(row({ process_state: "exited" }), true, false).change.enabled).toBe(false));
+  it("withholds Pause, Stop and Terminate for an unverified process even with old action details", () => {
+    const unverified = row({ process_state: "unverified", allowed_actions: ["pause", "terminate"] });
+    const menu = menuState(unverified, true, false, details({ phase: "working", interrupt_supported: true, allowed_actions: ["pause", "terminate"] }));
+    expect(menu.change.enabled).toBe(false);
+    expect(menu.stop.enabled).toBe(false);
+    expect(menu.end).toMatchObject({ enabled: false, reason: "Session availability unverified" });
+  });
   it("resumes a paused resumable session", () => {
     expect(menuState(row({ state: "paused" }), true, false).change).toMatchObject({ label: "Resume session", enabled: true });
     expect(menuState(row({ state: "paused", resumable: false }), true, false).change.enabled).toBe(false);

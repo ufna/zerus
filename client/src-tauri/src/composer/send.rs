@@ -284,6 +284,9 @@ impl Context {
     }
 
     pub(crate) fn reason(&self) -> Option<String> {
+        if self.row.process_state == zerus_client_core::view::PROCESS_UNVERIFIED {
+            return Some("Session availability unverified".into());
+        }
         if let Some(reason) = block_reason(&self.facts, self.details.as_deref()) {
             return Some(reason);
         }
@@ -302,7 +305,7 @@ impl Context {
     pub(crate) fn recorded(&self) -> bool {
         !self.online
             || matches!(self.row.state.as_str(), "archived" | "paused")
-            || self.row.process_state == "exited"
+            || !zerus_client_core::view::process_may_be_live(&self.row.process_state)
             || self.facts.inspect_error
     }
 }

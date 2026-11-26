@@ -65,6 +65,7 @@ export function taskStartBlocker(project: string, task: Task): string | undefine
   if (!any && !task.target.known) return task.target.id ? `${sessionLabel(task.target)} no longer has a confirmed session identity — choose another session` : `${sessionLabel(task.target)} is on a computer this one has not verified`;
   if (!s) return `${sessionLabel(task.target)} no longer exists — choose another session`;
   if (task.targetKind === "new_session") return !task.target.id || !task.target.machine ? tr("Choose a parent with a confirmed computer and session identity.") : computerOffline(s.computer) ? tr("The selected session is offline.") : undefined;
+  if (s.processState === "unverified") return tr("Session availability unverified");
   if (computerOffline(s.computer) || s.state !== "running" || s.processState === "exited") return tr("The agent is not running. Resume it before sending.");
   if (s.actionNeeded) return "agent is waiting for input, approval, or has an unknown state; open Terminal";
 }
