@@ -273,7 +273,7 @@ fn native_run<'a>(row: &'a ViewRow, details: Option<&'a Value>) -> &'a str {
         .unwrap_or("")
 }
 
-fn previous_message_pending(row: &ViewRow, target: (&str, &str), details: &Value) -> Option<bool> {
+pub(super) fn previous_message_pending(row: &ViewRow, target: (&str, &str), details: &Value) -> Option<bool> {
     let (run, conversation) = target;
     if run.is_empty()
         || conversation.is_empty()
@@ -346,7 +346,7 @@ impl Context {
             .then_some(hold)
     }
 
-    fn ordinary_input_held(&self, hub: &Hub) -> bool {
+    pub(super) fn ordinary_input_held(&self, hub: &Hub) -> bool {
         self.earlier_input_hold(hub).is_some() || self.previous_message_pending() == Some(true)
     }
 
@@ -716,6 +716,7 @@ impl Composers {
         self.retry_answer_saves();
         self.push_check();
         self.tick_handed(now);
+        self.tick_outbox(now);
         self.tick_handed_answers(now);
     }
 
@@ -749,6 +750,7 @@ impl Composers {
                 let waiting = hub.open.is_none()
                     && hub.start.is_none()
                     && hub.compacts.is_empty()
+                    && !Self::outbox_waiting(hub)
                     && !hub.closed;
                 #[cfg(test)]
                 self.0
@@ -1265,6 +1267,7 @@ impl Composers {
             || !composer.loaded
             || composer.busy()
             || composer.uncertain
+            || composer.outbox_blocks_send()
             || ctx.ordinary_input_held(hub)
             || composer.text_epoch != epoch
             || composer.draft.text != text
@@ -1436,6 +1439,7 @@ impl Composers {
         if hub.closed
             || !composer.loaded
             || composer.busy()
+            || composer.outbox_blocks_send()
             || (prompt.retry.is_none() && composer.uncertain)
             || (prompt.retry.is_some() && composer.checkpoint.is_some())
         {
@@ -1515,6 +1519,7 @@ impl Composers {
             || composer.sending
             || composer.attaching
             || composer.renaming
+            || composer.outbox_blocks_send()
             || (composer.uncertain && !delivery.preserve)
             // A Retry never replaces the draft's unresolved identity.
             || (delivery.preserve && composer.checkpoint.is_some())
@@ -2076,7 +2081,7 @@ impl Composers {
                 .get(&ctx.key)
                 // A draft holding an unresolved identity takes no Retry
                 // until the user allows a retry (zerus-5wmh.66.4.4).
-                .is_some_and(|c| c.handle == handle && !c.busy() && c.checkpoint.is_none())
+                .is_some_and(|c| c.handle == handle && !c.busy() && !c.outbox_blocks_send() && c.checkpoint.is_none())
         {
             return Err(SendReply::Busy);
         }

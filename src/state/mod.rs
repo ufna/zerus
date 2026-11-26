@@ -1855,6 +1855,11 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
                 .into(),
         );
     }
+    // The Composer's automatic offer must reach the terminal input lock.
+    // Provider routes that do not implement this admission cannot take it.
+    if command == "send" && args.iter().any(|arg| arg == "--when-idle") {
+        return input::dispatch(args);
+    }
     if args.first().is_some_and(|name| opencode::exists(name)) {
         return opencode::dispatch(command, args);
     }

@@ -110,6 +110,8 @@ impl EarlierInputHold {
     }
 }
 
+pub mod outbox;
+
 /// One stored draft: the composer's text and attachments and what Qt keeps
 /// with them.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -135,6 +137,9 @@ pub struct StoredDraft {
     /// never carries one.
     pub checkpoint: Option<Box<Checkpoint>>,
     pub earlier_input_hold: Option<EarlierInputHold>,
+    pub outbox: Vec<outbox::Entry>,
+    /// A malformed queue must survive every automatic or manual draft save.
+    pub outbox_damaged: bool,
 }
 
 /// Whether two stored drafts are the same in everything they store: text,
@@ -156,7 +161,11 @@ impl StoredDraft {
     /// Something a rename, recover or import never overwrites: content, or
     /// a deferred input or earlier-input hold even without content.
     fn occupied(&self) -> bool {
-        !self.is_empty() || self.checkpoint.is_some() || self.earlier_input_hold.is_some()
+        !self.is_empty()
+            || self.checkpoint.is_some()
+            || self.earlier_input_hold.is_some()
+            || !self.outbox.is_empty()
+            || self.outbox_damaged
     }
 
     /// Anything a one-time move carries or must never overwrite: content, a
@@ -395,28 +404,30 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
 /// Writes one draft (`saveDirect`): blobs first, then the manifest; blobs the
 /// manifest no longer names are removed after it.
 fn save_direct(root: &Path, key: &str, draft: &StoredDraft) -> Result<(), String> {
+    if !draft.outbox.is_empty() {
+        outbox::preserve_inline(root, key, &draft.outbox)?;
+    }
+    save_editable(root, key, draft, None)
+}
+
+fn save_editable(
+    root: &Path,
+    key: &str,
+    draft: &StoredDraft,
+    queue_claim: Option<&str>,
+) -> Result<(), String> {
     if key.is_empty() {
         return Ok(());
+    }
+    if draft.outbox_damaged {
+        return Err(not_saved("the local message queue is unreadable"));
     }
     let path = folder(root, key);
     if fs::create_dir_all(&path).is_err() || !private(root, 0o700) || !private(&path, 0o700) {
         return Err("Draft not saved: cannot create private draft storage. Keep this window open until saving succeeds.".into());
     }
-    let mut attachments = Vec::with_capacity(draft.draft.attachments.len());
     let mut retained = HashSet::new();
-    for attachment in &draft.draft.attachments {
-        let digest = sha256_hex(&attachment.bytes);
-        let name = format!("{digest}.bin");
-        let blob = path.join(&name);
-        if !blob.exists() {
-            atomic_write(&blob, &attachment.bytes)?;
-        }
-        retained.insert(name);
-        attachments.push(json!({
-            "name": attachment.name, "mime": attachment.mime, "reference": attachment.reference,
-            "sha256": digest, "bytes": attachment.bytes.len(),
-        }));
-    }
+    let attachments = write_attachments(&path, &draft.draft.attachments, &mut retained)?;
     let mut manifest = json!({
         "version": 1, "key": key, "text": draft.draft.text,
         "position": draft.position, "anchor": draft.anchor, "label": draft.label,
@@ -440,10 +451,18 @@ fn save_direct(root: &Path, key: &str, draft: &StoredDraft) -> Result<(), String
     if let Some(hold) = &draft.earlier_input_hold {
         manifest["earlier_input_hold"] = json!(hold);
     }
+    if let Some(claim) = queue_claim {
+        manifest["queue_claim"] = json!(claim);
+    }
     atomic_write(&path.join("draft.json"), manifest.to_string().as_bytes())?;
+    prune_blobs(&path, &retained);
+    Ok(())
+}
+
+fn prune_blobs(path: &Path, retained: &HashSet<String>) {
     // The committed manifest is authoritative: a crash during this cleanup
     // cannot bring sent attachments back.
-    if let Ok(entries) = fs::read_dir(&path) {
+    if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.ends_with(".bin") && !retained.contains(&name) {
@@ -451,7 +470,6 @@ fn save_direct(root: &Path, key: &str, draft: &StoredDraft) -> Result<(), String
             }
         }
     }
-    Ok(())
 }
 
 /// Pure original manifest header decoding, shared with read-only migration.
@@ -474,17 +492,40 @@ pub(crate) fn decode_manifest(key: &str, bytes: &[u8]) -> Option<Map<String, Val
 /// One read of a draft (`loadDirect`): what could be restored, and whether
 /// the manifest and every attachment were valid.
 fn load_once(root: &Path, key: &str) -> (StoredDraft, bool) {
+    let (mut draft, valid, claim) = load_editable(root, key);
+    match outbox::load(root, key) {
+        Ok(Some(queue)) => {
+            if claim.is_some() && claim == queue.consumed_draft {
+                // Enqueue committed, but the process exited before clearing
+                // its exact editor snapshot. A later ordinary edit removes
+                // the claim even when it has identical text.
+                draft.draft = Draft::default();
+                draft.position = 0;
+                draft.anchor = 0;
+            }
+            draft.outbox = queue.entries;
+        }
+        Ok(None) => {}
+        Err(()) => {
+            draft.outbox_damaged = true;
+            return (draft, false);
+        }
+    }
+    (draft, valid)
+}
+
+fn load_editable(root: &Path, key: &str) -> (StoredDraft, bool, Option<String>) {
     let path = folder(root, key);
     let manifest = path.join("draft.json");
     if !manifest.exists() {
-        return (StoredDraft::default(), true);
+        return (StoredDraft::default(), true, None);
     }
     let object = match read_bounded(&manifest, MAX_MANIFEST)
         .ok()
         .and_then(|bytes| decode_manifest(key, &bytes))
     {
         Some(object) => object,
-        _ => return (StoredDraft::default(), false),
+        _ => return (StoredDraft::default(), false, None),
     };
     let text = |name: &str| {
         object
@@ -514,6 +555,8 @@ fn load_once(root: &Path, key: &str) -> (StoredDraft, bool) {
         uncertain: flag("uncertain"),
         checkpoint: None,
         earlier_input_hold: None,
+        outbox: Vec::new(),
+        outbox_damaged: false,
     };
     let mut valid = true;
     if let Some(value) = object.get("earlier_input_hold") {
@@ -533,19 +576,55 @@ fn load_once(root: &Path, key: &str) -> (StoredDraft, bool) {
             _ => valid = false,
         }
     }
+    if let Some(value) = object.get("outbox") {
+        match outbox::decode(&path, value) {
+            Some(entries) => draft.outbox = entries,
+            None => {
+                draft.outbox_damaged = true;
+                valid = false;
+            },
+        }
+    }
+    let (attachments, attachments_valid) =
+        read_attachments(&path, object.get("attachments").and_then(Value::as_array));
+    draft.draft.attachments = attachments;
+    let claim = object.get("queue_claim").and_then(Value::as_str).map(str::to_owned);
+    (draft, valid && attachments_valid, claim)
+}
+
+fn write_attachments(
+    path: &Path,
+    files: &[Attachment],
+    retained: &mut HashSet<String>,
+) -> Result<Vec<Value>, String> {
+    let mut attachments = Vec::with_capacity(files.len());
+    for attachment in files {
+        let digest = sha256_hex(&attachment.bytes);
+        let name = format!("{digest}.bin");
+        let blob = path.join(&name);
+        if !blob.exists() {
+            atomic_write(&blob, &attachment.bytes)?;
+        }
+        retained.insert(name);
+        attachments.push(json!({
+            "name": attachment.name, "mime": attachment.mime, "reference": attachment.reference,
+            "sha256": digest, "bytes": attachment.bytes.len(),
+        }));
+    }
+    Ok(attachments)
+}
+
+fn read_attachments(path: &Path, listed: Option<&Vec<Value>>) -> (Vec<Attachment>, bool) {
     let mut total = 0;
-    let listed = object
-        .get("attachments")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    for attachment in listed {
+    let mut attachments = Vec::new();
+    let mut valid = true;
+    for attachment in listed.into_iter().flatten() {
         let digest = attachment["sha256"].as_str().unwrap_or("");
         if digest.len() != 64
             || !digest
                 .bytes()
                 .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-            || draft.draft.attachments.len() >= MAX_ATTACHMENTS
+            || attachments.len() >= MAX_ATTACHMENTS
         {
             valid = false;
             break;
@@ -566,14 +645,14 @@ fn load_once(root: &Path, key: &str) -> (StoredDraft, bool) {
             valid = false;
             continue;
         }
-        draft.draft.attachments.push(Attachment {
+        attachments.push(Attachment {
             name: attachment["name"].as_str().unwrap_or("").into(),
             mime: attachment["mime"].as_str().unwrap_or("").into(),
             bytes: bytes.into(),
             reference: attachment["reference"].as_str().unwrap_or("").into(),
         });
     }
-    (draft, valid)
+    (attachments, valid)
 }
 
 fn loaded((mut draft, valid): (StoredDraft, bool)) -> Loaded {
@@ -939,6 +1018,55 @@ impl DraftStore {
         );
     }
 
+    /// Commits a queue entry while preserving a separate editable draft.
+    /// The first write marks the exact draft to clear. After the independent
+    /// queue commit the claim makes a lost clear harmless on recovery.
+    pub fn enqueue_outbox(
+        &self,
+        key: &str,
+        before: StoredDraft,
+        after: StoredDraft,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let (root, owned, fence) = (self.root.clone(), key.to_owned(), self.fence.clone());
+        self.writer.enqueue(key, false, Box::new(move || {
+            let key = owned;
+            let write = || {
+                if !lock(&fence).gate.writes {
+                    return Err(NOT_RECORDED.into());
+                }
+                let claim = after.outbox.last().ok_or_else(|| not_saved("missing queued message"))?;
+                if !before.outbox.is_empty() {
+                    outbox::preserve_inline(&root, &key, &before.outbox)?;
+                }
+                save_editable(&root, &key, &before, Some(&claim.request_id))?;
+                outbox::save(&root, &key, &after.outbox, Some(&claim.request_id))?;
+                // The queue owns the message already. A failed clear leaves
+                // only the matching draft claim for the next load to retire.
+                let _ = save_editable(&root, &key, &after, None);
+                Ok(())
+            };
+            done(write());
+        }));
+    }
+
+    /// Saves a reservation, receipt settlement or explicit queue removal.
+    /// No snapshot of the independent editor participates in it.
+    pub fn save_outbox(
+        &self,
+        key: &str,
+        entries: Vec<outbox::Entry>,
+        done: impl FnOnce(Result<(), String>) + Send + 'static,
+    ) {
+        let (root, owned, fence) = (self.root.clone(), key.to_owned(), self.fence.clone());
+        self.writer.enqueue(key, false, Box::new(move || {
+            if !lock(&fence).gate.writes {
+                return done(Err(NOT_RECORDED.into()));
+            }
+            done(outbox::save(&root, &owned, &entries, None));
+        }));
+    }
+
     /// Loads after every save queued before it.
     pub fn load(&self, key: &str, done: impl FnOnce(Loaded) + Send + 'static) {
         let (root, owned) = (self.root.clone(), key.to_owned());
@@ -1145,6 +1273,7 @@ impl DraftStore {
                 }
                 // A recovered draft never carries a deferred input either.
                 copy.draft.checkpoint = None;
+                copy.draft.outbox.clear();
                 done(save_fenced(&fence, &root, &owned, &copy.draft).map(|()| copy))
             }),
         );
@@ -1522,6 +1651,7 @@ pub fn import_once(root: &Path, sources: &[ImportSource]) -> ImportReport {
                     key,
                     &StoredDraft {
                         checkpoint: None,
+                        outbox: Vec::new(),
                         ..found.draft.clone()
                     },
                 ) {

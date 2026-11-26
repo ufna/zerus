@@ -909,6 +909,14 @@ export type InboxRemoveReply = { outcome: "removed" | "changed" | "busy" } | { o
 
 /** A held message: the request of its local row, its exact text and its file names. */
 export interface HeldMessageView { request_id: string; text: string; attachments: string[] }
+export interface WaitingMessage {
+  request_id: string;
+  /** Unix seconds from the original desktop enqueue. */
+  queued_at?: number;
+  preview: string;
+  state: "waiting" | "reserved" | "unknown" | "failed";
+  target_changed?: boolean;
+}
 export interface ComposerView {
   handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
@@ -921,6 +929,8 @@ export interface ComposerView {
   previous_message_pending?: boolean;
   /** A definite refusal is waiting for a fresh release of this exact target. */
   earlier_input_held?: boolean;
+  offers_outbox?: boolean;
+  waiting_in_zerus?: WaitingMessage[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;

@@ -1075,6 +1075,10 @@ export const composerClearControl = (session: SessionRef) =>
 export const composerTab = (tab: ComposerTab) => (inTauri() ? invoke<void>("composer_tab", { tab }) : Promise.resolve());
 export const sendMessage = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
   desktop<SendReply>("send_message", { handle, rev, epoch, text, position, anchor });
+export const composerEnqueue = (handle: number, rev: number, epoch: number, text: string) =>
+  desktop<ComposerView>("composer_enqueue", { handle, rev, epoch, text });
+export const composerRemoveWaiting = (handle: number, requestId: string) =>
+  desktop<ComposerView>("composer_remove_waiting", { handle, request_id: requestId });
 export const sendPush = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
   desktop<SendReply>("send_push", { handle, rev, epoch, text, position, anchor });
 export const queueSendNow = (queueId: string | null) => desktop<boolean>("queue_send_now", { queue_id: queueId });

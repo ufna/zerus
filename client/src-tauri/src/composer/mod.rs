@@ -29,6 +29,7 @@ pub mod handed;
 mod history_hint;
 pub mod inbox;
 mod interrupted;
+pub mod outbox;
 pub mod questions;
 pub mod queue;
 pub mod saved;
@@ -352,6 +353,10 @@ pub struct ComposerView {
     pub previous_message_pending: Option<bool>,
     /// A definite refusal awaits a fresh release for this target.
     pub earlier_input_held: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting_in_zerus: Vec<outbox::EntryView>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub offers_outbox: bool,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
     pub send_label: zerus_client_core::text::Text,
     /// The session takes messages: no block reason (`setAvailability`).
@@ -469,6 +474,11 @@ pub(crate) struct Composer {
     pub(crate) earlier_input_hold: Option<zerus_client_core::drafts::EarlierInputHold>,
     /// Any already-started inspection predates this hold.
     pub(crate) hold_after_inspect: u64,
+    outbox: Vec<zerus_client_core::drafts::outbox::Entry>,
+    outbox_damaged: bool,
+    queue_editing: bool,
+    queue_writing: bool,
+    queue_check_at: f64,
     /// The desktop service still reported this draft's send in progress:
     /// it is checked again, read-only (zerus-5wmh.66.4.4).
     pub(crate) handed: Option<handed::Handed>,
@@ -513,6 +523,11 @@ impl Composer {
             checkpoint: None,
             earlier_input_hold: None,
             hold_after_inspect: 0,
+            outbox: Vec::new(),
+            outbox_damaged: false,
+            queue_editing: false,
+            queue_writing: false,
+            queue_check_at: 0.0,
             handed: None,
             probed: false,
             offer: None,
@@ -524,17 +539,22 @@ impl Composer {
     }
 
     pub(crate) fn busy(&self) -> bool {
-        self.sending
+        self.queue_editing
+            || self.sending
             || self.recording_owner.is_some()
             || self.waiting.is_some()
             || self.attaching
             || self.renaming
     }
 
+    fn outbox_blocks_send(&self) -> bool {
+        self.queue_editing || self.queue_writing || self.outbox_damaged || !self.outbox.is_empty()
+    }
+
     /// Only the memory holds a change the disk may lack, so the composer
     /// stays in memory (`trimDraftCache`'s saving and failed keys).
     fn unsaved(&self) -> bool {
-        self.saving || self.save_failed
+        self.saving || self.save_failed || self.queue_writing
     }
 
     pub(crate) fn stored(&self) -> StoredDraft {
@@ -549,6 +569,8 @@ impl Composer {
             uncertain: self.uncertain,
             checkpoint: self.checkpoint.clone().map(Box::new),
             earlier_input_hold: self.earlier_input_hold.clone(),
+            outbox: self.outbox.clone(),
+            outbox_damaged: self.outbox_damaged,
         }
     }
 
@@ -586,6 +608,7 @@ impl Composer {
             .iter()
             .map(|a| a.bytes.len())
             .sum::<usize>()
+            + zerus_client_core::drafts::outbox::attachment_bytes(&self.outbox)
             + self.removed.as_ref().map_or(0, |(_, a)| a.bytes.len())
     }
 }
@@ -675,6 +698,7 @@ pub(crate) struct Hub {
     /// (`SessionsWindow.cpp:2013-2016`); None is Activity's 2.5 s.
     pub(crate) poll: Option<f64>,
     pub(crate) queue: queue::Queue,
+    outbox_probe: bool,
     /// The one OpenCode inbox removal that runs (zerus-5wmh.13.6).
     pub(crate) inbox: inbox::Inbox,
     /// Events for the next batch (`composer_events`), at most 16.
@@ -1001,6 +1025,8 @@ impl Composers {
         // Its original identity, as data: a reload never continues it.
         composer.checkpoint = stored.checkpoint.map(|checkpoint| *checkpoint);
         composer.earlier_input_hold = stored.earlier_input_hold;
+        composer.outbox = stored.outbox;
+        composer.outbox_damaged = stored.outbox_damaged;
         composer.hold_after_inspect = inspection;
         if let Some(notice) = loaded.notice {
             composer.show_error(notice);
@@ -1021,7 +1047,12 @@ impl Composers {
         let Some(composer) = hub.composers.get(old) else {
             return;
         };
-        if composer.busy() || !composer.loaded || composer.storage_error.is_some() {
+        if composer.busy()
+            || composer.queue_writing
+            || outbox::reserved(composer)
+            || !composer.loaded
+            || composer.storage_error.is_some()
+        {
             return;
         }
         let stored = composer.stored();
@@ -1029,7 +1060,7 @@ impl Composers {
             if here.busy() || !here.loaded {
                 return;
             }
-            if here.has_content() || here.storage_error.is_some() {
+            if here.has_content() || !here.outbox.is_empty() || here.storage_error.is_some() {
                 here.show_error(ALREADY_EXISTS);
                 return;
             }
@@ -1146,7 +1177,7 @@ impl Composers {
                     && hub
                         .composers
                         .get(key)
-                        .is_none_or(|c| c.loaded && !c.busy() && !c.unsaved())
+                        .is_none_or(|c| c.loaded && !c.busy() && !outbox::reserved(c) && !c.unsaved())
             }) else {
                 break;
             };
@@ -1207,6 +1238,9 @@ impl Composers {
     /// `keep_error`: a success leaves the storage error shown (a refused
     /// rename's mark survives the hub's own save of the moved draft).
     fn save_with(&self, composer: &mut Composer, keep_error: bool) {
+        if composer.queue_editing {
+            return;
+        }
         composer.saves += 1;
         composer.saving = true;
         let me = self.clone();
@@ -1903,10 +1937,17 @@ impl Composers {
                 && !too_long
                 && !locked
                 && !composer.uncertain
+                && !composer.outbox_blocks_send()
                 && session.previous_message_pending != Some(true)
                 && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
+            waiting_in_zerus: outbox::view(
+                &composer.outbox,
+                key,
+                self.context(hub).as_ref().filter(|ctx| ctx.key == key),
+            ),
+            offers_outbox: self.offers_outbox(hub, key),
             send_label: if composer.sending {
                 zerus_client_core::text!("Sending…")
             } else if composer.waiting.is_some() {

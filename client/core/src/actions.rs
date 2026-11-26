@@ -42,6 +42,11 @@ impl RecoveryControl {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Action {
+    /// Automatic offer of an already accepted Composer outbox entry.
+    SendWhenIdle {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// Qt's guarded `hgs settings NAME --json`, including pending applies.
     Settings {
         model: String,
@@ -556,6 +561,21 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
+        Action::SendWhenIdle { text, attachments } => {
+            if target.conversation_id.is_empty() {
+                return Err("Queued input needs an exact conversation.".into());
+            }
+            let mut input = send_value(target, text, attachments, None, None, request_id)?;
+            input["only_when_idle"] = json!(true);
+            let input = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
+            (
+                vec!["send".to_owned(), name, "--when-idle".to_owned(), "--json".to_owned()],
+                Some(input),
+                30,
+                45,
+                Some(request_id.to_owned()),
+            )
+        }
         Action::StopProcess {
             process_id,
             archive_id,
@@ -834,6 +854,18 @@ pub fn send_input(
     compaction_id: Option<&str>,
     request_id: &str,
 ) -> Result<Vec<u8>, String> {
+    let input = send_value(target, text, files, agent_id, compaction_id, request_id)?;
+    serde_json::to_vec(&input).map_err(|error| error.to_string())
+}
+
+fn send_value(
+    target: &Target,
+    text: &str,
+    files: &[Attachment],
+    agent_id: Option<&str>,
+    compaction_id: Option<&str>,
+    request_id: &str,
+) -> Result<Value, String> {
     if target.name.is_empty() || target.run_id.is_empty() {
         return Err("Refresh the session before sending a message.".into());
     }
@@ -866,7 +898,7 @@ pub fn send_input(
     if let Some(compaction) = compaction_id.filter(|id| !id.is_empty()) {
         input["expected_compaction_id"] = json!(compaction);
     }
-    serde_json::to_vec(&input).map_err(|error| error.to_string())
+    Ok(input)
 }
 
 /// `requestStageFiles`: 1-8 absolute paths of regular, readable, nonempty
@@ -1227,6 +1259,7 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
+        Action::SendWhenIdle { .. } => classify_idle_send(target, invocation, exit),
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
         Action::SendNow { queue_id } => classify_send_now(target, invocation, queue_id, exit),
         Action::RemoveQueued { .. } => classify_remove_queued(target, invocation, exit),
@@ -1737,6 +1770,35 @@ fn classify_send(
                 uncertain("Delivery acknowledgement is invalid. Inspect Terminal before retrying.")
             }
         }
+    }
+}
+
+/// A positive pre-input refusal comes from this opt-in invocation's exact
+/// native input-lock witness. An older helper or a generic refusal supplies
+/// no permission for the queue to reoffer.
+fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
+    use sha2::{Digest, Sha256};
+
+    if let Exit::Code { code: 0, stdout, .. } = &exit {
+        let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
+        if receipt["schema"] == 1
+            && receipt["status"] == "waiting_for_idle"
+            && receipt["proof"] == "native_input_lock"
+            && receipt["request_id"].as_str().zip(invocation.request_id.as_deref()).is_some_and(|(actual, expected)| actual == expected)
+            && receipt["name"] == target.name
+            && receipt["run_id"] == target.run_id
+            && receipt["conversation_id"] == target.conversation_id
+            && invocation.stdin.as_deref().is_some_and(|input| {
+                receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
+            })
+        {
+            return done(receipt, None);
+        }
+    }
+    let started = !matches!(exit, Exit::StartFailed(_));
+    match classify_send(target, invocation, None, exit) {
+        Outcome::Failed { detail } if started => uncertain(detail),
+        outcome => outcome,
     }
 }
 
