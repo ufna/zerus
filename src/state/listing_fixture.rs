@@ -40,6 +40,8 @@ pub(crate) fn listed_live_row(mut record: Value) -> Result<Value> {
         question_routing: question_routing.as_ref(),
         route_outcomes: route_outcomes.as_ref(),
         budget: read_marks::question_budget(),
+        #[cfg(target_os = "linux")]
+        readiness_until: native_launch::catalog_deadline(),
     };
     let mut process_work = processes::WorkSample::default();
     live_row(&mut session, record, &shared, &mut process_work)?;
