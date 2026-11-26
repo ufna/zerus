@@ -435,6 +435,7 @@ pub(super) fn request(
 
 pub(super) struct Service {
     pub reg: Registration,
+    pub manual_compact: bool,
 }
 
 impl Service {
@@ -569,8 +570,8 @@ fn connect_from_until(
             MINIMUM.0, MINIMUM.1, MINIMUM.2
         )));
     }
-    let service = Service { reg };
-    let missing = if listing {
+    let mut service = Service { reg, manual_compact: false };
+    let compatibility = if listing {
         compatibility_in(
             &root().join("opencode/compat"),
             &service.reg,
@@ -587,11 +588,12 @@ fn connect_from_until(
         compatibility(&service)
     }
     .map_err(Unavailable::Unreachable)?;
-    if let Some(first) = missing.first() {
+    if let Some(first) = compatibility.missing.first() {
         return Err(Unavailable::Incompatible(format!(
             "OpenCode {version} lacks {first}; update OpenCode or Zerus"
         )));
     }
+    service.manual_compact = compatibility.manual_compact;
     Ok(service)
 }
 
@@ -600,20 +602,126 @@ fn connect_from_until(
 fn requirement_digest() -> String {
     format!(
         "{:x}",
-        Sha256::digest(json!(REQUIRED).to_string().as_bytes())
+        Sha256::digest(
+            json!([REQUIRED, "manual-compact-v2"])
+                .to_string()
+                .as_bytes()
+        )
     )
 }
 
-fn verdict(openapi: &Value) -> Result<Vec<String>> {
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct Compatibility {
+    missing: Vec<String>,
+    manual_compact: bool,
+}
+
+fn verdict(openapi: &Value) -> Result<Compatibility> {
     if !openapi["paths"].is_object() {
         return Err("OpenCode returned an invalid API description".into());
     }
-    Ok(missing_operations(openapi))
+    Ok(Compatibility {
+        missing: missing_operations(openapi),
+        manual_compact: manual_compact_request(openapi),
+    })
+}
+
+// The reviewed request is one ordinary object with both fields present.
+// Refuse schemas with conditions or unrecognized constraints. A component
+// elsewhere in the description cannot authorize what this operation accepts.
+fn manual_compact_request(openapi: &Value) -> bool {
+    let operation = &openapi["paths"]["/api/session/{sessionID}/compact"]["post"];
+    let schema = &operation["requestBody"]["content"]["application/json"]["schema"];
+    let response = &operation["responses"]["200"]["content"]["application/json"]["schema"];
+    let allowed = |key: &str| matches!(key, "id" | "delivery");
+    let only_object_fields = schema.as_object().is_some_and(|object| {
+        object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "type" | "properties" | "required" | "additionalProperties" | "description"
+            )
+        })
+    });
+    let required_fields_fit = schema.get("required").is_none_or(|required| {
+        required.as_array().is_some_and(|fields| {
+            fields
+                .iter()
+                .all(|field| field.as_str().is_some_and(allowed))
+        })
+    });
+    operation["operationId"] == "session.compact"
+        && schema["type"] == "object"
+        && only_object_fields
+        && required_fields_fit
+        && compact_string_field(openapi, &schema["properties"]["id"], CompactField::Id, 8)
+        && compact_string_field(
+            openapi,
+            &schema["properties"]["delivery"],
+            CompactField::Delivery,
+            8,
+        )
+        && schema_has_field(openapi, response, "data", 8)
+}
+
+#[derive(Clone, Copy)]
+enum CompactField {
+    Id,
+    Delivery,
+}
+
+// Accept the exact string fields that this service advertises, following the
+// operation's actual references and nullable alternatives within a fixed depth.
+fn compact_string_field(openapi: &Value, schema: &Value, field: CompactField, depth: u8) -> bool {
+    let Some(object) = schema.as_object().filter(|_| depth > 0) else {
+        return false;
+    };
+    if let Some(reference) = schema["$ref"].as_str() {
+        return object
+            .keys()
+            .all(|key| matches!(key.as_str(), "$ref" | "description"))
+            && reference
+                .strip_prefix("#/components/schemas/")
+                .is_some_and(|name| {
+                    compact_string_field(
+                        openapi,
+                        &openapi["components"]["schemas"][name],
+                        field,
+                        depth - 1,
+                    )
+                });
+    }
+    if let Some(variants) = schema["anyOf"].as_array() {
+        return object
+            .keys()
+            .all(|key| matches!(key.as_str(), "anyOf" | "description"))
+            && variants
+                .iter()
+                .any(|variant| compact_string_field(openapi, variant, field, depth - 1));
+    }
+    schema["type"] == "string"
+        && match field {
+            CompactField::Id => {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "pattern" | "description"))
+                    && schema
+                        .get("pattern")
+                        .is_none_or(|pattern| pattern == "^msg_")
+            }
+            CompactField::Delivery => {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "enum" | "description"))
+                    && schema["enum"]
+                        .as_array()
+                        .is_some_and(|options| options.iter().any(|value| value == "queue"))
+            }
+        }
 }
 
 /// The OpenAPI verdict, cached per service identity and requirement digest in
 /// private state. The cache write is best effort.
-fn compatibility(service: &Service) -> Result<Vec<String>> {
+fn compatibility(service: &Service) -> Result<Compatibility> {
     compatibility_in(
         &root().join("opencode/compat"),
         &service.reg,
@@ -633,7 +741,7 @@ pub(super) fn compatibility_in(
     reg: &Registration,
     digest: &str,
     fetch: impl FnOnce() -> Result<Value>,
-) -> Result<Vec<String>> {
+) -> Result<Compatibility> {
     let key = format!(
         "{:x}",
         Sha256::digest(
@@ -644,13 +752,13 @@ pub(super) fn compatibility_in(
     );
     let cache = dir.join(format!("{key}.json"));
     if let Ok(Some(bytes)) = labels::read_file(&cache, 4 << 20) {
-        if let Ok(value) = serde_json::from_slice::<Vec<String>>(&bytes) {
+        if let Ok(value) = serde_json::from_slice::<Compatibility>(&bytes) {
             return Ok(value);
         }
     }
-    let missing = verdict(&fetch()?)?;
-    let _ = atomic(&cache, &json!(missing).to_string());
-    Ok(missing)
+    let result = verdict(&fetch()?)?;
+    let _ = atomic(&cache, &json!(result).to_string());
+    Ok(result)
 }
 
 fn clipped_version(text: &str) -> String {
@@ -848,6 +956,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compact_queue_capability_checks_the_operations_actual_request_fields() {
+        let request = json!({"type":"object","properties":{
+            "id":{"anyOf":[{"type":"string","pattern":"^msg_"},{"type":"null"}]},
+            "delivery":{"$ref":"#/components/schemas/QueueDelivery"}},
+            "additionalProperties":false});
+        let mut openapi = json!({"components":{"schemas":{
+            "QueueDelivery":{"type":"string","enum":["queue","steer"]},
+            "Session.Inbox.Delivery":{"type":"string","enum":["queue","steer"]}
+        }},"paths":{"/api/session/{sessionID}/compact":{"post":{
+            "operationId":"session.compact",
+            "requestBody":{"content":{"application/json":{"schema":request}}},
+            "responses":{"200":{"content":{"application/json":{"schema":{"properties":{"data":{}}}}}}}
+        }}}});
+        assert!(manual_compact_request(&openapi));
+        openapi["components"]["schemas"]["QueueDelivery"]["enum"] = json!(["steer"]);
+        assert!(!manual_compact_request(&openapi));
+        openapi["components"]["schemas"]["QueueDelivery"]["enum"] = json!(["queue"]);
+        const REQUEST: &str = "/paths/~1api~1session~1{sessionID}~1compact/post/requestBody/content/application~1json/schema";
+        let incompatible = &mut openapi["paths"]["/api/session/{sessionID}/compact"]["post"]["requestBody"]
+            ["content"]["application/json"]["schema"];
+        incompatible["properties"]["id"] = json!({"type":"string","pattern":"^other_"});
+        assert!(!manual_compact_request(&openapi));
+        let replaced = openapi.pointer_mut(REQUEST).unwrap();
+        *replaced = request;
+        replaced["oneOf"] = json!([{"required":["id"]},{"not":{"required":["id"]}}]);
+        assert!(!manual_compact_request(&openapi));
+    }
+
+    #[test]
     fn registration_has_no_state_field_and_requires_loopback_and_pid() {
         let reg = parse_registration(include_bytes!(
             "../../../tests/fixtures/opencode2/registration.json"
@@ -1033,7 +1170,7 @@ mod tests {
         let dir = temp_dir("digest");
         let body = || Ok(json!({"paths":{}}));
         let first = compatibility_in(&dir, &reg(), "d1", body).unwrap();
-        assert!(!first.is_empty());
+        assert!(!first.missing.is_empty());
         // Same digest hits: the fetch must not run.
         assert_eq!(
             compatibility_in(&dir, &reg(), "d1", || Err("no".into())).unwrap(),
@@ -1060,7 +1197,7 @@ mod tests {
         let dir = temp_dir("blocked");
         fs::write(&dir, b"a file where the directory should be").unwrap();
         let missing = compatibility_in(&dir, &reg(), "d", || Ok(json!({"paths":{}}))).unwrap();
-        assert!(!missing.is_empty());
+        assert!(!missing.missing.is_empty());
         let _ = fs::remove_file(&dir);
     }
 
@@ -1176,7 +1313,13 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(missing_operations(&openapi), Vec::<String>::new());
-        assert!(verdict(&openapi).unwrap().is_empty());
+        assert!(verdict(&openapi).unwrap().missing.is_empty());
+        assert!(verdict(&openapi).unwrap().manual_compact);
+        let mut without_compact = openapi;
+        without_compact["paths"].as_object_mut().unwrap().remove("/api/session/{sessionID}/compact");
+        let compatible = verdict(&without_compact).unwrap();
+        assert!(compatible.missing.is_empty());
+        assert!(!compatible.manual_compact);
     }
 
     #[test]

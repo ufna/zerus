@@ -334,6 +334,8 @@ export function detailsFromInspection(value: unknown): Details | undefined {
     resume_message_can_send: v.resume_message_can_send === true,
     fork_supported: v.fork_supported === true,
     fork_reason: text(v.fork_reason),
+    ...(typeof v.compact_context_supported === "boolean" ? { compact_context_supported: v.compact_context_supported } : {}),
+    ...(typeof v.compact_context_reason === "string" ? { compact_context_reason: v.compact_context_reason } : {}),
     ...("fork_parent_id" in v ? { fork_parent_id: typeof v.fork_parent_id === "string" ? v.fork_parent_id : null } : {}),
     allowed_actions: Array.isArray(v.allowed_actions) ? v.allowed_actions.filter((a): a is string => typeof a === "string") : null,
     action_reasons: reasons,

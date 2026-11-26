@@ -44,7 +44,7 @@ export const errorText = (error: unknown) => (typeof error === "string" ? error 
  * it they have no target. The other actions name the session only.
  */
 export function targetOf(s: Pick<ActionRow, "computer" | "name" | "runId" | "conversationId">, kind: Action["kind"]): Target | undefined {
-  const identity = kind === "interrupt" || kind === "mark_read" || kind === "terminate" || kind === "forget_binding";
+  const identity = kind === "interrupt" || kind === "mark_read" || kind === "terminate" || kind === "forget_binding" || kind === "compact_context";
   if (identity && (!s.runId || (kind !== "terminate" && !s.conversationId))) return undefined;
   return { computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "" };
 }
@@ -82,6 +82,12 @@ export function createActions(
       else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", tr("Stop %1: the turn already ended or is waiting for input. No action needed.", target));
       else if (row.cmd === "agy") notify("error", tr("Stop %1 failed: %2\nRefresh the session before trying again.", target, out.detail), true);
       else notify("error", tr("Stop %1 failed: %2\nOpen Terminal to check the agent before trying again.", target, out.detail), true);
+      return;
+    }
+    if (action.kind === "compact_context") {
+      if (out.outcome === "done") notify("info", tr("Context compaction requested."));
+      else if (out.outcome === "uncertain") notify("warn", tr("Compaction is unconfirmed. Check this conversation before trying again."), true);
+      else notify("error", tr(out.detail), true);
       return;
     }
     if (key && out.outcome === "failed" && out.detail === STATE_CHANGED && isEndAction(action)) {
@@ -135,7 +141,8 @@ export function createActions(
   async function perform(row: ActionRow, action: Action, options: PerformOptions = {}): Promise<Outcome> {
     const live = catalog.rows[row.key];
     const target = targetOf(row, action.kind);
-    if (!live || !target || (row.runId && live.runId !== row.runId)) {
+    if (!live || !target || (row.runId && live.runId !== row.runId)
+      || (action.kind === "compact_context" && (!online(row.computer) || live.conversationId !== row.conversationId))) {
       if (!options.quiet) notify("info", tr(CHANGED));
       return failed(tr(CHANGED));
     }

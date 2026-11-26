@@ -173,6 +173,17 @@ The project directory remains on the agent computer.
 - **Permissions.** Allow once, Always allow or Reject. Reject rejects every
   pending request of that session. Always allow asks for a second confirmation.
 - **Model and effort** can be changed; **rename** changes the session title.
+- **Details** shows the selected model's advertised context window and maximum
+  output separately from cumulative native session usage. The current context
+  estimate comes from the last successful model step, including cache reads,
+  cache writes and reasoning. A model switch or completed compaction leaves
+  that estimate unavailable until another successful step is measured.
+- **Compact context** asks a compatible OpenCode service to summarize older
+  messages in the same conversation. The summary may omit details. This
+  control requires an idle conversation with messages and an empty queue.
+  Zerus retains an unconfirmed request for inspection and does not offer it
+  again. **Clear session** is unavailable. Start a new conversation to begin
+  with empty context.
 - **Forget** removes the Zerus binding and its local history cache; native
   history is kept. The cache keeps at most 64 recently used conversations and
   256 MiB.
@@ -185,7 +196,7 @@ The project directory remains on the agent computer.
   Mobile pane snapshots remain unavailable.
 
 Not available in this version: pause/resume (OpenCode sessions have no separate
-process to pause), attachments, compaction, fork and child sessions
+process to pause), attachments, fork and child sessions
 (a later update).
 
 ### Delivery
