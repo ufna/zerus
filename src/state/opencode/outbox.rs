@@ -28,6 +28,11 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     }
     let _bindings = try_bindings(Duration::from_secs(2))
         .ok_or("OpenCode session writer is busy; no message was sent")?;
+    expect(
+        name,
+        string(&request, "expected_run_id"),
+        string(&request, "expected_conversation_id"),
+    )?;
     let record = binding(name)?;
     check_request_identity(&record, &request)?;
     if record["name"] != *name
@@ -57,8 +62,6 @@ pub(super) fn status(name: &str) -> Result<i32> {
         return Err("OpenCode outbox status requires the original input digest".into());
     }
     let _bindings = try_bindings(Duration::from_millis(200)).ok_or(UNCERTAIN_STATE)?;
-    let record = binding(name)?;
-    check_request_identity(&record, &request)?;
     let request_id = string(&request, "request_id");
     let ledger = Ledger::current();
     let mut receipt = ledger.sent(request_id).ok_or(UNCERTAIN_STATE)?;
@@ -70,6 +73,17 @@ pub(super) fn status(name: &str) -> Result<i32> {
     {
         return Err(UNCERTAIN_STATE.into());
     }
+    // Use only the provider path the original admitted request selected.
+    // A second holder of the label cannot shadow that fixed path.
+    let record = match receipt["outbox_id_layout"].as_bool() {
+        Some(true) => PROVIDER.read_id(string(&receipt, "outbox_session_id"))?,
+        Some(false) => PROVIDER.read_label(name)?,
+        None => return Err(UNCERTAIN_STATE.into()),
+    };
+    if record["name"] != name || receipt.get("outbox_session_id") != Some(&record["session_id"]) {
+        return Err(UNCERTAIN_STATE.into());
+    }
+    check_request_identity(&record, &request)?;
     check_receipt_identity(&record, &receipt)?;
     if ledger
         .removal(&record, string(&receipt, "native_message_id"))?

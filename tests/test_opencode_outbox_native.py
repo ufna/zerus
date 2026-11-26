@@ -187,3 +187,41 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
             self.assertEqual(offered, [])
         self.assertFalse(self.receipt_path(request).exists())
         self.assertEqual(self.user_messages(target['conversation_id']), [])
+
+    def test_status_uses_the_original_provider_path_after_label_reuse(self):
+        target, shadow = self.start(), self.create()
+        name = target['name']
+        label_path = self.binding_path(name)
+        shadow_path = self.binding_path(shadow['name'])
+        original, original_shadow = label_path.read_bytes(), shadow_path.read_bytes()
+        id_record = dict(json.loads(original), layout='id')
+        id_path = self.state / 'opencode/sessions' / (id_record['session_id'] + '.json')
+        id_path.parent.mkdir(exist_ok=True)
+        try:
+            # Fault fixture: both native bindings came from ordinary launch.
+            # Put the original in the supported ID layout, then introduce the
+            # other real conversation as a later holder of the original label.
+            id_path.write_text(json.dumps(id_record))
+            id_path.chmod(0o600)
+            label_path.unlink()
+            request = self.attempt(target, 'Keep the original conversation')
+            sent = self.hgs(['send', name, '--session-id', id_record['session_id'],
+                             '--when-idle', '--json'], request)
+            self.assertEqual(sent['status'], 'submitted')
+            shadow_path.unlink()
+            label_path.write_text(json.dumps(dict(json.loads(original_shadow), name=name)))
+            label_path.chmod(0o600)
+            status = self.status(target, request)
+            self.assertEqual(status['native_message_id'], sent['native_message_id'])
+            self.status(target, request, success=False, expected_conversation_id=shadow['conversation_id'])
+            id_path.unlink()
+            self.status(target, request, success=False)
+            self.assertEqual(self.user_messages(shadow['conversation_id']), [])
+            self.assertEqual(self.user_messages(target['conversation_id']),
+                             [(sent['native_message_id'], request['text'])])
+        finally:
+            id_path.unlink(missing_ok=True)
+            label_path.write_bytes(original)
+            label_path.chmod(0o600)
+            shadow_path.write_bytes(original_shadow)
+            shadow_path.chmod(0o600)

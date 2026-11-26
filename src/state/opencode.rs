@@ -1897,6 +1897,8 @@ fn deliver_offer(
     if let Some(hash) = idle_guard {
         receipt["outbox_guarded"] = json!(true);
         receipt["outbox_input_sha256"] = json!(hash);
+        receipt["outbox_session_id"] = record["session_id"].clone();
+        receipt["outbox_id_layout"] = json!(storage::in_id_layout(record));
     }
     let staged = if has_files {
         let stage = attachments::prepare_native(request)?;
