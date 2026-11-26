@@ -199,7 +199,7 @@ export function queuedMessages(queue: QueueView, local: readonly LocalMessage[],
     }
     if (summary?.run_id === queue.run_id && summary.conversation_id === queue.conversation_id && Array.isArray(summary.attachment_messages)) {
       for (const event of (summary.attachment_messages as ActivityEvent[]).slice(-100)) {
-        if (event?.source === "hgs_delivery" && !event.agent_id && event.claude_outbox !== true) {
+        if (event?.source === "hgs_delivery" && !event.agent_id && event.claude_outbox !== true && event.dsh_outbox !== true) {
           add(receipt(event.message_id, event.submitted_text, event.detail, event.attachments));
         }
       }

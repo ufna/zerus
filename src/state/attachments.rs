@@ -201,6 +201,14 @@ fn projected_page(record:&Value,agent:&str,cursor:&str,limit:usize)->Result<(Val
                 message["run_id"] = receipt["run_id"].clone();
             }
         }
+        if record["backend"] == "dsh" && receipt["dsh_outbox"].is_object() {
+            message["dsh_outbox"] = json!(true);
+            if dsh::outbox_message_id(string(&receipt["dsh_outbox"], "message_id")) {
+                message["dsh_message_id"] = receipt["dsh_outbox"]["message_id"].clone();
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
+        }
         messages.push(message);
     }
     if !gaps.is_empty() {page.metadata["state"]=json!("partial");}

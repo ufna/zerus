@@ -17,6 +17,12 @@ class Adapter extends LlmAdapter {
     const gate = candidate && existsSync(candidate + '.entered') && candidate;
     if (gate && existsSync(gate)) writeFileSync(gate + '.resolving', '');
     for (let i = 0; gate && existsSync(gate) && i < 300; i++) await new Promise(resolve => setTimeout(resolve, 50));
+    const outboxGate = model === 'test-a' && this.holds && join(this.holds, 'OUTBOX_IMAGE_ADMISSION_HOLD');
+    if (outboxGate && existsSync(outboxGate)) {
+      writeFileSync(outboxGate + '.resolving', '');
+      for (let i = 0; existsSync(outboxGate) && i < 300; i++)
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
     return { provider,id:model,name:model,inputModalities: model === 'test-b' ? ['text'] : ['text','image'],
     reasoning:{efforts:[{id:'off',name:'Off'},{id:'high',name:'High'}],defaultEffort:'high'} }; }
   async *stream(options) {
@@ -24,6 +30,13 @@ class Adapter extends LlmAdapter {
     await new Promise(resolve => setTimeout(resolve, 120));
     const prompt = options.messages.filter(m => m.role === 'user' && m.source?.kind === 'user').at(-1);
     const text = prompt?.content?.filter(b => b.type === 'text').map(b => b.text).join('') ?? '';
+    if (text === 'OUTBOX_HELD_TURN_FIXTURE' && this.holds) {
+      writeFileSync(join(this.holds, 'OUTBOX_HELD_TURN_FIXTURE.started'), '');
+      for (let step = 0; step < 2400 && !existsSync(join(this.holds, 'OUTBOX_HELD_TURN_FIXTURE.release')); step++) {
+        if (options.signal?.aborted) throw new DOMException('Interrupted', 'AbortError');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
     if (text.includes('INTERRUPT_WAIT_FIXTURE')) {
       await new Promise((resolve,reject) => {
         const timer=setTimeout(resolve,10000);

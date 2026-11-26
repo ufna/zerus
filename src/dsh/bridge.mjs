@@ -704,6 +704,74 @@ export function apply(ctx, config) {
       return own.some(event => event.type === 'step/start') ? 'missing' : 'unstarted';
     } finally { observation[Symbol.dispose](); }
   }
+  function outboxReady(agent, sessionId) {
+    if (!agent || agent.session.id !== sessionId) return false;
+    try { if (topLevel(agent) !== agent) return false; } catch { return false; }
+    return agent.status === 'idle' && agent.inbox.nextStep.length === 0 && agent.inbox.nextTurn.length === 0
+      && publicQuestions(sessionId).length === 0
+      && compactionPublic(sessionId)?.status !== 'compacting';
+  }
+  function outboxState(sessionId) {
+    if (typeof sessionId !== 'string' || !NATIVE_SESSION.test(sessionId)) throw new Error('Invalid DeepSeek outbox conversation');
+    return { sessionId, generation,
+      ready: outboxReady(ctx.agents.get(sessionId), sessionId), fileAttachments: fileCapabilities() };
+  }
+  const outboxAdmission = new AsyncLocalStorage();
+  const followupGuards = new WeakMap();
+  function outboxWait(p) {
+    return { status: 'waiting_for_idle', proof: 'native_dsh_idle_guard',
+      requestId: p.requestId, sessionId: p.sessionId, generation };
+  }
+  // The official controller awaits image and attachment admission before
+  // calling followup. Keep that controller, its file receipts and deduplication.
+  // Check this RPC at the synchronous insertion seam. Other clients keep the
+  // original method, including calls while this one awaits native preparation.
+  async function outboxPrompt(agent, p) {
+    let entry = followupGuards.get(agent);
+    if (!entry) {
+      const old = Object.getOwnPropertyDescriptor(agent, 'followup');
+      const original = agent.followup;
+      if (typeof original !== 'function' || (old && !('value' in old)))
+        throw new Error('DeepSeek native outbox admission is unavailable');
+      const guarded = function (message, ...args) {
+        const scope = outboxAdmission.getStore();
+        if (scope?.agent === this && scope.active) {
+          scope.active = false;
+          if (rpcIdOf(message) !== scope.requestId) throw new Error('DeepSeek outbox request identity changed');
+          if (ctx.agents.get(scope.sessionId) !== this || !outboxReady(this, scope.sessionId)) {
+            scope.waiting = true;
+            throw new Error('DeepSeek became busy before the outbox offer');
+          }
+          const compact = compactionPublic(scope.sessionId);
+          if (compact) compact.status = 'cancelled';
+          recovery.get(scope.sessionId)?.finish(undefined);
+        }
+        return Reflect.apply(original, this, [message, ...args]);
+      };
+      Object.defineProperty(agent, 'followup', old
+        ? { ...old, value: guarded } : { configurable: true, writable: true, value: guarded });
+      entry = { old, guarded, users: 0 };
+      followupGuards.set(agent, entry);
+    }
+    if (agent.followup !== entry.guarded) throw new Error('DeepSeek native outbox admission changed');
+    entry.users++;
+    const scope = { agent, sessionId: p.sessionId, requestId: p.requestId, active: true, waiting: false };
+    try {
+      return await outboxAdmission.run(scope, () => api.prompt(p, new AbortController().signal));
+    } catch (error) {
+      if (scope.waiting) return outboxWait(p);
+      throw error;
+    } finally {
+      scope.active = false;
+      if (--entry.users === 0) {
+        if (agent.followup === entry.guarded) {
+          if (entry.old) Object.defineProperty(agent, 'followup', entry.old);
+          else delete agent.followup;
+        }
+        followupGuards.delete(agent);
+      }
+    }
+  }
   async function inspect(request) {
     const { sessionId, agentId } = request;
     let baseline = await api.projections({ sessionId }, new AbortController().signal);
@@ -729,6 +797,7 @@ export function apply(ctx, config) {
     const status = await accountStatus();
     const jobs = ctx.get('jobs');
     return { generation, baseline, page, fileAttachments: fileCapabilities(),
+      outboxReady: !agentId && !needsSignIn(selection, status) && outboxReady(parentLive, sessionId),
       lifecycleActions: agentId ? [] : ["rename", ...(!parentLive ? ["resume", "forget"] : owned.get(sessionId)?.agent === parentLive ? [...(lifecycleIdle ? ["pause"] : []), "forget"] : [])],
       jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => job.kind === 'bash' && job.owner === owner)
         .map(job => ({ ...job, callId:jobCalls.get(job.id)?.callId, controllable: owned.has(sessionId) && Boolean(ctx.agents.get(owner)) }))) : undefined,
@@ -939,7 +1008,9 @@ export function apply(ctx, config) {
       const d = event.data;
       if (event.type === 'agent/inbox/spliced') events.push({ seq: event.seq, type: event.type, target: d.target, start: d.start,
         removedCount: d.removedCount ?? 0, outcome: d.outcome ?? null, inserted: d.inserted.map(m => ({ id: m.id, rpcId: rpcIdOf(m) })) });
-      else if (event.type === 'user/message') events.push({ seq: event.seq, type: event.type, id: d.id, rpcId: rpcIdOf(d), digest: witnessDigest(d.content) });
+      else if (event.type === 'user/message') events.push({ seq: event.seq, type: event.type, id: d.id, rpcId: rpcIdOf(d),
+        digest: witnessDigest(d.content), attachmentIds: Array.isArray(d.content) ? d.content.filter(block =>
+          block?.type === 'image' || block?.type === 'file').map(block => block.attachment?.attachmentId ?? null) : null });
       else if (event.type === 'turn/end') events.push({ seq: event.seq, type: event.type, turn: d.turn, reason: d.reason?.kind ?? null });
     }
     const live = ctx.agents.get(record.sessionId);
@@ -1006,7 +1077,7 @@ export function apply(ctx, config) {
         const environment = callEnvironmentInstalled();
         return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
           fileAttachments: fileCapabilities(),
-          inputWitness: true, listJobs: true, teamLifecycle: true,
+          inputWitness: true, outboxSend: true, listJobs: true, teamLifecycle: true,
           shellIdentity: environment, callTokens: environment,
           nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       }
@@ -1027,6 +1098,8 @@ export function apply(ctx, config) {
       }
       case 'inspect': return inspect(p);
       case 'input-witness': return inputWitness(p);
+      case 'outbox-state': return outboxState(p.sessionId);
+      case 'outbox-proof': return { ...await inputWitness(p), sessionId: p.sessionId, requestId: p.requestId };
       case 'session-lifecycle': {
         if (typeof p.sessionId !== 'string' || !p.sessionId || p.sessionId.length > 2048) throw new Error('Invalid session identity');
         const live = ctx.agents.get(p.sessionId);
@@ -1233,7 +1306,12 @@ export function apply(ctx, config) {
           throw new Error('This child is not continuable with the addressed parent');
         return ctx.subagents.prompt(p, signal);
       }
+      case 'outbox-send':
       case 'send': return witnessedSend(p, async () => {
+        const outbox = request.method === 'outbox-send';
+        if (outbox && (p.generation !== generation || !RESUME_REQUEST.test(p.requestId)
+          || !NATIVE_SESSION.test(p.sessionId) || p.mode !== 'queue'))
+          throw new Error('DeepSeek outbox target changed');
         let agent = topLevel(ctx.agents.get(p.sessionId));
         const files = p.content?.filter(part => part?.type === 'file') ?? [];
         if (files.length) {
@@ -1248,9 +1326,11 @@ export function apply(ctx, config) {
           throw new Error('Compaction is not confirmed; message was not sent');
         if (p.expectedCompactionId && compactions.get(p.sessionId).revision !== (await api.projections({sessionId:p.sessionId}, new AbortController().signal)).asOfSeq)
           throw new Error('Conversation changed after compaction; message was not sent');
-        // A message consumes the continuation even if another client sent it.
-        if (compact) compact.status = 'cancelled';
-        recovery.get(p.sessionId)?.finish(undefined);
+        // Ordinary sends retain their established continuation behavior.
+        if (!outbox) {
+          if (compact) compact.status = 'cancelled';
+          recovery.get(p.sessionId)?.finish(undefined);
+        }
         if (!files.length) agent = ctx.agents.get(p.sessionId);
         if (!agent) throw new Error('Resume this session before sending a message');
         // Read as list and inspect do. A top-level Agent upstream composed has an
@@ -1261,6 +1341,10 @@ export function apply(ctx, config) {
           throw new Error('Sign in to DeepSeek in the native UI before sending a message');
         if (files.length && ctx.agents.get(p.sessionId) !== agent)
           throw new Error('DeepSeek session changed after file preparation');
+        if (outbox) {
+          if (ctx.agents.get(p.sessionId) !== agent || !outboxReady(agent, p.sessionId)) return outboxWait(p);
+          return outboxPrompt(agent, p);
+        }
         return api.prompt(p, new AbortController().signal);
       });
       case 'settings': {

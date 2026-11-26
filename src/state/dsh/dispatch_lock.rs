@@ -18,11 +18,21 @@ fn key(record: &Value) -> Result<String> {
 /// guard under the machine-wide binding lock. Once held, re-read the binding
 /// under the short file lock and refuse a replaced native identity.
 pub(in crate::state) fn acquire(name: &str) -> Result<(Guard, Value)> {
+    acquire_with(name, |path| lock(Some(path)))
+}
+
+pub(super) fn acquire_until(name: &str, deadline: Instant) -> Result<(Guard, Value)> {
+    acquire_with(name, |path| {
+        lock_until(path, deadline)?.ok_or_else(|| "DeepSeek binding is busy".into())
+    })
+}
+
+fn acquire_with(name: &str, take: impl Fn(&Path) -> Result<Guard>) -> Result<(Guard, Value)> {
     let observed = binding(name)?;
     let identity = key(&observed)?;
-    let guard = lock_record(&observed)?;
+    let guard = take(&root().join("dsh/session-locks").join(format!("{identity}.lock")))?;
     let record = {
-        let _bindings = lock(Some(&root().join("dsh/bindings.lock")))?;
+        let _bindings = take(&root().join("dsh/bindings.lock"))?;
         let current = binding(name)?;
         if key(&current)? != identity {
             return Err("DeepSeek binding changed while waiting for its session".into());

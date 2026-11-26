@@ -7,6 +7,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let [operation, name, format] = args else {
         return Err("usage: hgs delivery receipt <original-session-name> --json".into());
     };
+    if format == "--json" && operation == "outbox-status" && name.starts_with("dsh/") {
+        return dsh::outbox_status(name);
+    }
     if format == "--json" && operation == "outbox-status" && !name.starts_with("claude/") {
         return opencode::outbox_status(name);
     }

@@ -1894,6 +1894,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         if args.first().is_some_and(|name| name.starts_with("opencode/") || opencode::exists(name)) {
             return opencode::send_when_idle(args);
         }
+        if args.first().is_some_and(|name| name.starts_with("dsh/") || dsh::exists(name)) {
+            return dsh::send_when_idle(args);
+        }
         return input::dispatch(args);
     }
     let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")

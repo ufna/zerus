@@ -414,6 +414,9 @@ export interface ActivityEvent {
   claude_prompt_id?: string;
   claude_outbox_request_id?: string;
   claude_outbox?: boolean;
+  dsh_outbox?: boolean;
+  dsh_request_id?: string;
+  dsh_message_id?: string;
   type?: string;
   source?: string;
   detail?: string;

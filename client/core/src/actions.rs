@@ -1835,12 +1835,14 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
 
     let opencode = target.name.starts_with("opencode/");
     let claude = target.name.starts_with("claude/");
+    let dsh = target.name.starts_with("dsh/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
-        if receipt["schema"] == 1
-            && receipt["status"] == "waiting_for_idle"
+        let exact_pre_offer = receipt["schema"] == 1
             && receipt["proof"] == if opencode {
                 "native_opencode_queue"
+            } else if dsh {
+                "native_dsh_idle_guard"
             } else {
                 "native_input_lock"
             }
@@ -1850,9 +1852,15 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             && receipt["conversation_id"] == target.conversation_id
             && invocation.stdin.as_deref().is_some_and(|input| {
                 receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
-            })
-        {
+            });
+        if exact_pre_offer && receipt["status"] == "waiting_for_idle" {
             return done(receipt, None);
+        }
+        if let (true, Some(reason)) = (
+            dsh && exact_pre_offer && receipt["status"] == "not_offered",
+            receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty()),
+        ) {
+            return failed(reason);
         }
         if opencode
             && (receipt["transport"] != "native_opencode"
@@ -1864,6 +1872,11 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             receipt["digest"] == format!("{:x}", Sha256::digest(input))
         })) {
             return uncertain("The original Claude Send is unconfirmed.");
+        }
+        if dsh && !(dsh_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+            receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
+        })) {
+            return uncertain("The original DeepSeek Send is unconfirmed.");
         }
     }
     let started = !matches!(exit, Exit::StartFailed(_));
@@ -1881,7 +1894,7 @@ pub fn outbox_status(
 ) -> Result<Invocation, String> {
     use sha2::{Digest, Sha256};
 
-    if !(target.name.starts_with("opencode/") || target.name.starts_with("claude/"))
+    if !(target.name.starts_with("opencode/") || target.name.starts_with("claude/") || target.name.starts_with("dsh/"))
         || !matches!(action, Action::SendWhenIdle { .. })
     {
         return Err("Expected an original outbox request.".into());
@@ -1912,6 +1925,15 @@ pub fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
     receipt["native_input"]["prompt_id"].as_str().filter(|id| crate::creation::canonical_uuid(id))
 }
 
+pub(crate) fn dsh_outbox_submitted(receipt: &Value) -> bool {
+    receipt["schema"] == 1 && receipt["status"] == "submitted"
+        && receipt["proof"] == "native_dsh_receipt" && receipt["transport"] == "native_dsh"
+        && receipt["native_message_id"].as_str().is_some_and(|id| {
+            !id.is_empty() && id.len() <= 128
+                && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+        })
+}
+
 pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
     let Exit::Code { code: 0, stdout, .. } = exit else { return None };
     if stdout.len() > 8192 { return None; }
@@ -1919,6 +1941,8 @@ pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
     let provider = if target.name.starts_with("claude/") {
         receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
+    } else if target.name.starts_with("dsh/") {
+        dsh_outbox_submitted(&receipt)
     } else {
         target.name.starts_with("opencode/") && receipt["proof"] == "native_opencode_receipt"
             && receipt["transport"] == "native_opencode"

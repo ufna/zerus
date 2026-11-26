@@ -316,7 +316,8 @@ fn exact_input_identity(row: &ViewRow, target: (&str, &str), details: &Value) ->
         && text(details, "run_id") == run
         && text(details, "conversation_id") == conversation
         && text(details, "name") == row.name
-        && text(details, "agent") == row.agent
+        && (text(details, "agent") == row.agent
+            || (row.agent == "deepseek" && text(details, "agent") == "dsh"))
         && (!row.account_binding_reported
             || (text(details, "account_id") == row.account_id
                 && text(details, "account_home") == row.account_home))

@@ -22,6 +22,10 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     if agent == "claude" {
         value["claude_outbox_supported"] = json!(true);
     }
+    if dsh_agent(agent) {
+        value["dsh_outbox_supported"] = json!(true);
+        value["dsh_outbox_ready"] = json!(!is_busy);
+    }
     if let Some(pending) = pending {
         value["previous_message_pending"] = json!(pending);
     }
@@ -31,7 +35,7 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
 fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> ComposerView {
     let mut row = lock(&fake.row);
     row.name.clone_from(&target.name);
-    row.agent = agent.into();
+    row.agent = if agent == "dsh" { "deepseek" } else { agent }.into();
     row.process_state = "running".into();
     row.phase = Some("tool".into());
     drop(row);
@@ -78,7 +82,7 @@ fn settle_next(
 
 #[test]
 fn ordinary_send_accepts_a_busy_draft_without_native_input() {
-    for agent in ["codex", "kimi", "opencode", "claude"] {
+    for agent in ["codex", "kimi", "opencode", "claude", "dsh"] {
         let root = dir("ordinary-send-busy");
         let (c, fake) = send_hub_on(&drafts(&root));
         let target = target_session(agent);
@@ -99,6 +103,39 @@ fn ordinary_send_accepts_a_busy_draft_without_native_input() {
         assert!(saved.draft.draft.text.is_empty());
         assert!(lock(&fake.calls).is_empty());
     }
+}
+
+#[test]
+fn deepseek_waits_for_native_idle_and_offers_only_the_exact_original_head() {
+    let root = dir("deepseek-ordinary-queue-drain");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let target = target_session("dsh");
+    present(&c, &fake, &target, "dsh");
+    let original = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
+    enqueue(&c, "second");
+    lock(&fake.row).phase = Some("idle".into());
+    let idle = details(&target, "dsh", false, None);
+    let mut still_queued = idle.clone();
+    still_queued["dsh_outbox_ready"] = json!(false);
+    settle_next(&c, &fake, &store, still_queued);
+    let mut wrong = idle.clone();
+    wrong["conversation_id"] = json!("different-conversation");
+    settle_next(&c, &fake, &store, wrong);
+    assert!(lock(&fake.calls).is_empty());
+
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
+        detail: "Lost acknowledgement".into(),
+    });
+    settle_next(&c, &fake, &store, idle.clone());
+    let held = until(&c, |view| view.waiting_in_zerus[0].state == State::Unknown);
+    assert!(!held.waiting_in_zerus[0].can_check_terminal);
+    assert_eq!(held.waiting_in_zerus[1].state, State::Waiting);
+    settle_next(&c, &fake, &store, idle);
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.name, target.name);
+    assert_eq!(calls[0].2, original);
 }
 
 #[test]
@@ -177,8 +214,9 @@ fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_o
 #[test]
 fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
     for (agent, reason) in [
-        ("dsh", QUEUE_UNAVAILABLE),
+        ("agy", QUEUE_UNAVAILABLE),
         ("claude", QUEUE_OLD_HOST),
+        ("dsh", QUEUE_OLD_HOST),
         ("codex", QUEUE_TARGET_CHANGED),
     ] {
         let root = dir("single-send-unsupported");
@@ -192,11 +230,17 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
             row.phase = Some("tool".into());
         }
         let mut busy = details(&session, agent, true, Some(false));
+        if agent == "agy" {
+            busy["send_supported"] = json!(true);
+            busy["send_available"] = json!(true);
+        }
         if reason == QUEUE_TARGET_CHANGED {
             busy["run_id"] = json!("replacement-run");
         }
         if reason == QUEUE_OLD_HOST {
-            busy.as_object_mut().unwrap().remove("claude_outbox_supported");
+            let capability = if dsh_agent(agent) { "dsh_outbox_supported" } else { "claude_outbox_supported" };
+            busy.as_object_mut().unwrap().remove(capability);
+            busy.as_object_mut().unwrap().remove("dsh_outbox_ready");
         }
         c.open(Some(session));
         c.observe(&state(busy));
