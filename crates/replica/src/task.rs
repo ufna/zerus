@@ -740,6 +740,7 @@ impl TaskDoc {
                     considered: integer(&entry, "considered").and_then(|n| u64::try_from(n).ok()),
                     reviews: string(&entry, "reviews"),
                     of: string(&entry, "of"),
+                    quick_review: decode(&entry, "quick_review").ok(),
                     person_request: string(&entry, "person_request")
                         .and_then(|raw| serde_json::from_str(&raw).ok()),
                 },
@@ -882,6 +883,9 @@ impl TaskDoc {
             },
             summary: string(&fields, "summary").unwrap_or_default(),
             review_assignment: None,
+            review_report_id: None,
+            quick_review_status: None,
+            quick_review: None,
             cancelled_at: integer(&fields, "cancelled_at"),
             cancel_reason: string(&fields, "cancel_reason").unwrap_or_default(),
             title: self.title(),
@@ -896,6 +900,7 @@ impl TaskDoc {
             }
             _ => assignment,
         };
+        crate::quick_review::project(&mut view, &ids);
         Ok((view, ids))
     }
 
@@ -1283,6 +1288,14 @@ impl TaskDoc {
         }
         fields.insert(REPORTED_REVIEW, serde_json::to_string(&decision)?)?;
         self.log_review_assignment(assignment, actor, now)
+    }
+
+    pub(crate) fn record_quick_review(
+        &self, decision: &crate::quick_review::Decision, actor: &Actor, now: i64,
+    ) -> Result<()> {
+        let entry = self.log("quick_review", actor, now, &Self::quick_review_log(decision), None)?;
+        entry.insert("quick_review", serde_json::to_string(decision)?)?;
+        self.commit()
     }
 
     fn log_review_assignment(

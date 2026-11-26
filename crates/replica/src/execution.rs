@@ -981,6 +981,7 @@ mod tests {
             reviews: None,
             of: None,
             person_request: None,
+            quick_review: None,
         }
     }
 
