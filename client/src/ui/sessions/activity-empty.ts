@@ -6,7 +6,14 @@ import { tr } from "../../i18n";
  * message; otherwise activity will appear as the agent works, or, for a
  * session Zerus does not track, its terminal is where to look.
  */
-export function emptyActivity(summary: Record<string, unknown> | undefined, tracked: boolean): { title: string; text: string } {
+export function emptyActivity(summary: Record<string, unknown> | undefined, tracked: boolean, provider?: string): { title: string; text: string } {
+  if (provider === "agy" && summary && summary.activity_supported !== true) {
+    return { title: tr("Activity unavailable"), text: tr("This computer does not report Google Antigravity activity.") };
+  }
+  if (provider === "agy" && summary?.activity_supported === true && summary.send_supported === true && summary.send_available === true
+    && summary.runtime_state === "live" && summary.activity === "idle" && summary.auth_required !== true) {
+    return { title: tr("Ready for your first message"), text: tr("Send a message below. The agent’s replies will appear here.") };
+  }
   const native = summary?.backend === "dsh" && summary.runtime_state === "live" && summary.read_only !== true;
   if (native && summary.auth_required === true) {
     return { title: tr("No messages yet"), text: tr("After signing in, send a message below to start this session.") };

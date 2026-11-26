@@ -363,9 +363,12 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
 
   function formInput(): NewSessionFormInput {
     const fields = repository?.fields;
+    const agyAccount = agent() === "agy" && account() === "native-agy"
+      ? accounts.find((row) => row.provider === "agy" && row.id === account()) : undefined;
     const form: LaunchForm = {
       no_machine: machines.length === 0, can_enable_local_sessions: false, online: online(host()), agent: agent(), name,
       account_count: rows.length, account_selected: accountIndex >= 0, account_loading: accountRequest !== 0, account_preset: accountPreset,
+      native_launch_supported: accountHost === host() && agyAccount?.installed === true && agyAccount.launch_supported === true,
       path: path(), listed_folder: listedKey() !== "", folder_online: folderIndex >= 0 && folderAvailable, prefill_pending: prefillRequest !== 0,
       catalog_pending: catalogRequest !== 0, catalog_worktrees: worktreeCatalog.stale !== true && array(worktreeCatalog.worktrees).length > 0,
       auto_preferred: autoPreferred, creation_failed: false, implicit_inbox: implicitInbox(), branch, style: style(host()), stage: "idle",

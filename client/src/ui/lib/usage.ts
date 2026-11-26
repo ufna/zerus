@@ -123,7 +123,7 @@ export function severest(windows: readonly UsageWindow[]): Tone | undefined {
   return tone;
 }
 
-const PROVIDERS: Record<string, string> = { claude: "Claude", codex: "Codex", kimi: "Kimi", opencode: "OpenCode", dsh: "DeepSeek", deepseek: "DeepSeek", sh: "Shell" };
+const PROVIDERS: Record<string, string> = { claude: "Claude", codex: "Codex", kimi: "Kimi", opencode: "OpenCode", agy: "Google Antigravity", dsh: "DeepSeek", deepseek: "DeepSeek", sh: "Shell" };
 /** IdentityBadges::providerName. */
 export const providerName = (provider: string) => PROVIDERS[provider] ?? provider;
 

@@ -37,6 +37,7 @@ vi.mock("../../bridge", async (original) => {
   return {
     ...bridge,
     composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
+    runAction: withDesktop(bridge.runAction),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
     localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
     inTauri: () => transport.enablesTeams, setParent: transport.parent,
@@ -739,4 +740,123 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
   const badge = host.querySelector('[data-tab="team"] [data-team-tab-notices]');
   expect(badge?.textContent).toBe("1");
   expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
+});
+
+it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle through the ordinary menu in %s", async (lang) => {
+  transport.language = lang;
+  const labels = lang === "ru"
+    ? { menu: "Действия сессии", stop: "Остановить сессию…", confirm: "Остановить сессию", resume: "Возобновить сессию", retry: "Повторить запуск", cancel: "Отмена" }
+    : { menu: "Session actions", stop: "Stop session…", confirm: "Stop session", resume: "Resume session", retry: "Retry start", cancel: "Cancel" };
+  const fixture = fixtureRow("Private Antigravity");
+  const row: ViewRow = { ...fixture, name: "agy/example/fixture", agent: "agy", terminal_supported: false };
+  const view: ComposerView = {
+    handle: 118, key: draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name, session_id: row.session_id, archive_id: null }),
+    loaded: true, rev: 1, text_epoch: 1, text: "Private Antigravity draft", position: 0, anchor: 0,
+    attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false,
+    status: "", status_error: false, can_send: false, send_label: { source: "Send" }, available: false,
+    unavailable_reason: "On this computer, run agy acp --login, then refresh the session. Your draft stays here.",
+    block_reason: null, attachments_available: false, attachments_reason: "", session_status: "", session_status_error: false,
+    session_blocks_input: false, inspect_error: false, local: [], compacting: false, cancel_send: false, input_visible: true,
+    question: null, queue: null, cache: { visible: false, tone: "quiet", label: "", short_label: "" },
+    cache_warning: "", cache_details: "",
+    context: { visible: false, tone: "quiet", text: "", tooltip: "", warning: false, percent: null, accessible_name: "" },
+    clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "", cache_enabled: false, running: false, reason: "", cache_reason: "" },
+  };
+  vi.mocked(bridge.composerOpen).mockImplementation(async s => s?.name === row.name ? view : null);
+  const key = (await open(row)).slice(1);
+  const lifecycle: unknown[] = [], sendCalls: unknown[] = [];
+  transport.composer = (command, args) => {
+    if (command === "send_message") {
+      sendCalls.push(args);
+      return { kind: "sending" };
+    }
+    if (command === "run_action") {
+      lifecycle.push(args);
+      return { outcome: "done", receipt: {}, cleanup: null };
+    }
+    return undefined;
+  };
+  const menus = () => [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
+  const openMenu = async (label: string) => {
+    setMenu(undefined);
+    host.querySelector<HTMLButtonElement>(`.detail-head button[data-tip="${labels.menu}"]`)!.click();
+    await flush();
+    return menus().find((button) => button.textContent?.trim() === label);
+  };
+  const state = (rev: number, extra: Record<string, unknown>) => receive({ ...emptyBatch(), activity: [{
+    computer: "", key, kind: "state", payload: { rev, value: { backend: "agy", run_id: row.run_id,
+      conversation_id: row.conversation_id, terminal_supported: false, ...extra } },
+  }] });
+  const confirmButton = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('dialog[aria-labelledby="action-dlg-title"] button')]
+    .find(b => b.textContent?.trim() === label);
+  expect(selected()?.agent).toBe("agy");
+  expect(host.querySelector(".detail-head .agent-badge")?.getAttribute("title")).toBe("Google Antigravity");
+  state(2, { activity_supported: false, auth_required: true });
+  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain("agy acp --login");
+  const sendDraft = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
+  expect(sendDraft().disabled).toBe(true);
+  sendDraft().click();
+  expect(sendCalls).toEqual([]);
+  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
+  expect((await openMenu(labels.stop))?.getAttribute("aria-disabled")).toBe("true");
+  expect(lifecycle).toEqual([]);
+
+  state(3, { activity_supported: true, send_supported: true, send_available: true,
+    allowed_actions: ["pause"], activity: "idle", phase: "idle", runtime_state: "live" });
+  receive({ ...emptyBatch(), composer: { ...view, available: true, can_send: true, unavailable_reason: "" } });
+  expect(host.querySelector(".qcard[role=status]")).toBeNull();
+  expect(sendDraft().disabled).toBe(false);
+  sendDraft().click();
+  await vi.waitFor(() => expect(sendCalls).toHaveLength(1));
+  expect(sendCalls[0]).toMatchObject({ handle: view.handle, text: view.text });
+  const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
+  receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [reply], cursor: 2 } }] });
+  expect(activity.events()).toEqual([reply]);
+  const stop = await openMenu(labels.stop);
+  expect(stop?.getAttribute("aria-disabled")).toBe("false");
+  stop!.click();
+  await flush();
+  expect(lifecycle).toEqual([]);
+  confirmButton(labels.cancel)!.click();
+  expect(lifecycle).toEqual([]);
+
+  (await openMenu(labels.stop))!.click();
+  await flush();
+  confirmButton(labels.confirm)!.click();
+  const target = { name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, computer: "" };
+  await vi.waitFor(() => expect(lifecycle).toEqual([{ target, action: { kind: "pause" }, delay: undefined }]));
+
+  put({ ...row, state: "paused", status: "paused", resumable: true, allowed_actions: ["resume"] });
+  state(4, { activity_supported: true, allowed_actions: ["resume"], runtime_state: "stopped" });
+  await flush();
+  expect(selected()).toMatchObject({ state: "paused", cmd: "agy" });
+  const resume = await openMenu(labels.resume);
+  expect(resume?.getAttribute("aria-disabled"), menus().map(b => b.textContent).join(", ")).toBe("false");
+  resume!.click();
+  await vi.waitFor(() => expect(lifecycle).toEqual([
+    { target, action: { kind: "pause" }, delay: undefined },
+    { target, action: { kind: "resume" }, delay: undefined },
+  ]));
+
+  const signedOut = { ...fixtureRow("First-time sign-in"), name: "agy/example/sign-in", agent: "agy",
+    conversation_id: "", state: "stopped", status: "paused", resumable: true, allowed_actions: ["resume"] };
+  const authKey = (await open(signedOut)).slice(1);
+  const auth = (rev: number, retry?: boolean) => receive({ ...emptyBatch(), activity: [{
+    computer: "", key: authKey, kind: "state", payload: { rev, value: {
+      run_id: signedOut.run_id, conversation_id: "", allowed_actions: ["resume"], auth_required: true, startup_retry_available: retry,
+    } },
+  }] });
+  auth(2);
+  expect((await openMenu(labels.resume))?.getAttribute("aria-disabled")).toBe("true");
+  expect(lifecycle).toHaveLength(2);
+  auth(3, true);
+  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain(labels.retry);
+  const retry = await openMenu(labels.retry);
+  expect(retry?.getAttribute("aria-disabled")).toBe("false");
+  retry!.click();
+  await vi.waitFor(() => expect(lifecycle).toHaveLength(3));
+  expect(lifecycle[2]).toMatchObject({
+    target: { computer: "", name: signedOut.name, run_id: signedOut.run_id, conversation_id: "" },
+    action: { kind: "resume" },
+  });
 });

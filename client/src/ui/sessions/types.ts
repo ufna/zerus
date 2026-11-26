@@ -3,7 +3,7 @@ import type { ParentLinkOut, Reply } from "../../types";
 // catalog store's row: the Rust view row plus the presentation fields derived
 // from it once per upsert (store/catalog.ts `toSession`).
 
-export type AgentKind = "claude" | "codex" | "kimi" | "deepseek" | "opencode" | "sh";
+export type AgentKind = "claude" | "codex" | "kimi" | "deepseek" | "opencode" | "agy" | "sh";
 
 /** Legacy rows without a process observation retain their existing meaning. */
 export const processMayBeLive = (state: string): boolean => state !== "exited" && state !== "unverified";
@@ -128,6 +128,7 @@ export interface Session {
   state: string;
   tracked: boolean;
   resumable: boolean;
+  startupRetryAvailable?: boolean;
   /** The raw activity (`idle`, `busy`, ...). */
   activity: string;
   processState: string;

@@ -80,6 +80,7 @@ export function createActions(
       const target = `${row.name} (${row.machine})`;
       if (out.outcome === "done") notify("info", tr("Interrupt sent to %1. Waiting for the agent to stop…", target));
       else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", tr("Stop %1: the turn already ended or is waiting for input. No action needed.", target));
+      else if (row.cmd === "agy") notify("error", tr("Stop %1 failed: %2\nRefresh the session before trying again.", target, out.detail), true);
       else notify("error", tr("Stop %1 failed: %2\nOpen Terminal to check the agent before trying again.", target, out.detail), true);
       return;
     }

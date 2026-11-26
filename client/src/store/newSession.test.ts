@@ -1139,3 +1139,18 @@ describe("task executor admission", () => {
     expect(t.state()).toMatchObject({ submitted: true, error: "Task launch reply lost" });
   });
 });
+
+it("binds Antigravity Start to the selected computer's native account advertisement", async () => {
+  const t = setup((w) => { w.flags.add("agy"); w.flags.add("agy-launch"); });
+  await t.open({ computer: "mac", agent: "agy", account: "native-agy", path: "/workspace/example" });
+  expect(t.state()).toMatchObject({ host: "mac", agent: "agy", accountId: "native-agy", form: { start_enabled: false } });
+  expect(t.state().accounts[t.state().account].summary).toBe("Sign-in is checked when Google Antigravity starts.");
+  await t.start();
+  expect(t.world.count("creationSubmit")).toBe(0);
+  t.store.closeNewSession();
+  await t.open({ computer: "", agent: "agy", account: "native-agy", path: "/workspace/example" });
+  expect(t.state()).toMatchObject({ host: "", agent: "agy", accountId: "native-agy", form: { start_enabled: true } });
+  await t.start();
+  expect(t.world.count("creationSubmit")).toBe(1);
+  expect(t.choices()).toMatchObject({ host: "", agent: "agy", account: "native-agy" });
+});

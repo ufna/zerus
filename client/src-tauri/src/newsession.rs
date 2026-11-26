@@ -1107,6 +1107,32 @@ mod tests {
         assert_eq!(suggested.destination, "C:/work/app");
     }
 
+    #[test]
+    fn antigravity_start_requires_advertisement_and_uses_the_guarded_headless_child() {
+        let mut form = Form {
+            online: true, agent: "agy".into(), account_selected: true, account_count: 1,
+            name: "fixture".into(), path: "/srv/example".into(), folder_online: true,
+            ..Form::default()
+        };
+        assert_eq!(launch::start(&form, true, false), launch::Start::Nothing);
+        assert_eq!(launch::shown(&form).notice.unwrap().english(),
+            "Starting Google Antigravity is unavailable on this computer.");
+        form.native_launch_supported = true;
+        assert!(launch::shown(&form).start_enabled);
+        assert!(!launch::shown(&form).open_terminal_enabled);
+        let launch_id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
+        let machine = "be98a24c-8daa-4d06-9f87-fc241a388ad5";
+        let inv = launch::launch_invocation(&ComputerId::from("arch"), &launch::Launch {
+            agent: "agy".into(), target: "/srv/example".into(), account: "native-agy".into(),
+            name: "fixture".into(), launch_id: launch_id.into(), ..launch::Launch::default()
+        }, machine);
+        assert!(inv.args.windows(2).any(|pair| pair == ["--expect-machine", machine]));
+        assert!(inv.args.windows(2).any(|pair| pair == ["--account", "native-agy"]));
+        assert!(inv.args.windows(2).any(|pair| pair == ["--launch-id", launch_id]));
+        assert!(inv.args.windows(2).any(|pair| pair == ["agy", "/srv/example"]));
+        assert!(!inv.args.iter().any(|arg| arg == "-d"));
+    }
+
     fn catalog() -> Value {
         json!({"state": "ok", "common_dir": "/srv/repo/.git", "selected_root": "/srv/repo", "path": "/srv/repo",
                "worktrees": [{"path": "/srv/repo", "kind": "main", "available": true},

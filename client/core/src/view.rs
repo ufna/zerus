@@ -146,6 +146,8 @@ pub struct ViewRow {
     pub state: String,
     pub tracked: bool,
     pub resumable: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub startup_retry_available: bool,
     pub activity: String,
     pub process_state: String,
     /// `process_work.count`, -1 when unknown.
@@ -1430,6 +1432,7 @@ pub fn row(value: &Value) -> ViewRow {
             .get("resumable")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        startup_retry_available: flag("startup_retry_available").unwrap_or(false),
         activity: session.activity.to_owned(),
         process_state: session.process_state.to_owned(),
         background: session.background,
@@ -1478,12 +1481,12 @@ pub fn row(value: &Value) -> ViewRow {
                     .map(|s| (*s).to_owned())
             })
             .flatten(),
-        terminal_supported: flag("terminal_supported").unwrap_or(cmd != "dsh" && cmd != "opencode"),
+        terminal_supported: flag("terminal_supported").unwrap_or(!matches!(cmd, "dsh" | "opencode" | "agy")),
         terminal_reported: flag("terminal_supported").is_some(),
         terminal_attach_supported: flag("terminal_attach_supported").unwrap_or(false),
         terminal_attach_reported: flag("terminal_attach_supported").is_some(),
         notify,
-        bulk_lifecycle_supported: flag("bulk_lifecycle_supported").unwrap_or(cmd != "opencode"),
+        bulk_lifecycle_supported: flag("bulk_lifecycle_supported").unwrap_or(!matches!(cmd, "opencode" | "agy")),
     }
 }
 

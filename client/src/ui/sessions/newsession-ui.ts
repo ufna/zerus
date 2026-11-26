@@ -1,3 +1,4 @@
+import { trText } from "../../text";
 import type { Account, FolderOut, HeaderOut, MachineMeta, PathStyle, Profile, Usage } from "../../types";
 import { balanceCompact, balanceTitle, current, fromProjected, period, providerName, severest, windowsAt, type Tone, type UsageWindow } from "../lib/usage";
 import { clean, leaf, native, same } from "./paths";
@@ -202,7 +203,7 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
   if (!name) name = choice.cachedEmail?.(profile.provider, profile.id) ?? "";
   if (!name) name = profile.label;
   if (UNNAMED.has(name)) name = tr("Account n/a");
-  const summary = usage ? launchSummary(usage, choice.now) : tr("limits n/a");
+  const summary = profile.provider === "agy" ? trText(profile.detail) : usage ? launchSummary(usage, choice.now) : tr("limits n/a");
   // A terse balance ("$6.20") is named in full for the tooltip and assistive technology.
   const title = usage && balanceCompact(usage) ? balanceTitle(usage) : "";
   const about = title ? `\n${title}` : "";

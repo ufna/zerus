@@ -839,7 +839,7 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         && details
             .get("attachments_supported")
             .and_then(Value::as_bool)
-            .unwrap_or(true);
+            .unwrap_or(ctx.facts.cmd != "agy");
     let attachments_reason = details
         .get("attachments_reason")
         .and_then(Value::as_str)
@@ -5934,6 +5934,40 @@ pub(crate) mod tests {
 
     pub(crate) fn sent(fake: &Fake) -> Vec<(Target, Action, String)> {
         lock(&fake.calls).clone()
+    }
+
+    #[test]
+    fn antigravity_ordinary_send_uses_the_bound_run_and_conversation() {
+        let root = dir("agy-send");
+        let (c, fake) = send_hub(&root);
+        let name = "agy/sample-project/review";
+        let mut session = session();
+        session.name = name.into();
+        *lock(&fake.row) = ViewRow { agent: "agy".into(), ..row(name) };
+        c.open(Some(session));
+        let mut details = ready();
+        details["provider"] = json!("agy");
+        details["name"] = json!(name);
+        details["send_supported"] = json!(true);
+        details["attachments_supported"] = json!(false);
+        c.observe(&state(details.clone()));
+        let v = until(&c, |v| v.loaded);
+        let draft = "Send this synthetic draft once.";
+        c.edit(v.handle, 4, v.text_epoch, draft.into(), 0, 0);
+        assert!(!c.current().unwrap().can_send);
+        assert!(sent(&fake).is_empty());
+        details["send_available"] = json!(true);
+        c.observe(&state(details));
+        let v = until(&c, |v| v.can_send);
+        assert!(!v.attachments_available);
+        assert_eq!(c.send_message(v.handle, 5, v.text_epoch, draft.into(), 0, 0), SendReply::Sending);
+        until(&c, |v| !v.sending && v.text.is_empty());
+        let calls = sent(&fake);
+        assert_eq!(calls.len(), 1);
+        let (target, action, _) = &calls[0];
+        assert_eq!((target.computer.as_str(), target.name.as_str(), target.run_id.as_str(), target.conversation_id.as_str()),
+            ("studio", name, "run-1", "conv-1"));
+        assert!(matches!(action, Action::Send { text, attachments, .. } if text == draft && attachments.is_empty()));
     }
 
     #[test]
