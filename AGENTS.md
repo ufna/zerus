@@ -85,7 +85,7 @@ task, a team hand-out or a timer), do it, including actions reserved to the
 person: accepting a task, answering another session's trust, hook or permission
 prompt, stopping or archiving a session, turning automatic tool approvals on. A
 standing request given there ("from now on ...", "always ...") counts until the
-person withdraws it. A team's Confirm folder trust setting (`confirm_trust`) is
+person withdraws it. A team's Confirm folder and Zerus hook trust setting (`confirm_trust`) is
 the person's standing choice for its members' trust prompts. A child or team
 member acts for the person only when the person messaged it directly. Where a
 product check still refuses an agent (the tasks caller proof, Teams
@@ -247,7 +247,11 @@ An agent may turn this opt-in on at the person's request.
 
 A team's standing confirmations are a separate bounded exception with their
 own audit categories: the startup folder trust prompt of a member whose
-worktree Zerus created for that team, and the resume of a member whose agent
+worktree Zerus created for that team; under the same delegation, the Codex
+trust Zerus records before such a Codex member starts, for exactly its own hooks
+and those committed in the team's base commit, never by answering Codex's hook
+review (owner decision 2026-11-18; each grant once); and the resume of a member
+whose agent
 exited by itself, at most three times an hour. Trust covers the team repository's
 main checkout and its subfolders on the member's account; its audit row names
 that scope. These confirmations never widen automatic tool approvals. Session

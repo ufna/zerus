@@ -378,3 +378,88 @@ fn a_reply_cut_off_at_the_limit_says_the_cli_s_error_when_it_wrote_one() {
         2000
     );
 }
+
+/// zerus-f67qp: a team's Codex hook-trust row keeps its standing kind through
+/// the list decoder and says what it covered; only a confirmed grant claims
+/// the trust, and it needs no folder scope.
+#[test]
+fn a_hook_trust_row_keeps_its_kind_and_says_what_it_covered() {
+    let rows: Vec<Value> = ["approved", "failed", "unknown", "cancelled"]
+        .iter()
+        .map(|status| {
+            json!({"id": 1, "at": 1, "host": "h", "session": "codex/example/member",
+                "prompt": "Hooks need review", "status": status, "categories": ["team_hook_trust"]})
+        })
+        .collect();
+    let reply = json!({"entries": rows, "next": null, "previous": null});
+    let page = page(reply.as_object().unwrap()).unwrap();
+    assert_eq!(page.entries.len(), 4);
+    for (entry, status) in page
+        .entries
+        .iter()
+        .zip(["approved", "failed", "unknown", "cancelled"])
+    {
+        assert_eq!(
+            entry.standing.as_deref(),
+            Some("team_hook_trust"),
+            "{entry:?}"
+        );
+        assert_eq!(entry.scope, None);
+        assert_eq!(
+            trust_sentence(None, &json!(["team_hook_trust"]), Some(status)).as_deref(),
+            Some(if status == "approved" {
+                "Codex hook trust recorded before start for Zerus's own and the team's committed hooks"
+            } else {
+                "Codex hook trust was requested; it was not confirmed"
+            }),
+            "{status}"
+        );
+    }
+    let detail = detail(
+        json!({"status": "approved", "categories": ["team_hook_trust"]})
+            .as_object()
+            .unwrap(),
+    );
+    assert!(
+        detail.contains("Codex hook trust recorded before start"),
+        "{detail}"
+    );
+}
+
+/// zerus-f67qp review: the detail of a team's Codex hook-trust record, from
+/// the record hgs writes (its committed fixture), committed in turn for the
+/// Russian journal test. Regenerate with HGS_F67QP_WRITE_FIXTURE set.
+#[test]
+fn a_hook_trust_records_detail_is_the_committed_fixture() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(format!("{root}/tests/fixtures/team-hook-trust-record.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let detail_of = |status: &str, outcome: &Value| {
+        detail(
+            json!({"status": status, "categories": ["team_hook_trust"], "question": record["question"],
+                "answers": [], "detail": outcome})
+            .as_object()
+            .unwrap(),
+        )
+    };
+    let produced = json!({
+        "approved": detail_of("approved", &record["approved_detail"]),
+        "unknown": detail_of("unknown", &record["unknown_detail"]),
+    });
+    let path = format!("{root}/client/src/ui/screens/settings/approvals-hook-trust.fixture.json");
+    if std::env::var_os("HGS_F67QP_WRITE_FIXTURE").is_some() {
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&produced).unwrap() + "\n",
+        )
+        .unwrap();
+    }
+    let committed: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        produced, committed,
+        "the hook-trust detail drifted; regenerate with HGS_F67QP_WRITE_FIXTURE"
+    );
+}

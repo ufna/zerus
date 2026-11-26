@@ -16,6 +16,8 @@ pub(crate) mod caller;
 pub(crate) mod catalog;
 pub(crate) mod clean;
 mod cli;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use cli::fixture_lead_cards;
 // The member launch's host check (zerus-63rru.28) uses this once a DeepSeek
 // seat is accepted; until then only its tests do.
 #[cfg(unix)]

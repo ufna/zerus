@@ -4,7 +4,7 @@
 //! any spawn; its exact audit has never been offered to a child.
 use super::{
     policy,
-    ports::{Ports, Result},
+    ports::{Ports, Result, ValidationError},
     types::*,
 };
 use serde_json::{json, Value};
@@ -33,15 +33,31 @@ pub(super) fn key(parts: &Value) -> String {
 }
 
 pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
+    let effects = effects(p, b, epoch, now);
+    // Owed feed lines live apart from the effect rows, so a row is settled
+    // under the same rules every build reads, and a line still owed never
+    // holds the member's later confirmations (zerus-f67qp review).
+    let feed = feed(p, b);
+    effects.and(feed)
+}
+
+fn feed(p: &mut impl Ports, b: &Binding) -> Result<()> {
+    for note in p.notes_owed(b)? {
+        p.note(&note)?;
+    }
+    Ok(())
+}
+
+fn effects(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
     if let Some(mut row) = p.unsettled(b)? {
         if row.state == "waiting" {
             if let Err(why) = validate(p, &row.plan) {
                 row.state = "cancelled".into();
-                row.detail = why;
+                row.detail = why.into_detail();
                 p.save(&row)?;
                 return settle(p, &mut row);
             }
-            return execute(p, row.plan, epoch, now);
+            return execute(p, row.plan, epoch, now, ClaimPhase::Waiting);
         }
         if row.state == "prepared" {
             row.state = "unknown".into();
@@ -59,7 +75,7 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
         };
         if ready.ready && ready.live && !ready.paused && !ready.ended && ready.questions.is_empty()
         {
-            return execute(p, brief, epoch, now);
+            return execute(p, brief, epoch, now, ClaimPhase::Fresh);
         }
     }
     let Some(snapshot) = p.observe_member(b)? else {
@@ -82,22 +98,65 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
                 return Ok(());
             }
             let plan = candidate(b, &snapshot, Kind::Resume, Value::Null);
-            let refusal = validate(p, &plan).err().unwrap_or_else(|| format!(
-                "The original run did not settle: its terminal name is still held. {}", policy::SEAT,
-            ));
-            return execute_refusal(p, plan, epoch, now, Some(refusal));
+            return execute(p, plan, epoch, now, ClaimPhase::ResumeWaitExpired);
         }
         (Kind::Resume, Value::Null)
     } else {
         return Ok(());
     };
     let plan = candidate(b, &snapshot, kind, question);
-    execute(p, plan, epoch, now)
+    execute(p, plan, epoch, now, ClaimPhase::Fresh)
 }
 
-fn execute(p: &mut impl Ports, plan: Plan, epoch: &str, now: i64) -> Result<()> {
-    let refusal = validate(p, &plan).err();
+enum ClaimPhase {
+    Fresh,
+    ResumeWaitExpired,
+    Waiting,
+}
+
+fn execute(p: &mut impl Ports, plan: Plan, epoch: &str, now: i64, phase: ClaimPhase) -> Result<()> {
+    if plan.kind == Kind::Trust && policy::hooks(&plan.question) {
+        return hooks_notice(p, plan, epoch, now);
+    }
+    let fresh = !matches!(phase, ClaimPhase::Waiting);
+    let refusal = match validate(p, &plan) {
+        Err(ValidationError::Retired(disposition)) if fresh => {
+            // The exact observation can retire its saved notices without
+            // claiming a fresh standing effect.
+            return p.retire_observation(&plan.binding, disposition);
+        }
+        Err(ValidationError::ArchiveCoverage(detail)) if fresh && plan.kind == Kind::Resume => {
+            // Leave the resume slot empty. The observation gate owns this gap
+            // and can retire it after the archive is proved.
+            p.archive_coverage_deferred(&detail);
+            return Err(detail);
+        }
+        Err(error) => Some(error.into_detail()),
+        Ok(()) => matches!(phase, ClaimPhase::ResumeWaitExpired).then(|| {
+            format!(
+                "The original run did not settle: its terminal name is still held. {}",
+                policy::SEAT,
+            )
+        }),
+    };
     execute_refusal(p, plan, epoch, now, refusal)
+}
+/// Zerus never answers Codex's hooks panel: "Trust all and continue" trusts
+/// whatever the panel captured, not what Zerus verified (zerus-f67qp). The
+/// person gets one card naming what Codex lists, read once per panel: a
+/// later pass finds the claim and reads nothing again.
+fn hooks_notice(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64) -> Result<()> {
+    plan.kind = Kind::Notice;
+    let claim = p.claim(&plan, epoch, now)?;
+    let mut row = claim.record;
+    if claim.fresh {
+        row.state = "cancelled".into();
+        row.detail = p.hook_listing(&plan).unwrap_or_else(|why| {
+            format!("Codex asks you to review its hooks; their list is unavailable: {why}")
+        });
+        p.save(&row)?;
+    }
+    settle(p, &mut row)
 }
 fn execute_refusal(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64, refusal: Option<String>) -> Result<()> {
     if refusal.is_some() {
@@ -131,6 +190,17 @@ fn execute_refusal(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64, re
     settle(p, &mut row)
 }
 
+#[cfg(test)]
+pub(super) fn fixture_legacy_archive_notice(
+    p: &mut impl Ports,
+    binding: &Binding,
+    snapshot: &Snapshot,
+    detail: String,
+) -> Result<()> {
+    let plan = candidate(binding, snapshot, Kind::Resume, Value::Null);
+    execute_refusal(p, plan, "legacy-fixture", 1, Some(detail))
+}
+
 fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
     if row.audit.is_some() {
         // Only a durable, definite non-start can reach a new claim with an audit.
@@ -155,7 +225,15 @@ fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
     Ok(true)
 }
 fn deliver(p: &mut impl Ports, row: &mut Record) {
-    let outcome = p.original(row, &mut |p| validate(p, &row.plan));
+    // Codex trusts the member's covered hooks before it starts again, so its
+    // resumed run shows no panel for them (zerus-f67qp). Its outcome is
+    // journaled on its own and never holds the resume.
+    if row.plan.kind == Kind::Resume && row.plan.binding.agent == "codex" {
+        p.before_start(&row.plan);
+    }
+    let outcome = p.original(row, &mut |p| {
+        validate(p, &row.plan).map_err(ValidationError::into_detail)
+    });
     match outcome {
         Outcome::Retry => {
             row.state = "waiting".into();
@@ -213,11 +291,11 @@ fn settle(p: &mut impl Ports, row: &mut Record) -> Result<()> {
     audit_error.map_or(Ok(()), Err)
 }
 
-pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
+fn validate(p: &mut impl Ports, plan: &Plan) -> std::result::Result<(), ValidationError> {
     let b = &plan.binding;
     let facts = p.facts(b)?;
     policy::stored(b, &facts)?;
-    let snapshot = p.observe(b)?;
+    let snapshot = p.observe_for_validation(b)?;
     policy::session(b, &snapshot)?;
     policy::ownership(b, &p.ownership(b)?)?;
     if snapshot.run != plan.snapshot.run || snapshot.conversation != plan.snapshot.conversation {
@@ -225,6 +303,10 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     }
     match plan.kind {
         Kind::Trust => {
+            // Zerus never answers Codex's hooks panel ([`hooks_notice`]).
+            if policy::hooks(&plan.question) {
+                return Err(p.hook_listing(plan)?.into());
+            }
             if !facts.team.settings.delegations.confirm_trust {
                 return Err("Folder-trust delegation is off".into());
             }
@@ -273,7 +355,20 @@ pub(super) fn candidate(b: &Binding, s: &Snapshot, kind: Kind, question: Value) 
     } else {
         "resume"
     };
-    let key = confirmation_key(b, &s.run, tag);
+    // Codex's hooks trust is its own question of the run, after its folder
+    // trust: another hash is another question (zerus-f67qp).
+    let key = if kind == Kind::Trust && policy::hooks(&question) {
+        key(&json!([
+            b.team,
+            b.member,
+            b.launch,
+            s.run,
+            "hooks_trust",
+            question["question_hash"]
+        ]))
+    } else {
+        confirmation_key(b, &s.run, tag)
+    };
     let text = format!("You are a member of team {} in role {}. Read `hgs team current` for your current team and work.", b.team, b.role);
     let question = if kind == Kind::Resume {
         synthetic(b, s, &text, "resume")

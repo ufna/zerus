@@ -1138,7 +1138,19 @@ pub(super) fn claude_version(program: &str) -> Option<(u64, u64, u64)> {
 /// Install hgs's tracking hooks into the configuration of `agent`, whose
 /// executable is `program` (spec D12 on Windows).
 pub(super) fn install_hooks(agent: &str, program: &str) -> Result<()> {
-    let path = hook_config(agent)?;
+    install_hooks_at(hook_config(agent)?, agent, program)
+}
+
+/// Brings this installation's hook entries in a Codex account at `home` up to
+/// date, as a session start does, so that a Teams pre-trust records Codex's
+/// trust for the very entries the start finds (zerus-f67qp). `program` is the
+/// agent executable whose version decides versioned events.
+#[cfg(unix)]
+pub(crate) fn install_codex_hooks(home: &Path, program: &str) -> Result<()> {
+    install_hooks_at(resolved_target(&home.join("hooks.json"))?, "codex", program)
+}
+
+fn install_hooks_at(path: PathBuf, agent: &str, program: &str) -> Result<()> {
     let lock_path = path.with_file_name(format!(
         "{}.hgs.lock",
         path.file_name().unwrap().to_string_lossy()
@@ -1256,6 +1268,27 @@ pub(super) fn health_version(path: &Path, program: &str) -> Option<(u64, u64, u6
     let bytes = super::hook_health::read_bounded(&seen_version(path), 4096).ok()??;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     (value["executable"] == identity).then(|| version::version_in(value["version"].as_str()?))?
+}
+
+/// The hook entry this installation writes into a Codex account's `hooks.json`
+/// for each of its events: the command line, its timeout and the events, as
+/// `install_hooks` writes them. A Teams standing confirmation of Codex's hook
+/// review compares each pending entry with it (zerus-f67qp).
+#[cfg(unix)]
+pub(crate) fn codex_hook_definition() -> Result<(String, u64, Vec<&'static str>)> {
+    let executable = runner_executable()?;
+    Ok((
+        fresh_command(&executable)?,
+        HOOK_TIMEOUT,
+        health_events("codex"),
+    ))
+}
+
+/// The matcher group this installation writes into a Codex `hooks.json` for
+/// each event, exactly: the whole definition Codex hashes, no field more.
+#[cfg(unix)]
+pub(crate) fn codex_hook_group() -> Result<Value> {
+    Ok(Entry::shell(fresh_command(&runner_executable()?)?).group())
 }
 
 pub(super) fn health_events(agent: &str) -> Vec<&'static str> {
@@ -3810,5 +3843,45 @@ mod tests {
         fs::remove_file(&claude).unwrap();
         assert_eq!(launch().registered_version(&program), None);
         assert_eq!(asked(), 4);
+    }
+
+    /// Each event's matcher group the Codex writer puts in an account's
+    /// `hooks.json`, new or refreshed from an older timeout, is exactly the
+    /// group a Teams hook trust compares, every field Codex hashes
+    /// (zerus-f67qp).
+    #[cfg(unix)]
+    #[test]
+    fn codex_writer_groups_are_the_group_teams_hook_trust_compares() {
+        let executable = runner_executable().unwrap();
+        let installed = Installed {
+            program: "codex",
+            agent: "codex",
+            version: std::cell::OnceCell::new(),
+            seen: PathBuf::from("/unused"),
+        };
+        let group = codex_hook_group().unwrap();
+        let (_, _, events) = codex_hook_definition().unwrap();
+        let older = json!({"hooks": events.iter().map(|event| (event.to_string(),
+            json!([{"hooks":[{"type":"command","command":fresh_command(&executable).unwrap(),"timeout":5}]}])))
+            .collect::<serde_json::Map<_, _>>()})
+        .to_string();
+        let _own = OwnProgram::for_config(Some(&executable), &path());
+        for original in [String::new(), older] {
+            let merged = merge_json(
+                &original,
+                &path(),
+                "codex",
+                false,
+                &mut || fresh_entry("codex", &executable, &installed),
+                &mut || None,
+            )
+            .unwrap()
+            .unwrap();
+            let written: Value = serde_json::from_str(&merged).unwrap();
+            assert_eq!(written["hooks"].as_object().unwrap().len(), events.len());
+            for event in &events {
+                assert_eq!(written["hooks"][event], json!([group.clone()]), "{event}");
+            }
+        }
     }
 }

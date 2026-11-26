@@ -27,11 +27,15 @@ the owner's decision zerus-63rru.66 and for zerus-63rru.73) and the resume of an
 exited member (Claude Code and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
-HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
-session: the Teams caller proof refuses a person command below a live agent.
+HGS_TEST_BIN, HGS_TEAMS_PERSON_BIN (the hgs unit-test executable, whose contract entry
+performs the person's native create, stop and task intake) and HGS_CLAUDE_TEST_BIN or
+HGS_CODEX_TEST_BIN, outside any agent session: the Teams caller proof refuses every
+person command below a live agent, team reads included.
 The Kimi class runs only in the hosted Kimi workflow.
 """
 from contextlib import closing, contextmanager, nullcontext
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -40,9 +44,12 @@ import re
 import shutil
 import shlex
 import socket
+import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 from unittest import mock
 import uuid
@@ -86,13 +93,14 @@ class ClassFixture:
     count = 1
     pinned = None
     pretrust = ()
+    split_codex_accounts = False
 
     @classmethod
     def setUpClass(cls):
         cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
                                      delegations=cls.delegations, service_answers=cls.service_answers,
                                      after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned,
-                                     pretrust=cls.pretrust)
+                                     pretrust=cls.pretrust, split_codex_accounts=cls.split_codex_accounts)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -123,11 +131,15 @@ class ClassFixture:
         return outcome
 
 
+LEAD_LAUNCH_BRIEF = ('lead', 'team_resume', ('team_launch_brief',), 'approved')
+
+
 def journal_is(case, expected, label):
     """The whole audit journal settles to exactly `expected` (journal_summary) within a
     turn's bound; the last summary read is kept in the evidence either way."""
     fx = case.fx
     last = []
+    expected = sorted(expected)
 
     def settled():
         last[:] = [fx.journal_summary()]
@@ -137,6 +149,36 @@ def journal_is(case, expected, label):
     finally:
         fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
                           dict(expected=expected, last=last[0] if last else None))
+
+
+def assert_lead_launch_audit(case):
+    lead = case.fx.sessions['lead']
+    [brief] = [row for row in case.fx.audit_rows(lead['name'])
+               if row['categories'] == ['team_launch_brief']]
+    case.assertEqual((brief['question_id'], brief['run']), ('brief:' + lead['run'], lead['run']))
+    case.assertIsNone(brief['scope'])
+    case.assertIs(brief['saved_question']['can_answer'], False)
+
+
+MANUAL_END_NOTE = 'The exact member run was deliberately archived or terminated.'
+
+
+def manual_end_event(cards, journal, opened):
+    """Only the service's deliberate-retirement close of this observed card counts."""
+    matches = [card for card in cards if card['seq'] == opened['seq']]
+    if len(matches) != 1:
+        return None
+    card = matches[0]
+    if (card['state'], card['decision'], card['decided_actor']) != ('closed', 'stale', opened['actor']):
+        return None
+    events = [row for row in journal if row['kind'] == 'close_card'
+              and f"card:{opened['seq']}" in row['refs']]
+    if len(events) != 1:
+        return None
+    event = events[0]
+    if event['actor'] == opened['actor'] and event['text'] == MANUAL_END_NOTE:
+        return event
+    return None
 
 
 # Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
@@ -402,12 +444,12 @@ class TeamsContract(ClassFixture):
 
         def stop():
             # The service may change the team between the person's read and the stop (a
-            # hand-out of the task above): a stale revision changes nothing, so the person
-            # refreshes and asks again with a new request.
+            # hand-out of the task above). The window's review then refuses the stale action
+            # without naming why and changes nothing, so the person refreshes and confirms
+            # again, but only when the team's revision really moved.
             revision = fx.status()['team']['revision']
-            reply = fx.json('team', 'stop', '--json', ok=False, stdin=json.dumps(dict(
-                request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
-            if (reply.get('error') or {}).get('code') == 'stale_revision':
+            reply = fx.person_team_action(dict(kind='stop'), revision)
+            if reply.get('ok') is not True and fx.status()['team']['revision'] != revision:
                 refusals.append(revision)
                 return None
             return reply
@@ -473,13 +515,15 @@ class TrustContract(ClassFixture):
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
         fx.evidence.write('cards-after-trust.json', refusals)
         self.assertFalse(refusals, 'no member card was left for the person')
-        journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
+        journal_is(self, self.startup_journal(), 'the journal holds startup grants and the lead launch brief')
 
     def member_ids(self):
         return ('lead',) + tuple(f'm{number}' for number in range(1, self.count + 1))
 
-    def startup_grants(self):
-        return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
+    def startup_journal(self):
+        return [LEAD_LAUNCH_BRIEF,
+                *((member, self.trust_source, ('team_folder_trust',), 'approved')
+                  for member in self.member_ids())]
 
     def test_2_an_ordinary_question_stays_the_persons(self):
         """After the startup grants, every member asks an ordinary question (zerus-63rru.73)."""
@@ -559,6 +603,44 @@ def codex_trust_problems(records, accounts, main):
     return problems
 
 
+def assert_startup_hook_grant(case, row, launch, trusted):
+    case.assertEqual((row['source'], row['provider'], row['status'], row['categories'], row['scope'], row['answers']),
+                     ('team_hook_trust', 'codex', 'approved', ['team_hook_trust'], None, []))
+    case.assertEqual(row['detail'], 'Codex saved trust for exactly these hooks')
+    question = row['saved_question']
+    case.assertEqual((question['run_id'], question['conversation_id']), (launch, ''))
+    case.assertIs(question['can_answer'], False)
+    hooks = question['hooks']
+    case.assertTrue(hooks)
+    pairs = {}
+    for hook in hooks:
+        case.assertEqual(set(hook), {'key', 'hash'})
+        case.assertNotIn(hook['key'], pairs)
+        case.assertTrue(hook['key'])
+        case.assertRegex(hook['hash'], r'^sha256:[0-9a-f]{64}$')
+        pairs[hook['key']] = hook['hash']
+    case.assertEqual(pairs, trusted)
+    encoded = json.dumps([launch, launch, hooks], sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    case.assertEqual(question['question_hash'], digest)
+    case.assertEqual(question['question_id'], f'hooks:{launch}:{digest[:16]}')
+    case.assertEqual(question['questions'], [dict(id='hooks_trust', header='Hook trust',
+                                                question="Trust Zerus's own and the team's committed Codex hooks",
+                                                body=f'Hooks to trust: {len(hooks)}', options=[])])
+    return len(hooks)
+
+
+def check_startup_hook_grant(case, fx, member_id):
+    [grant] = [row for row in fx.journal() if row['source'] == 'team_hook_trust'
+               and row['saved_question'].get('conversation_id') == ''
+               and fx.journal_member(row) == member_id]
+    fx.evidence.write(f'prestart-hook-grant-{member_id}.json', grant)
+    config = tomllib.loads(codex_config(fx, member_id).read_text())
+    trusted = {key: entry['trusted_hash'] for key, entry in config['hooks']['state'].items()
+               if 'trusted_hash' in entry}
+    return assert_startup_hook_grant(case, grant, fx.sessions[member_id]['launch'], trusted)
+
+
 class CodexTrustContract(ClassFixture):
     """Standing trust records the team repository's main checkout and subfolders,
     as owner decision D9 permits. The product's saved native question proves
@@ -566,11 +648,16 @@ class CodexTrustContract(ClassFixture):
     The ordinary Codex startup case retains the physical 80x24 panel variants."""
     delegations = {'confirm_trust': True}
     service_answers = ('codex_folder_trust',)
+    # Each launch sees an untrusted hook inventory in its own private account.
+    split_codex_accounts = True
 
     def test_1_the_service_answers_the_repository_scope_and_records_the_grant(self):
         fx = self.fx
         answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
         main = str((fx.root / 'work/proj').resolve())
+        members = fx.members()
+        self.assertEqual((members['lead']['account'], members['m1']['account']),
+                         (fx.account, fx.member_account))
         for member_id in ('lead', 'm1'):
             with self.subTest(member=member_id):
                 rows = fx.audit_rows(fx.sessions[member_id]['name'])
@@ -587,7 +674,7 @@ class CodexTrustContract(ClassFixture):
                 item = card['questions'][0]
                 self.assertEqual(item['question'], 'Trust this Git repository?')
                 self.assertEqual(item['body'].split('\n\n', 1)[0].replace('\n', ''),
-                                 fx.members()[member_id]['worktree'])
+                                 members[member_id]['worktree'])
                 self.assertIn(main, item['options'][0]['description'])
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_folder_trust'],
                                  'the person did not answer the delegated trust card')
@@ -596,10 +683,24 @@ class CodexTrustContract(ClassFixture):
                 self.assertLessEqual(len(seen), 1)
                 if seen:
                     self.assertEqual(seen[0]['question_id'], card['question_id'])
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id, prompt='hooks'):
+                count = check_startup_hook_grant(self, fx, member_id)
+                self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_hooks_trust'])
+                self.assertFalse([q for q in fx.pending(member_id) if q.get('source') == 'codex_hooks_trust'])
+                self.assertFalse([card for (member, _), card in fx.cards_seen.items()
+                                  if member == member_id and card['source'] == 'codex_hooks_trust'])
+                note = (f"Zerus trusted {count} of its own and the team's committed Codex hooks "
+                        f"for member {member_id} before its agent started.")
+                fx.wait(f'{member_id} exact hook trust confirmation note',
+                        lambda: fx.feed_lines(member_id) == [note] or None, fixture.BOUND['turn'], 2)
         fx.evidence.write('codex-trust-cards.json', fx.cards())
         self.assertFalse([c for c in fx.cards() if 'needs your attention' in c.get('text', '')])
-        journal_is(self, [(m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')],
-                   'the journal holds exactly the two startup grants')
+        journal_is(self, [LEAD_LAUNCH_BRIEF,
+                          *((m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')),
+                          *((m, 'team_hook_trust', ('team_hook_trust',), 'approved') for m in ('lead', 'm1'))],
+                   'the journal holds folder grants, pre-start hook grants and the lead launch brief')
+        assert_lead_launch_audit(self)
         records = fx.codex_trust_records()
         fx.evidence.write('codex-trust-records-asserted.json', records)
         accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
@@ -656,13 +757,18 @@ class ResumeContract(ClassFixture):
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
         fx.evidence.write('resume-audit.json', rows)
         # One reservation for the resume of the exited run and one for the brief in the new run.
-        self.assertEqual(sorted((r['question_id'].split(':', 1)[0], r['run']) for r in rows),
-                         [('brief', resumed['run_id']), ('resume', before['run_id'])], 'the resume and its brief are audited')
-        journal_is(self, self.resume_journal(), 'the journal holds exactly the resume and its brief')
+        self.assertEqual(sorted((r['question_id'], r['run'], tuple(r['categories'])) for r in rows), [
+            ('brief:' + resumed['run_id'], resumed['run_id'], ('team_resume_brief',)),
+            ('resume:' + before['run_id'], before['run_id'], ('team_resume',)),
+        ], 'the original resume and the new run brief have distinct audit categories')
+        journal_is(self, self.resume_journal(), 'the journal holds launch and resume records only')
+        assert_lead_launch_audit(self)
         type(self).resumed_run = resumed['run_id']
 
     def resume_journal(self):
-        return [('m1', 'team_resume', ('team_resume',), 'approved')] * 2
+        return [LEAD_LAUNCH_BRIEF,
+                ('m1', 'team_resume', ('team_resume',), 'approved'),
+                ('m1', 'team_resume', ('team_resume_brief',), 'approved')]
 
     def diagnose_refused_resume(self):
         """A refused resume: what the service reads at that moment, then the person's own
@@ -681,24 +787,118 @@ class ResumeContract(ClassFixture):
     def test_2_a_member_the_person_terminates_is_not_resumed(self):
         fx = self.fx
         view = fx.inspect('m1')
-        pid, _ = fx.process('m1')
-        # The launch from the team store's binding (fails if absent), and the view agrees.
+        pid, ticks = fx.process('m1')
+        name = fx.sessions['m1']['name']
         launch = fx.sessions['m1']['launch']
-        self.assertEqual(view.get('launch_id'), launch)
+        run = view['run_id']
+        self.assertEqual((view['launch_id'], run), (launch, self.resumed_run))
+        [prior] = [row for row in fx.audit_rows(name) if row['categories'] == ['team_resume']]
+        self.assertNotEqual(prior['run'], run)
+        refused = fx.hgs('terminate', name, '--expected-run-id', prior['run'], ok=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('session changed before termination', refused.stderr)
+        self.assertEqual(fx.start_ticks(pid), ticks)
+        self.assertEqual(fx.inspect('m1')['run_id'], run)
+
+        state = Path(fx.env['HGS_STATE_DIR'])
         last = max([c.get('seq', 0) for c in fx.cards()] or [0])
-        fx.hgs('terminate', fx.sessions['m1']['name'], '--expected-run-id', view['run_id'], timeout=120)
-        fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
-        refused = fx.wait('the service refused to resume the terminated member, with a card for the person',
-                          lambda: [c for c in fx.cards() if c.get('seq', 0) > last
-                                   and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
-        fx.evidence.write('terminate-refusal.json', refused)
-        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
+        fx.hgs('__state', 'archive-catalog-worker', timeout=70)
+        catalog = state / 'archive-catalog-v1.sqlite3'
+        stamp = hashlib.sha256(json.dumps(
+            [launch, view['session_id'], run, view['conversation_id']], separators=(',', ':')).encode()
+        ).hexdigest()
+
+        def unreadable_card():
+            cards = [card for card in fx.cards() if card['seq'] > last and card['kind'] == 'team_actor_blocked'
+                     and card['state'] == 'open' and card['node'] is None and card['actor']['kind'] == 'service'
+                     and card['actor']['team'] == fx.team
+                     and f'Whether member session {name} ended is unknown' in card['text']
+                     and 'Archive catalog coverage is incomplete' in card['text']]
+            if not cards:
+                return None
+            [card] = cards
+            actor = state / 'teams/actor-v1.sqlite3'
+            with closing(sqlite3.connect(f'file:{actor}?mode=ro', uri=True, timeout=1)) as ledger:
+                held = ledger.execute("""SELECT data FROM actor_rows
+                                         WHERE team=? AND key='gate:unreadable_confirmation:m1'""",
+                                      (fx.team,)).fetchone()
+            # The visible card can commit just before its opener receipt.
+            gate = json.loads(held[0])
+            self.assertEqual(json.loads(gate['revision']), [0, 0, stamp])
+            return card if gate['card'] == card['seq'] else None
+
+        # Keep the real Terminate archive on disk while making its exact index
+        # publication roll back. A real observation of that gap opens the card
+        # the service must close when it processes the deliberate end.
+        lock = state / 'archive-catalog-v2/worker.lock'
+        with lock.open('r+b') as exclusion, closing(sqlite3.connect(catalog, timeout=5)) as db:
+            def acquire_worker_lock():
+                try:
+                    fcntl.flock(exclusion, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                return True
+
+            fx.wait('fixture owns the archive worker lock', acquire_worker_lock, fixture.BOUND['exit'], 1)
+            quoted_run, = db.execute('SELECT quote(?)', (run,)).fetchone()
+            db.execute(f"""CREATE TRIGGER fixture_lost_terminate_publication BEFORE INSERT ON archive_rows
+                           WHEN NEW.run = {quoted_run}
+                           BEGIN SELECT RAISE(ABORT, 'fixture lost Terminate publication'); END""")
+            try:
+                terminated = fx.hgs('terminate', name, '--expected-run-id', run, timeout=120)
+                match = re.fullmatch(rf'hgs: terminated and archived {re.escape(name)} \(([0-9a-f-]{{36}})\)',
+                                     terminated.stdout.strip())
+                self.assertIsNotNone(match, terminated.stdout)
+                archive_id = str(uuid.UUID(match[1]))
+                self.assertTrue((state / 'archives' / f'{archive_id}.json').is_file())
+                fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None,
+                        fixture.BOUND['exit'], 1)
+                self.assertIsNone(db.execute('SELECT id FROM archive_identities WHERE run=? LIMIT 1',
+                                             (run,)).fetchone())
+                # The service waits 180 seconds before opening the card. Allow
+                # two 60-second safety observations and runner scheduling.
+                opened = fx.wait('the service opened the exact member unreadable-end card',
+                                 unreadable_card, 330, 3)
+                fx.evidence.write('terminate-card-open.json', dict(card=opened, binding_stamp=stamp))
+            finally:
+                db.execute('DROP TRIGGER fixture_lost_terminate_publication')
+
+        fx.hgs('__state', 'archive-catalog-worker', timeout=70)
+
+        def retirement():
+            page = fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json')
+            events = fx.listed(page, 'rows', 'team journal')
+            return manual_end_event(fx.cards(), events, opened)
+
+        closed = fx.wait('the service retired the exact manually terminated member', retirement,
+                         fixture.BOUND['doorbell'], 3)
+        archived = fx.json('inspect', name, '--archive', archive_id, '--after', str(2 ** 63 - 1), '--skip-processes')
+        keys = ('name', 'agent', 'account_id', 'cwd', 'worktree_owner_id', 'session_id', 'launch_id',
+                'run_id', 'conversation_id')
+        before = {key: view[key] for key in keys}
+        self.assertTrue(all(before.values()), before)
+        self.assertEqual({key: archived[key] for key in keys}, before)
+        self.assertEqual((archived['archive_id'], archived['completion_source'], archived['completion_reason']),
+                         (archive_id, 'manual_terminate', 'user_terminated'))
+        fx.evidence.write('terminate-retirement.json', dict(archive=before, archive_id=archive_id, close=closed))
+
+        # The old successful reservation must still be visible in the same
+        # ledger. A missing database or an empty reader cannot pass this check.
+        standing = state / 'teams/standing-v1/journal.sqlite3'
+        with closing(sqlite3.connect(f'file:{standing}?mode=ro', uri=True, timeout=1)) as db:
+            reservations = db.execute("""SELECT run FROM standing_effects
+                                         WHERE team=? AND member='m1' AND launch=? AND kind='resume'
+                                         LIMIT 2""", (fx.team, launch)).fetchall()
+        self.assertEqual(reservations, [(prior['run'],)], 'only the original self-exit reserved a resume')
+        rows = [r for r in fx.audit_rows(name)
+                if r['source'] == 'team_resume' and r['run'] == run and r['question_id'].startswith('resume:')]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
-        # The positive control: the same reader still finds the first resume and its brief.
-        journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
+        journal_is(self, self.resume_journal(), 'the journal still holds only the launch and original resume records')
         live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
         self.assertFalse(live, 'no session of the member launch runs again')
+        later = [c for c in fx.cards() if c['seq'] > last and c['seq'] != opened['seq']
+                 and ('Member m1' in c['text'] or name in c['text'])]
+        self.assertEqual(later, [], 'no additional attention card for the deliberately terminated member')
 
 
 class UnworkedResumeContract(ClassFixture):
@@ -757,7 +957,7 @@ class QuestionAfterTrustContract(ClassFixture):
         self.assertEqual(plain, ['plain-native-claude', 'plain-zt-claude'], 'the capture saw the plain sessions\' trust cards')
         startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
         self.assertEqual(startup, [], 'no member showed a startup card')
-        journal_is(self, [], 'the journal holds no grant: there was no startup card')
+        journal_is(self, [LEAD_LAUNCH_BRIEF], 'the journal holds only the launch brief')
         ordinary_question_stays_the_persons(self, ['m1'])
 
 
@@ -777,6 +977,7 @@ class TeamsFixtureIsolation(unittest.TestCase):
         native.write_text('#!/bin/sh\n')
         native.chmod(0o755)
         patches = [mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)), mock.patch.object(fixture, 'HGS', str(native)),
+                   mock.patch.object(fixture, 'PERSON', str(native)),
                    mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(self.base / 'evidence'))]
         for patch in patches:
             patch.start()
@@ -790,6 +991,75 @@ class TeamsFixtureIsolation(unittest.TestCase):
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
         server.bind(str(self.outside / 'default'))
+
+    def test_no_state_of_a_built_fixture_hides_one_of_its_methods(self):
+        # A run once failed every class at bring-up: an instance flag `listed` hid the
+        # `listed()` helper ("'bool' object is not callable", hosted run 44474231340).
+        hidden = sorted(name for name in vars(self.fx) if callable(getattr(type(self.fx), name, None)))
+        self.assertEqual(hidden, [])
+        self.assertTrue(callable(self.fx.listed))
+
+    def test_preflight_needs_the_person_executable_and_the_root_is_marked(self):
+        self.fx.preflight()
+        self.assertEqual((self.fx.root / fixture.ROOT_FILE).read_text(), f'{fixture.PERSON_MARKER}\n{self.fx.nonce}\n')
+        self.assertEqual(stat.S_IMODE(os.stat(self.fx.root / fixture.ROOT_FILE).st_mode), 0o600)
+        for value in ('', 'relative/hgs-unit-tests', str(self.base / 'missing')):
+            with self.subTest(person=value), mock.patch.object(fixture, 'PERSON', value), \
+                    self.assertRaisesRegex(AssertionError, 'HGS_TEAMS_PERSON_BIN'):
+                self.fx.preflight()
+
+    def test_the_state_folder_is_private_whatever_the_umask(self):
+        """The window's first Create binds only a private state folder; a runner's umask
+        022 must not leave the fixture's open (hosted run 44462168438)."""
+        previous = os.umask(0o022)
+        try:
+            fx = fixture.TeamFixture('claude', self.base / 'agent', 'Umask')
+            self.addCleanup(shutil.rmtree, fx.root, True)
+            fx.build()
+        finally:
+            os.umask(previous)
+        self.assertEqual(stat.S_IMODE(os.stat(fx.env['HGS_STATE_DIR']).st_mode), 0o700)
+        fx.preflight()
+        os.chmod(fx.env['HGS_STATE_DIR'], 0o755)
+        with self.assertRaisesRegex(AssertionError, 'mode HGS_STATE_DIR'):
+            fx.preflight()
+
+    def test_a_listing_is_read_again_until_its_body_is_complete_and_never_read_as_empty(self):
+        from types import SimpleNamespace
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        answer = lambda stderr='', stdout='', code=1: SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+        complete, bootstrap, building = answer(stdout=listed, code=0), answer(fixture.LS_RACE + '\n'), answer(
+            fixture.LS_BUILDING + '\n')
+
+        def read(*answers, bound=30):
+            self.fx.hgs = mock.Mock(side_effect=list(answers))
+            self.fx.evidence = mock.Mock()
+            with mock.patch.dict(fixture.BOUND, listing=bound), mock.patch.object(fixture.time, 'sleep'):
+                rows = [row['name'] for row in self.fx.rows()]
+            return rows, self.fx.hgs.call_count, self.fx.evidence.append.call_count
+
+        # Hosted run 44476290302: a complete listing, then "building" seconds later.
+        self.assertEqual(read(bootstrap, building, complete), (['codex/p/one'], 3, 2))
+        self.assertEqual(read(building, building, complete), (['codex/p/one'], 3, 2))
+        # The bootstrap refusal only before the first complete listing; never another failure.
+        for refused in (bootstrap, answer('hgs: Missing state folder\n'), answer(fixture.LS_RACE + ' and more\n')):
+            with self.assertRaises(AssertionError, msg=refused.stderr):
+                read(refused, complete)
+        # A listing that stays incomplete past its bound fails; it is never an empty list.
+        with self.assertRaisesRegex(AssertionError, 'building, stale or unavailable'):
+            read(building, building, complete, bound=0)
+
+    def test_a_first_listing_may_meet_the_bootstrap_refusal(self):
+        from types import SimpleNamespace
+        self.fx.listed_once = False
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        self.fx.hgs = mock.Mock(side_effect=[SimpleNamespace(returncode=1, stdout='', stderr=fixture.LS_RACE + '\n'),
+                                             SimpleNamespace(returncode=0, stdout=listed, stderr='')])
+        self.fx.evidence = mock.Mock()
+        with mock.patch.object(fixture.time, 'sleep'):
+            self.assertEqual([row['name'] for row in self.fx.rows()], ['codex/p/one'])
+        self.assertTrue(self.fx.listed_once)
+        self.assertEqual(self.fx.evidence.append.call_args[0][0], 'transient-reads.jsonl')
 
     def tmux(self, *argv, **env):
         self.marker.unlink(missing_ok=True)
@@ -911,6 +1181,48 @@ class TeamsFixtureIsolation(unittest.TestCase):
         answered.assert_called_once_with(['tmux', 'send-keys', '-t', '=kimi/example/team:', 'Enter'], env={}, check=True)
         changed = chooser.replace('❯ Trust and continue', '  Trust and continue').replace('     Exit', '   ❯ Exit')
         self.assertFalse(answer(changed, False).call_count, 'a changed selection must stay in Terminal for the person')
+
+
+@unittest.skipUnless(fixture.HGS and os.uname().sysname == 'Linux', 'Set HGS_TEST_BIN (Linux)')
+class TeamsListingWorker(unittest.TestCase):
+    """The listing metadata worker that a supported Linux `hgs ls` starts for the fixture's
+    state root stays until teardown stops it (every class of hosted run 44464876721 left
+    one process). The real hgs; a stand-in agent, person and tmux."""
+
+    def test_teardown_stops_the_worker_that_hgs_ls_starts(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-teams-listing-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        stand_in = base / 'stand-in'
+        stand_in.write_text('#!/bin/sh\n')
+        stand_in.chmod(0o755)
+        for patch in (mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)),
+                      mock.patch.object(fixture, 'PERSON', str(stand_in)),
+                      mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(base / 'evidence'))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        fx = fixture.TeamFixture('claude', stand_in, 'ListingWorker')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        state = Path(fx.env['HGS_STATE_DIR'])
+        # Whatever happens below, the worker ends: the product's own disable stops it.
+        self.addCleanup(lambda: state.is_dir() and fx.hgs('listing-index', 'disable', '--json', ok=False))
+        lock = state / 'listing-metadata/worker.lock'
+
+        def started():
+            fx.hgs('ls', '--json', ok=False)
+            return fx.owned_left() or None
+        fx.wait('hgs ls started the listing worker', started, 60, 0.5)
+        time.sleep(3)
+        self.assertTrue(fx.owned_left(), 'without a stop the worker stays')
+        self.assertTrue(lock.is_file())
+        self.assertEqual(fx.teardown(), [])
+        self.assertEqual(fx.owned_left(), [])
+        calls = [json.loads(line)['argv'] for line in (fx.evidence.folder / 'hgs-calls.jsonl').read_text().splitlines()]
+        self.assertIn(['listing-index', 'disable', '--json'], calls)
+        self.assertFalse(fx.root.exists(), 'a clean teardown removes the root')
+        # Without a state root the stop is a no-op that names nothing.
+        self.assertIsNone(fx.stop_listing_worker())
 
 
 class TeamsWaitingList(unittest.TestCase):
@@ -1289,6 +1601,137 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
         self.assertEqual([r['file'] for r in out['owned_receipts']], ['owned-a.json'])
 
 
+class TeamsPersonSteps(unittest.TestCase):
+    """The person's native Team actions (zerus-63rru.182) without an agent: the fixture
+    proves the shipped hgs still refuses the person's create, then performs create, stop
+    and task intake by the contract entry of the hgs unit-test executable, only on its
+    marked private root; the step shapes are the ones the entry reads."""
+
+    STEPS = Path(__file__).resolve().parent / 'fixtures/teams-contract-person-steps.json'
+
+    def offline(self, split_codex_accounts=False):
+        """A fixture object with its identity set and no root, process or agent."""
+        fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
+        fx.agent, fx.count, fx.pinned = 'codex', 1, None
+        fx.split_codex_accounts = split_codex_accounts
+        fx.team, fx.machine, fx.commit = None, 'machine-fixture', 'c' * 40
+        fx.delegations = dict(fixture.TeamFixture.DELEGATIONS_OFF)
+        fx.evidence = mock.Mock()
+        return fx
+
+    def cli(self, refusal):
+        """The shipped hgs's replies, with `refusal` as its answer to the person's create."""
+        def json_(*argv, stdin=None, ok=True):
+            if argv[:2] == ('team', 'preview'):
+                return dict(ok=True)
+            if argv[:3] == ('team', 'template', 'import'):
+                return dict(ok=True)
+            if argv[:2] == ('team', 'create'):
+                return refusal
+            if argv[:3] == ('team', 'catalog', 'show'):
+                return dict(catalog=dict(templates=[dict(id='zt-codex', digest='d' * 64)]))
+            if argv[:2] == ('task', 'add'):
+                return dict(task=dict(ref='teams-fixture/7', uuid=str(uuid.UUID(int=7)), project='teams-fixture'))
+            raise AssertionError(argv)
+        return json_
+
+    def test_the_answer_is_found_on_the_test_name_line_or_its_own(self):
+        value = {'reply': {'ok': True, 'revision': 1}}
+        line = fixture.PERSON_MARKER + ' ' + json.dumps(value)
+        self.assertEqual(fixture.person_answer('test x::contract_person_step ... ' + line + '\nok\n'), value)
+        self.assertEqual(fixture.person_answer('running 1 test\n' + line + '\n'), value)
+        self.assertEqual(fixture.person_answer(line + ' ok'), value)
+        self.assertIsNone(fixture.person_answer('test x ... ok\n'))
+        self.assertIsNone(fixture.person_answer(fixture.PERSON_MARKER + ' not json'))
+
+    def test_a_step_runs_the_entry_on_the_marked_root_and_refuses_any_other_outcome(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-person-step-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        seen = base / 'seen.json'
+        entry = base / 'entry'
+        answer = json.dumps({'reply': {'ok': True, 'revision': 3}})
+        for case, script in (
+                ('answered', f'cp "$ZERUS_TEAMS_CONTRACT_STEP" {seen}\necho "$@" > {base}/argv\n'
+                             f"echo 'test x ... {fixture.PERSON_MARKER} {answer}'\necho ok\n"),
+                ('refused', f'echo \'{fixture.PERSON_MARKER} {{"refused":"no marker"}}\'\nexit 101\n'),
+                ('silent', 'echo running\n'),
+                ('failed', f"echo '{fixture.PERSON_MARKER} {answer}'\nexit 101\n")):
+            entry.write_text('#!/bin/sh\n' + script)
+            entry.chmod(0o755)
+            fx = self.offline()
+            fx.root, fx.nonce, fx.env = base, 'nonce-0000000000000000', dict(PATH='/usr/bin:/bin')
+            with mock.patch.object(fixture, 'PERSON', str(entry)):
+                if case != 'answered':
+                    with self.assertRaises(AssertionError, msg=case):
+                        fx.person_step(dict(kind='team', plan={}))
+                    continue
+                self.assertEqual(fx.person_step(dict(kind='team', plan={'p': 1})), {'ok': True, 'revision': 3})
+            self.assertEqual(json.loads(seen.read_text()),
+                             dict(root=str(base), nonce='nonce-0000000000000000', action=dict(kind='team', plan={'p': 1})))
+            self.assertEqual((base / 'argv').read_text().split(),
+                             ['--exact', fixture.PERSON_ENTRY, '--ignored', '--nocapture', '--test-threads=1'])
+            row = fx.evidence.append.call_args[0]
+            self.assertEqual((row[0], row[1]['root'], row[1]['kind'], row[1]['exit']),
+                             ('person-steps.jsonl', str(base), 'team', 0))
+
+    def test_the_split_codex_bundle_pins_each_account(self):
+        fx = self.offline(split_codex_accounts=True)
+        fx.account, fx.member_account = 'zt-codex', 'zt-codex-member'
+        bundle = fx.bundle()
+        self.assertEqual(bundle['template']['lead']['account'], dict(mode='named', account='zt-codex'))
+        self.assertEqual(bundle['roles'][0]['account'], dict(mode='named', account='zt-codex-member'))
+
+    def test_the_person_create_needs_the_shipped_refusal_first(self):
+        for refusal in (dict(ok=True), dict(ok=False, error=dict(code='stale_revision')), dict(ok=False)):
+            fx = self.offline()
+            fx.json = self.cli(refusal)
+            fx.person_step = mock.Mock(return_value=dict(ok=True))
+            with self.assertRaises(AssertionError, msg=refusal):
+                fx.create_team()
+            fx.person_step.assert_not_called()
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        fx.person_step = mock.Mock(return_value=dict(ok=False, code='team_person_action_evidence_unavailable'))
+        with self.assertRaises(AssertionError):
+            fx.create_team()
+
+    def test_a_task_is_added_by_the_person_then_sent_by_the_native_intake(self):
+        fx = self.offline()
+        fx.team = str(uuid.UUID(int=1))
+        fx.json = self.cli(None)
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=True)))
+        self.assertEqual(fx.add_task('Title', 'Text'), ('teams-fixture/7', str(uuid.UUID(int=7))))
+        draft = fx.person_step.call_args[0][0]['draft']
+        self.assertEqual(draft['action'], dict(kind='intake', project='teams-fixture', task=str(uuid.UUID(int=7)),
+                                               revision='', role=None, pipeline=None))
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=False)))
+        with self.assertRaises(AssertionError):
+            fx.add_task('Title', 'Text')
+
+    def test_the_steps_are_the_committed_shapes_the_entry_reads(self):
+        """The fixture's create, stop and intake steps, as it builds them, are the committed
+        shapes the Rust contract tests run (src/desktop/teams/person_actions/contract)."""
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        captured = []
+        fx.person_step = lambda action: captured.append(action) or dict(ok=True, team=dict(queued=True))
+        fx.create_team()
+        fx.add_task('Title', 'Text')
+        fx.person_team_action(dict(kind='stop'), 5)
+        team = fx.team
+        def normal(value):
+            if isinstance(value, dict):
+                return {k: ('@request@' if k == 'request_id' else normal(v)) for k, v in value.items()}
+            if isinstance(value, list):
+                return [normal(v) for v in value]
+            return '@team@' if value == team else value
+        steps = [normal(step) for step in captured]
+        if os.environ.get('ZERUS_WRITE_FIXTURES'):
+            self.STEPS.write_text(json.dumps(steps, indent=2, sort_keys=True) + '\n')
+        self.assertEqual(steps, json.loads(self.STEPS.read_text()))
+
+
 class TeamsFixtureProducers(unittest.TestCase):
     @unittest.skipUnless(fixture.HGS, 'Set HGS_TEST_BIN')
     def test_kimi_inspection_uses_a_synthetic_grant_on_the_fixture_origin(self):
@@ -1361,8 +1804,6 @@ class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
 
     @contextmanager
     def during_exit(self, before):
-        import fcntl
-        import sqlite3
         import threading
 
         fx = self.fx

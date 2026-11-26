@@ -259,6 +259,7 @@ pub fn page(reply: &Map<String, Value>) -> Result<Page, String> {
 pub(crate) fn standing_kind(value: &Value) -> Option<String> {
     value.as_array()?.iter().find_map(|id| match id.as_str()? {
         "team_folder_trust" => Some("team_folder_trust".to_owned()),
+        "team_hook_trust" => Some("team_hook_trust".to_owned()),
         _ => None,
     })
 }
@@ -289,6 +290,18 @@ pub fn trust_sentence(
     categories: &Value,
     status: Option<&str>,
 ) -> Option<String> {
+    // A team's Codex hook-trust record says what it covered (zerus-f67qp).
+    if categories
+        .as_array()
+        .is_some_and(|ids| ids.iter().any(|id| id == "team_hook_trust"))
+    {
+        return Some(if status == Some("approved") {
+            "Codex hook trust recorded before start for Zerus's own and the team's committed hooks"
+                .to_owned()
+        } else {
+            "Codex hook trust was requested; it was not confirmed".to_owned()
+        });
+    }
     let scope = scope.filter(|s| !s.is_empty())?;
     let trust = categories
         .as_array()

@@ -92,7 +92,16 @@ fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, stderr: &[u8]) -
         Ok(bytes) if ring.agent == "dsh" => hosted_receipt(ring, input, &bytes),
         Ok(bytes) => match send::Outcome::from_receipt(&plan, &bytes) {
             Ok(_) => Rung::Submitted,
-            Err(why) => Rung::Uncertain(why.into()),
+            Err(why) => {
+                // The public CLI can retain exact negative evidence even
+                // though its output is an ordinary refusal on stderr.
+                if code == 1 && RECEIPTED.contains(&ring.agent.as_str()) {
+                    if let Ok(refusal) = send::Refusal::from_receipt(&plan, &bytes) {
+                        return Rung::Refused(refusal.reason);
+                    }
+                }
+                Rung::Uncertain(why.into())
+            }
         },
         Err(Failure::Missing) if code != 0 && RECEIPTED.contains(&ring.agent.as_str()) => {
             Rung::Refused(refusal(stderr))

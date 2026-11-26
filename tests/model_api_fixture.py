@@ -75,15 +75,47 @@ def items(body):
     return body["input"] if isinstance(body.get("input"), list) else body.get("messages") or []
 
 
+PASTED_OPEN = '<pasted_content id="'
+
+
+def pasted_text(text):
+    """The text the person sent, as src/state/journal.rs pasted_text reads it: Claude Code
+    2.1.328 sends text pasted into its prompt (as hgs delivers a task) as
+    `\\n\\n<pasted_content id="…">\\n…\\n</pasted_content id="…">\\n`, and only the inner
+    text was sent; around typed text the layout stays."""
+    if PASTED_OPEN not in text:
+        return text
+    result, rest, typed, lead = "", text, False, None
+    while (start := rest.find(PASTED_OPEN)) >= 0:
+        ident, found, body = rest[start + len(PASTED_OPEN):].partition('">')
+        if not found or not 0 < len(ident) <= 64 or not all(c.isascii() and (c.isalnum() or c in "-_") for c in ident):
+            break
+        close = f'</pasted_content id="{ident}">'
+        end = body.find(close)
+        if end < 0:
+            break
+        inner = body[:end].removeprefix("\n")
+        typed = typed or bool(rest[:start].strip())
+        lead = start if lead is None else lead
+        result += rest[:start] + inner.removesuffix("\n")
+        rest = body[end + len(close):]
+    if len(rest) == len(text):
+        return text
+    if not typed and not rest.strip():
+        return result[lead:]
+    return result + rest
+
+
 def typed_parts(item):
-    """The text parts a person typed in a user message of either API: not the `<tag>`
-    context blocks that agents add."""
+    """The text parts a person typed or pasted in a user message of either API: not the
+    `<tag>` context blocks that agents add."""
     if not isinstance(item, dict) or item.get("role") != "user":
         return []
     content = item.get("content")
     parts = [content] if isinstance(content, str) else [
         part.get("text", "") for part in content if isinstance(part, dict)
         and part.get("type") in ("text", "input_text")] if isinstance(content, list) else []
+    parts = [pasted_text(text) for text in parts]
     return [text for text in parts if text.strip() and not text.lstrip().startswith("<")]
 
 

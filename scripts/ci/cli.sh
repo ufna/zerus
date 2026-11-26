@@ -64,5 +64,14 @@ HGS_TEST_SPEECH_RECOVERY_BIN=$(python3 scripts/ci/speech-recovery-executable.py 
 export HGS_TEST_SPEECH_RECOVERY_BIN
 python3 scripts/ci/python-tests.py 2>&1 | tee artifacts/test-results/python.log
 cargo build --release --locked
+if [ "$phase" = all ]; then
+    # zerus-63rru.182: the Teams contracts' person fixture is test-only. The debug and
+    # release hgs never hold it; the unit-test executable does (the positive control).
+    cargo test --locked --no-run --bin hgs --message-format=json \
+        > artifacts/test-results/unit-tests-build.jsonl
+    python3 scripts/ci/check-no-person-fixture.py --absent target/debug/hgs target/release/hgs \
+        --cargo-messages artifacts/test-results/unit-tests-build.jsonl \
+        | tee artifacts/test-results/person-fixture-check.json
+fi
 printf 'CLI checks and release build passed.\n'
 fi

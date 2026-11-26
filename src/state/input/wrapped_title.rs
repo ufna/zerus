@@ -16,17 +16,31 @@ pub(super) fn matches(
     let Some((_, body)) = first.split_once(" · ") else {
         return false;
     };
-    let Some(title) =
-        shown_path::strip_prefix(body, folder, windows).and_then(|rest| rest.strip_prefix(" · "))
-    else {
+    let Some(rest) = shown_path::strip_prefix(body, folder, windows) else {
         return false;
     };
     let Some(continuation) = next.strip_prefix("  ") else {
         return false;
     };
+    // When even the separator cannot fit, Codex wraps it with the title.
+    // Otherwise, the first row carries the separator and possibly title text.
+    let separator_wrapped = rest.is_empty();
+    let (title, continuation) = if separator_wrapped {
+        let Some(continuation) = continuation.strip_prefix("· ") else {
+            return false;
+        };
+        ("", continuation)
+    } else {
+        let Some(title) = rest
+            .strip_prefix(" · ")
+            .or_else(|| (rest == " ·").then_some(""))
+        else {
+            return false;
+        };
+        (title, continuation)
+    };
     if title.trim() != title
         || continuation.trim() != continuation
-        || title.width() == 0
         || continuation.width() == 0
         || first.width() > columns
         || next.width() > columns
@@ -45,6 +59,9 @@ pub(super) fn matches(
         return false;
     };
     // It must be a needed native word wrap, not an arbitrary extra paragraph.
-    first.width() + 1 + word.width() > columns
-        && (first.width() - 2 + 1 + continuation.width()).div_ceil(columns - 2) == 2
+    let first_width = first.trim_end_matches(' ').width();
+    let word_width = if separator_wrapped { 1 } else { word.width() };
+    let separator_width = if separator_wrapped { 2 } else { 0 };
+    first_width + 1 + word_width > columns
+        && (first_width - 2 + 1 + separator_width + continuation.width()).div_ceil(columns - 2) == 2
 }

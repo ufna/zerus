@@ -27,11 +27,16 @@ pub(super) fn save_then_exit(config: &Config, b: &Binding, name: &str) -> Value 
 }
 
 pub(super) fn use_cli_inspection() {
+    use_cli_inspection_before(|_| {});
+}
+
+pub(super) fn use_cli_inspection_before(mut before: impl FnMut(&[String]) + 'static) {
     FIXTURE_SPAWN.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(|config, args, stdin| {
+        *slot.borrow_mut() = Some(Box::new(move |config, args, stdin| {
             assert!(stdin.is_none());
             assert_eq!(args[0], "--expect-machine");
             assert_eq!(args[2], "inspect");
+            before(args);
             cli_inspection(config, args)
         }));
     });

@@ -516,6 +516,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::UnbindMember { .. } => members::unbind(ctx),
         Operation::TellPausedStarted { .. } => members::tell_paused_started(ctx),
         Operation::ClosePausedStarted { .. } => members::close_paused_started(ctx),
+        Operation::NoteConfirmation { .. } => members::note_confirmation(ctx),
     }
 }
 

@@ -60,7 +60,7 @@ fn settings() -> Value {
                 vec![
                     boolean("accept_results", "Accept results", true),
                     boolean("answer_members", "Answer members", true),
-                    boolean("confirm_trust", "Confirm folder trust", true),
+                    boolean("confirm_trust", "Confirm folder and Zerus hook trust", true),
                     boolean("resume_exited", "Resume exited members", true),
                     boolean("merge_accepted", "Merge accepted work", true),
                 ],

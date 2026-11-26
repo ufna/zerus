@@ -713,6 +713,13 @@ pub enum Operation {
     ClosePausedStarted {
         member: MemberId,
     },
+    /// The service delivered a standing confirmation the person sees in the
+    /// feed (zerus-f67qp): the journal row is the one line, naming the
+    /// member; nothing else changes.
+    NoteConfirmation {
+        member: MemberId,
+        text: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

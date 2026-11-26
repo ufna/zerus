@@ -304,9 +304,11 @@ class KimiNativeCI(unittest.TestCase):
                    RUNNER_TEMP=str(temporary), GITHUB_WORKSPACE=str(ci.ROOT))
 
         def args(teams):
-            # The original mode carries its seed; --teams carries none.
+            # The original mode carries its seed; --teams carries none, and the unit-test
+            # executable for its person steps (zerus-63rru.182).
             return SimpleNamespace(hgs=temporary / 'hgs', tmux=temporary / 'tmux', teams=teams,
                                    effort_seed_receipt=None if teams else temporary / 'hgs-effort-seed.json',
+                                   person_bin=temporary / 'hgs-unit-tests' if teams else None,
                                    output=ci.ROOT / 'artifacts/test-results/kimi-teams')
         ci.hosted_paths(args(True), env)
         ci.hosted_paths(args(False), env)
@@ -329,6 +331,13 @@ class KimiNativeCI(unittest.TestCase):
         original.effort_seed_receipt = None
         with self.assertRaisesRegex(ValueError, 'seed receipt'):
             ci.hosted_paths(original, env)
+        # The person executable belongs to the Teams class only, as a private build.
+        for teams, person, refusal in ((True, None, 'needs it'), (False, temporary / 'hgs-unit-tests', 'needs it'),
+                                       (True, Path('/usr/bin/hgs-unit-tests'), 'private runner-temporary')):
+            values = args(teams)
+            values.person_bin = person
+            with self.subTest(teams=teams, person=person), self.assertRaisesRegex(ValueError, refusal):
+                ci.hosted_paths(values, env)
         with mock.patch.object(sys, 'argv', [str(ci.__file__), '--teams', '--source-sha', 'a' * 40, '--hgs', 'hgs',
                                              '--tmux', 'tmux', '--effort-seed-receipt', 'seed.json', '--output', 'out']), \
                 mock.patch.object(ci, 'hosted_paths'), mock.patch.object(ci, 'stage_latest') as staged:

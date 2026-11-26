@@ -14,7 +14,7 @@ import unittest
 import test_codex_input_native as input_fixture
 
 
-def exercise(case):
+def exercise(case, whole_title=False):
     case.assertEqual(case.geometry, (80, 24), 'This contract needs its captured wrap geometry')
     case.record.update(model='gpt-6.1-sol')
     case.write_record()
@@ -25,8 +25,10 @@ def exercise(case):
     label = status.strip().split(' · ')[0]
     available = 80 - len('  '+label+' · '+str(case.root)+' · ')
     case.assertGreaterEqual(available, 1, 'Use a short private TMPDIR for this frame')
-    prefix = 'R'*available
-    title = prefix+' instructions'
+    prefix = 'R' * (available + int(whole_title))
+    title = prefix + ' instructions'
+    continuation = title if whole_title else 'instructions'
+    first_suffix = ' · ' + str(case.root) + (' ·' if whole_title else ' · ' + prefix)
     attempts = native_effort_id.key_log(case)
     # Observe every input mutation, forwarding unchanged argv/stdin to this
     # fixture's original private tmux. Reads keep their original fast path.
@@ -58,8 +60,8 @@ def exercise(case):
     ansi = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
     def named_footer():
         rows = case.screen().splitlines()
-        return (len(rows) == 24 and rows[-2].strip() == 'instructions'
-                and ' · '+str(case.root)+' · ' in rows[-3])
+        return (len(rows) == 24 and rows[-2].strip() == continuation
+                and rows[-3].endswith(first_suffix))
     test_input.InputTransport.wait_until(case, named_footer, 15,
         lambda: 'The private named status did not reach its two-row frame: '+case.screen())
     styled = case.tmux('capture-pane', '-ep', '-t', case.pane)
@@ -69,8 +71,8 @@ def exercise(case):
     plain = [ansi.sub('', row) for row in styled.splitlines()]
     first = next((i for i, row in enumerate(plain) if 'gpt-6.1-sol' in row.lower() and ' · ' in row), None)
     case.assertIsNotNone(first, styled)
-    case.assertIn(' · '+str(case.root)+' · ', plain[first])
-    case.assertEqual(plain[first + 1].strip(), 'instructions')
+    case.assertTrue(plain[first].endswith(first_suffix), plain[first])
+    case.assertEqual(plain[first + 1].strip(), continuation)
     case.assertIn('← for agents · ? for shortcuts', plain[first + 2])
     x, y = map(int, case.tmux('display-message', '-p', '-t', case.pane,
                             '#{cursor_x}:#{cursor_y}').strip().split(':'))
@@ -150,3 +152,6 @@ class NativeWrappedTitle(unittest.TestCase):
 
     def test_wrapped_native_title_keeps_guarded_input_and_drafts(self):
         exercise(self)
+
+    def test_whole_wrapped_native_title_keeps_guarded_input_and_drafts(self):
+        exercise(self, whole_title=True)
