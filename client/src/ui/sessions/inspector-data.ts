@@ -18,8 +18,18 @@ export function sessionGoal(value: unknown) {
   return { objective: text(goal.objective), completion: text(goal.completion_criterion), status, caption };
 }
 export function usageRows(value: unknown): [string, string][] {
-  const view = sessionUsageView(object(value).session_usage);
-  return [...view.rows.map((row): [string, string] => [row.label, row.value]), ...(view.context ? [[tr("Latest context"), view.context] as [string, string]] : [])];
+  const usage = object(object(value).session_usage), context = object(usage.context);
+  const view = sessionUsageView(usage);
+  const rows = view.rows.map((row): [string, string] => [row.label, row.value]);
+  if (view.context) rows.push([context.used_source === "opencode_completed_step"
+    ? tr("Last completed model step") : tr("Latest context"), view.context]);
+  if (usage.source === "opencode") {
+    if (!view.context && typeof context.limit === "number" && context.limit > 0)
+      rows.push([tr("Model context window"), context.limit.toLocaleString()]);
+    if (typeof context.output_limit === "number" && context.output_limit > 0)
+      rows.push([tr("Maximum output tokens"), context.output_limit.toLocaleString()]);
+  }
+  return rows;
 }
 
 /** The row's recorded binding grouped as the account chooser groups it (exact

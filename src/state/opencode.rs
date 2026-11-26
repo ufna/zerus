@@ -11,6 +11,8 @@ mod history;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod providers;
 mod service;
+mod compact;
+mod context;
 mod context_hint;
 pub(crate) use context_hint::lookup as hint_context;
 pub(super) fn note_hint(record: &Value) { context_hint::note(record); }
@@ -120,6 +122,7 @@ fn session_path(record: &Value, suffix: &str) -> String {
     format!("/api/session/{}{suffix}", string(record, "conversation_id"))
 }
 use service::Response;
+pub(super) use compact::submit as submit_compact;
 
 fn attach_hint(native: &dyn Native, record: &mut Value) {
     attach_hint_with(
@@ -730,8 +733,8 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         "terminal_attach_supported":cfg!(unix) && available && record["service"] == "opencode2",
         "terminal_attach_reason":if available { "" } else { "Refresh this session after its OpenCode service reconnects." },
         "native_ui_available":false,"bulk_lifecycle_supported":false,"attachments_supported":false,
-        "clear_context_supported":false,"clear_context_reason":"OpenCode context reset is not available in this adapter",
-        "compact_context_supported":false,"compact_context_reason":"OpenCode compaction arrives in a later update",
+        "clear_context_supported":false,"clear_context_reason":"OpenCode cannot reset this conversation. Start a new session to begin with empty context.",
+        "compact_context_supported":false,"compact_context_reason":"Manual compaction is unavailable on this OpenCode service.",
         "allowed_actions":allowed,"action_reasons":{"pause":"OpenCode sessions have no separate process to pause","resume":"OpenCode sessions have no separate process to pause",
             "archive":"OpenCode archives are not supported","restore":"OpenCode archives are not supported","fork":"OpenCode fork arrives in a later update","terminate":"Use Stop for this OpenCode session"},
         "pending_questions":pending,"events":events,"replace_events":true,"cursor":0,"history_truncated":observed.is_some_and(|o| o.page.truncated)});
@@ -938,6 +941,7 @@ fn parent_view(
             conversation_history::inspected_voice_messages(record, &result, None);
     }
     if detail == Detail::Full {
+        compact::decorate(service, record, &observed, &mut result);
         let pinned: Vec<String> = ["settings_model", "pending_model"]
             .iter()
             .filter_map(|key| result[*key].as_str())
@@ -945,9 +949,15 @@ fn parent_view(
             .map(str::to_owned)
             .collect();
         let pinned: Vec<&str> = pinned.iter().map(String::as_str).collect();
-        let options = catalog::session_options(&PathBuf::from(string(record, "cwd")), &pinned);
+        let options = catalog::session_options(
+            &PathBuf::from(string(record, "cwd")),
+            &pinned,
+            string(&result, "settings_model"),
+        );
         result["model_options"] = options["model_options"].clone();
         result["model_options_truncated"] = options["model_options_truncated"].clone();
+        result["session_usage"] =
+            context::usage(&observed.session, &observed.page.messages, &options["context_limits"]);
     }
     let questions = result["pending_questions"]
         .as_array()
@@ -974,6 +984,10 @@ struct Bounded<'a> {
     deadline: Instant,
 }
 impl Native for Bounded<'_> {
+    fn manual_compact(&self) -> bool {
+        self.service.manual_compact
+    }
+
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response> {
         service::request(&self.service.reg, method, path, body, self.deadline)
     }
@@ -1316,6 +1330,7 @@ fn check_request_identity(record: &Value, request: &Value) -> Result<()> {
 }
 /// The native OpenCode 2 operations that delivery needs.
 trait Native {
+    fn manual_compact(&self) -> bool { false }
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response>;
     /// The same request, ending no later than `deadline`.
     fn raw_until(
@@ -1329,6 +1344,7 @@ trait Native {
     }
 }
 impl Native for service::Service {
+    fn manual_compact(&self) -> bool { self.manual_compact }
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response> {
         service::Service::raw(self, method, path, body)
     }
@@ -2431,6 +2447,7 @@ mod tests {
             }
         });
         let service = |port| service::Service {
+            manual_compact: false,
             reg: service::Registration {
                 id: String::new(),
                 version: String::new(),
@@ -4962,6 +4979,7 @@ mod tests {
     /// A registered service that refuses every connection before a byte is sent.
     fn refusing() -> service::Service {
         service::Service {
+            manual_compact: false,
             reg: service::Registration {
                 id: "a".into(),
                 version: "2.0.32".into(),

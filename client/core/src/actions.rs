@@ -692,6 +692,9 @@ pub fn invocation(
             (args, None, 60, 90, None)
         }
         Action::CompactContext => {
+            if target.run_id.is_empty() || target.conversation_id.is_empty() {
+                return Err("Refresh the session before compacting its context.".into());
+            }
             let input = json!({
                 "request_id": request_id,
                 "expected_run_id": target.run_id,
@@ -1246,6 +1249,18 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
             without_terminal,
             ..
         } => classify_settings(target, invocation, model, effort, *without_terminal, exit),
+        Action::CompactContext if target.name.starts_with("opencode/") => {
+            let outcome = classify_typed(target, invocation, exit, &["submitted", "uncertain", "failed"]);
+            match &outcome {
+                Outcome::Done { receipt, .. } if receipt["status"] == "uncertain" => {
+                    uncertain("OpenCode compaction is unconfirmed. Check this conversation before trying again.")
+                }
+                Outcome::Done { receipt, .. } if receipt["status"] == "failed" => {
+                    failed("OpenCode refused this compaction.")
+                }
+                _ => outcome,
+            }
+        }
         Action::Interrupt { .. } | Action::CompactContext => {
             classify_typed(target, invocation, exit, &["submitted"])
         }
@@ -2014,6 +2029,23 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_compact_classifies_the_exact_native_receipt() {
+        let mut target = target("");
+        target.name = "opencode/sample/compact".into();
+        let action = Action::CompactContext;
+        let invocation = invocation(&target, &action, "original").unwrap();
+        let result = |id: &str, status: &str| {
+            let receipt = json!({"status":status,"request_id":id,"name":target.name,
+                "run_id":target.run_id,"conversation_id":target.conversation_id});
+            classify(&target, &action, &invocation, exit(0, receipt.to_string().as_bytes(), ""))
+        };
+        assert!(matches!(result("original", "submitted"), Outcome::Done { .. }));
+        assert!(matches!(result("original", "failed"), Outcome::Failed { .. }));
+        assert!(matches!(result("original", "uncertain"), Outcome::Uncertain { .. }));
+        assert!(matches!(result("other", "submitted"), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn new_session_tags_reject_shell_syntax() {
         let names: serde_json::Value = serde_json::from_str(include_str!(

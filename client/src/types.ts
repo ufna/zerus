@@ -448,6 +448,7 @@ export type Action =
   | { kind: "fork"; tag: string; archive_id: string | null }
   | { kind: "settings"; model: string; effort: string; expected_pending_id?: string; without_terminal: boolean }
   | { kind: "interrupt"; turn_started: number }
+  | { kind: "compact_context" }
   | { kind: "mark_read"; reply_id: string | null; attention_signature: string | null }
   | { kind: "pause" }
   | { kind: "resume" }
@@ -488,6 +489,8 @@ export interface Details {
   resume_message_can_send: boolean;
   fork_supported?: boolean;
   fork_reason?: string;
+  compact_context_supported?: boolean;
+  compact_context_reason?: string;
   /** The conversation a fork came from; `null` when this is no fork, absent from an older hgs. */
   fork_parent_id?: string | null;
   allowed_actions: string[] | null;

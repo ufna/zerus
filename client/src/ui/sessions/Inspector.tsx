@@ -2,7 +2,7 @@ import { For, Show, Switch, Match, Suspense, lazy, createEffect, createMemo, cre
 import { Icon } from "../lib/icons";
 import { selected, setSubagentOpen, setDetailTab, setSelectedKey, subagentOpen, setMenu } from "../../store/ui";
 import { inspectorOpen, inspectorTab, inspectorWidth, inspectorClosed, setInspectorOpen, setInspectorTab, setInspectorWidth, toggleInspectorCard, panelGeometry, inspectorHint, INSPECTOR_TABS, type InspectorTab } from "../../store/inspector";
-import { followedFor, detailsFor, copyIdentity, copy, notify } from "../../store/actions";
+import { followedFor, detailsFor, copyIdentity, copy, notify, updating } from "../../store/actions";
 import { newSessionFromWorktree } from "./newsession-view";
 import { KeepWarmRow } from "./KeepWarmRow";
 import { catalogStatus, catalogRoots } from "./worktree-dialogs";
@@ -29,6 +29,7 @@ import { sessionUsageView } from "./session-usage-ui";
 import { composer } from "../../store/composer";
 import * as bridge from "../../bridge";
 import { eventTimeOf } from "../lib/dates";
+import { OpenCodeContextActions } from "./OpenCodeContextActions";
 import "../styles/inspector.css";
 
 // Keep the always-visible badge eager; load the board only when its tab opens.
@@ -121,6 +122,7 @@ function Details() {
   const usage = () => sessionUsageView(object(raw()).session_usage);
   const context = () => composer.view()?.context;
   const clear = () => composer.view()?.clear;
+  const isOpenCode = () => s().cmd === "opencode" && s().tracked && s().state !== "archived";
   // The listing's recorded binding, else the inspect's (account_id/account_home).
   const bound = createMemo((): BoundRow & { accountId: string; accountHome: string } => {
     const row = s(), v = object(raw());
@@ -148,9 +150,13 @@ function Details() {
     <Card id="details-usage" title={tr("Session usage")}><Show when={rows().length} fallback={<div class="hint">{tr("No native usage reported for this conversation yet.")}</div>}><table class="usage"><tbody><For each={rows()}>{([label, val]) => <Show when={val !== tr("Not reported")} fallback={<tr><td>{label}</td><td class="tabular">{val}</td></tr>}>
       <tr class="copyable" tabindex="0" role="button" title={tr("Click to copy")} aria-label={tr("Copy %1: %2", label, val)} onClick={() => void copyValue(val)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void copyValue(val); } }}><td>{label}</td><td class="tabular"><span class="u-val">{val}<CopyMark /></span></td></tr></Show>}</For></tbody></table><Show when={usage().costNote}><div class="hint">{usage().costNote}</div></Show><div class="hint">{usage().footer}</div></Show></Card>
-    <Show when={!subagentOpen()}><div class="insp-foot"><span class="muted" title={context()?.tooltip}>{tr("Context: %1", context()?.text || tr("Not reported"))}</span><span class="grow" /><button class="btn small" title={clear()?.reason || undefined} disabled={!clear()?.enabled} onClick={() => composer.openClear()}>{clear()?.running ? tr("Clearing…") : tr("Clear session…")}</button></div></Show>
+    <Show when={!subagentOpen()}><div class="insp-foot"><span class="muted" title={context()?.tooltip}>{tr("Context: %1", context()?.text || tr("Not reported"))}</span><span class="grow" />
+      <Show when={isOpenCode()} fallback={<button class="btn small" title={clear()?.reason || undefined} disabled={!clear()?.enabled} onClick={() => composer.openClear()}>{clear()?.running ? tr("Clearing…") : tr("Clear session…")}</button>}>
+        <OpenCodeContextActions row={s()} details={details()} offline={computerOffline(s().computer)} busy={updating(s().computer, s().name)} />
+      </Show></div></Show>
   </div>;
 }
+
 function Worktrees() {
   const [catalog, setCatalog] = createSignal<Record<string, unknown>>({}), [reading, setReading] = createSignal(false);
   const [picked, setPicked] = createSignal<string>();

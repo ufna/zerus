@@ -50,12 +50,15 @@ pub(super) fn observe(record: &mut Value, event: &Value) {
 }
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() != 2 || args[1] != "--json" { return Err("usage: hgs compact-context <session> --json".into()); }
-    if opencode::exists(&args[0]) {return Err("OpenCode compaction is not yet qualified in this adapter".into());}
     if dsh::exists(&args[0]) { return dsh::dispatch("compact-context", args); }
     let mut bytes = Vec::new(); io::stdin().take(8193).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
     if bytes.len() > 8192 { return Err("Compact request is too large".into()); }
     let request: Request = serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
-    let receipt = submit(&args[0], request, None)?;
+    let receipt = if opencode::exists(&args[0]) {
+        opencode::submit_compact(&args[0], &request)?
+    } else {
+        submit(&args[0], request, None)?
+    };
     println!("{receipt}"); Ok(0)
 }
 

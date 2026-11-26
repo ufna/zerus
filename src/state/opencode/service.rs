@@ -435,6 +435,7 @@ pub(super) fn request(
 
 pub(super) struct Service {
     pub reg: Registration,
+    pub manual_compact: bool,
 }
 
 impl Service {
@@ -569,8 +570,8 @@ fn connect_from_until(
             MINIMUM.0, MINIMUM.1, MINIMUM.2
         )));
     }
-    let service = Service { reg };
-    let missing = if listing {
+    let mut service = Service { reg, manual_compact: false };
+    let compatibility = if listing {
         compatibility_in(
             &root().join("opencode/compat"),
             &service.reg,
@@ -587,11 +588,12 @@ fn connect_from_until(
         compatibility(&service)
     }
     .map_err(Unavailable::Unreachable)?;
-    if let Some(first) = missing.first() {
+    if let Some(first) = compatibility.missing.first() {
         return Err(Unavailable::Incompatible(format!(
             "OpenCode {version} lacks {first}; update OpenCode or Zerus"
         )));
     }
+    service.manual_compact = compatibility.manual_compact;
     Ok(service)
 }
 
@@ -600,20 +602,34 @@ fn connect_from_until(
 fn requirement_digest() -> String {
     format!(
         "{:x}",
-        Sha256::digest(json!(REQUIRED).to_string().as_bytes())
+        Sha256::digest(json!([REQUIRED, "manual-compact-v1"]).to_string().as_bytes())
     )
 }
 
-fn verdict(openapi: &Value) -> Result<Vec<String>> {
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Compatibility {
+    missing: Vec<String>,
+    manual_compact: bool,
+}
+
+fn verdict(openapi: &Value) -> Result<Compatibility> {
     if !openapi["paths"].is_object() {
         return Err("OpenCode returned an invalid API description".into());
     }
-    Ok(missing_operations(openapi))
+    let operation = &openapi["paths"]["/api/session/{sessionID}/compact"]["post"];
+    let schema = &operation["requestBody"]["content"]["application/json"]["schema"];
+    let response = &operation["responses"]["200"]["content"]["application/json"]["schema"];
+    let delivery = &openapi["components"]["schemas"]["Session.Inbox.Delivery"]["enum"];
+    let manual_compact = operation["operationId"] == "session.compact"
+        && schema_has_field(openapi, response, "data", 8)
+        && delivery.as_array().is_some_and(|options| options.iter().any(|value| value == "queue"))
+        && ["id", "delivery"].into_iter().all(|field| schema_has_field(openapi, schema, field, 8));
+    Ok(Compatibility { missing: missing_operations(openapi), manual_compact })
 }
 
 /// The OpenAPI verdict, cached per service identity and requirement digest in
 /// private state. The cache write is best effort.
-fn compatibility(service: &Service) -> Result<Vec<String>> {
+fn compatibility(service: &Service) -> Result<Compatibility> {
     compatibility_in(
         &root().join("opencode/compat"),
         &service.reg,
@@ -628,12 +644,12 @@ pub(super) fn fetch_description(service: &Service) -> Result<Value> {
     service.call_within("GET", "/openapi.json", None, Duration::from_secs(10))
 }
 
-pub(super) fn compatibility_in(
+fn compatibility_in(
     dir: &Path,
     reg: &Registration,
     digest: &str,
     fetch: impl FnOnce() -> Result<Value>,
-) -> Result<Vec<String>> {
+) -> Result<Compatibility> {
     let key = format!(
         "{:x}",
         Sha256::digest(
@@ -644,13 +660,13 @@ pub(super) fn compatibility_in(
     );
     let cache = dir.join(format!("{key}.json"));
     if let Ok(Some(bytes)) = labels::read_file(&cache, 4 << 20) {
-        if let Ok(value) = serde_json::from_slice::<Vec<String>>(&bytes) {
+        if let Ok(value) = serde_json::from_slice::<Compatibility>(&bytes) {
             return Ok(value);
         }
     }
-    let missing = verdict(&fetch()?)?;
-    let _ = atomic(&cache, &json!(missing).to_string());
-    Ok(missing)
+    let result = verdict(&fetch()?)?;
+    let _ = atomic(&cache, &json!(result).to_string());
+    Ok(result)
 }
 
 fn clipped_version(text: &str) -> String {
@@ -1033,7 +1049,7 @@ mod tests {
         let dir = temp_dir("digest");
         let body = || Ok(json!({"paths":{}}));
         let first = compatibility_in(&dir, &reg(), "d1", body).unwrap();
-        assert!(!first.is_empty());
+        assert!(!first.missing.is_empty());
         // Same digest hits: the fetch must not run.
         assert_eq!(
             compatibility_in(&dir, &reg(), "d1", || Err("no".into())).unwrap(),
@@ -1060,7 +1076,7 @@ mod tests {
         let dir = temp_dir("blocked");
         fs::write(&dir, b"a file where the directory should be").unwrap();
         let missing = compatibility_in(&dir, &reg(), "d", || Ok(json!({"paths":{}}))).unwrap();
-        assert!(!missing.is_empty());
+        assert!(!missing.missing.is_empty());
         let _ = fs::remove_file(&dir);
     }
 
@@ -1176,7 +1192,13 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(missing_operations(&openapi), Vec::<String>::new());
-        assert!(verdict(&openapi).unwrap().is_empty());
+        assert!(verdict(&openapi).unwrap().missing.is_empty());
+        assert!(verdict(&openapi).unwrap().manual_compact);
+        let mut without_compact = openapi;
+        without_compact["paths"].as_object_mut().unwrap().remove("/api/session/{sessionID}/compact");
+        let compatible = verdict(&without_compact).unwrap();
+        assert!(compatible.missing.is_empty());
+        assert!(!compatible.manual_compact);
     }
 
     #[test]

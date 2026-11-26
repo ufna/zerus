@@ -192,6 +192,15 @@ pub(super) fn read_snapshot(
     location: &Path,
     with_providers: bool,
 ) -> Result<Snapshot> {
+    read_snapshot_with_limits(service, location, with_providers, None).map(|(snapshot, _)| snapshot)
+}
+
+fn read_snapshot_with_limits(
+    service: &Service,
+    location: &Path,
+    with_providers: bool,
+    selected: Option<&str>,
+) -> Result<(Snapshot, Value)> {
     let limit = Duration::from_secs(10);
     // OpenCode lists a folder's own providers only after that folder's models
     // were read, so the models and the default come first.
@@ -218,7 +227,8 @@ pub(super) fn read_snapshot(
         snapshot.providers.clear();
         snapshot.providers_truncated = false;
     }
-    Ok(snapshot)
+    let limits = selected.map_or(Value::Null, |model| super::context::model_limits(&models, model));
+    Ok((snapshot, limits))
 }
 
 /// Percent-encodes every byte outside the RFC 3986 unreserved set.
@@ -542,16 +552,16 @@ fn unavailable_from(
 
 /// Never starts the service. Falls back to the last known home catalog.
 pub(crate) fn catalog(location: Option<&Path>) -> Value {
-    catalog_with(location, true, &[])
+    catalog_with(location, true, &[], None)
 }
 
 /// The short list of a session's folder for session details, with the
 /// session's current and pending model right after the default: no
 /// providers, so no `/api/integration` read, and no cache write.
-pub(crate) fn session_options(location: &Path, pinned: &[&str]) -> Value {
-    let answer = catalog_with(Some(location), false, pinned);
+pub(super) fn session_options(location: &Path, pinned: &[&str], selected: &str) -> Value {
+    let answer = catalog_with(Some(location), false, pinned, Some(selected));
     json!({"model_options": answer["model_options"],
-        "model_options_truncated": answer["model_options_truncated"]})
+        "model_options_truncated": answer["model_options_truncated"], "context_limits": answer["context_limits"]})
 }
 
 /// The short list while the service is stopped, for session details: the
@@ -572,7 +582,7 @@ fn stopped_options_from(
         "model_options_truncated": answer["model_options_truncated"]})
 }
 
-fn catalog_with(location: Option<&Path>, providers: bool, pinned: &[&str]) -> Value {
+fn catalog_with(location: Option<&Path>, providers: bool, pinned: &[&str], selected: Option<&str>) -> Value {
     let home_dir = home();
     let location = location.unwrap_or(&home_dir);
     let is_home = location == home_dir;
@@ -581,10 +591,13 @@ fn catalog_with(location: Option<&Path>, providers: bool, pinned: &[&str]) -> Va
         Ok(service) => service,
         Err(why) => return unavailable(&why, is_home, &favorites, pinned),
     };
-    match read_snapshot(&service, location, providers && is_home) {
-        Ok(snapshot) => {
+    match read_snapshot_with_limits(&service, location, providers && is_home, selected) {
+        Ok((snapshot, limits)) => {
             let at = json!(now());
-            let row = row_from(&snapshot, &favorites, pinned);
+            let mut row = row_from(&snapshot, &favorites, pinned);
+            if selected.is_some() {
+                row["context_limits"] = limits;
+            }
             if !snapshot.loaded {
                 return answer(
                     &row,

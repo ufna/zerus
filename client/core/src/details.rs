@@ -22,6 +22,10 @@ pub struct Details {
     pub fork_supported: bool,
     #[serde(default)]
     pub fork_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_context_supported: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_context_reason: Option<String>,
     /// The conversation this session was forked from: `Some(None)` for a
     /// session that is not a fork (null), `None` when the hgs predates the
     /// field (omitted again), so a client never confuses the two.
@@ -227,6 +231,8 @@ pub fn parse_details(target: &Target, exit: Exit) -> Option<Details> {
         resume_message_can_send: flag(&value, "resume_message_can_send"),
         fork_supported: flag(&value, "fork_supported"),
         fork_reason: text(&value, "fork_reason"),
+        compact_context_supported: value["compact_context_supported"].as_bool(),
+        compact_context_reason: value["compact_context_reason"].as_str().map(str::to_owned),
         fork_parent_id: value
             .get("fork_parent_id")
             .map(|parent| parent.as_str().map(str::to_owned)),

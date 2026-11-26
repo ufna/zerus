@@ -135,9 +135,13 @@ pub fn context(usage: &Value, recorded: bool) -> ContextChip {
             compact(limit)
         ),
         (Some(used), _, _) => format!("{approximate}{}", compact(used)),
+        (None, Some(limit), _) => format!("— / {}", compact(limit)),
         _ => String::new(),
     };
     let mut hint = Vec::new();
+    if context["used_source"] == "opencode_completed_step" && used.is_some() {
+        hint.push("Context from the last completed OpenCode model step.".into());
+    }
     if let Some(used) = used {
         hint.push(format!("Latest reported context: {} tokens", integer(used)));
         match (limit, percent) {
@@ -171,6 +175,9 @@ pub fn context(usage: &Value, recorded: bool) -> ContextChip {
         }
     } else {
         hint.push("The provider has not reported context usage for this conversation yet.".into());
+        if let Some(limit) = limit {
+            hint.push(format!("Model context window: {} tokens.", integer(limit)));
+        }
     }
     hint.push("Open session usage in Details.".into());
     let tone = match percent {
@@ -181,7 +188,7 @@ pub fn context(usage: &Value, recorded: bool) -> ContextChip {
     };
     let warning = used.is_some() && limit.is_none();
     ContextChip {
-        visible: used.is_some(),
+        visible: used.is_some() || limit.is_some(),
         accessible_name: format!(
             "Context: {text}{}",
             if warning { " (capacity unknown)" } else { "" }
