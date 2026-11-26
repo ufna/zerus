@@ -710,6 +710,58 @@ fn usage_text(tmux: bool) -> Cow<'static, str> {
 #[cfg(any(windows, test))]
 mod swarm_restart;
 
+pub(crate) const VERIFIED_SEND_USAGE: &str =
+    "use local Linux hgs send-verified <codex session> [--observe] --json as a direct command";
+
+/// The executable's distinct local route. This is not Person authority.
+/// The direct route excludes tracked and hosted callers. Internal and forwarded
+/// dispatch cannot mint this token.
+#[cfg(target_os = "linux")]
+pub(crate) struct VerifiedCodexInput(());
+
+#[cfg(not(windows))]
+pub(crate) fn dispatch_process(args: Vec<String>) -> Result<i32> {
+    if args.first().is_some_and(|arg| arg == "send-verified") {
+        #[cfg(target_os = "linux")]
+        {
+            let (name, observe) = match args.as_slice() {
+                [_, name, json] if json == "--json" => (name, false),
+                [_, name, observe, json] if observe == "--observe" && json == "--json" => (name, true),
+                _ => return Err(Error::new(2, VERIFIED_SEND_USAGE)),
+            };
+            if !name.starts_with("codex/")
+                || name.contains('@')
+                || !zerus_client_core::desktop::creation_launch::session_name(name)
+            {
+                return Err(Error::new(2, VERIFIED_SEND_USAGE));
+            }
+            platform::prepare_environment();
+            local_sessions()?;
+            if state::session_graph::hosted_agent_call()
+                || state::dsh::host_check() != state::dsh::HostCheck::Outside
+            {
+                return Err(Error::new(
+                    1,
+                    "Verified input is unavailable from a hosted agent or when host ancestry is unverified; use the ordinary send route",
+                ));
+            }
+            if state::session_graph::has_proven_send_origin()
+                .map_err(|e| Error::new(1, e))?
+            {
+                return Err(Error::new(
+                    1,
+                    "Verified input is unavailable from a tracked agent; use the ordinary send route",
+                ));
+            }
+            return state::send_verified(&VerifiedCodexInput(()), name, observe)
+                .map_err(|e| Error::new(1, e));
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(Error::new(2, VERIFIED_SEND_USAGE));
+    }
+    dispatch(args)
+}
+
 pub fn dispatch(args: Vec<String>) -> Result<i32> {
     dispatch_at(args, Instant::now())
 }
@@ -724,6 +776,9 @@ pub(crate) fn error_line(message: &str) -> String {
 }
 
 pub(crate) fn dispatch_at(args: Vec<String>, entered: Instant) -> Result<i32> {
+    if args.first().is_some_and(|arg| arg == "send-verified") {
+        return Err(Error::new(2, VERIFIED_SEND_USAGE));
+    }
     if let Some(result) = observe_gate(&args) {
         return result;
     }
@@ -939,6 +994,11 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         first
     }
     .map(String::as_str);
+    // Do not let a prefix normalize this verb into a new public invocation
+    // on this computer or on a peer.
+    if routed == Some("send-verified") {
+        return Err(Error::new(2, VERIFIED_SEND_USAGE));
+    }
     // The same agent refusal as a local change, before forwarding
     // (zerus-ppd26.1, zerus-ppd26.15).
     if routed == Some("question-routing") {
@@ -1068,6 +1128,8 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
                 return remote(&config, &target, "--help", args, dry);
             }
             print!("{}", help_text());
+            #[cfg(target_os = "linux")]
+            println!("       hgs send-verified <codex session> [--observe] --json   use an exact local Linux launch proof");
             println!("Encrypted workspace ABI: guarded-local-v1");
             println!("Desktop creation ABI: guarded-create-v1");
             println!("Account transfer ABI: revision-copy-v1");
@@ -4115,6 +4177,19 @@ mod parent_scan_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn verified_codex_input_cannot_enter_via_programmatic_dispatch() {
+        for args in [
+            vec!["send-verified", "codex/project", "--json"],
+            vec!["send-verified", "codex/project", "--observe", "--json"],
+        ] {
+            let error = super::dispatch(args.into_iter().map(str::to_owned).collect())
+                .expect_err("programmatic dispatch cannot select the direct public command");
+            assert_eq!(error.code, 2);
+            assert_eq!(error.message, super::VERIFIED_SEND_USAGE);
+        }
+    }
+
     #[test]
     fn new_session_tags_reject_shell_syntax() {
         for tag in ["bad$tag", "bad;tag", "bad\u{200b}tag"] {

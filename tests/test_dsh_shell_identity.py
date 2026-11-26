@@ -344,6 +344,43 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         self.assertOwnMarkers(env, second)
         self.assertEqual(env['DSH_SESSION_ID'], second['conversation_id'])
 
+    def test_verified_observer_never_initializes_a_hosted_callers_catalog(self):
+        cold = self.root / 'verified-observer-cold-config'
+        cold.mkdir(mode=0o700)
+        sentinel = cold / 'sentinel'
+        sentinel.write_bytes(b'unchanged configuration')
+        hgs = str(HGS)
+        target = 'codex/test/not-a-session'
+        request = json.dumps({'expected_run_id': str(uuid.uuid4()),
+                              'expected_conversation_id': str(uuid.uuid4())})
+        witness = self.root / 'verified-observer-state.py'
+        witness.write_text('''import hashlib, json, os, pathlib
+root = pathlib.Path(os.environ['HGS_STATE_DIR'])
+state = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.glob('*.json')}
+state['sessions'] = sorted(p.name for p in (root / 'sessions').glob('*.json'))
+print(json.dumps(state, sort_keys=True))
+''')
+        observe = [hgs, 'send-verified', target, '--observe', '--json']
+        snapshot = [sys.executable, '-I', str(witness)]
+        cold_env = {'HGS_CONFIG_DIR': str(cold)}
+        without_markers = dict(cold_env, **{key: None for key in
+                               ('HGS_AGENT', *SESSION_MARKERS, 'HGS_DSH_CALL_TOKEN')})
+        result = self.shell(self.first, runs=[('identity', [hgs, 'self', '--json'], None),
+            ('before', snapshot, None), ('proven', observe, request, cold_env),
+            ('ancestry', observe, request, without_markers), ('after', snapshot, None)])
+        runs = result['runs']
+        self.assertOwnMarkers(result['env'], self.first)
+        identity = json.loads(runs['identity']['stdout'])
+        self.assertEqual((identity['identity_source'], identity['session_id']), ('hosted_call', self.first['session_id']))
+        self.assertEqual(sorted(p.name for p in cold.iterdir()), ['sentinel'])
+        self.assertEqual(sentinel.read_bytes(), b'unchanged configuration')
+        self.assertEqual(runs['before']['code'], 0, runs['before'])
+        self.assertEqual(runs['after']['code'], 0, runs['after'])
+        self.assertEqual(runs['after']['stdout'], runs['before']['stdout'])
+        for label in ('proven', 'ancestry'):
+            self.assertEqual(runs[label]['code'], 1, (label, runs[label]))
+            self.assertIn('unavailable from a hosted agent', runs[label]['stderr'])
+
     def test_new_runs_forks_children_and_jobs_carry_their_own_identity(self):
         source = self.launch()
         before = source['run_id']

@@ -33,7 +33,7 @@ fn path(record: &Value) -> Result<PathBuf> {
         return Err("This input cannot be acknowledged now; check Terminal".into());
     }
     let key = format!("{:x}", Sha256::digest(format!("{agent}\0{conversation}")));
-    Ok(absolute_root()?
+    Ok(storage::existing_absolute_root()?
         .join("input_acceptance_barriers")
         .join(format!("{key}.json")))
 }

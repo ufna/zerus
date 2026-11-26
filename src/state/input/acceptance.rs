@@ -422,6 +422,15 @@ pub(in crate::state) fn allows_hook(record: &Value, event: &Value) -> bool {
 /// The caller holds Root and the selected record. Only acceptance changes;
 /// original delivery/unknown receipts, clearing and person audits stay intact.
 pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
+    reconcile(record, true)
+}
+
+/// Read through the same receipt gates without publishing the evidence.
+pub(super) fn reconcile_observed(record: &mut Value) -> Result<()> {
+    reconcile(record, false)
+}
+
+fn reconcile(record: &mut Value, publish: bool) -> Result<()> {
     let agent = string(record, "agent");
     if !matches!(agent, "codex" | "kimi")
         || !input_unconfirmed(record)
@@ -504,7 +513,7 @@ pub(in crate::state) fn reconcile_locked(record: &mut Value) -> Result<()> {
     if receipt["conversation_id"] != record["conversation_id"] {
         record["input_acceptance"]["receipt_conversation_id"] = receipt["conversation_id"].clone();
     }
-    write(record)
+    if publish { write(record) } else { Ok(()) }
 }
 
 /// Positive native completion is only eligibility for the person's unknown

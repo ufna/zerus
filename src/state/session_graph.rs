@@ -6,6 +6,8 @@ mod model;
 mod sends;
 
 pub(super) use sends::target_receipt;
+#[cfg(target_os = "linux")]
+pub(crate) use sends::has_proven_send_origin;
 pub(crate) use sends::{
     caller_agent_for, caller_hosted_backend, caller_opencode_host, caller_machine, caller_record,
     caller_record_for, forward_send, hosted_agent_call, hosted_claim, hosted_proof_refusal,

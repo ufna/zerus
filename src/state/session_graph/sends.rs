@@ -169,6 +169,31 @@ pub(crate) fn send_origin() -> Option<Value> {
     target_receipt(&owned_record()?)
 }
 
+/// Check the native caller using bounded saved identity reads. The direct CLI
+/// has already excluded hosted ancestry. No presentation or graph refresh.
+#[cfg(target_os = "linux")]
+pub(crate) fn has_proven_send_origin() -> Result<bool> {
+    if let (Some(name), Some(run)) = (nonempty_env("HGS_SESSION"), nonempty_env("HGS_RUN_ID")) {
+        let by_name = storage::read_metadata(&name).ok()
+            .filter(|record| string(record, "run_id") == run);
+        let record = if by_name.is_some() {
+            by_name
+        } else {
+            let mut matches = session_index::metadata_records_unrepaired()?.into_iter()
+                .filter(|record| string(record, "run_id") == run);
+            let found = matches.next();
+            if matches.next().is_some() {
+                return Err("Caller run identity is ambiguous; use the ordinary send route".into());
+            }
+            found
+        };
+        if record.as_ref().is_some_and(|record| bound_ancestor(record).is_some()) {
+            return Ok(true);
+        }
+    }
+    continuations::background_session_metadata().map(|record| record.is_some())
+}
+
 /// The live binding whose native agent is an actual ancestor of this CLI, or
 /// whose agent window holds the Claude background job this CLI runs under.
 /// Its name may be a rename shadow's: hooks and agents keep the environment
@@ -191,12 +216,17 @@ fn token_record() -> Option<Value> {
             .flatten();
     }
     let record = read_run(&name, &run).ok()??;
-    if !process_alive(&record) || record["state"] == "archived" {
-        return None;
-    }
     // Ancestry through a recorded DeepSeek host proves no other agent's
     // session (zerus-ppd26.15).
     if crate::state::dsh::host_check() != crate::state::dsh::HostCheck::Outside {
+        return None;
+    }
+    bound_ancestor(&record)?;
+    Some(record)
+}
+
+fn bound_ancestor(record: &Value) -> Option<()> {
+    if !process_alive(record) || record["state"] == "archived" {
         return None;
     }
     let owner = u32::try_from(record["pid"].as_u64()?).ok()?;
@@ -204,7 +234,7 @@ fn token_record() -> Option<Value> {
     for _ in 0..64 {
         let process = crate::platform::process_identity(pid)?;
         if pid == owner {
-            return Some(record);
+            return Some(());
         }
         if process.parent == 0 || process.parent == pid {
             break;
