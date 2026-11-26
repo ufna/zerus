@@ -6,6 +6,7 @@ import os
 import shlex
 import sqlite3
 import subprocess
+import sys
 import time
 import unittest
 import uuid
@@ -26,7 +27,9 @@ class TerminationOutcome(unittest.TestCase):
     def setUp(self):
         self.receipts = lifecycle.LifecycleReceiptStatus()
         self.addCleanup(self.receipts.doCleanups)
-        self.receipts.setUp()
+        # macOS CI's native TMPDIR can exceed the UNIX socket address limit.
+        short_tmp = os.environ.get("ZERUS_TEST_SHORT_TMPDIR", "/tmp") if sys.platform == "darwin" else None
+        self.receipts.setUp(temp_dir=short_tmp)
         self.receipts.payload["action"] = "terminate"
         self.receipts.catalog()
         self.receipts.write()
@@ -242,6 +245,46 @@ class TerminationOutcome(unittest.TestCase):
         slow.unlink()
         answer = self.request(request)
         self.assertEqual(answer["archive_id"], ARCHIVE, answer)
+
+    @unittest.skipUnless(sys.platform == "linux", "private escaped pipe holder and flock")
+    def test_shutdown_keeps_serving_owner_until_original_pipe_closes(self):
+        import fcntl
+
+        # The command-scoped process only holds an inherited pipe. It exits on
+        # its own and neither reads original stdin nor contacts a real peer.
+        ssh = self.home / "ssh"
+        ssh.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os,sys,pathlib,time\n"
+            "home=pathlib.Path(os.environ['HOME'])\n"
+            "if 'session-action-status' in sys.argv[-1]:\n"
+            "    if os.fork() == 0:\n"
+            "        os.setsid()\n"
+            "        (home/'holder').touch()\n"
+            "        time.sleep(5)\n"
+            "        (home/'holder-ended').touch()\n"
+            "        os._exit(0)\n"
+            "    os._exit(0)\n"
+            "os.execv('/bin/sh',['sh','-c',sys.argv[-1]])\n"
+        )
+        request = self.retain(computer="synthetic-peer")
+        result = self.command("request", request)
+        if result.returncode == 0:
+            self.assertFalse(json.loads(result.stdout)["accepted"], result.stdout)
+        else:
+            self.assertTrue(result.stderr.strip())
+        self.assertTrue((self.home / "holder").exists())
+        self.assertFalse((self.home / "holder-ended").exists())
+
+        self.server.terminate()
+        time.sleep(0.2)
+        self.assertIsNone(self.server.poll())
+        with (self.db.parent / "owner.lock").open("rb") as owner:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.server.wait(timeout=8)
+            self.assertTrue((self.home / "holder-ended").exists())
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 if __name__ == "__main__":
