@@ -623,6 +623,7 @@ impl Composers {
                             &entry.target.run_id,
                             &entry.target.conversation_id,
                             me.now(),
+                            None,
                         );
                         hub.local.finished(
                             &key,

@@ -1582,7 +1582,7 @@ fn classify_answer(
 
 /// OpenCode's message ID as `hgs` checks it: `msg_` and at most 128 ASCII
 /// letters, digits, `_` and `-`.
-fn native_message_id(id: &str) -> bool {
+pub(crate) fn native_message_id(id: &str) -> bool {
     id.strip_prefix("msg_").is_some_and(|rest| {
         (1..=124).contains(&rest.len())
             && rest
@@ -3200,7 +3200,7 @@ mod tests {
             assert!(matches!(outcome, Outcome::Uncertain { .. }));
             let key = "draft";
             let mut messages = crate::local_messages::LocalMessages::default();
-            messages.sending(key, id, None, "Private fixture", &[], &t.run_id, &t.conversation_id, 1.0);
+            messages.sending(key, id, None, "Private fixture", &[], &t.run_id, &t.conversation_id, 1.0, None);
             messages.finished(key, id, &outcome);
             assert!(messages.retryable(key, id, &t.run_id, &t.conversation_id).is_none());
         }
