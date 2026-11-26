@@ -44,6 +44,12 @@ pub struct ViewRow {
     /// The raw phase (`idle`, `working`, `tool`, `approval`, `input`, `error`,
     /// `interrupted`, `compacting`, `starting`, ...), None when unknown.
     pub phase: Option<String>,
+    /// A provider refusal belongs to a request, independently of process health.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_refusal: Option<String>,
+    /// Time of this exact refusal. A later failure remains current.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_refusal_at: Option<f64>,
     /// Why the session needs attention: `approval` or `question`; None when it
     /// does not, or for other reasons (an error that needs action, a subagent).
     pub attention: Option<String>,
@@ -446,7 +452,16 @@ impl<'a> Session<'a> {
                 .get("state")
                 .and_then(Value::as_str)
                 .unwrap_or("running"),
-            phase: text(row, "phase"),
+            phase: if row["superseded_provider_attention"] == true
+                && number(row, "provider_refusal_at").is_some_and(|at| at > 0.0)
+                && row["phase"] == "error"
+                && row["activity"] == "unknown"
+                && !row["provider_error"].is_object()
+            {
+                "unknown"
+            } else {
+                text(row, "phase")
+            },
             activity: text(row, "activity"),
             process_state: text(row, "process_state"),
             conversation_state: text(row, "conversation_state"),
@@ -1343,6 +1358,18 @@ pub fn row(value: &Value) -> ViewRow {
         status: status.to_owned(),
         caption,
         phase: some(session.phase),
+        provider_refusal: if session.phase == "error" && session.error_kind() == "provider_policy" {
+            Some("current".into())
+        } else if number(value, "provider_refusal_at").is_some_and(|at| at > 0.0) {
+            Some("earlier".into())
+        } else {
+            None
+        },
+        provider_refusal_at: if session.phase == "error" && session.error_kind() == "provider_policy" {
+            number(&value["provider_error"], "at")
+        } else {
+            number(value, "provider_refusal_at")
+        }.filter(|at| *at > 0.0),
         attention,
         unread: session.unread_reply() && !session.reply_in_progress(),
         muted: notifications.is_some_and(|preferences| {

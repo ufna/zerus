@@ -56,6 +56,7 @@ export const captionText = (caption: string) => (CAPTIONS.has(caption) ? tr(capt
  */
 export function statusCaption(s: Session, seconds = true): string {
   if (statusOf(s) === "offline") return tr("Offline");
+  if (verifiedRunningAfterRefusal(s)) return tr("Session running");
   if (s.status === "ready" && s.draft) return tr("Draft");
   const worked = elapsed(s);
   if (worked === undefined) return captionText(s.caption);
@@ -77,6 +78,7 @@ export type BadgeKind =
 
 export function badgeKind(s: Session): BadgeKind {
   const status = statusOf(s);
+  if (verifiedRunningAfterRefusal(s)) return "neutral";
   if (status === "attention") return quietAttention(s) ? "muted-attention" : "attention";
   // A supervised child's error is its parent's to handle: gray, like its other requests (zerus-rxz9k).
   if (status === "error" && s.quiet && !s.muted) return "muted-attention";
@@ -409,6 +411,45 @@ function OptionalQuestionsChip(props: { session: Session }) {
   </Show>;
 }
 
+export function refusalCaption(s: Session): string {
+  if (statusOf(s) === "offline" || s.state !== "running") return "";
+  if (s.providerRefusal === "earlier") return tr("Earlier request refused");
+  return s.providerRefusal === "current" ? tr("Request blocked by provider") : "";
+}
+
+const verifiedRunningAfterRefusal = (s: Session) =>
+  s.providerRefusal === "current" && s.state === "running" && s.processState === "running" && statusOf(s) !== "offline";
+
+function RequestRefusal(props: { session: Session; onOpenActivity?: () => void }) {
+  const label = () => refusalCaption(props.session);
+  return <Show when={label()}>
+    <button type="button" class="sc-refusal" classList={{ current: props.session.providerRefusal === "current" && !quietAttention(props.session) }}
+      aria-label={tr("%1. Open Activity", label())} title={tr("%1. Open Activity", label())}
+      onClick={(e) => { e.stopPropagation(); props.onOpenActivity?.(); }} onDblClick={(e) => e.stopPropagation()}>
+      <Icon name="triangle-alert" size={12} /><span class="ell">{label()}</span>
+    </button>
+  </Show>;
+}
+
+function RowDensityButton(props: { expanded: boolean; onToggle: () => void; description?: string }) {
+  const label = () => tr(props.expanded ? "Collapse session row" : "Expand session row");
+  const title = steadyTitle(() => [label(), props.description].filter(Boolean).join("\n"));
+  return <button type="button" class="cc-expand" aria-label={label()} aria-expanded={props.expanded}
+    aria-description={props.description} title={title.title()} onPointerEnter={title.enter} onPointerLeave={title.leave}
+    onPointerDown={(e) => e.stopPropagation()} onDblClick={(e) => e.stopPropagation()}
+    onClick={(e) => {
+      e.stopPropagation();
+      const button = e.currentTarget;
+      const row = button.closest(".rowhit");
+      const focused = document.activeElement === button;
+      props.onToggle();
+      if (focused) queueMicrotask(() => row?.querySelector<HTMLButtonElement>(".cc-expand")?.focus());
+    }}>
+    <Icon name="chevron-down" size={16} />
+    <span>{tr(props.expanded ? "Collapse row" : "Expand row")}</span>
+  </button>;
+}
+
 export function SessionCard(props: {
   session: Session;
   agentTeamRole?: string;
@@ -418,6 +459,8 @@ export function SessionCard(props: {
   expandable: boolean;
   expanded: boolean;
   onToggleChildren: () => void;
+  onCompact?: () => void;
+  onOpenActivity?: () => void;
   team?: Team;
   onToggleTeam?: () => void;
   onOpenTeam?: () => void;
@@ -442,6 +485,7 @@ export function SessionCard(props: {
         </Show>
         <OptionalQuestionsChip session={s()} />
         <span class="grow" />
+        <Show when={props.onCompact}><RowDensityButton expanded onToggle={() => props.onCompact?.()} /></Show>
       </div>
       <div class="sc-l2">
         <Icon name={s().branch ? "git-branch" : "folder"} size={14} class="sc-meta-ico" />
@@ -455,7 +499,8 @@ export function SessionCard(props: {
         <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
         <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} live={s().parent?.state === "live"} onOpen={props.onOpenParent} />}</Show>
         <Show when={s().reviewLater}><Icon name="attention" size={14} class="sc-review" /></Show>
-        <span class="ell">{detailText(s())}</span>
+        <RequestRefusal session={s()} onOpenActivity={props.onOpenActivity} />
+        <Show when={s().providerRefusal !== "current" || !refusalCaption(s())}><span class="ell">{detailText(s())}</span></Show>
       </div>
       <div class="sc-foot">
         <span class="sc-model ell">{s().model}</span>
@@ -595,7 +640,7 @@ function CompactTeam(props: { team: Team; onToggle?: () => void }) {
  * row draws as an icon only. The session's name follows a title that differs.
  */
 export function compactDescription(s: Session): string {
-  return [s.title, s.name !== s.title ? s.name : "", statusCaption(s, false), AGENT_LABEL[s.agent]].filter(Boolean).join("\n");
+  return [s.title, s.name !== s.title ? s.name : "", statusCaption(s, false), refusalCaption(s), AGENT_LABEL[s.agent]].filter(Boolean).join("\n");
 }
 
 /** The ended parent container's tooltip (zerus-sa9qn.17): what it is and what it is not. */
@@ -632,11 +677,10 @@ export function ContainerCard(props: { container: Container; selected: boolean; 
 }
 
 export function CompactCard(props: { session: Session; agentTeamRole?: string; agentTeamName?: string; agentTeamSummary?: TeamSummary; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void; onOpenTeam?: () => void;
-  fromParent?: ParentBadge; onOpenParent?: (key: string) => void }) {
+  fromParent?: ParentBadge; onOpenParent?: (key: string) => void; onOpenActivity?: () => void }) {
   const s = () => props.session;
   // Tooltips hold still under the pointer (zerus-5ryrx).
   const described = steadyTitle(() => compactDescription(s()));
-  const expand = steadyTitle(() => `${tr("Expand session row")}\n${compactDescription(s())}`);
   return (
     <div class="scard compact" classList={{ "agent-team-lead": !!props.agentTeamSummary, selected: props.selected, two: !!props.team }} data-emphasis={emphasis(s())}
       aria-description={tr("Collapsed session row. Press Right to expand.")}>
@@ -652,10 +696,8 @@ export function CompactCard(props: { session: Session; agentTeamRole?: string; a
       <StatusBadge kind={badgeKind(s())} caption={statusCaption(s())} />
       <OptionalQuestionsChip session={s()} />
       <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} compact live={s().parent?.state === "live"} onOpen={props.onOpenParent} />}</Show>
-      <button class="cc-expand" title={expand.title()} onPointerEnter={expand.enter} onPointerLeave={expand.leave} aria-description={compactDescription(s())}
-        onClick={(e) => { e.stopPropagation(); props.onExpand(); }} onDblClick={(e) => e.stopPropagation()}>
-        <Icon name="expand-row" size={16} />
-      </button>
+      <RequestRefusal session={s()} onOpenActivity={props.onOpenActivity} />
+      <RowDensityButton expanded={false} onToggle={props.onExpand} description={compactDescription(s())} />
       </div>
       <Show when={props.team}>{(team) => <CompactTeam team={team()} onToggle={props.onToggleTeam} />}</Show>
       <Show when={props.agentTeamSummary}>{(team) => <TeamStrip team={team()} onOpen={() => props.onOpenTeam?.()} />}</Show>

@@ -83,14 +83,16 @@ export function recoveryView(details: Recovery, online: boolean, now: number, pe
   const job = object(details.recovery);
   const failureObject = details.phase === "error" ? object(details.provider_error) : {};
   const state = text(job.state);
-  const failure = Object.keys(failureObject).length > 0 && (Object.keys(job).length === 0 || state === "succeeded" || resumed(job)
+  const policyRefusal = failureObject.error_kind === "provider_policy";
+  const failure = policyRefusal || Object.keys(failureObject).length > 0 && (Object.keys(job).length === 0 || state === "succeeded" || resumed(job)
     || failureObject.error_kind === "quota" || (failureObject.error_kind === "session_limit" && job.class !== "session_limit"));
   const active = (Object.keys(job).length > 0 && state !== "succeeded" && !resumed(job)) || Object.keys(failureObject).length > 0;
   const sessionLimit = failureObject.error_kind === "session_limit";
   const waiting = state === "waiting";
   const reset = job.class === "session_limit" && job.session_limit_mode === "reset";
   let label = tr("Automatic recovery is not scheduled"), shortLabel = tr("Error"), tone: "warning" | "danger" = "danger";
-  if (failure) { label = tr("Provider error"); shortLabel = tr("Error"); }
+  if (policyRefusal) { label = providerFailure(failureObject); shortLabel = tr("Request refused"); }
+  else if (failure) { label = tr("Provider error"); shortLabel = tr("Error"); }
   else if (waiting || state === "dispatching" || state === "retrying") {
     label = waiting ? tr("Retry %1", clock(number(job.due_at))) : recoveryStatus(job, now);
     tone = "warning";
@@ -104,7 +106,9 @@ export function recoveryView(details: Recovery, online: boolean, now: number, pe
     status = providerFailure(failureObject);
     detailFull = text(failureObject.detail);
     detail = detailFull.length > 500 ? `${detailFull.slice(0, 500)}…` : detailFull;
-    help = sessionLimit
+    help = policyRefusal
+      ? tr("Review the refused request in Activity. Zerus will not retry it.")
+      : sessionLimit
       ? tr("The session usage limit stopped this turn. Automatic recovery can wait for reset or retry on a schedule when enabled in Settings. Your draft is kept.")
       : failureObject.error_kind === "quota"
       ? tr("The provider stopped this turn. Wait for the limit to reset or restore account access, then refresh usage and send a message to continue. Your draft is kept; Zerus will not retry automatically.")
@@ -124,7 +128,7 @@ export function recoveryView(details: Recovery, online: boolean, now: number, pe
   return {
     active, failure, label, shortLabel, tone, status, detail, detailFull, help,
     now: { visible: !failure && waiting, enabled: !failure && waiting && online && !pending && number(job.not_before) <= now },
-    cancel: { visible: waiting, enabled: waiting && online && !pending },
+    cancel: { visible: !policyRefusal && waiting, enabled: !policyRefusal && waiting && online && !pending },
     history: { visible: !failure, enabled: !failure && attempts.length > 0 },
     terminal: { visible: failure, enabled: failure && online },
     usage: { visible: failure && (failureObject.error_kind === "quota" || sessionLimit), enabled: failure && online },
@@ -137,7 +141,15 @@ export function recoveryView(details: Recovery, online: boolean, now: number, pe
 export function recoveryInspection(s: Session, followed: Followed): Recovery {
   if (s.state === "archived") return {};
   const details = followed.value ?? {};
-  return text(details.run_id) === (s.runId ?? "") && text(details.conversation_id) === (s.conversationId ?? "") ? details : {};
+  if (text(details.run_id) !== (s.runId ?? "") || text(details.conversation_id) !== (s.conversationId ?? "")) return {};
+  const failure = object(details.provider_error);
+  const at = number(failure.at);
+  if (s.providerRefusal === "earlier" && failure.error_kind === "provider_policy"
+      && at > 0 && s.providerRefusalAt !== undefined && at <= s.providerRefusalAt) {
+    const { provider_error, ...current } = details;
+    return current;
+  }
+  return details;
 }
 
 /** A fresh usage snapshot can explain an early Claude reset, not clear the error. */

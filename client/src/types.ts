@@ -55,6 +55,8 @@ export interface ViewRow {
   status?: string;
   caption?: string;
   phase?: string | null;
+  provider_refusal?: "current" | "earlier";
+  provider_refusal_at?: number;
   /** `approval` or `question` while the session asks for one. */
   attention?: string | boolean | null;
   unread?: boolean;

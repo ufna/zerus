@@ -243,6 +243,7 @@
   :root[data-tree-lines="indent"] .team-tree { display: none; }
 
   /* Compact (collapsed) row: 40 px row, 30 px card; status, provider, mute and expand at the right. */
+  .scard.tiled, .scard.compact { container: session-row / inline-size; }
   .scard.compact { display: flex; align-items: center; padding: 2px 3px 0 11px; bottom: 6px; }
   .scard.compact .sc-title { flex: 1 1 auto; line-height: 22px; }
   /* An ended parent kept for its live child sessions (zerus-sa9qn.17): dimmed, never a session's live marks. */
@@ -279,9 +280,25 @@
   .cc-team .team-asking { color: var(--z-list-badge-muted); background: var(--z-list-chip); }
   .cc-team .team-needs { color: var(--z-list-tone-attention); background: color-mix(in srgb, var(--z-list-tone-attention) 16%, transparent); }
   .cc-team .team-errors { color: var(--z-list-tone-error); background: color-mix(in srgb, var(--z-list-edge-error) 14%, transparent); }
-  .cc-expand { flex: none; margin-left: 6px; width: 24px; height: 24px; border-radius: 4px; display: grid; place-items: center; color: var(--z-list-muted); }
-  .cc-expand:hover { background: var(--z-list-counter-hover); color: var(--z-list-text); }
-  .cc-expand:focus-visible { outline: 1px solid var(--z-color-accent); }
+  .cc-expand { flex: none; margin-left: 5px; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 2px; white-space: nowrap;
+    background: var(--z-list-chip); color: var(--z-list-text); font-size: 11px; }
+  .cc-expand[aria-expanded="true"] { height: 21px; }
+  .cc-expand[aria-expanded="true"] svg { rotate: 180deg; }
+  .cc-expand:hover { background: var(--z-list-counter-hover); }
+  .cc-expand:focus-visible, .sc-refusal:focus-visible { outline: 1px solid var(--z-color-accent); }
+  .sc-refusal { min-width: 0; display: inline-flex; align-items: center; gap: 4px; padding: 0 4px; border-radius: 4px;
+    color: var(--z-list-muted); font-size: 11px; white-space: nowrap; }
+  .sc-refusal.current { color: var(--z-list-tone-error); }
+  .sc-refusal:hover { background: var(--z-list-counter-hover); }
+  .sc-refusal svg { flex: none; }
+  .scard.compact .sc-refusal { margin-left: 4px; }
+  @container session-row (max-width: 265px) {
+    .scard.compact .sbadge, .scard.tiled .sbadge { flex-shrink: 1; }
+  }
+  @container session-row (max-width: 205px) {
+    .cc-expand span { display: none; }
+  }
   .cc-slot { visibility: hidden; }
   .scard.compact.archived { position: relative; inset: auto; height: 36px; margin: 2px 2px; gap: 8px; }
   .scard.compact.archived .hint { font-size: var(--fs-xs); }

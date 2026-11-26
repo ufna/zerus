@@ -133,6 +133,9 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     unread: !!v.unread,
     draft: false,
     muted: !!v.muted,
+    providerRefusal: v.provider_refusal === "current" || v.provider_refusal === "earlier" ? v.provider_refusal : undefined,
+    providerRefusalAt: typeof v.provider_refusal_at === "number" && v.provider_refusal_at > 0 && Number.isFinite(v.provider_refusal_at)
+      ? v.provider_refusal_at : undefined,
     attention,
     scheduleNext: undefined,
     backgroundJobs: typeof v.background === "number" ? v.background : undefined,
