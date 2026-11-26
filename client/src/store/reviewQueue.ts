@@ -1,12 +1,13 @@
 import { createSignal } from "solid-js";
 import { readTaskPage, type TaskScope } from "../bridge";
 import { decodeTaskRows, object, TASK_PAGE, text, type Task } from "../ui/screens/tasks-ui";
+import { readQuickCounts, type QuickCounts, type QuickQueue } from "../ui/screens/quick-review";
 
 export const REVIEW_LANES = ["person", "technical", "triage", "team"] as const;
 export type ReviewLane = typeof REVIEW_LANES[number];
-type Target = { project: string; scope?: TaskScope; query: string; lane: ReviewLane | "all" };
+type Target = { project: string; scope?: TaskScope; query: string; lane: ReviewLane | "all"; quick?: QuickQueue };
 type ReviewPage = {
-  counts: Record<ReviewLane, number>;
+  counts?: Record<ReviewLane, number>;
   damaged: number;
   next: string;
   previous: string;
@@ -21,7 +22,9 @@ export function createReviewQueue() {
   const [page, setPage] = createSignal<ReviewPage>();
   const [loading, setLoading] = createSignal(false);
   const [failed, setFailed] = createSignal(false);
-  let target: Target | undefined, generation = 0, running = false, pending = false;
+  const [counts, setCounts] = createSignal<QuickCounts>();
+  const [legacy, setLegacy] = createSignal<ReviewPage["counts"]>();
+  let target: Target | undefined, generation = 0, running = false, pending = false, scopeKey = "";
 
   const read = async (cursor?: { after?: string; before?: string; revision: string }) => {
     if (!target || running) return;
@@ -30,19 +33,24 @@ export function createReviewQueue() {
     pending = false;
     setLoading(true);
     try {
-      const reply = object(await readTaskPage(
-        request.project, "review", request.lane === "all" ? 1 : TASK_PAGE,
-        cursor?.after || null, request.scope, request.query, request.lane, cursor?.before,
-      ));
+      const reply = object(await (request.quick
+        ? readTaskPage(request.project, "review", TASK_PAGE, cursor?.after || null, request.scope, request.query, undefined, cursor?.before, request.quick)
+        : readTaskPage(request.project, "review", request.lane === "all" ? 1 : TASK_PAGE,
+          cursor?.after || null, request.scope, request.query, request.lane, cursor?.before)));
       if (mine !== generation) return;
-      const counts = object(reply.review_counts);
+      const oldCounts = object(reply.review_counts);
+      const quickCounts = readQuickCounts(reply.quick_review_counts);
       const meta = object(reply.page), revision = text(reply.revision);
       const position = meta.position, total = meta.total;
       const damaged = reply.damaged_total;
-      if (reply.review_lane !== request.lane || !revision || !Array.isArray(reply.tasks)
+      const legacyCounts = REVIEW_LANES.every((lane) => typeof oldCounts[lane] === "number"
+        && Number.isSafeInteger(oldCounts[lane]) && (oldCounts[lane] as number) >= 0)
+        ? oldCounts as ReviewPage["counts"] : undefined;
+      if ((request.quick ? reply.quick_review_lane !== request.quick || !quickCounts
+            : reply.review_lane !== request.lane || !legacyCounts)
+        || !revision || !Array.isArray(reply.tasks)
         || typeof position !== "number" || typeof total !== "number"
-        || typeof damaged !== "number" || !Number.isSafeInteger(damaged) || damaged < 0
-        || !REVIEW_LANES.every((lane) => typeof counts[lane] === "number" && Number.isSafeInteger(counts[lane]) && (counts[lane] as number) >= 0)) {
+        || typeof damaged !== "number" || !Number.isSafeInteger(damaged) || damaged < 0) {
         throw new Error();
       }
       if (cursor && cursor.revision !== revision) {
@@ -52,9 +60,11 @@ export function createReviewQueue() {
       }
       const rows = decodeTaskRows(reply.tasks, "review");
       setPage({
-        counts: counts as ReviewPage["counts"], damaged, rows, revision, position, total,
+        counts: legacyCounts, damaged, rows, revision, position, total,
         next: text(meta.next), previous: text(meta.previous),
       });
+      if (legacyCounts) setLegacy(legacyCounts);
+      if (quickCounts || request.lane === "all" && !request.quick) setCounts(quickCounts);
       setFailed(false);
     } catch {
       if (mine === generation) { if (!cursor) setPage(undefined); setFailed(true); }
@@ -66,8 +76,14 @@ export function createReviewQueue() {
   };
 
   return {
-    page, loading, failed,
+    page, loading, failed, counts, legacy,
     show(next?: Target) {
+      const key = next ? JSON.stringify([next.project, next.scope, next.query]) : "";
+      if (key !== scopeKey) {
+        scopeKey = key;
+        setCounts(undefined);
+        setLegacy(undefined);
+      }
       target = next;
       generation++;
       setPage(undefined);

@@ -1,15 +1,18 @@
 import { createSignal } from "solid-js";
 import { readTaskDetails } from "../bridge";
 import type { Fetched } from "../types";
+import { readDisposition, reportId, type QuickDisposition } from "../ui/screens/quick-review";
 import { object, taskItem, text, type Task } from "../ui/screens/tasks-ui";
 
 export interface TaskEntry {
+  id?: string;
   kind: string; text: string; at: number; actor: string; session: string; requestId: string; files: Fetched[];
   delivery: { mode: string; state: string; error: string };
   /** Why a report was recorded without moving its task (hgs `execution::Stale`). */
   stale?: string;
   /** The attempt the entry's request names: its origin and its own phase (A4). */
   attempt?: { origin: string; phase: string };
+  quickReview?: { reportId: string; disposition: QuickDisposition };
 }
 export interface TaskDetail extends Task { files: Fetched[]; log: TaskEntry[]; total: number; next?: string; started: boolean; dispatch: string; unknownAttempts: string[] }
 const actor = (v: unknown) => { const a = object(v); return a.kind === "agent" ? text(a.session) + (a.host ? ` @${text(a.host)}` : "") : "You"; };
@@ -25,8 +28,12 @@ export function taskDetail(raw: unknown, project: string, uuid: string): TaskDet
     next: text(d.history_next) || undefined, started: d.start_confirmed === true, dispatch: text(d.dispatch_id),
     log: d.log.map((value) => {
       const e = object(value), delivery = object(e.delivery);
-      return { kind: text(e.kind), text: text(e.text), at: typeof e.at === "number" ? e.at : 0,
+      const verdict = object(e.quick_review), disposition = readDisposition(verdict.disposition);
+      const quickReview = e.kind === "quick_review" && reportId(verdict.report_id) && disposition
+        ? { reportId: verdict.report_id, disposition } : undefined;
+      return { ...(reportId(e.id) ? { id: e.id } : {}), kind: text(e.kind), text: text(e.text), at: typeof e.at === "number" ? e.at : 0,
         actor: actor(e.actor), session: text(object(e.session).session), requestId: text(e.request_id), files: files(e.attachments),
+        ...(quickReview ? { quickReview } : {}),
         delivery: { mode: text(delivery.mode), state: text(delivery.state), error: text(delivery.error) },
         ...(text(e.stale) ? { stale: text(e.stale) } : {}),
         ...(e.attempt !== undefined ? { attempt: { origin: text(object(e.attempt).origin), phase: text(object(e.attempt).phase) } } : {}) };

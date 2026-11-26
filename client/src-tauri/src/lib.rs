@@ -1812,6 +1812,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         task_details::task_reference,
         task_details::task_page,
         task_details::task_classify_review,
+            task_details::task_quick_review,
         task_details::task_attachment_read,
         task_details::task_assign,
         task_details::task_board_action,

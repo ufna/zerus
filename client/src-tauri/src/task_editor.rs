@@ -637,7 +637,13 @@ fn submitted_with_delivery(
     } else {
         None
     };
+    let review = delivery.and_then(|delivery| delivery.review.as_ref())
+        .filter(|_| !recover && slot.mode == Mode::Note);
+    let defect = review.and_then(|_| zerus_client_core::task_feedback::recorded_defect(&detail));
+    let keep_draft = review.is_some()
+        || original.as_ref().is_some_and(|record| record["intent"]["review"].is_object());
     if !recover
+        && defect.is_none()
         && slot.stored.draft.text.trim().is_empty()
         && slot.stored.draft.attachments.is_empty()
         && slot.mode == Mode::Note
@@ -651,6 +657,10 @@ fn submitted_with_delivery(
     });
     let current_draft = slot.stored.draft.clone();
     let mut expected = current_draft.clone();
+    if let Some(defect) = defect {
+        expected.text = defect;
+        expected.attachments.clear();
+    }
     slot.stored.sending = true;
     checkpoint(slot, store)?;
     let mut delivered = None;
@@ -721,12 +731,15 @@ fn submitted_with_delivery(
                     tasks_write::message_call(&slot.project, &slot.task, &record, recover)?;
                 (record, message)
             } else {
-                let intent = tasks_write::message_intent(
+                let mut intent = tasks_write::message_intent(
                     &expected.text,
                     &expected.attachments,
                     message_mode,
                     detail["dispatch_id"].as_str().unwrap_or(""),
                 );
+                if let Some(review) = review {
+                    intent["review"] = serde_json::json!(review);
+                }
                 let id = uuid::Uuid::new_v4().to_string();
                 // The one actual call, its stdin frozen into the checkpoint
                 // before anything is sent; this same call is sent after it.
@@ -804,8 +817,8 @@ fn submitted_with_delivery(
                 // this original replaces it; an edited draft keeps the
                 // original for the explicit reviewed release.
                 Some(tasks_write::Reopen::Refused) => {
-                    if current_draft.text == expected.text
-                        && current_draft.attachments == expected.attachments
+                    if keep_draft || (current_draft.text == expected.text
+                        && current_draft.attachments == expected.attachments)
                     {
                         not_started = Some(record);
                         return Err(REOPEN_NOT_SENT.into());
@@ -834,7 +847,7 @@ fn submitted_with_delivery(
         saved?;
         return Err(error);
     }
-    let cleared = clear(store, &key, expected)?;
+    let cleared = !keep_draft && clear(store, &key, expected)?;
     if !cleared {
         let (tx, rx) = mpsc::channel();
         store.settle_if_unchanged(&key, current_draft, false, move |result| {
@@ -857,7 +870,7 @@ fn submitted_with_delivery(
 
     slot.recovery = false;
     slot.error.clear();
-    Ok(cleared)
+    Ok(cleared || keep_draft)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1124,6 +1137,7 @@ mod tests {
                 mode: mode.into(),
                 stage_at: 123,
                 dispatch_id: "original-dispatch".into(),
+                review: None,
             };
             assert!(submitted_with_delivery(
                 &mut slot,
@@ -1157,6 +1171,7 @@ mod tests {
                 mode: "note".into(),
                 stage_at: 456,
                 dispatch_id: "later-dispatch".into(),
+                review: None,
             };
             assert!(submitted_with_delivery(
                 &mut slot,
@@ -1186,6 +1201,62 @@ mod tests {
                 .is_none());
         }
     }
+    #[test]
+    fn reviewed_rework_uses_the_saved_defect_and_keeps_the_unrelated_draft() {
+        use zerus_client_core::{task_feedback::Delivery, task_quick_review::ReportGuard};
+        let root = crate::composer::tests::dir("task-reviewed-rework");
+        let store = crate::composer::tests::drafts(&root);
+        let (hub, _) = crate::composer::tests::hub_on(&store);
+        let mut slot = slot(Mode::Note);
+        let draft = slot.stored.draft.clone();
+        let report = ReportGuard {
+            history_revision: "a".repeat(64),
+            report_id: "report@original".into(),
+        };
+        let delivery = Delivery {
+            mode: "reopen".into(),
+            stage_at: 123,
+            dispatch_id: "original-dispatch".into(),
+            review: Some(report.clone()),
+        };
+        let detail = json!({ "uuid":ID, "project":"example", "stage":"review", "writable":true,
+            "stage_at":123, "dispatch_id":"original-dispatch", "quick_review_status":"rework",
+            "history_revision":report.history_revision, "review_report_id":report.report_id,
+            "quick_review":{"kind":"rework","defect":"Check the second item."}
+        });
+        let mut changed = detail.clone();
+        changed["quick_review_status"] = json!("parked");
+        assert!(submitted_with_delivery(&mut slot, &hub, changed, false, Some(&delivery), None,
+            &|_| panic!("stale disposition cannot send")).is_err());
+        assert!(outbox::pending(store.root(), "example", ID).unwrap().is_none());
+
+        assert!(submitted_with_delivery(&mut slot, &hub, detail.clone(), false, Some(&delivery), None,
+            &|call| {
+                assert_eq!(call.args[0], "message-reviewed");
+                assert!(call.args.windows(2).any(|pair| pair == ["--expect-report-id", "report@original"]));
+                assert!(!call.args.iter().any(|value| value == "--recover-only"));
+                let input: Value = serde_json::from_str(&call.input).unwrap();
+                assert_eq!(input["text"], "Check the second item.");
+                assert_eq!(input["attachments"], json!([]));
+                Err("unknown fixture return".into())
+            }).is_err());
+        let original = outbox::pending(store.root(), "example", ID).unwrap().unwrap();
+        let id = original["id"].as_str().unwrap();
+        assert!(submitted_with_delivery(&mut slot, &hub, detail, true, None, None,
+            &|call| {
+                assert_eq!(call.args[0], "message-reviewed");
+                assert!(call.args.iter().any(|value| value == "--recover-only"));
+                assert!(call.args.windows(2).any(|pair| pair == ["--request-id", id]));
+                assert_eq!(original["input_sha256"], tasks_write::input_digest(&call.input));
+                let mut answer = receipt(id);
+                answer.insert("attempt".into(), json!({"id":id,"state":"submitted"}));
+                Ok(answer)
+            }).unwrap());
+        assert!(outbox::pending(store.root(), "example", ID).unwrap().is_none());
+        assert_eq!(slot.stored.draft.text, draft.text);
+        assert_eq!(slot.stored.draft.attachments, draft.attachments);
+    }
+
     // Adapted from review-n's #1292 probes, through the actual editor flow.
     #[test]
     fn a_large_frozen_message_is_readable_before_the_editor_calls_hgs() {
@@ -1290,6 +1361,7 @@ mod tests {
             mode: "send".into(),
             stage_at: 123,
             dispatch_id: "original".into(),
+            review: None,
         };
         assert!(submitted_with_delivery(
             &mut slot,
@@ -1517,6 +1589,7 @@ mod tests {
                 mode: mode.into(),
                 stage_at: 123,
                 dispatch_id: String::new(),
+                review: None,
             };
             // A lost direct reply leaves an unmarked record...
             assert!(submitted_with_delivery(
@@ -1568,6 +1641,7 @@ mod tests {
                 mode: "reopen".into(),
                 stage_at: 123,
                 dispatch_id: String::new(),
+                review: None,
             };
             let mut slot = slot(Mode::Note);
             let state = state.to_owned();
