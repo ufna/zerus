@@ -12,7 +12,8 @@ const fixture = vi.hoisted(() => ({
 }));
 vi.mock("../../bridge", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../bridge")>()), copyVerbatim: fixture.copy, pasteText: fixture.clipboard }));
 vi.mock("../../store/composer", () => ({ composer: { canAttach: fixture.canAttach, pasteImage: fixture.image, send: fixture.send, view: () => undefined } }));
-vi.mock("../../store/terminal", () => ({
+vi.mock("../../store/terminal", async (original) => ({
+  ...(await original<typeof import("../../store/terminal")>()),
   screenShowsLatest: () => true,
   terminal: { paste: fixture.paste, input: fixture.input, show: fixture.show, hide: fixture.hide, generation: () => fixture.generation(),
     captureImage: (screen: unknown) => { fixture.capture(screen); return { current: () => fixture.imageCurrent, paste: async (png: Uint8Array) => { if (fixture.imageCurrent) await fixture.terminalImage(png); } }; },

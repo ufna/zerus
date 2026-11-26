@@ -24,7 +24,8 @@ vi.mock("../../bridge", async (importOriginal) => ({ ...(await importOriginal<ty
 vi.mock("../../store/composer", () => ({ composer: { canAttach: () => true, pasteImage: async () => {}, send: () => {}, view: () => fixture.view } }));
 vi.mock("../../store/ui", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../store/ui")>()),
   selected: () => fixture.session, toast: fixture.toast }));
-vi.mock("../../store/terminal", () => ({
+vi.mock("../../store/terminal", async (original) => ({
+  ...(await original<typeof import("../../store/terminal")>()),
   screenShowsLatest: () => true,
   terminal: { paste() {}, input() {}, show() {}, hide() {}, generation: () => 1,
     captureImage: () => ({ current: () => false, paste: async () => {} }),

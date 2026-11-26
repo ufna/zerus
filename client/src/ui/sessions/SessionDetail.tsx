@@ -14,7 +14,7 @@ import { Icon } from "../lib/icons";
 import { ActivityView, columnStyle } from "./Activity";
 import { KeepWarmChip } from "./KeepWarmChip";
 import { ShowInListButton } from "./ShowInList";
-import { AgentBadge, MachineBadge, captionText, statusOf, folderOf } from "./SessionCard";
+import { AgentBadge, MachineBadge, captionText, openCodeAvailabilityCaption, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
 import { teams } from "../../store/teams";
 import { rowIdentity } from "../teams/session-binding";
@@ -64,7 +64,7 @@ let reportedRemovedDetail = false;
 function headerCaption(): string {
   const s = selected();
   if (!s) return "";
-  return statusOf(s) === "offline" ? tr("Offline") : captionText(s.caption);
+  return statusOf(s) === "offline" ? tr("Offline") : openCodeAvailabilityCaption(s) ?? captionText(s.caption);
 }
 
 function EmptyDetail() {
@@ -217,7 +217,7 @@ createRoot(() => {
     }).then((status) => {
       if (selected()?.key !== s.key) return;
       setTerminalTexts(status);
-      void terminal.setTarget({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.terminalConversationId ?? s.conversationId, machine: s.machine }, status);
+      void terminal.setTarget({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.terminalConversationId ?? s.conversationId, machine: s.machine }, status, s.cmd === "opencode" ? "opencode" : undefined);
     });
   }));
   // Leaving the Sessions page disconnects, and coming back does not connect (SessionsWindow.cpp:1637, QStackedWidget::currentChanged).

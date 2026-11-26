@@ -868,3 +868,64 @@ describe("the latest output in view (checkViewedReply's Terminal branch)", () =>
     });
   });
 });
+
+describe("the native OpenCode client exit", () => {
+  const openCode = (conversation_id = "ses_one", run_id = "run-open-code"): TerminalTarget => ({
+    computer: "", name: "opencode/example/first", run_id, conversation_id, machine: "fixture",
+  });
+  const attempts = (f: ReturnType<typeof fakes>) => f.calls.filter(call => call.startsWith("connect "));
+  const ended = { kind: "finished", status: "Disconnected", code: 0 } as const;
+
+  it("keeps a cleanly closed conversation disconnected across a tab remount and clears only on explicit Connect", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(openCode(), ok, "opencode");
+    t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    expect(t.openCodeAttached("", "run-open-code", "ses_one")).toBe(true);
+    expect(t.openCodeAttached("", "run-open-code", "ses_two")).toBe(false);
+    t.input(new TextEncoder().encode("/exit"));
+    await tick();
+    expect(f.calls).toContain("write 7 /exit");
+    expect(t.connected()).toBe(true);
+    f.emit(ended);
+    expect(t.connected()).toBe(false);
+    expect(t.openCodeAttached("", "run-open-code", "ses_one")).toBe(false);
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    expect(t.status()).toBe("Terminal closed. Select Connect to reopen.");
+    await t.toggle();
+    expect(attempts(f)).toHaveLength(2);
+    expect(t.connected()).toBe(true);
+  });
+
+  it("keeps the stop bound to the exact OpenCode run and conversation, including after a rename", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(openCode(), ok, "opencode");
+    t.show(f.screen); await tick();
+    f.emit(ended);
+    t.hide();
+    f.setChanged(false); // Rust also preserves the exact run on rename.
+    await t.setTarget({ ...openCode(), name: "opencode/example/renamed" }, ok, "opencode");
+    t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(1);
+    await t.setTarget(openCode("ses_two"), ok, "opencode");
+    await tick();
+    expect(attempts(f)).toHaveLength(2);
+    expect(t.connected()).toBe(true);
+    f.setChanged(true);
+    await t.setTarget(openCode(), ok, "opencode"); await tick();
+    expect(attempts(f)).toHaveLength(2);
+  });
+
+  it("preserves the remount behavior of other providers and a failed OpenCode attach", async () => {
+    const f = fakes(), t = createTerminal(f.port, f.timers, f.visibility);
+    await t.setTarget(target(), ok);
+    t.opened(); t.show(f.screen); await tick(); f.emit(ended);
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(2);
+    await t.setTarget(openCode(), ok, "opencode"); await tick();
+    f.emit({ ...ended, code: 1 });
+    t.hide(); t.opened(); t.show(f.screen); await tick();
+    expect(attempts(f)).toHaveLength(4);
+  });
+});

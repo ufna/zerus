@@ -18,6 +18,11 @@ import type { TerminalConnected, TerminalEvent, TerminalStatus, TerminalTarget }
 export const VIEW = "main";
 /** At most one resize per this interval reaches Rust, plus the trailing one. */
 export const RESIZE_MS = 100;
+export const OPENCODE_TERMINAL_CLOSED = "Terminal closed. Select Connect to reopen.";
+const OPEN_CODE_CLOSES_KEPT = 64;
+// A rename does not make another attach to the same run and native conversation.
+const openCodeIdentity = (computer: string, run?: string, conversation?: string) =>
+  run && conversation ? JSON.stringify([computer, run, conversation]) : undefined;
 
 export interface TerminalPort {
   connect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (message: TerminalEvent) => void): Promise<TerminalConnected>;
@@ -83,7 +88,18 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   const [phase, setPhase] = createSignal<"idle" | "connecting" | "connected">("idle");
   const [status, setStatus] = createSignal("");
   const [texts, setTexts] = createSignal<TerminalStatus | undefined>();
+  const [openCodeAttach, setOpenCodeAttach] = createSignal<string>();
   let target: TerminalTarget | undefined;
+  let provider: "opencode" | undefined;
+  // This window can observe its own client. Another application's attach is
+  // independent, and a clean exit here is no evidence about the service.
+  const closedOpenCode = new Set<string>();
+  const openCodeKey = () => provider === "opencode" && target
+    ? openCodeIdentity(target.computer, target.run_id, target.conversation_id) : undefined;
+  const openCodeClosed = () => {
+    const key = openCodeKey();
+    return !!key && closedOpenCode.has(key);
+  };
   let screen: Screen | undefined;
   let generation = 0;
   /** Acknowledgements owed for output that arrived before the connect resolved. */
@@ -115,9 +131,11 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
   const ready = () => !!target && !!texts()?.available;
   const imageBinding = (t: TerminalTarget | undefined) => JSON.stringify(t && [t.computer, t.name, t.run_id, t.conversation_id]);
 
-  interface Restore { next: boolean; parsing: boolean; connected?: TerminalConnected; cols: number; rows: number }
+  interface Restore { next: boolean; parsing: boolean; connected?: TerminalConnected; cols: number; rows: number; openCode?: string }
   const restored = (mine: number, restore: Restore) => {
     if (mine !== serial || restore.parsing || !restore.connected) return;
+    if (restore.openCode) closedOpenCode.delete(restore.openCode);
+    setOpenCodeAttach(restore.openCode);
     setPhase("connected");
     setStatus(restore.connected.status);
     // The view may have been resized while its history was being parsed.
@@ -153,11 +171,19 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
       return;
     }
     if (m.kind === "finished") {
+      const key = restore.openCode;
+      const cleanClose = key && m.code === 0 && (restore.connected || openCodeAttach() === key);
+      if (cleanClose) {
+        closedOpenCode.delete(key);
+        closedOpenCode.add(key);
+        if (closedOpenCode.size > OPEN_CODE_CLOSES_KEPT) closedOpenCode.delete(closedOpenCode.values().next().value!);
+      }
       serial++;
       generation = 0;
       rustHolds = false;
+      setOpenCodeAttach(undefined);
       setPhase("idle");
-      setStatus(m.status);
+      setStatus(cleanClose ? OPENCODE_TERMINAL_CLOSED : m.status);
     }
   };
 
@@ -173,7 +199,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     const { cols, rows } = screen.size();
     const sent = target!;
     const ticket = ++issued;
-    const restore: Restore = { next: false, parsing: false, cols, rows };
+    const restore: Restore = { next: false, parsing: false, cols, rows, openCode: openCodeKey() };
     rustHolds = true;
     try {
       const c = await queue(() => port.connect(VIEW, sent, cols, rows, handler(mine, restore)));
@@ -188,6 +214,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     } catch (error) {
       if (ticket === issued) rustHolds = false;
       if (mine !== serial) return;
+      setOpenCodeAttach(undefined);
       setPhase("idle");
       setStatus(message(error));
     }
@@ -207,6 +234,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     const mine = ++serial;
     generation = 0;
     owed = 0;
+    setOpenCodeAttach(undefined);
     setPhase("idle");
     const text = await hangUp();
     // A connect issued meanwhile owns the status now.
@@ -218,6 +246,7 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     serial++;
     generation = 0;
     owed = 0;
+    setOpenCodeAttach(undefined);
     setPhase("idle");
   }
 
@@ -253,44 +282,57 @@ export function createTerminal(port: TerminalPort, timers: Timers = realTimers, 
     void disconnect();
   });
 
+  const showConnection = () => { if (!openCodeClosed()) void connect(); };
+
   return {
     phase, status, ready,
+    openCodeAttached(computer: string, run?: string, conversation?: string) {
+      const current = openCodeAttach();
+      return !!current && current === openCodeIdentity(computer, run, conversation);
+    },
     connected: () => phase() === "connected",
     /** The tab shows a connected attach at its bottom and not blank: the person sees the latest output. */
     showsLatest: () => phase() === "connected" && !!screen?.latest?.(),
     /** The current attach's generation, 0 without one (Qt's connectionGeneration). */
     generation: () => generation,
     /** The selected session's target and texts (on every change of either). */
-    async setTarget(next: TerminalTarget | undefined, nextTexts: TerminalStatus | undefined) {
+    async setTarget(next: TerminalTarget | undefined, nextTexts: TerminalStatus | undefined, nextProvider?: "opencode") {
       if (imageBinding(next) !== imageBinding(target)) imageRevision++;
       setTexts(nextTexts);
-      if (!next || !nextTexts) { await disconnect(); target = undefined; setStatus(""); return; }
+      if (!next || !nextTexts) { await disconnect(); target = undefined; provider = undefined; setStatus(""); return; }
+      // The core normally retargets by run. OpenCode also binds the native
+      // conversation, whose known replacement must not reuse an old client.
+      const otherConversation = provider === "opencode" && nextProvider === "opencode"
+        && target?.computer === next.computer && target.run_id === next.run_id
+        && !!target.conversation_id && !!next.conversation_id && target.conversation_id !== next.conversation_id;
       // Input stops reaching the previous session before the await.
-      const dropped = changedTarget(target, next) && phase() !== "idle";
+      const dropped = (changedTarget(target, next) || otherConversation) && phase() !== "idle";
       if (dropped) leaveSession();
       const ticket = issued;
-      const changed = await queue(() => port.retarget(VIEW, next));
+      if (otherConversation && rustHolds) await hangUp();
+      const changed = await queue(() => port.retarget(VIEW, next)) || otherConversation;
       target = next;
+      provider = nextProvider;
       if (changed) {
         if (ticket === issued) rustHolds = false;
         serial++;
         generation = 0;
         setPhase("idle");
         screen?.reset();
-        setStatus(nextTexts.available ? nextTexts.idle : nextTexts.reason);
+        setStatus(!nextTexts.available ? nextTexts.reason : openCodeClosed() ? OPENCODE_TERMINAL_CLOSED : nextTexts.idle);
       }
       if (!nextTexts.available) {
-        if (phase() !== "idle" || rustHolds) { serial++; generation = 0; setPhase("idle"); await hangUp(); }
+        if (phase() !== "idle" || rustHolds) { leaveSession(); await hangUp(); }
         setStatus(nextTexts.reason);
         return;
       }
-      if (screen && phase() === "idle" && (changed || dropped || rustHolds)) void connect();
+      if (screen && phase() === "idle" && (changed || dropped || rustHolds)) showConnection();
     },
     /** The tab shows `s`: connect (Qt's currentChanged), or redraw a running attach. */
     show(s: Screen) {
       screen = s;
       if (phase() === "connected" && generation !== 0) port.shown(VIEW, generation, true);
-      if (!held) void connect();
+      if (!held) showConnection();
     },
     /** The user opened the Terminal tab: showing it connects (Qt's currentChanged). */
     opened() { held = false; },

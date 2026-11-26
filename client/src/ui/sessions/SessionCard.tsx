@@ -5,6 +5,7 @@ import { steadyTitle } from "../lib/steady-title";
 import { FavoriteMark } from "./FavoriteMark";
 import { tr, trNoop } from "../../i18n";
 import { AGENT_LABEL, Icon } from "../lib/icons";
+import { terminal } from "../../store/terminal";
 import { catalog, computerFresh, computerOffline } from "../../store/catalog";
 import { quietAttention, visibleUnreadReply } from "../../store/attention";
 import { optionalQuestionCount, optionalQuestionCountText } from "./optional-questions";
@@ -48,6 +49,16 @@ const CAPTIONS = new Set<string>([
 ]);
 export const captionText = (caption: string) => (CAPTIONS.has(caption) ? tr(caption) : caption);
 
+/** The provider's idle availability and this window's own attach are separate
+ * from active work. An unavailable/offline row has no current client claim. */
+export function openCodeAvailabilityCaption(s: Session): string | undefined {
+  if (s.cmd !== "opencode" || s.state !== "running" || s.status !== "ready" || s.activity !== "idle"
+    || s.phase !== "idle" || !s.terminalAttachSupported || !s.runId || !s.conversationId
+    || s.draft || s.unread || s.reviewLater || computerOffline(s.computer)) return;
+  return terminal.openCodeAttached(s.computer, s.runId, s.conversationId)
+    ? tr("Terminal attached") : tr("Available conversation");
+}
+
 /** The Qt caption (SessionPresentation::status) with the Working clock, as Qt shows it. */
 /**
  * The status a row shows, with its Working time. `seconds: false` is for a
@@ -59,7 +70,7 @@ export function statusCaption(s: Session, seconds = true): string {
   if (verifiedRunningAfterRefusal(s)) return tr("Session running");
   if (s.status === "ready" && s.draft) return tr("Draft");
   const worked = elapsed(s);
-  if (worked === undefined) return captionText(s.caption);
+  if (worked === undefined) return openCodeAvailabilityCaption(s) ?? captionText(s.caption);
   const h = Math.floor(worked / 3600), m = Math.floor((worked % 3600) / 60), sec = worked % 60;
   return `${captionText(s.caption)} (${h ? `${h}h ${m}m` : seconds ? `${m}m ${String(sec).padStart(2, "0")}s` : `${m}m`})`;
 }
