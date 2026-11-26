@@ -49,11 +49,12 @@ export const voiceStateIssue = (state: VoiceState) => state === "failed" || stat
 const EVENT_TITLE: Record<string, string> = {
   SessionStart: trNoop("Session started"), SessionEnd: trNoop("Session closed"),
   TurnStarted: trNoop("Turn started"), UserPromptQueued: trNoop("Message queued"),
-  PreToolUse: trNoop("Tool started"), PostToolUse: trNoop("Tool finished"),
+  PreToolUse: trNoop("Tool started"), ToolProgress: trNoop("Tool running"), PostToolUse: trNoop("Tool finished"),
   PostToolUseFailure: trNoop("Tool failed"), PermissionRequest: trNoop("Approval requested"),
   PermissionResult: trNoop("Approval resolved"), Stop: trNoop("Response finished"),
   StopFailure: trNoop("Response failed"), Interrupt: trNoop("Turn interrupted"),
   PreCompact: trNoop("Compacting context"), PostCompact: trNoop("Context compacted"),
+  CompactFailure: trNoop("Context compaction failed"), CompactCancelled: trNoop("Context compaction cancelled"),
   SubagentStart: trNoop("Subagent started"), SubagentStop: trNoop("Subagent finished"),
   TaskStarted: trNoop("Background task started"), Notification: trNoop("Agent notification"),
 };
@@ -84,6 +85,8 @@ export function messageRole(e: ActivityEvent): Role {
 /** Approvals and failures open their group and are never merged with others. */
 const attention = (e: ActivityEvent) => e.type === "PermissionRequest" || e.type === "PostToolUseFailure" || e.type === "StopFailure" || e.type === "Interrupt";
 
+const openCodeCompaction = (e: ActivityEvent) => e.source === "opencode_native"
+  && (e.type === "PreCompact" || e.type === "PostCompact" || e.type === "CompactFailure" || e.type === "CompactCancelled");
 
 /** A message's files as Qt's attachment cards show them (ActivityView.cpp:759-782). */
 export function attachments(e: ActivityEvent): ActivityItem["attachments"] {
@@ -723,6 +726,10 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       items.push({ id, kind: "cleared", at, sender: tr("Session cleared"), body: tr("The agent no longer sees the activity above. New messages start with a fresh conversation context.") });
       i++; continue;
     }
+    if (openCodeCompaction(e)) {
+      items.push({ id, kind: "report", at, title: eventTitle(e.type), body: e.detail });
+      i++; continue;
+    }
     if (e.type === "AgentThinking") {
       if ((e.detail ?? "").trim()) items.push({ id, kind: "thinking", at, body: e.detail });
       i++; continue;
@@ -787,7 +794,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     // Adjacent operational events form one group; messages and attention stay boundaries.
     const group = [e];
     i++;
-    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i])
+    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i]) && !openCodeCompaction(events[i])
       && events[i].inherited_from === e.inherited_from
       && !messageRole(events[i]) && !attention(e) && !attention(events[i])) group.push(events[i++]);
     const tools: string[] = [];
@@ -802,7 +809,10 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     if (group.length === 1) {
       items.push({ id, kind: "tool", at: timeText(last.at), title: `${eventTitle(e.type)}${e.tool ? ` / ${e.tool}` : ""}`, body: preview(e.detail), events: toolEvents, warn: attention(e) });
     } else {
-      const title = calls > 0 ? tr("%1, %2 events", calls === 1 ? tr("1 tool call") : tr("%1 tool calls", calls), group.length) : tr("%1 activity events", group.length);
+      const running = group.filter(event => event.type === "ToolProgress").length;
+      const count = calls === 1 ? tr("1 tool call") : tr("%1 tool calls", calls);
+      const title = running > 0 && calls > 0 ? tr("%1, %2 running", count, running)
+        : calls > 0 ? tr("%1, %2 events", count, group.length) : tr("%1 activity events", group.length);
       items.push({ id, kind: "tools", at: timeText(last.at), title, body: shownTools || preview(last.detail), events: toolEvents, warn: group.some(attention) });
     }
   }

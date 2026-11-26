@@ -394,11 +394,183 @@ fn part_id(part: &Value, index: usize) -> String {
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
         })
-        .map_or_else(|| index.to_string(), str::to_owned)
+        .map_or_else(|| format!("ordinal:{index}"), str::to_owned)
 }
 
-/// Activity events for chronological messages. Other message and part types
-/// (compaction, reasoning, model switches) are not shown.
+/// A full inspection may read one bounded page of the newest running shell's
+/// public output. It stays out of the cached history and the listing path.
+pub(super) fn decorate_live_shell(
+    native: &dyn Native,
+    record: &Value,
+    messages: &[Value],
+    events: &mut Value,
+) {
+    let cwd = string(record, "cwd");
+    if cwd.is_empty() {
+        return;
+    }
+    for message in messages
+        .iter()
+        .rev()
+        .take(32)
+        .take_while(|m| m["type"] != "idle")
+    {
+        let id = string(message, "id");
+        let shell = match string(message, "type") {
+            "shell" if message["status"] == "running" => {
+                Some((string(message, "shellID"), format!("{id}:result")))
+            }
+            "assistant" if message["time"]["completed"].is_null() => {
+                message["content"].as_array().and_then(|parts| {
+                    parts.iter().enumerate().rev().find_map(|(index, part)| {
+                        let state = &part["state"];
+                        let shell = string(&state["metadata"], "shellID");
+                        (part["type"] == "tool"
+                            && part["name"] == "shell"
+                            && state["status"] == "running"
+                            && native_id(shell, "sh_"))
+                        .then(|| (shell, format!("{id}:{}:result", part_id(part, index))))
+                    })
+                })
+            }
+            _ => None,
+        };
+        let Some((shell, slot)) = shell.filter(|(shell, _)| native_id(shell, "sh_")) else {
+            continue;
+        };
+        let Some(event) = events
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .find(|event| event["type"] == "ToolProgress" && event["message_id"] == slot)
+        else {
+            return;
+        };
+        if let Some(text) = live_shell_text(native, cwd, shell) {
+            event["detail"] = json!(text);
+        }
+        return;
+    }
+}
+
+fn live_shell_text(native: &dyn Native, cwd: &str, shell: &str) -> Option<String> {
+    const OUTPUT: u64 = 4096;
+    let deadline = Instant::now() + Duration::from_millis(350);
+    let path = format!(
+        "/api/shell/{shell}/output?location%5Bdirectory%5D={}&limit={OUTPUT}",
+        encode(cwd)
+    );
+    let read = |path| {
+        let response = native.raw_until("GET", path, None, deadline).ok()?;
+        (response.status == 200).then_some(response.body)
+    };
+    let first = read(&path)?;
+    let start = first["data"]["size"]
+        .as_u64()
+        .unwrap_or(0)
+        .saturating_sub(OUTPUT);
+    let page = if start == 0 {
+        first
+    } else {
+        read(&format!("{path}&cursor={start}"))?
+    };
+    let text = journal::clipped(&page["data"]["output"], OUTPUT as usize);
+    if text.is_empty() {
+        None
+    } else if start == 0 {
+        Some(text)
+    } else {
+        Some(format!("…\n{text}"))
+    }
+}
+
+/// The native message or tool slot stays the same as its contents change.
+fn activity(kind: &str, detail: String, tool: &str, at: f64, id: String) -> Value {
+    let key = format!("opencode:{id}");
+    let mut row = event(kind, detail, tool, at, id, Value::Null);
+    row["activity_key"] = json!(key);
+    row
+}
+
+fn compaction(message: &Value, at: f64, id: &str) -> Option<Value> {
+    let (kind, detail) = match string(message, "status") {
+        "running" => ("PreCompact", String::new()),
+        "completed" => ("PostCompact", journal::clipped(&message["summary"], TEXT)),
+        "failed" if message["error"]["type"] == "aborted" => ("CompactCancelled", String::new()),
+        "failed" => ("CompactFailure", error_text(&message["error"])),
+        _ => return None,
+    };
+    Some(activity(kind, detail, "", at, id.to_owned()))
+}
+
+fn tool_rows(rows: &mut Vec<Value>, part: &Value, id: &str, index: usize, at: f64) {
+    let call = format!("{id}:{}", part_id(part, index));
+    let name = string(part, "name");
+    let state = &part["state"];
+    let started = part["time"]["created"].as_f64().map_or(at, |t| t / 1000.0);
+    rows.push(activity(
+        "PreToolUse",
+        shown(&state["input"]),
+        name,
+        started,
+        call.clone(),
+    ));
+    let status = string(state, "status");
+    let kind = match status {
+        "running" => "ToolProgress",
+        "completed" => "PostToolUse",
+        "error" => "PostToolUseFailure",
+        _ => return,
+    };
+    let mut parts = state["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|content| content["type"] == "text")
+        .filter_map(|content| content["text"].as_str())
+        .collect::<Vec<_>>();
+    let error = (status == "error").then(|| error_text(&state["error"]));
+    if let Some(error) = error.as_deref().filter(|error| !parts.contains(error)) {
+        parts.push(error);
+    }
+    let ended = part["time"]["completed"]
+        .as_f64()
+        .map_or(started, |t| t / 1000.0);
+    rows.push(activity(
+        kind,
+        journal::clipped(&json!(parts.join("\n")), TEXT),
+        name,
+        ended,
+        format!("{call}:result"),
+    ));
+}
+
+fn shell_rows(rows: &mut Vec<Value>, message: &Value, at: f64, id: &str) {
+    let status = string(message, "status");
+    let result = match status {
+        "running" => "ToolProgress",
+        "exited" if message["exit"] == 0 => "PostToolUse",
+        "exited" | "timeout" | "killed" => "PostToolUseFailure",
+        _ => return,
+    };
+    rows.push(activity(
+        "PreToolUse",
+        journal::clipped(&message["command"], TEXT),
+        "shell",
+        at,
+        id.to_owned(),
+    ));
+    let output = journal::clipped(&message["output"]["output"], TEXT);
+    rows.push(activity(
+        result,
+        output,
+        "shell",
+        at,
+        format!("{id}:result"),
+    ));
+}
+
+/// Public Activity events from the bounded native history window.
 pub(super) fn rows(messages: &[Value]) -> Vec<Value> {
     let mut rows = Vec::new();
     for message in messages {
@@ -430,40 +602,7 @@ pub(super) fn rows(messages: &[Value]) -> Vec<Value> {
                             texts.push(string(part, "text"));
                         }
                         "tool" => {
-                            let call = format!("{id}:{}", part_id(part, index));
-                            let name = string(part, "name");
-                            let state = &part["state"];
-                            rows.push(event(
-                                "PreToolUse",
-                                shown(&state["input"]),
-                                name,
-                                at,
-                                call.clone(),
-                                Value::Null,
-                            ));
-                            let result = match string(state, "status") {
-                                "completed" => Some(
-                                    state["content"]
-                                        .as_array()
-                                        .into_iter()
-                                        .flatten()
-                                        .filter_map(|c| c["text"].as_str())
-                                        .collect::<Vec<_>>()
-                                        .join("\n"),
-                                ),
-                                "error" => Some(error_text(&state["error"])),
-                                _ => None,
-                            };
-                            if let Some(result) = result {
-                                rows.push(event(
-                                    "PostToolUse",
-                                    journal::clipped(&json!(result), TEXT),
-                                    name,
-                                    at,
-                                    format!("{call}:result"),
-                                    Value::Null,
-                                ));
-                            }
+                            tool_rows(&mut rows, part, id, index, at);
                         }
                         _ => {}
                     }
@@ -484,6 +623,8 @@ pub(super) fn rows(messages: &[Value]) -> Vec<Value> {
                     }
                 }
             }
+            "compaction" => rows.extend(compaction(message, at, id)),
+            "shell" => shell_rows(&mut rows, message, at, id),
             "idle" => {
                 let (kind, detail) = match string(message, "outcome") {
                     "succeeded" => ("Stop", String::new()),
@@ -507,7 +648,7 @@ pub(super) fn last_error(messages: &[Value]) -> Option<Value> {
             "idle" if message["outcome"] == "failed" => {
                 return Some(
                     json!({"id": message["id"], "message": error_text(&message["error"]), "at": seconds(message)}),
-                )
+                );
             }
             "idle" => return None,
             _ => {}
@@ -537,7 +678,8 @@ pub(super) fn queued_rows(inbox: &Value, conversation: &str, stopped: bool) -> V
             duplicates.insert(id);
         }
     }
-    items.into_iter()
+    items
+        .into_iter()
         .map(|item| {
             let id = string(item, "id");
             let created = seconds(item);
@@ -608,6 +750,116 @@ mod tests {
     }
 
     #[test]
+    fn compactions_are_distinct_ordered_reports_with_stable_identity() {
+        let summary = "## Objective\nExample work\n\n### Next steps\n- Verify the fixture";
+        let mut first = json!({"type":"compaction","id":"msg_first","time":{"created":1000},
+            "status":"running","summary":summary,"providerContext":{"private":"opaque"}});
+        let running = rows(&[first.clone()]);
+        assert_eq!(running[0]["type"], "PreCompact");
+        assert_eq!(running[0]["detail"], "");
+        first["status"] = json!("completed");
+        let mut second = first.clone();
+        second["id"] = json!("msg_second");
+        let rows = rows(&[
+            first,
+            json!({"type":"idle","id":"msg_middle","outcome":"succeeded"}),
+            second,
+        ]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["PostCompact", "Stop", "PostCompact"]
+        );
+        assert_eq!(rows[0]["detail"], summary);
+        assert_eq!(rows[0]["activity_key"], running[0]["activity_key"]);
+        assert_ne!(rows[0]["activity_key"], rows[2]["activity_key"]);
+        assert!(!json!(rows).to_string().contains("opaque"));
+    }
+
+    #[test]
+    fn tool_progress_and_public_results_keep_the_same_slot() {
+        let mut message = json!({"type":"assistant","id":"msg_step","time":{"created":1000},"content":[
+            {"type":"reasoning","text":"opaque reasoning"},
+            {"type":"tool","id":"unique_call","name":"shell","time":{"created":2000},"state":{
+                "status":"running","input":{"command":"printf example"},"metadata":{"private":"opaque tool metadata"}}}]});
+        let mut streaming = message.clone();
+        streaming["content"][1]["state"]["status"] = json!("streaming");
+        assert_eq!(rows(&[streaming]).len(), 1);
+        let progress = rows(&[message.clone()]);
+        assert_eq!(progress[1]["type"], "ToolProgress");
+        assert_eq!(progress[1]["streaming"], true);
+        message["time"]["completed"] = json!(3000);
+        message["content"][1]["time"]["completed"] = json!(3000);
+        let state = &mut message["content"][1]["state"];
+        state["status"] = json!("error");
+        state["error"] = json!({"message":"Shell failed","private":"opaque error"});
+        state["content"] = json!([{"type":"text","text":"public output"}]);
+        let completed = rows(&[message]);
+        assert_eq!(completed[1]["activity_key"], progress[1]["activity_key"]);
+        assert_eq!(completed[1]["type"], "PostToolUseFailure");
+        assert_eq!(completed[1]["at"], 3.0);
+        assert_eq!(completed[1]["detail"], "public output\nShell failed");
+        assert!(!json!(completed).to_string().contains("opaque"));
+    }
+
+    #[test]
+    fn only_the_latest_active_shell_gets_a_bounded_public_output_read() {
+        let running = |id, shell_id| {
+            json!({
+                "type":"assistant","id":id,"content":[{
+                    "type":"tool","id":"call_1","name":"shell","state":{
+                        "status":"running","metadata":{"shellID":shell_id}
+                    }
+                }]
+            })
+        };
+        let mut current = running("msg_current", "sh_earlier");
+        current["content"][0]["id"] = json!("1");
+        let mut next = running("msg_current", "sh_current")["content"][0].clone();
+        next["id"] = json!("call:second");
+        current["content"].as_array_mut().unwrap().push(next);
+        let messages = [current];
+        let record = json!({"cwd":"/fixture directory"});
+        let native = pages(vec![
+            json!({"data":{"output":"old prefix","cursor":4096,"size":6000}}),
+            json!({"data":{"output":"public output","private":"opaque","cursor":6000,"size":6000}}),
+        ]);
+        let mut events = json!(rows(&messages));
+        decorate_live_shell(&native, &record, &messages, &mut events);
+        let path = "/api/shell/sh_current/output?location%5Bdirectory%5D=%2Ffixture%20directory&limit=4096";
+        assert_eq!(
+            *native.paths.borrow(),
+            [path, &format!("{path}&cursor=1904")]
+        );
+        assert_eq!(events[1]["detail"], "");
+        assert_eq!(events[3]["detail"], "…\npublic output");
+        assert_ne!(events[1]["activity_key"], events[3]["activity_key"]);
+        assert!(!events.to_string().contains("opaque"));
+
+        let native = pages(vec![]);
+        let messages = [
+            messages[0].clone(),
+            json!({"type":"idle","id":"msg_idle"}),
+            running("msg_invalid", "sh_wrong?path"),
+        ];
+        decorate_live_shell(&native, &record, &messages, &mut json!(rows(&messages)));
+        assert!(native.paths.borrow().is_empty());
+    }
+
+    #[test]
+    fn native_shell_history_exposes_its_bounded_output() {
+        let rows = rows(&[
+            json!({"type":"shell","id":"msg_shell","command":"printf example",
+            "status":"exited","exit":0,"output":{"output":"example","cursor":7,"size":7}}),
+        ]);
+        assert_eq!(rows[0]["detail"], "printf example");
+        assert_eq!(rows[1]["type"], "PostToolUse");
+        assert_eq!(rows[1]["detail"], "example");
+        assert_ne!(rows[0]["activity_key"], rows[1]["activity_key"]);
+    }
+
+    #[test]
     fn a_failed_idle_is_a_provider_error() {
         let messages = chronological(load("messages_error"));
         let error = last_error(&messages).unwrap();
@@ -665,7 +917,7 @@ mod tests {
             {"type":"text","text":"Done"}]});
         let rows = rows(&[message]);
         let types: Vec<_> = rows.iter().map(|r| string(r, "type")).collect();
-        assert_eq!(types, ["AgentMessage", "PreToolUse", "PostToolUse"]);
+        assert_eq!(types, ["AgentMessage", "PreToolUse", "PostToolUseFailure"]);
         assert_eq!(rows[0]["detail"], "Checking\nDone");
         assert_eq!(rows[0]["reply_id"], "msg_A");
         assert_eq!(rows[0]["at"], 2.0);
@@ -678,7 +930,7 @@ mod tests {
             {"type":"text","text":"Partial"},
             {"type":"tool","id":"call_1","name":"bash","state":{"status":"running","input":{}}}]});
         let streaming = rows(std::slice::from_ref(&message));
-        assert_eq!(streaming.len(), 2);
+        assert_eq!(streaming.len(), 3);
         assert!(streaming.iter().all(|r| r["streaming"] == true));
         message["time"]["completed"] = json!(3500);
         let done = rows(&[message]);
@@ -723,15 +975,22 @@ mod tests {
 
     #[test]
     fn timestamps_follow_unique_exact_inbox_entries_even_when_text_matches() {
-        let entry = |id, time, session| json!({"id":id,"type":"user","delivery":"queue",
-            "sessionID":session,"payload":{"text":"same"},"time":{"created":time}});
+        let entry = |id, time, session| {
+            json!({"id":id,"type":"user","delivery":"queue",
+            "sessionID":session,"payload":{"text":"same"},"time":{"created":time}})
+        };
         let a = entry("msg_A", 3000, "ses_fixture");
         let b = entry("msg_B", 4000, "ses_fixture");
         let c = entry("msg_C", 5000, "ses_other");
         let project = |data| queued_rows(&json!({"data":data}), "ses_fixture", false);
         let first = project(vec![a.clone(), b.clone(), c]);
-        assert_eq!(first.iter().map(|row| row["queued_at"].as_f64()).collect::<Vec<_>>(),
-            [Some(3.0), Some(4.0), None]);
+        assert_eq!(
+            first
+                .iter()
+                .map(|row| row["queued_at"].as_f64())
+                .collect::<Vec<_>>(),
+            [Some(3.0), Some(4.0), None]
+        );
         let reinserted = project(vec![b, entry("msg_D", 6000, "ses_fixture")]);
         assert_eq!(reinserted[1]["message_id"], "msg_D");
         assert_eq!(reinserted[1]["queued_at"], 6.0);
