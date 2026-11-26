@@ -88,6 +88,26 @@ fn process_table(deadline: Instant) -> Result<BTreeMap<u32, ProcessRow>> {
 
 impl Termination {
     pub(in crate::state) fn prepare(record: &Value) -> Result<Option<Self>> {
+        Self::prepare_original(
+            record,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::state) fn prepare_verified(
+        record: &Value,
+        original: &crate::state::lifecycle::native::Original,
+    ) -> Result<Self> {
+        Self::prepare_original(record, Some(original))?
+            .ok_or_else(|| "The verified original exited before termination; terminal kept".into())
+    }
+
+    fn prepare_original(
+        record: &Value,
+        #[cfg(target_os = "linux")] original: Option<&crate::state::lifecycle::native::Original>,
+    ) -> Result<Option<Self>> {
         if supervisor::owned_pending(record) {
             return Err("Original descendant owner requires a cohort-aware controller; terminal kept".into());
         }
@@ -96,7 +116,11 @@ impl Termination {
             .and_then(|pid| u32::try_from(pid).ok())
             .filter(|pid| *pid > 0)
             .ok_or("Invalid agent PID")?;
-        if !process_alive(record) {
+        #[cfg(target_os = "linux")]
+        let verified = original.is_some();
+        #[cfg(target_os = "macos")]
+        let verified = false;
+        if !verified && !process_alive(record) {
             return if crate::platform::process_state(root, None)? == ProcessState::Exited {
                 Ok(None)
             } else {
@@ -121,18 +145,30 @@ impl Termination {
             }
             caller = row.parent;
         }
-        let identity = crate::platform::process_identity(root)
-            .ok_or("Agent process identity is unavailable")?;
-        if !process_alive(record) {
-            return Err("Agent identity changed before termination".into());
-        }
+        let legacy_birth = || {
+            let identity = crate::platform::process_identity(root)
+                .ok_or("Agent process identity is unavailable")?;
+            if !process_alive(record) {
+                return Err("Agent identity changed before termination".to_owned());
+            }
+            Ok(identity.birth)
+        };
+        #[cfg(target_os = "linux")]
+        let birth = if let Some(original) = original {
+            original.recheck(record, crate::state::lifecycle::native::Operation::Terminate, None)?;
+            original.child_birth()?
+        } else {
+            legacy_birth()?
+        };
+        #[cfg(target_os = "macos")]
+        let birth = legacy_birth()?;
         let mut owned = Self {
             processes: BTreeMap::new(),
             _signals: signals,
         };
         owned
             .processes
-            .insert(root, Frozen::new(root, &identity.birth, deadline)?);
+            .insert(root, Frozen::new(root, &birth, deadline)?);
         let mut stable = false;
         loop {
             if Instant::now() >= deadline || crate::platform::shutdown_signal() != 0 {

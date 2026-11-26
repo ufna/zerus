@@ -6,7 +6,7 @@ import { catalog as appCatalog, computerOffline, type CatalogState } from "./cat
 import { marks as appMarks, type Marks } from "./marks";
 import { activityReadOnly } from "./activitySource";
 import { bus as appBus, createNoticeBus, sessionNoticeKey, type NoticeBus } from "./notices";
-import { copyState, sessionIdentity, detailsFromInspection, MUTE_PENDING, STATE_CHANGED, forgetsBindingOnly, notificationsStillAllowed, snapshotOf, terminates, type ActionRow, type ChildIdentity, type ForgetScope, type PendingNotifications } from "../ui/sessions/actions-ui";
+import { copyState, sessionIdentity, detailsFromInspection, lifecycleReady, MUTE_PENDING, STATE_CHANGED, forgetsBindingOnly, notificationsStillAllowed, snapshotOf, terminates, type ActionRow, type ChildIdentity, type ForgetScope, type PendingNotifications } from "../ui/sessions/actions-ui";
 import type { Action, Details, Outcome, Target } from "../types";
 import type { Session } from "../ui/sessions/types";
 import type { MuteOutcome } from "../ui/sessions/selection";
@@ -168,18 +168,25 @@ export function createActions(
    * offline meanwhile gets no call and no notice, as in Qt.
    */
   async function end(row: ActionRow, action: "terminate" | "kill" | Extract<Action, { kind: "terminate_shell" }>, cleanupId?: string): Promise<Outcome> {
-    if (!online(row.computer)) return failed("offline");
-    const live = catalog.rows[row.key];
-    if (row.processState === "unverified" || live?.processState === "unverified") {
-      const reason = tr("Session availability unverified");
-      notify("error", reason, true);
-      return failed(reason);
+    try {
+      if (!online(row.computer)) return failed("offline");
+      const live = catalog.rows[row.key];
+      const verified = action === "terminate" && live && lifecycleReady(row, "terminate") && lifecycleReady(live, "terminate")
+        && live.sessionId === row.sessionId && live.runId === row.runId && live.conversationId === row.conversationId
+        && live.name === row.name;
+      if (!verified && (row.processState === "unverified" || live?.processState === "unverified")) {
+        const reason = tr("Session availability unverified");
+        notify("error", reason, true);
+        return failed(reason);
+      }
+      if (live && terminates(live) !== terminates(row)) {
+        notify("error", tr(STATE_CHANGED), true);
+        return failed(STATE_CHANGED);
+      }
+      return await perform(row, typeof action === "string" ? { kind: action } : action, { cleanupId: action === "terminate" ? cleanupId : undefined });
+    } finally {
+      if (cleanupId) await bridge.terminationCleanupCancel(cleanupId).catch(() => {});
     }
-    if (live && terminates(live) !== terminates(row)) {
-      notify("error", tr(STATE_CHANGED), true);
-      return failed(STATE_CHANGED);
-    }
-    return perform(row, typeof action === "string" ? { kind: action } : action, { cleanupId: action === "terminate" ? cleanupId : undefined });
   }
 
   /**
@@ -484,10 +491,6 @@ const app = createActions(withArchived(appCatalog, (key) => archivedRow(key) ?? 
     appBus.notify("warn", tr("Working folder kept for review."), false, sessionNoticeKey(row.computer, row.name), tr("Session archived"));
   }); }, async (row, action, execute, current, remove, cleanupId) => {
     const { endActions } = await import("./endActions");
-    try {
-      return await endActions.schedule([captureEnd(row, action)], ([ref], key) => execute(ref, key), { current, remove, cleanupId });
-    } finally {
-      if (cleanupId) await bridge.terminationCleanupCancel(cleanupId).catch(() => {});
-    }
+    return endActions.schedule([captureEnd(row, action)], ([ref], key) => execute(ref, key), { current, remove, cleanupId });
   });
 export const { perform, performComputer, end, forget, toggleMute, setMute, stillListed, pendingNotifications, copy, copyName, copySessionId, copyIdentity, copyFolder, lastCopied, copyCommand, copyReference, change, updating, interrupting, detailsFor, notices, dismiss, notify, clearNotice } = app;

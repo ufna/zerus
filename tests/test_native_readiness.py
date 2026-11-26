@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import sqlite3
@@ -440,3 +441,164 @@ else:
             self.refusal()
         finally:
             self.wait(lambda: not stem.exists())
+
+    def lifecycle_request(self, **fields):
+        return dict({"request_id": str(uuid.uuid4()), "expected_run_id": self.original["run_id"],
+                     "expected_conversation_id": self.original["conversation_id"]}, **fields)
+
+    def test_drifted_desktop_pause_rechecks_the_selected_launch(self):
+        args = ["session-action", self.name, "--json"]
+        before = self.path.read_bytes()
+        stale = self.lifecycle_request(action="pause", expected_run_id=str(uuid.uuid4()))
+        refused = self.call(args, stale)
+        self.assertEqual(json.loads(refused.stdout)["status"], "failed", refused.stderr)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.bytes_received(), b"")
+        with os.fdopen(os.pidfd_open(self.original["pid"]), "rb") as child:
+            result = self.call(args, self.lifecycle_request(action="pause"))
+            receipt = json.loads(result.stdout)
+            self.assertEqual(receipt["status"], "completed", receipt)
+            exited = select.poll()
+            exited.register(child, select.POLLIN)
+            self.assertTrue(exited.poll(0), "Pause must observe the original child exit")
+        self.assertTrue(self.binding(self.name)["paused"])
+        self.assertEqual(self.bytes_received(), b"")
+
+    def test_drifted_desktop_stop_is_pinned_to_the_current_turn(self):
+        self.send_event(self.name, "UserPromptSubmit", prompt="Synthetic turn only")
+        current = self.binding(self.name)
+        self.assertGreater(current["turn_started"], 0)
+        self.assertEqual(current["activity"], "busy")
+        args = ["interrupt", self.name, "--json"]
+        before = self.path.read_bytes()
+        outdated = self.lifecycle_request(expected_turn_started=current["turn_started"] - 1)
+        result = self.call(args, outdated)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("turn changed", result.stderr)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.bytes_received(), b"")
+
+        exact = self.lifecycle_request(expected_turn_started=current["turn_started"])
+        result = self.call(args, exact)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "submitted")
+        self.wait(lambda: self.bytes_received() == b"\x1b")
+        self.assertNotEqual(self.call(args, exact).returncode, 0)
+        self.assertEqual(self.bytes_received(), b"\x1b")
+        self.assertEqual(self.stat(self.original["pid"])[19], str(self.drifted["process_index_pin"]["child"]["birth"]["Linux"]))
+
+    def test_drifted_desktop_terminate_keeps_the_original_archive(self):
+        request = self.lifecycle_request(action="terminate")
+        with os.fdopen(os.pidfd_open(self.original["pid"]), "rb") as child:
+            result = self.call(["session-action", self.name, "--json"], request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads(result.stdout)
+            self.assertEqual(receipt["status"], "completed", receipt)
+            exited = select.poll()
+            exited.register(child, select.POLLIN)
+            self.assertTrue(exited.poll(0), "Terminate must observe the original child exit")
+        archived = [json.loads(path.read_bytes()) for path in (self.root / "state/archives").glob("*.json")]
+        self.assertEqual(len(archived), 1, archived)
+        self.assertEqual(archived[0]["conversation_id"], self.original["conversation_id"])
+        self.assertEqual(archived[0]["run_id"], self.original["run_id"])
+        self.assertEqual(self.bytes_received(), b"")
+
+    def test_drifted_desktop_actions_refuse_substituted_births_without_effect(self):
+        for role in ("child", "supervisor"):
+            with self.subTest(role=role):
+                changed = copy.deepcopy(self.drifted)
+                changed["process_index_pin"][role]["birth"]["Linux"] += 1
+                self.save(changed)
+                before = self.path.read_bytes()
+                pause = self.call(["session-action", self.name, "--json"], self.lifecycle_request(action="pause"))
+                self.assertEqual(json.loads(pause.stdout)["status"], "failed")
+                self.assertEqual(self.path.read_bytes(), before)
+                end = self.call(["session-action", self.name, "--json"], self.lifecycle_request(action="terminate"))
+                self.assertEqual(json.loads(end.stdout)["status"], "failed")
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(self.bytes_received(), b"")
+                self.assertFalse(list((self.root / "state/archives").glob("*.json")))
+                self.assertIn(self.name, self.t("list-sessions", "-F", "#{session_name}"))
+        self.send_event(self.name, "UserPromptSubmit", prompt="Synthetic turn only")
+        before = self.path.read_bytes()
+        current = self.binding(self.name)
+        stop = self.call(["interrupt", self.name, "--json"],
+                         self.lifecycle_request(expected_turn_started=current["turn_started"]))
+        self.assertNotEqual(stop.returncode, 0)
+        self.assertIn("Session identity changed", stop.stderr)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.bytes_received(), b"")
+
+    def test_drifted_desktop_terminate_keeps_binding_without_original_terminal(self):
+        self.t("rename-session", "-t", "=" + self.name, "private-renamed")
+        for pin_kind in ("original", "unavailable", "changed"):
+            with self.subTest(pin=pin_kind):
+                current = copy.deepcopy(self.drifted)
+                if pin_kind == "unavailable":
+                    del current["process_index_pin"]
+                elif pin_kind == "changed":
+                    current["process_index_pin"]["child"]["birth"]["Linux"] += 1
+                self.save(current)
+                before = self.path.read_bytes()
+                result = self.call(["session-action", self.name, "--json"], self.lifecycle_request(action="terminate"))
+                receipt = json.loads(result.stdout)
+                self.assertEqual(receipt["status"], "failed", receipt)
+                self.assertIn("binding kept", receipt["error"])
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertFalse(list((self.root / "state/archives").glob("*.json")))
+                self.assertIn("private-renamed", self.t("list-sessions", "-F", "#{session_name}"))
+                self.assertEqual(self.bytes_received(), b"")
+
+    def test_drifted_desktop_terminate_keeps_respawned_pane(self):
+        pane = self.original["pane"]
+        self.t("set-option", "-t", pane, "-w", "remain-on-exit", "on")
+        with os.fdopen(os.pidfd_open(self.original["pid"]), "rb") as child:
+            signal.pidfd_send_signal(child.fileno(), signal.SIGKILL)
+        self.wait(lambda: self.t("display-message", "-p", "-t", pane, "#{pane_dead}").strip() == "1")
+        self.t("respawn-pane", "-k", "-t", pane, "exec /usr/bin/sleep 40")
+        supervisor = self.drifted["process_index_pin"]["supervisor"]["pid"]
+        def observe():
+            fields = self.t("display-message", "-p", "-t", pane,
+                            "#{pane_id} #{@hgs_run} #{pane_pid} #{HGS_SESSION_ID}").split()
+            self.assertEqual(fields[:2], [pane, self.original["run_id"]])
+            self.assertEqual(fields[3], self.original["session_id"])
+            self.assertNotEqual(int(fields[2]), supervisor)
+            return fields
+        replacement = observe()
+        self.save(self.drifted)
+        before = self.path.read_bytes()
+        request = self.lifecycle_request(action="terminate")
+        result = self.call(["session-action", self.name, "--json"], request)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["status"], "failed", receipt)
+        self.assertIn("terminal kept", receipt["error"])
+        self.assertEqual(observe(), replacement)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse(list((self.root / "state/archives").glob("*.json")))
+
+    def test_drifted_desktop_pause_keeps_a_pane_respawned_during_cleanup(self):
+        pane = self.original["pane"]
+        supervisor = self.drifted["process_index_pin"]["supervisor"]["pid"]
+        self.t("set-option", "-t", pane, "-w", "remain-on-exit", "on")
+
+        # The private tmux swaps its dead pane immediately before the guarded
+        # cleanup command. The original child has already settled.
+        wrapper = self.bin / "tmux"
+        wrapper.write_text(f"""#!{sys.executable}
+import os, subprocess, sys
+tmux = {[TMUX, '-S', self.socket, '-f', '/dev/null']!r}
+args = sys.argv[1:]
+if args[:1] == ["if-shell"] and "kill-pane -t {pane}" in args:
+    subprocess.run([*tmux, "respawn-pane", "-k", "-t", {pane!r},
+                    "exec /usr/bin/sleep 40"], check=True)
+os.execv(tmux[0], [*tmux, *args])
+""")
+        args = ["session-action", self.name, "--json"]
+        result = self.call(args, self.lifecycle_request(action="pause"))
+        self.assertEqual(json.loads(result.stdout)["status"], "completed", result.stderr)
+        self.assertTrue(self.binding(self.name)["paused"])
+        pane_pid, dead = self.t("display-message", "-p", "-t", pane,
+                               "#{pane_pid} #{pane_dead}").split()
+        self.assertNotEqual(int(pane_pid), supervisor)
+        self.assertEqual(dead, "0")
+        self.assertEqual(self.bytes_received(), b"")

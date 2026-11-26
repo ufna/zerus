@@ -41,7 +41,7 @@ pub(super) fn catalog_readiness(hint: &Value, until: Instant) -> Option<Readines
         return None;
     }
     let send = input::native_readiness::established(&canonical);
-    Some(Readiness {
+    let mut readiness = Readiness {
         version: VERSION,
         session_id: string(&saved, "session_id").into(),
         run_id: string(&saved, "run_id").into(),
@@ -50,7 +50,9 @@ pub(super) fn catalog_readiness(hint: &Value, until: Instant) -> Option<Readines
         pause: false,
         terminate: false,
         stop: false,
-    })
+    };
+    lifecycle::native::add_capabilities(&canonical, &mut readiness);
+    (Instant::now() < until).then_some(readiness)
 }
 
 /// Compare the binding from the regular input gate to a fresh, bounded read

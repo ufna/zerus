@@ -3,7 +3,7 @@
 use super::*;
 use serde::Deserialize;
 
-fn eligible(record: &Value) -> bool {
+pub(super) fn eligible(record: &Value) -> bool {
     ["codex", "claude", "kimi"].contains(&string(record, "agent"))
         && record["run_identity_version"] == 1 && record["supervisor"].is_object()
         && record["activity"] == "busy"
@@ -11,6 +11,24 @@ fn eligible(record: &Value) -> bool {
         && !pause_active(record) && string(record, "error").is_empty()
 }
 pub(super) fn available(record: &Value, live: bool) -> bool { live && eligible(record) }
+
+fn terminal_identity(
+    record: &Value,
+    #[cfg(target_os = "linux")] original: Option<&lifecycle::native::Original>,
+) -> Result<Value> {
+    #[cfg(target_os = "linux")]
+    if let Some(original) = original {
+        let current = read_run(string(record, "name"), string(record, "run_id"))?
+            .ok_or("Session run disappeared")?;
+        if current["turn_started"] != record["turn_started"] {
+            return Err("The turn changed before interruption".into());
+        }
+        original.recheck(&current, lifecycle::native::Operation::Stop, None)?;
+        input::checked_terminal(&current, false)?;
+        return Ok(current);
+    }
+    kimi_tui_choice::identity(record)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,11 +57,23 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let path=absolute_root()?.join("interrupt_receipts").join(format!("{uuid}.json"));
     let pending_guard=if dsh_session.is_some() {Some(lock(None)?)} else {None};
     if path.exists() {return Err("This interrupt was already attempted. Check Terminal before trying again".into());}
+    #[cfg(target_os = "linux")]
+    let original = if !native && !process_alive(&record) {
+        lifecycle::native::observe(&record, lifecycle::native::Operation::Stop)
+            .map(lifecycle::native::Original::pin)
+            .transpose()?
+    } else {
+        None
+    };
     if native {
         if record["interrupt_supported"]!=true {return Err("This DeepSeek turn cannot be interrupted from Activity. Open the native UI".into());}
     } else {
         if !eligible(&record) {return Err("This turn is no longer working".into());}
-        kimi_tui_choice::identity(&record)?;
+        terminal_identity(
+            &record,
+            #[cfg(target_os = "linux")]
+            original.as_ref(),
+        )?;
     }
     recovery::cancel_for_input(&record)?;
     atomic(&path,&json!({"status":"in_progress"}).to_string())?;
@@ -52,15 +82,26 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if open_native {opencode::interrupt(&record)?;}
     else if native { dsh::interrupt(&record)?; }
     else {
-        let mut current=kimi_tui_choice::identity(&record)?;
+        let mut current=terminal_identity(
+            &record,
+            #[cfg(target_os = "linux")]
+            original.as_ref(),
+        )?;
         if !eligible(&current) || current["turn_started"]!=record["turn_started"] {return Err("The turn changed before interruption".into());}
         if current["agent"]=="claude" {seen=kimi_tui_choice::capture(&current).ok().map(|screen|interruptions(&screen));}
         // Codex returns ordinary queued follow-ups to its input on Escape.
         if current["agent"]=="codex" {input_queue::note_stop(&mut current);}
         compact_context::observe(&mut current,&json!({"hook_event_name":"Interrupt"}));
         write(&mut current)?;
-        backend::current().send(string(&current,"pane"),&[backend::Key::Named("Escape")])
-            .map_err(uncertain)?;
+        let send_escape = || backend::current()
+            .send(string(&current, "pane"), &[backend::Key::Named("Escape")]);
+        #[cfg(target_os = "linux")]
+        match &original {
+            Some(original) => original.interrupt_terminal(&current),
+            None => send_escape(),
+        }.map_err(uncertain)?;
+        #[cfg(not(target_os = "linux"))]
+        send_escape().map_err(uncertain)?;
     }
     let mut receipt=json!({"request_id":request.request_id,"name":name,"run_id":request.expected_run_id,
         "conversation_id":request.expected_conversation_id,"status":"submitted"});

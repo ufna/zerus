@@ -54,6 +54,8 @@ pub(super) struct Pair {
     record: Value,
     agent: (u32, Sample),
     supervisor: (u32, Sample),
+    #[cfg(target_os = "linux")]
+    original: Option<(Identity, Identity)>,
 }
 impl Pair {
     pub(super) fn before(record: &Value, until: Instant) -> Option<Self> {
@@ -62,7 +64,35 @@ impl Pair {
     fn read(
         record: &Value,
         until: Instant,
+        observe: impl FnMut(u32, Instant) -> Option<Sample>,
+    ) -> Option<Self> {
+        Self::read_original(
+            record,
+            until,
+            observe,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn before_verified(
+        record: &Value,
+        until: Instant,
+        witness: &super::super::native_launch::Witness,
+    ) -> Option<Self> {
+        let (child, supervisor) = witness.originals();
+        let identity = |process: &super::super::process_index::Process| {
+            Some(Identity { pid: process.pid, birth: lifecycle::native::birth(process).ok()? })
+        };
+        Self::read_original(record, until, sample, Some((identity(child)?, identity(supervisor)?)))
+    }
+
+    fn read_original(
+        record: &Value,
+        until: Instant,
         mut observe: impl FnMut(u32, Instant) -> Option<Sample>,
+        #[cfg(target_os = "linux")] original: Option<(Identity, Identity)>,
     ) -> Option<Self> {
         let binding = binding(record)?;
         let pid = |v: &Value| {
@@ -77,8 +107,16 @@ impl Pair {
         }
         let agent_sample = observe(agent, until)?;
         let supervisor_sample = observe(supervisor, until)?;
-        if agent_sample.stamp != record["process_start"]
-            || supervisor_sample.stamp != record["supervisor"]["start"]
+        let legacy_starts = || agent_sample.stamp == record["process_start"]
+            && supervisor_sample.stamp == record["supervisor"]["start"];
+        #[cfg(target_os = "linux")]
+        let original_pair = original.as_ref().map_or_else(legacy_starts, |(child, owner)| {
+            child.pid == agent && child.birth == agent_sample.native.birth
+                && owner.pid == supervisor && owner.birth == supervisor_sample.native.birth
+        });
+        #[cfg(target_os = "macos")]
+        let original_pair = legacy_starts();
+        if !original_pair
             || agent_sample.native.parent != supervisor
             || agent_sample.native.birth.is_empty()
             || supervisor_sample.native.birth.is_empty()
@@ -90,6 +128,8 @@ impl Pair {
             record: binding,
             agent: (agent, agent_sample),
             supervisor: (supervisor, supervisor_sample),
+            #[cfg(target_os = "linux")]
+            original,
         })
     }
     pub(super) fn finish(
@@ -107,7 +147,13 @@ impl Pair {
         until: Instant,
         observe: impl FnMut(u32, Instant) -> Option<Sample>,
     ) -> Option<Presentation> {
-        let after = Self::read(record, until, observe)?;
+        let after = Self::read_original(
+            record,
+            until,
+            observe,
+            #[cfg(target_os = "linux")]
+            self.original.clone(),
+        )?;
         if self.record != after.record
             || self.agent != after.agent
             || self.supervisor != after.supervisor

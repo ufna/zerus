@@ -1269,6 +1269,9 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Recovery { job_id, action } => {
             classify_recovery(target, invocation, job_id, *action, exit)
         }
+        Action::Pause if invocation.request_id.is_some() => {
+            classify_scoped_lifecycle(target, invocation, exit, "The session was not paused.")
+        }
         Action::ForgetBinding => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not forgotten.")
         }

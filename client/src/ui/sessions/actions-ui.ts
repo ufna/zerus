@@ -13,7 +13,7 @@ import { tr, trNoop } from "../../i18n";
 export type ActionRow = Pick<Session,
   | "key" | "computer" | "name" | "machine" | "cmd" | "state" | "tracked" | "resumable" | "activity" | "processState"
   | "archiveId" | "attention" | "unread" | "sharedRead" | "allowed" | "archiveReason" | "terminateReason" | "forgetReason" | "restoreReason" | "phase"
-  | "restorePending"
+  | "restorePending" | "nativeReadiness"
   | "runId" | "conversationId" | "replyId" | "attentionSignature" | "created" | "fingerprint" | "sessionId"
   | "cwdPath" | "terminalSupported" | "terminalReported" | "terminalAttachSupported" | "terminalAttachReported"
   | "muted" | "sharedNotifications" | "notificationRevision" | "notificationConflict" | "gitWorktree">;
@@ -25,6 +25,7 @@ export function snapshotOf(s: ActionRow): ActionRow {
     resumable: s.resumable, activity: s.activity, processState: s.processState, archiveId: s.archiveId, attention: s.attention,
     unread: s.unread, sharedRead: s.sharedRead, allowed: s.allowed, archiveReason: s.archiveReason, terminateReason: s.terminateReason, forgetReason: s.forgetReason,
     restoreReason: s.restoreReason, restorePending: s.restorePending,
+    nativeReadiness: s.nativeReadiness && { ...s.nativeReadiness },
     phase: s.phase, runId: s.runId, conversationId: s.conversationId, replyId: s.replyId, attentionSignature: s.attentionSignature,
     created: s.created, fingerprint: s.fingerprint, sessionId: s.sessionId,
     cwdPath: s.cwdPath, terminalSupported: s.terminalSupported, terminalReported: s.terminalReported,
@@ -119,8 +120,19 @@ export interface MenuOptions {
 const NO_REASON = trNoop("This native adapter does not support this action in the current session state.");
 const WORKING = ["working", "tool", "compacting"];
 
-/** NativeSessionCapabilities::action: details win, then reported actions, then the agent. */
-export function allowedOp(s: Pick<ActionRow, "allowed" | "cmd"> & Partial<Pick<ActionRow, "processState">>, op: string, details?: Details): boolean {
+type LifecycleRow = Pick<ActionRow, "cmd"> & Partial<Pick<ActionRow,
+  "computer" | "tracked" | "nativeReadiness" | "sessionId" | "runId" | "conversationId">>;
+
+export function lifecycleReady(s: LifecycleRow, op: "stop" | "pause" | "terminate"): boolean {
+  const proof = s.nativeReadiness;
+  return s.computer === "" && s.tracked === true && s.cmd === "codex" && proof?.version === 1
+    && proof[op] === true && proof.session_id === s.sessionId
+    && proof.run_id === s.runId && proof.conversation_id === s.conversationId;
+}
+
+/** Exact native lifecycle capabilities supplement the reported actions for the verified operation. */
+export function allowedOp(s: LifecycleRow & Pick<ActionRow, "allowed"> & Partial<Pick<ActionRow, "processState">>, op: string, details?: Details): boolean {
+  if ((op === "pause" || op === "terminate") && lifecycleReady(s, op)) return true;
   if (op === "terminate" && s.processState === "unverified") return false;
   if (details?.allowed_actions) return details.allowed_actions.includes(op);
   if (s.allowed !== undefined) return s.allowed.split(" ").includes(op);
@@ -154,8 +166,9 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   // native Pause capability may offer its existing exact-process stop path.
   const firstTurnPause = !s.conversationId && !details?.conversation_id
     && (details?.allowed_actions != null ? details.allowed_actions.includes("pause") : s.allowed?.split(" ").includes("pause") === true);
-  const canPause = running && processMayBeLive(s.processState) && (firstTurnPause
-    || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)));
+  const canPause = running && (lifecycleReady(s, "pause")
+    || processMayBeLive(s.processState) && (firstTurnPause
+      || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send))));
   // Restore (Qt canChange 5302-5304). The client's right-click selects the row
   // first, so its context menu is Qt's selected-row case, which reuses the
   // header's m_changeAction (5360). It also follows the computer's restore
@@ -181,7 +194,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
 
   // Stop follows the inspected turn (Qt's m_details); without details it stays off.
   const phase = details?.phase || s.phase || "";
-  const working = WORKING.includes(phase) && running && s.processState !== "unverified";
+  const working = WORKING.includes(phase) && running && (s.processState !== "unverified" || lifecycleReady(s, "stop"));
   const interruptible = !!details?.interrupt_supported;
   const stop: MenuState["stop"] = {
     visible: working,
