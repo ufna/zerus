@@ -56,6 +56,7 @@ pub struct ActivityState {
     /// The `rev` of the latest `state` frame.
     pub rev: u64,
     staged: Option<Vec<Value>>,
+    awaiting_fresh_state: bool,
     revisions: HashMap<String, u64>,
 }
 
@@ -64,6 +65,22 @@ impl ActivityState {
     pub fn replace_state(&mut self, value: Value, rev: u64) {
         self.state = Some(value);
         self.rev = rev;
+    }
+
+    /// Reconnect is not evidence that the retained summary is current.
+    /// Announce readiness immediately before the first new state or inspect.
+    fn admit_fresh_state(&mut self, computer: &ComputerId, key: &str, changes: &mut Vec<Change>) {
+        if std::mem::take(&mut self.awaiting_fresh_state) {
+            changes.push(activity_change(
+                computer,
+                key,
+                ActivityUpdate::Connection {
+                    ready: true,
+                    pending: false,
+                    code: "watch_ready".into(),
+                },
+            ));
+        }
     }
 
     /// Merges an activity `event` frame (a provider message, `AgentMessage` or
@@ -332,7 +349,9 @@ impl CatalogState {
             }
             Body::Event(event) if event.topic == topic::ACTIVITY => {
                 if let Some(activity) = self.activity.get_mut(&event.key) {
-                    if activity.merge_event(&event.id, event.rev, event.event.clone()) {
+                    if !activity.awaiting_fresh_state
+                        && activity.merge_event(&event.id, event.rev, event.event.clone())
+                    {
                         let value = activity.state.clone().unwrap_or(Value::Null);
                         let rev = activity.rev;
                         changes.push(activity_change(
@@ -345,6 +364,7 @@ impl CatalogState {
             }
             Body::State(state) if state.topic == topic::ACTIVITY => {
                 if let Some(activity) = self.activity.get_mut(&state.key) {
+                    activity.admit_fresh_state(computer, &state.key, &mut changes);
                     activity.replace_state(state.value.clone(), state.rev);
                     changes.push(activity_change(
                         computer,
@@ -594,7 +614,10 @@ impl CatalogState {
             }
             value
         };
-        if activity.state.as_ref().map(steady) != Some(steady(&value)) {
+        if activity.awaiting_fresh_state
+            || activity.state.as_ref().map(steady) != Some(steady(&value))
+        {
+            activity.admit_fresh_state(computer, key, &mut changes);
             let rev = activity.rev + 1;
             activity.replace_state(value.clone(), rev);
             changes.push(activity_change(
@@ -721,6 +744,7 @@ impl CatalogState {
                 attempt: self.failures,
             },
         }];
+        changes.extend(self.activity_transport_lost(computer));
         let keys: Vec<String> = self.tasks.keys().cloned().collect();
         for key in keys {
             changes.extend(self.tasks.unavailable(
@@ -731,6 +755,26 @@ impl CatalogState {
             ));
         }
         changes
+    }
+
+    /// Retire the followed state even on a watch replacement that skips the
+    /// restart delay and failure accounting. The first fresh summary reopens it.
+    pub(crate) fn activity_transport_lost(&mut self, computer: &ComputerId) -> Vec<Change> {
+        self.activity
+            .iter_mut()
+            .map(|(key, activity)| {
+                activity.awaiting_fresh_state = true;
+                activity_change(
+                    computer,
+                    key,
+                    ActivityUpdate::Connection {
+                        ready: false,
+                        pending: true,
+                        code: "watch_reconnecting".into(),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Whether this attempt has ended.
@@ -2174,9 +2218,34 @@ mod tests {
         state.follow("run:run-review-1");
         apply_all(&mut state, &local, &frames[..9]);
         assert_eq!(state.cursor("run:run-review-1"), Some(41));
-        state.end(&local, Instant::now());
+        let changes = state.end(&local, Instant::now());
+        assert!(matches!(
+            &changes[1],
+            Change::Activity { key, update: ActivityUpdate::Connection { ready: false, pending: true, .. }, .. }
+                if key == "run:run-review-1"
+        ));
         state.apply(&local, &frames[0]);
         assert_eq!(state.cursor("run:run-review-1"), Some(41));
+        let event = frame(
+            json!({"v":1,"seq":95,"t":"event","topic":"activity","key":"run:run-review-1",
+            "id":"late","rev":1,"event":message("AgentMessage","late","Unsettled snapshot",0.0)}),
+        );
+        assert!(state.apply(&local, &event).is_empty());
+        let snapshot = frame(
+            json!({"v":1,"seq":96,"t":"state","topic":"activity","key":"run:run-review-1",
+            "value":{"previous_message_pending":false},"rev":1}),
+        );
+        assert!(matches!(
+            &followed(&mut state, &[snapshot])[..],
+            [
+                ActivityUpdate::Connection {
+                    ready: true,
+                    pending: false,
+                    ..
+                },
+                ActivityUpdate::State { rev: 1, .. }
+            ]
+        ));
         state.unfollow("run:run-review-1");
         assert_eq!(state.cursor("run:run-review-1"), None);
     }

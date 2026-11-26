@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
@@ -12,7 +13,7 @@ const transport = vi.hoisted(() => ({
 vi.mock("../../i18n", async (original) => {
   const i18n = await original<typeof import("../../i18n")>();
   const ru = (await import("../../i18n.ru.json")).default;
-  return { ...i18n, tr: (source: string, ...args: (string | number)[]) =>
+  return { ...i18n, uiLanguage: () => transport.language, tr: (source: string, ...args: (string | number)[]) =>
     transport.language === "ru" ? i18n.translateWithCatalog(ru, "ru", source, ...args) : i18n.tr(source, ...args) };
 });
 vi.mock("@tauri-apps/api/core", async (original) => {
@@ -150,6 +151,16 @@ const queueDraftLabels = {
     origin: "Агент показывает отправителя: kimi/example/helper на fixture" },
 };
 
+type SubmissionWire = {
+  name: string;
+  run_id: string;
+  conversation_id: string;
+  input_queue: Pick<NonNullable<ComposerView["queue"]>, "id" | "text" | "hint" | "can_send_now">;
+  pending_zerus_submission: { request_id: string; run_id: string; conversation_id: string; submitted_at: number; sender: string };
+};
+const wirePath = process.env.HGS_TEST_SUBMISSION_WIRE;
+const nativeWire = wirePath ? JSON.parse(readFileSync(wirePath, "utf8")) as SubmissionWire : undefined;
+
 it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and refused draft independent in %s", async (lang) => {
   transport.language = lang;
   // Happy DOM has no layout. Give the real Activity virtualizer a viewport.
@@ -157,12 +168,13 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
   onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
   const labels = queueDraftLabels[lang];
-  const selectedRow = { ...fixtureRow("Synthetic manager"), agent: "kimi", name: "kimi/example/manager",
-    status: "working", caption: "Busy" };
+  const row = fixtureRow("Synthetic manager");
+  const selectedRow = { ...row, agent: "kimi", name: nativeWire?.name ?? "kimi/example/manager",
+    run_id: nativeWire?.run_id ?? row.run_id, status: "working", caption: "Busy" };
   const key = draftKey({ computer: "", key: `run:${selectedRow.run_id}`, name: selectedRow.name,
     session_id: selectedRow.session_id, archive_id: null });
   // The selected catalog lies one conversation behind the Activity target.
-  const actualConversation = "fixture-current-conversation";
+  const actualConversation = nativeWire?.conversation_id ?? "fixture-current-conversation";
   const queueId = "synthetic-native-queue", failedId = uuid(99901);
   const helperBody = "Synthetic helper report.";
   const draft = "Please summarize the synthetic findings.";
@@ -234,6 +246,15 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   expect(host.querySelector(".act-queue-source")?.textContent).toBe(labels.origin);
   expect(host.querySelector(".act-queue-text")?.textContent).toContain(helperBody);
   expect(host.querySelector(".act-queue-text")?.textContent).not.toContain("zerus://");
+  const unavailable = lang === "ru" ? "Время постановки в очередь неизвестно" : "Queue time unavailable";
+  expect(host.querySelector(".act-queue-time")?.textContent).toBe(unavailable);
+  const legacyQueue = { ...queue,
+    text: '❯ <zerus-message from="kimi/example/helper" host="fixture" reference="zerus://session?…\n❯ Another item',
+    entry_times: [{ row: 0, queued_at: 1792271374 }] };
+  publish({ ...refusal, previous_message_pending: true, queue: legacyQueue });
+  expect([...host.querySelectorAll(".act-queue-time")].map(node => node.textContent)).toEqual([unavailable, unavailable]);
+  expect(host.querySelector(".act-queue-source")?.textContent).toBe(labels.origin);
+  publish({ ...refusal, previous_message_pending: true });
   expect(host.textContent).toContain(labels.notSent);
   expect(draftState()).toBe(labels.wait);
   expect(editor().value).toBe(draft);
@@ -323,6 +344,152 @@ it.each(["en", "ru"] as const)("keeps a synthetic manager's native queue and ref
   setDetailTab("activity");
   await flush();
   expect(editor().value).toBe(draft);
+
+  const submitted = nativeWire?.pending_zerus_submission ?? {
+    request_id: uuid(99903), run_id: selectedRow.run_id, conversation_id: actualConversation,
+    submitted_at: +new Date(2026, 10, 26, 9, 7) / 1000, sender: "codex/example/helper",
+  };
+  const clipped = nativeWire?.input_queue ?? { ...queue, text:
+    '❯ <zerus-message from="codex/example/helper" host="fixture" reference="zerus://session?…' };
+  const showState = (rev: number, submission?: typeof submitted, pending = true) => activity.applyActivity([{
+    computer: "", key: activityKey.slice(1), kind: "state",
+    payload: { rev, value: { run_id: selectedRow.run_id, conversation_id: actualConversation,
+      activity: "busy", phase: "working", previous_message_pending: pending, pending_zerus_submission: submission } },
+  }]);
+  const submissionTime = () => host.querySelector<HTMLTimeElement>(".act-zerus-submission time");
+  const surface = () => ({
+    submission: host.querySelector(".act-zerus-submission")?.textContent ?? null,
+    submitted_at: submissionTime()?.dateTime ?? null,
+    queue: host.querySelector(".act-queue")?.textContent ?? null,
+    native_timestamp_count: host.querySelectorAll(".act-queue time").length,
+  });
+  publish({ ...refusal, previous_message_pending: true, queue: {
+    ...queue, ...clipped, enabled: clipped.can_send_now, label: "Send now",
+  } });
+  showState(3);
+  expect(submissionTime()).toBeNull(); // older host with the same queue
+  expect(host.querySelector(".act-queue-text")?.textContent).not.toContain("zerus://");
+  const before = surface();
+  showState(4, submitted);
+  expect(submissionTime()).toBeNull(); // Activity and catalog disagree for this run
+  put({ ...selectedRow, conversation_id: actualConversation });
+  await flush();
+  publish({ ...refusal, previous_message_pending: true, queue: {
+    ...queue, ...clipped, enabled: clipped.can_send_now, label: "Send now",
+  } });
+  expect(surface().queue).toBe(before.queue);
+  const iso = new Date(submitted.submitted_at * 1000).toISOString();
+  expect(submissionTime()?.dateTime).toBe(iso);
+  expect(submissionTime()?.textContent).toMatch(lang === "ru" ? /^Отправка Zerus записана / : /^Zerus submission recorded at /);
+  expect(host.querySelector(".act-zerus-submission")?.textContent).toContain(submitted.sender);
+  expect(host.querySelector(".act-queue time")).toBeNull();
+  if (nativeWire && process.env.HGS_TEST_SUBMISSION_RENDER) {
+    writeFileSync(`${process.env.HGS_TEST_SUBMISSION_RENDER}-${lang}.json`,
+      JSON.stringify({ before, after: surface() }, null, 2) + "\n");
+  }
+  publish({ ...refusal, previous_message_pending: true, queue: null });
+  expect(submissionTime()?.dateTime).toBe(iso);
+  put({ ...selectedRow, conversation_id: "new-catalog-conversation" });
+  expect(submissionTime()).toBeNull();
+  put({ ...selectedRow, conversation_id: actualConversation });
+  showState(5, { ...submitted, conversation_id: "switched-away" });
+  expect(submissionTime()).toBeNull();
+  showState(6, submitted, false);
+  expect(submissionTime()).toBeNull();
+  showState(7);
+  put(selectedRow);
+  publish({ ...refusal, previous_message_pending: true });
+});
+
+const submissionLifecycleCases = [
+  { lang: "en", phase: "ended" }, { lang: "ru", phase: "ended" },
+  { lang: "en", phase: "disconnected" }, { lang: "ru", phase: "disconnected" },
+  { lang: "en", phase: "reconnected" }, { lang: "ru", phase: "reconnected" },
+] as const;
+
+it.each(submissionLifecycleCases)("requires current Activity state for a pending submission after $phase in $lang", async ({ lang, phase }) => {
+  transport.language = lang;
+  const row = fixtureRow("Submission lifecycle");
+  const key = (await open(row)).slice(1);
+  const { run_id, conversation_id } = row;
+  const history = { seq: 1, type: "prompt", detail: "Synthetic retained transcript" };
+  const submitted = { request_id: uuid(90001), run_id, conversation_id, submitted_at: 1795684020, sender: "codex/example/helper" };
+  const summary = { run_id, conversation_id, previous_message_pending: true, pending_zerus_submission: submitted };
+  const state = (rev: number, value = summary, target = key) => ({ computer: "", key: target, kind: "state", payload: { rev, value } });
+  const connection = (ready: boolean) => ({ computer: "", key, kind: "connection", payload: { ready } });
+  const assertTranscript = () => {
+    expect(activity.events()).toEqual([history]);
+    expect(activity.transcriptSummary()?.run_id).toBe(run_id);
+  };
+  const card = () => host.querySelector<HTMLElement>(".act-zerus-submission");
+  const stamp = () => card()?.querySelector("time")?.dateTime;
+  const expected = new Date(submitted.submitted_at * 1000).toISOString();
+  const name = lang === "ru" ? "Отправка Zerus ожидает подтверждения" : "Pending Zerus submission";
+  receive({ ...emptyBatch(), activity: [
+    { computer: "", key, kind: "replace", payload: { events: [history] } },
+    state(2),
+  ] });
+  expect(card()?.getAttribute("aria-label")).toBe(name);
+  expect(stamp()).toBe(expected);
+
+  const ended = { computer: "", key, kind: "ended", payload: null };
+  const lifecycle = phase === "ended" ? [ended] : phase === "disconnected" ? [connection(false)] : [connection(false), connection(true)];
+  receive({ ...emptyBatch(), activity: lifecycle });
+  expect(card()).toBeNull();
+  assertTranscript();
+
+  if (phase !== "reconnected") {
+    // A delayed state with this key while the old follow is retired is still stale.
+    const stale = { ...summary, pending_zerus_submission: { ...submitted, sender: "codex/example/old-follow" } };
+    receive({ ...emptyBatch(), activity: [state(3, stale)] });
+    expect(card()).toBeNull();
+    expect(activity.transcriptSummary()).toMatchObject(summary);
+    assertTranscript();
+  }
+  if (phase === "ended") {
+    const next = fixtureRow("Replacement follow");
+    const nextKey = (await open(next)).slice(1);
+    receive({ ...emptyBatch(), activity: [state(4)] });
+    expect(card()).toBeNull();
+    const nextReceipt = { ...submitted, run_id: next.run_id, conversation_id: next.conversation_id, request_id: uuid(90002) };
+    receive({ ...emptyBatch(), activity: [state(2, { run_id: next.run_id, conversation_id: next.conversation_id,
+      previous_message_pending: true, pending_zerus_submission: nextReceipt }, nextKey)] });
+    expect(stamp()).toBe(expected);
+    return;
+  }
+  if (phase === "disconnected") {
+    receive({ ...emptyBatch(), activity: [connection(true)] });
+    expect(card()).toBeNull();
+    assertTranscript();
+  }
+  // The replacement connection can start its revision stream over.
+  receive({ ...emptyBatch(), activity: [state(1)] });
+  expect(card()?.getAttribute("aria-label")).toBe(name);
+  expect(stamp()).toBe(expected);
+  assertTranscript();
+});
+
+it.each(["en", "ru"] as const)("renders only exact OpenCode inbox times in %s", async (lang) => {
+  transport.language = lang;
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  onTestFinished(() => height.mockRestore());
+  const row = { ...fixtureRow("Private OpenCode inbox"), agent: "opencode", name: "opencode/example/inbox" };
+  const key = (await open(row)).slice(1);
+  const at = (minute: number) => +new Date(2026, 10, 3, 2, minute) / 1000;
+  const inbox = (id: string, minute: number, timed = true) => ({
+    message_id: id, source: "opencode_native", type: "UserPromptSubmit", delivery_state: "queued",
+    at: at(minute), queued_at: timed ? at(minute) : undefined, detail: "Identical private preview",
+  });
+  const update = (events: ReturnType<typeof inbox>[]) => activity.applyActivity([
+    { computer: "", key, kind: "replace", payload: { events } },
+  ]);
+  const shown = () => Array.from(host.querySelectorAll(".act-msg.k-user .act-time"), node => node.textContent);
+  const expected = (minute: number) => lang === "ru" ? `В очереди с 3 ноября 02:0${minute}` : `Queued at Nov 3 02:0${minute}`;
+  const unavailable = lang === "ru" ? "Время постановки в очередь неизвестно" : "Queue time unavailable";
+  update([inbox("msg_old", 3), inbox("msg_same", 7), inbox("msg_legacy", 8, false)]);
+  await vi.waitFor(() => expect(shown()).toEqual([expected(3), expected(7), unavailable]));
+  update([inbox("msg_same", 7), inbox("msg_legacy", 8, false), inbox("msg_new", 9)]);
+  await vi.waitFor(() => expect(shown()).toEqual([expected(7), unavailable, expected(9)]));
 });
 
 function expectEmpty() {

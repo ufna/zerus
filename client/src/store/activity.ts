@@ -78,6 +78,9 @@ export function createActivity(port: ActivityPort) {
   const [target, setTarget] = createSignal<FollowTarget | undefined>();
   const [events, setEvents] = createSignal<readonly ActivityEvent[]>([]);
   const [summary, setSummary] = createSignal<Record<string, unknown> | undefined>();
+  // Transient status needs a state from the current follow. The transcript
+  // can retain its last summary while a replacement follow starts.
+  const [currentSummary, setCurrentSummary] = createSignal<Record<string, unknown> | undefined>();
   const [transcriptSummary, setTranscriptSummary] = createSignal<Record<string, unknown> | undefined>();
   const [displayKey, setDisplayKey] = createSignal<string | undefined>();
   const [ended, setEnded] = createSignal(false);
@@ -98,6 +101,7 @@ export function createActivity(port: ActivityPort) {
   let olderAfter = 0;
   let olderTimer: ReturnType<typeof setTimeout> | undefined;
   let subscribed: FollowTarget | undefined;
+  let observing = false;
   /** Each follow and Retry is one read attempt: a retired one's late timers, failures and steps are ignored. */
   let attempt = 0;
   // One display-only bridge across a run change; routing always uses target().
@@ -171,8 +175,10 @@ export function createActivity(port: ActivityPort) {
     const after = continuing ? newestSeq(retained) : undefined;
     const mine = ++attempt;
     subscribed = undefined;
+    observing = false;
     if (prev) void port.unfollow(prev.computer, prev.key).catch(() => {});
     batch(() => {
+      setCurrentSummary(undefined);
       if (continuing) {
         if (retained !== byKey) { byKey = new Map(retained); setEvents(ordered(byKey)); }
         resuming = { conversation, previous: new Map(retained), incoming: new Map(), page: false, confirmed: false };
@@ -196,15 +202,25 @@ export function createActivity(port: ActivityPort) {
     const subscribe = () => {
       if (!next || target() !== next || attempt !== mine) return;
       subscribed = next;
+      observing = true;
       watchFirstPage(next, mine);
       void port.follow(request(next, after)).catch((reason) => {
-        if (target() === next && attempt === mine) batch(() => { setError(String(reason)); setLoaded(true); });
+        if (target() === next && attempt === mine) followFailed(reason);
       });
     };
     // A failed composer does not prevent read-only Activity. The await orders
     // subscription delivery only; it supplies no native readiness or authority.
     if (opened) void opened.then(subscribe, subscribe);
     else subscribe();
+  }
+
+  function followFailed(reason: unknown) {
+    observing = false;
+    batch(() => {
+      setCurrentSummary(undefined);
+      setError(String(reason));
+      setLoaded(true);
+    });
   }
 
   /** A follow whose first answer does not come in time ends in a visible state, not in reading forever. */
@@ -226,14 +242,17 @@ export function createActivity(port: ActivityPort) {
     const mine = ++attempt;
     const current = () => target() === t && attempt === mine;
     subscribed = undefined;
+    observing = false;
+    setCurrentSummary(undefined);
     clearTimeout(firstPage);
     setStalled(false);
     const again = () => {
       if (!current()) return;
       subscribed = t;
+      observing = true;
       watchFirstPage(t, mine);
       void port.follow(request(t)).catch((reason) => {
-        if (current()) batch(() => { setError(String(reason)); setLoaded(true); });
+        if (current()) followFailed(reason);
       });
     };
     void port.unfollow(t.computer, t.key).then(again, again);
@@ -315,11 +334,15 @@ export function createActivity(port: ActivityPort) {
             break;
           }
           case "state": {
+            // A retiring route may still have state in flight. Keep the
+            // transcript and wait for the replacement route to be ready.
+            if (subscribed === t && !observing) break;
             const p = (out.payload ?? {}) as { value?: Record<string, unknown>; rev?: number };
             const rev = typeof p.rev === "number" ? p.rev : stateRev + 1;
             if (rev < stateRev) break;
             stateRev = rev;
             setSummary(p.value);
+            if (observing && subscribed === t) setCurrentSummary(p.value);
             if (resuming && typeof p.value?.conversation_id === "string" && p.value.conversation_id) {
               if (p.value.conversation_id !== resuming.conversation) {
                 byKey = resuming.incoming;
@@ -337,6 +360,8 @@ export function createActivity(port: ActivityPort) {
             // Transport replacement can restart native state revisions. Keep
             // the last transcript visible until its native snapshot arrives.
             stateRev = -1;
+            observing = p.ready === true && p.pending !== true;
+            setCurrentSummary(undefined);
             if (!p.pending) setError(p.ready ? undefined : tr("Activity is unavailable from the desktop service. Retry to reconnect."));
             if (!p.ready && !p.pending) {
               setLoaded(true);
@@ -347,6 +372,8 @@ export function createActivity(port: ActivityPort) {
             break;
           }
           case "ended":
+            observing = false;
+            setCurrentSummary(undefined);
             setEnded(true);
             setLoaded(true);
             break;
@@ -366,7 +393,7 @@ export function createActivity(port: ActivityPort) {
     return { computer: t.computer, name: t.name, conversation_id: conversation, archive_id: null };
   };
 
-  return { target, displayKey, events, summary, transcriptSummary, ended, loaded, loadingOlder, olderDone, error, stalled, retry, follow, loadOlder, applyActivity, attachmentScope };
+  return { target, displayKey, events, summary, currentSummary, transcriptSummary, ended, loaded, loadingOlder, olderDone, error, stalled, retry, follow, loadOlder, applyActivity, attachmentScope };
 }
 
 export type ActivityStore = ReturnType<typeof createActivity>;

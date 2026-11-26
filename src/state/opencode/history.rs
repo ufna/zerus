@@ -3,7 +3,7 @@
 use super::super::*;
 #[cfg(test)]
 use super::service::Response;
-use super::{catalog::encode, native_id, session_path, Native};
+use super::{catalog::encode, native_id, queued_message_id, session_path, Native};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::time::{Duration, Instant};
@@ -521,23 +521,47 @@ pub(super) fn last_error(messages: &[Value]) -> Option<Value> {
 /// starts a run, the waiting message runs first and that message after it
 /// (OpenCode 2.0.32, native `test_11`, one waiting message). Zerus never
 /// posts them again.
-pub(super) fn queued_rows(inbox: &Value, stopped: bool) -> Vec<Value> {
-    inbox["data"]
+pub(super) fn queued_rows(inbox: &Value, conversation: &str, stopped: bool) -> Vec<Value> {
+    let items: Vec<_> = inbox["data"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|item| item["type"] == "user" && valid(item))
         .take(INBOX)
+        .collect();
+    let mut ids = std::collections::HashSet::new();
+    let mut duplicates = std::collections::HashSet::new();
+    for item in &items {
+        let id = string(item, "id");
+        if !ids.insert(id) {
+            duplicates.insert(id);
+        }
+    }
+    items.into_iter()
         .map(|item| {
+            let id = string(item, "id");
+            let created = seconds(item);
             let mut row = event(
                 "UserPromptSubmit",
                 string(&item["payload"], "text").to_owned(),
                 "",
-                seconds(item),
-                string(item, "id").to_owned(),
+                created,
+                id.to_owned(),
                 Value::Null,
             );
             row["delivery_state"] = json!(if stopped { "not_delivered" } else { "queued" });
+            // The inbox describes the current native entry by ID, including
+            // its own creation time. Older or incomplete rows still render.
+            if !conversation.is_empty()
+                && item["sessionID"] == conversation
+                && item["delivery"] == "queue"
+                && queued_message_id(id)
+                && !duplicates.contains(id)
+                && created > 0.0
+                && created <= 8.64e12
+            {
+                row["queued_at"] = json!(created);
+            }
             row
         })
         .collect()
@@ -594,14 +618,16 @@ mod tests {
     #[test]
     fn inbox_items_are_queued_and_after_stop_not_delivered() {
         let inbox = load("inbox_busy");
-        let queued = queued_rows(&inbox, false);
+        let entry = &inbox["data"][0];
+        let conversation = string(entry, "sessionID");
+        let queued = queued_rows(&inbox, conversation, false);
         assert_eq!(queued[0]["type"], "UserPromptSubmit");
         assert_eq!(queued[0]["delivery_state"], "queued");
         assert_eq!(queued[0]["detail"], "queued later");
-        assert_eq!(
-            queued_rows(&inbox, true)[0]["delivery_state"],
-            "not_delivered"
-        );
+        assert_eq!(queued[0]["queued_at"], seconds(entry));
+        let stopped = queued_rows(&inbox, conversation, true);
+        assert_eq!(stopped[0]["delivery_state"], "not_delivered");
+        assert_eq!(stopped[0]["queued_at"], queued[0]["queued_at"]);
     }
 
     #[test]
@@ -687,11 +713,30 @@ mod tests {
             {"id":"../x","type":"user","payload":{"text":"bad"},"time":{"created":1}},
             {"id":"msg_A","type":"other","payload":{"text":"skip"},"time":{"created":1}},
             {"id":"msg_B","type":"user","payload":{"text":"keep"},"time":{"created":3000}}]});
-        let rows = queued_rows(&inbox, false);
+        let rows = queued_rows(&inbox, "ses_fixture", false);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["message_id"], "msg_B");
         assert_eq!(rows[0]["at"], 3.0);
-        assert!(queued_rows(&json!({}), true).is_empty());
+        assert!(rows[0].get("queued_at").is_none());
+        assert!(queued_rows(&json!({}), "ses_fixture", true).is_empty());
+    }
+
+    #[test]
+    fn timestamps_follow_unique_exact_inbox_entries_even_when_text_matches() {
+        let entry = |id, time, session| json!({"id":id,"type":"user","delivery":"queue",
+            "sessionID":session,"payload":{"text":"same"},"time":{"created":time}});
+        let a = entry("msg_A", 3000, "ses_fixture");
+        let b = entry("msg_B", 4000, "ses_fixture");
+        let c = entry("msg_C", 5000, "ses_other");
+        let project = |data| queued_rows(&json!({"data":data}), "ses_fixture", false);
+        let first = project(vec![a.clone(), b.clone(), c]);
+        assert_eq!(first.iter().map(|row| row["queued_at"].as_f64()).collect::<Vec<_>>(),
+            [Some(3.0), Some(4.0), None]);
+        let reinserted = project(vec![b, entry("msg_D", 6000, "ses_fixture")]);
+        assert_eq!(reinserted[1]["message_id"], "msg_D");
+        assert_eq!(reinserted[1]["queued_at"], 6.0);
+        let duplicate = project(vec![a, entry("msg_A", 6000, "ses_fixture")]);
+        assert!(duplicate.iter().all(|row| row.get("queued_at").is_none()));
     }
 
     /// Serves scripted `/message` pages and records each requested path.

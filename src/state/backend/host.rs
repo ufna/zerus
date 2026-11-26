@@ -910,6 +910,33 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
             .map_err(Failure::message)?;
         Ok(captured.text.into_bytes())
     }
+    fn capture_until(
+        &self,
+        pane: &str,
+        mode: super::Capture,
+        until: Instant,
+        bytes: usize,
+    ) -> Result<Vec<u8>> {
+        let wait = until.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            return Err("Terminal capture deadline passed".into());
+        }
+        // The host bounds its wire frame before allocation. The screen itself
+        // must also fit the caller's smaller limit.
+        let (_, response) = self.connector.call_within(
+            Op::Capture {
+                target: protocol::Target::Pane(pane.into()),
+                styled: matches!(mode, super::Capture::Styled),
+            },
+            wait,
+        );
+        let captured: Captured = serde_json::from_value(response.map_err(Failure::message)?)
+            .map_err(|error| format!("invalid session host answer: {error}"))?;
+        if captured.text.len() > bytes {
+            return Err("Terminal snapshot is too large".into());
+        }
+        Ok(captured.text.into_bytes())
+    }
     fn send(&self, pane: &str, keys: &[Key]) -> Result<()> {
         self.act(Op::SendKeys {
             target: protocol::Target::Pane(pane.into()),

@@ -417,6 +417,8 @@ export interface ActivityEvent {
   message_id?: string;
   /** OpenCode's inbox: a waiting message is `queued`, and after Stop it stays `not_delivered` until it is sent or removed. */
   delivery_state?: string;
+  /** Creation time of an exact current OpenCode inbox entry. */
+  queued_at?: number;
   attachments?: EventAttachment[];
   voice?: Record<string, unknown>;
   /** Codex's question replies of a user event, parsed in Rust (R7's annotate_replies). */

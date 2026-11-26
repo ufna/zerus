@@ -199,6 +199,7 @@ mod tests {
             receipts: path.clone(),
             reason: "settings may have been typed".into(),
             waiting: true,
+            idle_refusal: false,
             dialog: None,
         };
         assert!(matches!(

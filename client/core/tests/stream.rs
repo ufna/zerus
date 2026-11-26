@@ -7,7 +7,7 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 use zerus_client_core::stream::{self, Probe};
 use zerus_client_core::{
-    ActivityUpdate, Change, ComputerId, ComputerStatus, SessionRef, StreamEvent, Timing,
+    ActivityUpdate, Change, Coalescer, ComputerId, ComputerStatus, SessionRef, StreamEvent, Timing,
 };
 use zerus_watch_protocol::{Control, Ping};
 
@@ -270,6 +270,86 @@ fn a_replaced_executable_restarts_at_once_and_only_once_a_minute() {
         }
     }
     assert!(known, "the row was never live");
+}
+
+#[test]
+fn fast_executable_replacement_retires_the_pending_activity_state() {
+    let name = "codex/example/review";
+    let run = "run-with-pending-input";
+    let key = format!("run:{run}");
+    let row = [(run, name)];
+    let summary = |rev, pending| {
+        json!({
+            "t":"state", "topic":"activity", "key":key, "rev":rev,
+            "value":{"run_id":run,"conversation_id":"saved-conversation","previous_message_pending":pending}
+        })
+    };
+    let replaced =
+        json!({"t":"error","code":"hgs_replaced","fatal":true,"message":"Executable replaced"});
+    let fake = FakeHgs::new(
+        "stream_replaced_activity",
+        json!({"":{"runs":[
+            [{"lines":[hello("fixture"), catalog(&row)]},{"await_file":"first-state"},
+             {"lines":[summary(7, true)]},{"await_file":"replace"},{"lines":[replaced]}],
+            [{"lines":[hello("fixture"), catalog(&row)]},{"await_file":"second-state"},
+             {"lines":[summary(1, false)]},{"serve":true}]
+        ]}}),
+    );
+    let (tx, rx) = channel();
+    let mut seen = Seen::new(rx);
+    let timing = Timing {
+        silence: common::WAIT,
+        ..quick()
+    };
+    let handle = stream::spawn(&fake.path(), &ComputerId::local(), timing, tx);
+    seen.until("the first watch", live);
+    assert_eq!(
+        handle
+            .follow(
+                SessionRef {
+                    name: name.into(),
+                    run_id: Some(run.into()),
+                    conversation_id: Some("saved-conversation".into()),
+                },
+                None,
+                100
+            )
+            .unwrap(),
+        key
+    );
+    fake.touch("first-state");
+    let initial = seen.until("the old watch's pending state", |event| {
+        matches!(change_of(event), Some(Change::Activity { key: route, update: ActivityUpdate::State { rev: 7, .. }, .. }) if route == &key)
+    });
+    fake.touch("replace");
+    seen.until_from(initial + 1, "the new watch before its first state", live);
+    fake.touch("second-state");
+    let fresh = seen.until_from(initial + 1, "the new watch's cleared state", |event| {
+        matches!(change_of(event), Some(Change::Activity { key: route, update: ActivityUpdate::State { rev: 1, .. }, .. }) if route == &key)
+    });
+    handle.stop();
+    let events = &seen.all[initial..=fresh];
+    assert!(!events.iter().any(|event| reconnecting(event, 1)));
+    let mut coalescer = Coalescer::new();
+    let mut activity = Vec::new();
+    for change in events.iter().filter_map(change_of) {
+        coalescer.push(change.clone());
+        activity.extend(coalescer.take().activity);
+    }
+    let order: Vec<_> = activity
+        .iter()
+        .filter(|out| out.key == key)
+        .map(|out| match out.kind.as_str() {
+            "connection" => out.payload["ready"].clone(),
+            "state" => out.payload["rev"].clone(),
+            other => panic!("unexpected Activity frame {other}"),
+        })
+        .collect();
+    assert_eq!(order, [json!(7), json!(false), json!(true), json!(1)]);
+    assert_eq!(
+        activity.last().unwrap().payload["value"]["previous_message_pending"],
+        false
+    );
 }
 
 #[test]

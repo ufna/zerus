@@ -31,6 +31,7 @@ import { markEntry } from "./mark-entries";
 import { followViewedReplies } from "./viewed-reply";
 import { Composer } from "./Composer";
 import { QueuePanel } from "./QueuePanel";
+import { PendingZerusSubmission } from "./PendingZerusSubmission";
 import { HeldMessage } from "./HeldMessage";
 import { onCommand } from "../../store/shortcuts";
 import { composer } from "../../store/composer";
@@ -350,7 +351,7 @@ export function SessionDetail() {
                         <Show when={antigravitySignIn()}>{(message) => <div class="cmp-col">
                           <div class="qcard" role="status"><p class="qcard-body">{message()}</p></div>
                         </div>}</Show>
-                        <HeldMessage /><QueuePanel /><QuestionSlot />
+                        <HeldMessage /><PendingZerusSubmission /><QueuePanel /><QuestionSlot />
                       </Show>
                       <div class="cmp-col"><Composer /></div>
                     </div>

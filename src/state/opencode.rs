@@ -656,7 +656,9 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
     // A message admitted between the inbox and history reads is shown once.
     let ids: std::collections::HashSet<&str> = messages.iter().map(|m| string(m, "id")).collect();
     let queued: Vec<Value> = observed
-        .map_or_else(Vec::new, |o| history::queued_rows(&o.inbox, !active))
+        .map_or_else(Vec::new, |o| {
+            history::queued_rows(&o.inbox, string(record, "conversation_id"), !active)
+        })
         .into_iter()
         .filter(|row| !ids.contains(string(row, "message_id")))
         .collect();
