@@ -180,6 +180,7 @@ pub(crate) use session_action::fixture_receipt as lifecycle_fixture_receipt;
 pub(crate) use session_action::observe_held as observe_held_lifecycle_receipt;
 pub(crate) use session_action::{
     observe_original as observe_lifecycle_receipt, status_machine as lifecycle_receipt_machine,
+    ReceiptEvidence as LifecycleReceiptEvidence, ReceiptRoot as LifecycleReceiptRoot,
 };
 mod shown_path;
 mod startup_choice;

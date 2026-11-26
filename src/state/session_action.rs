@@ -16,7 +16,7 @@ pub(super) use status::dispatch as status_dispatch;
 pub(crate) use status::machine as status_machine;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use status::observe_held;
-pub(crate) use status::observe_original;
+pub(crate) use status::{observe_original, ReceiptEvidence, ReceiptRoot};
 
 const INPUT_LIMIT: usize = 8192;
 

@@ -151,17 +151,101 @@ fn observe(root: &Path, request: &Request, name: &str) -> Result<Value> {
     if missing(root)? {
         return Ok(unavailable(request, name));
     }
-    let state = Directory::open(root).map_err(|_| INVALID)?;
-    if !state.private().map_err(|_| INVALID)? {
-        return Err(INVALID.into());
+    let state = ReceiptRoot::open(root)?;
+    state.read(request, name).map(|(result, _)| result)
+}
+
+/// The service holds this selected state directory across queries.
+pub(crate) struct ReceiptRoot(Directory);
+
+/// Keeps the opened evidence through the worker's response and cleanup.
+pub(crate) struct ReceiptEvidence {
+    _folder: Directory,
+    _file: fs::File,
+}
+
+impl ReceiptRoot {
+    pub(crate) fn open(path: &Path) -> Result<Self> {
+        let directory = Directory::open(path).map_err(|_| INVALID)?;
+        if !directory.private().map_err(|_| INVALID)? {
+            return Err(INVALID.into());
+        }
+        Ok(Self(directory))
     }
-    let directory = root.join("action_receipts");
-    let leaf = format!("{}.json", request.request_id);
-    let Some(bytes) = read_existing(&directory, &leaf, LIMIT)? else {
-        return Ok(unavailable(request, name));
-    };
-    state.verify().map_err(|_| INVALID)?;
-    project(&bytes, request, name)
+
+    pub(crate) fn observe(
+        &self,
+        name: &str,
+        original: &[u8],
+    ) -> Result<(Value, Option<ReceiptEvidence>)> {
+        let request = decode_request(original, name)?;
+        validate(&request, name)?;
+        self.read(&request, name)
+    }
+
+    fn read(&self, request: &Request, name: &str) -> Result<(Value, Option<ReceiptEvidence>)> {
+        let state = &self.0;
+        state.verify().map_err(|_| INVALID)?;
+        if !state.private().map_err(|_| INVALID)? {
+            return Err(INVALID.into());
+        }
+        let absent = || Ok((unavailable(request, name), None));
+        if missing(&state.path.join("action_receipts"))? {
+            state.verify().map_err(|_| INVALID)?;
+            return absent();
+        }
+        let folder = state.child("action_receipts").map_err(|_| INVALID)?;
+        if !folder.private().map_err(|_| INVALID)? {
+            return Err(INVALID.into());
+        }
+        let leaf = format!("{}.json", request.request_id);
+        let file = folder.read_private_optional(&leaf).map_err(|_| INVALID)?;
+        let Some(file) = file else {
+            folder.verify().map_err(|_| INVALID)?;
+            state.verify().map_err(|_| INVALID)?;
+            return absent();
+        };
+        let before = receipt_version(&file)?;
+        let bytes = bounded_bytes(&file, LIMIT)?;
+        let named = folder.read_private(&leaf).map_err(|_| INVALID)?;
+        if receipt_version(&file)? != before
+            || receipt_version(&named)? != before
+            || !folder.private().map_err(|_| INVALID)?
+        {
+            return Err(INVALID.into());
+        }
+        folder.verify().map_err(|_| INVALID)?;
+        state.verify().map_err(|_| INVALID)?;
+        let result = project(&bytes, request, name)?;
+        Ok((
+            result,
+            Some(ReceiptEvidence {
+                _folder: folder,
+                _file: file,
+            }),
+        ))
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct Version {
+    identity: crate::platform::FileIdentity,
+    size: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+fn receipt_version(file: &fs::File) -> Result<Version> {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    let identity = crate::platform::FileIdentity::of(file).map_err(|_| INVALID)?;
+    let metadata = file.metadata().map_err(|_| INVALID)?;
+    Ok(Version {
+        identity,
+        size: metadata.len(),
+        #[cfg(unix)]
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+    })
 }
 
 fn read_existing(directory: &Path, leaf: &str, limit: u64) -> Result<Option<Vec<u8>>> {
@@ -179,6 +263,10 @@ fn read_existing(directory: &Path, leaf: &str, limit: u64) -> Result<Option<Vec<
         return Ok(None);
     }
     let file = pinned.read_private(leaf).map_err(|_| INVALID)?;
+    bounded_bytes(&file, limit).map(Some)
+}
+
+fn bounded_bytes(file: &fs::File, limit: u64) -> Result<Vec<u8>> {
     if file.metadata().map_err(|_| INVALID)?.len() > limit {
         return Err(INVALID.into());
     }
@@ -189,7 +277,7 @@ fn read_existing(directory: &Path, leaf: &str, limit: u64) -> Result<Option<Vec<
     if bytes.len() as u64 > limit {
         return Err(INVALID.into());
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 /// Unlike local_node_id, this guard never initializes, locks or saves Swarm.

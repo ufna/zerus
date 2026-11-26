@@ -57,7 +57,12 @@ fn status(intent: &Intent, fingerprint: String) -> Result<Status> {
     })
 }
 
-fn load(db: &Connection, id: &str, configuration: &str) -> Result<Option<Status>> {
+struct Retained {
+    intent: Intent,
+    status: Status,
+}
+
+fn load(db: &Connection, id: &str, configuration: &str) -> Result<Option<Retained>> {
     let stored: Option<(String, String, String, String, String)> = db
         .query_row(
             "SELECT original,fingerprint,configuration,confirmation_id,original_sha256 FROM desktop_termination_outcomes WHERE request_id=?1",
@@ -104,7 +109,10 @@ fn load(db: &Connection, id: &str, configuration: &str) -> Result<Option<Status>
                         && original.fingerprint().as_deref() == Some(&fingerprint),
                     "original termination outcome changed"
                 );
-                status(&original, fingerprint)
+                Ok(Retained {
+                    status: status(&original, fingerprint)?,
+                    intent: original,
+                })
             },
         )
         .transpose()
@@ -140,10 +148,13 @@ fn retain(store: &mut Store, authority: Validated) -> Result<Status> {
         .context("invalid termination original")?;
     let retained = load(&tx, &intent.request_id, &intent.scope.configuration)?;
     if let Some(retained) = retained {
-        ensure!(retained.matches(&intent), "termination original conflict");
+        ensure!(
+            retained.status.matches(&intent),
+            "termination original conflict"
+        );
         authority.check_termination_outcome()?;
         tx.commit()?;
-        return Ok(retained);
+        return Ok(retained.status);
     }
     let original = serde_json::to_string(&intent)?;
     ensure!(
@@ -195,6 +206,9 @@ struct Query {
     original_request_id: String,
     configuration: String,
 }
+fn valid_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|parsed| !parsed.is_nil() && parsed.to_string() == id)
+}
 #[derive(Deserialize)]
 enum QueryOperation {
     #[serde(rename = "termination_outcome_status")]
@@ -204,10 +218,6 @@ pub(super) fn query(store: &Store, configuration: &str, value: &Value) -> Value 
     let result = (|| -> Result<(Query, Option<Status>)> {
         let request: Query = serde_json::from_value(value.clone())?;
         let _ = &request.op;
-        let valid_id = |id: &str| {
-            uuid::Uuid::parse_str(id)
-                .is_ok_and(|parsed| !parsed.is_nil() && parsed.to_string() == id)
-        };
         ensure!(
             request.configuration == configuration
                 && valid_id(&request.request_id)
@@ -224,7 +234,8 @@ pub(super) fn query(store: &Store, configuration: &str, value: &Value) -> Value 
             selected == configuration,
             "termination query service changed"
         );
-        let status = load(&store.db, &request.original_request_id, configuration)?;
+        let status = load(&store.db, &request.original_request_id, configuration)?
+            .map(|retained| retained.status);
         Ok((request, status))
     })();
     match result {
@@ -237,5 +248,6 @@ pub(super) fn query(store: &Store, configuration: &str, value: &Value) -> Value 
     }
 }
 
+pub(super) mod observation;
 #[cfg(test)]
 mod tests;

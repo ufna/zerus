@@ -12,8 +12,8 @@ current service epoch, original confirmation UUID, Remove choice, original
 Terminate UUID, exact original input JSON, and captured target, run,
 conversation, machine, checkout, common directory and launch-owner identity.
 The confirmation UUID and Terminate UUID are distinct. Missing launch ownership
-stays missing. A future reconciliation consumer must use the existing exact
-original-ID lifecycle receipt observer; retained input alone proves no result.
+stays missing. Reconciliation uses the existing exact original-ID lifecycle receipt observer.
+Retained input alone supplies no result.
 
 Admission uses the native frontend SERVICE lane and its original opaque proof.
 The actor begins an IMMEDIATE transaction before checking the proof, captured
@@ -40,8 +40,33 @@ It returns bounded identity/hash metadata, never the captured paths or raw input
 Missing is explicit, and corrupt or conflicting data refuses rather than becoming
 an empty result. Neither status nor a retained acknowledgement grants retry,
 execution, removal or resource release. The native submission described below
-consumes this typed retention boundary; background receipt reconciliation
-remains separate work, without an additional Terminate executor.
+consumes this typed retention boundary.
+
+## Read-only reconciliation
+
+Use `hgs desktop request --json` with `op: "termination_outcome_observe"`,
+a new query `request_id`, the selected `configuration`, the current
+`service_epoch`, and `original` set to the complete `status` object returned
+by `termination_outcome_status`. Pass the original metadata unchanged across
+service restarts, including its first epoch. Only the top-level serving epoch
+changes. The service verifies the indexed retained record and all of its hashes
+before admitting the read.
+
+One original desktop client worker at a time reads the receipt off the
+actor. It checks the serving owner and selected state directory for a local
+read. For a peer it invokes the existing capability- and machine-guarded
+`session-action-status` command with the retained stdin bytes. The receipt
+deadline is 1.6 seconds from worker admission request. An unavailable worker,
+invalid evidence, older peer or deadline yields a refusal. Shutdown and service
+replacement retain the serving owner until the read and any accounted helper
+resources close. The reader does not acquire background write authority.
+
+A successful observation is correlated to the query and original Terminate
+UUID. Its `status` is `unavailable` (receipt absent), `uncertain` (including a
+claim), `failed`, or `completed`. Only an exact completed receipt supplies
+`archive_id`. All replies are read-only; completion supplies data for a
+possible cleanup proposal with fresh independent checks. The lookup never
+resubmits Terminate, checks the checkout, or grants cleanup.
 
 ## Native submission
 
@@ -88,8 +113,8 @@ They preserve the original intent and offered/dispatch bookkeeping, and cannot
 construct a controller. This confirmation path keeps an unconfirmed native run
 fenced across session, alias or conversation changes. These records are not yet
 a durable client
-recovery journal: restart observation and service-owned receipt reconciliation
-remain separate follow-up work. No stored metadata can submit a recovered
+recovery journal. The separate service lookup reads the retained original after
+restart without reconstructing a controller. No stored metadata can submit a recovered
 Terminate or remove a checkout.
 
 ## Execution custody and platform boundary
