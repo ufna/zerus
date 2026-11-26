@@ -1,7 +1,7 @@
 import { batch, createSignal } from "solid-js";
 import { followTasks, readTaskPage, type TaskScope } from "../bridge";
 import type { TasksOut } from "../types";
-import { STAGES, TASK_LIMIT, object, taskItem, text, type Stage, type Task } from "../ui/screens/tasks-ui";
+import { STAGES, TASK_LIMIT, decodeTaskRows, object, text, type Stage, type Task } from "../ui/screens/tasks-ui";
 import { tr } from "../i18n";
 import { createSessionView } from "./sessionTasks";
 
@@ -73,13 +73,6 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
   };
   /** Ends every read in flight for `stage`: its page belongs to rows that were replaced. */
   const abandon = (stage: Stage) => { reads[stage]++; if (loading()[stage]) busy(stage, false); };
-  const unique = (values: unknown[], stage?: Stage) => {
-    const seen = new Set<string>();
-    return values.flatMap((value) => {
-      const t = taskItem(value); if (!t.uuid || seen.has(t.uuid) || (stage && t.stage !== stage)) return [];
-      seen.add(t.uuid); return [t];
-    });
-  };
   const busy = (stage: Stage, on: boolean) => setLoading({ ...loading(), [stage]: on });
 
   /** Reads `stage` from its start up to `want` rows, replacing its rows when this is still the latest read. */
@@ -93,14 +86,14 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
         // A newer read or project supersedes this one: stop reading.
         if (at !== generation || mine !== reads[stage]) return;
         const cursor = text(page.page.next) || null;
-        found = unique([...found, ...page.tasks], stage);
+        found = decodeTaskRows(page.tasks, stage, found);
         // A cursor that does not advance ends the read rather than looping on it.
         after = cursor && cursor !== after ? cursor : null;
       } while (after && found.length < want && ++pages < MAX_REREAD_PAGES);
       batch(() => {
         place(stage, found); next = { ...next, [stage]: after }; publish();
         refreshError(stage, ""); setPageError("");
-        if (stage === "review") setRetainedReview(new Set());
+        if (stage === "review") setRetainedReview(new Set<string>());
       });
     } catch (e) {
       if (at === generation && mine === reads[stage]) {
@@ -138,7 +131,7 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
       const mine = ++generation;
       setProject(nextProject); setTasks([]); setShown(none(0)); setLoaded(false); setError(""); setTruncated(false); setDamaged(0);
       setWindowed(false); setTotals(none(0)); setLoading(none(false)); setPageError(""); setRefreshErrors(none("")); setAdopted(new Map());
-      rows = none([]); next = none(null); extent = none(0); whole = null; setRetainedReview(new Set());
+      rows = none([]); next = none(null); extent = none(0); whole = null; setRetainedReview(new Set<string>());
       session.show(undefined, undefined, []);
       sent = sent.then(() => follow(nextProject ?? null)).catch((e) => { if (mine === generation) { setError(String(e)); setLoaded(true); } });
     },
@@ -151,7 +144,7 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
       try {
         const page = await readPage(owner, stage, WINDOW, after) as Page;
         if (at !== generation || mine !== reads[stage]) return;
-        place(stage, unique([...rows[stage], ...page.tasks], stage));
+        place(stage, decodeTaskRows(page.tasks, stage, rows[stage]));
         next = { ...next, [stage]: text(page.page.next) || null };
         extent = { ...extent, [stage]: rows[stage].length };
         publish(); setPageError("");
@@ -175,7 +168,7 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
             // A window: each stage's first rows; extended stages keep their
             // rows and are read again to the extent the user loaded. The
             // window's rows win over any row kept from earlier reads.
-            const first = unique(p.tasks), current = new Set(first.map((t) => t.uuid));
+            const first = decodeTaskRows(p.tasks), current = new Set(first.map((t) => t.uuid));
             whole = null; setWindowed(true);
             setTotals(Object.fromEntries(STAGES.map((s) => [s, Number(object(stages[s]).total) || 0])) as Record<Stage, number>);
             for (const s of STAGES) {
@@ -187,15 +180,15 @@ export function createTasks(follow: (project: string | null) => Promise<void>, r
                 void reread(s, extent[s]);
               } else {
                 abandon(s); refreshError(s, "");
-                if (s === "review") setRetainedReview(new Set());
+                if (s === "review") setRetainedReview(new Set<string>());
                 rows = { ...rows, [s]: head }; next = { ...next, [s]: cursor }; extent = { ...extent, [s]: 0 };
               }
             }
             setTruncated(false);
             setDamaged(Number(summary.damaged_total) || (Array.isArray(p.damaged) ? p.damaged.length : 0));
           } else {
-            setWindowed(false); STAGES.forEach(abandon); setRefreshErrors(none("")); setRetainedReview(new Set());
-            const all = unique(p.tasks.slice(0, TASK_LIMIT));
+            setWindowed(false); STAGES.forEach(abandon); setRefreshErrors(none("")); setRetainedReview(new Set<string>());
+            const all = decodeTaskRows(p.tasks.slice(0, TASK_LIMIT));
             whole = all;
             rows = Object.fromEntries(STAGES.map((s) => [s, all.filter((t) => t.stage === s)])) as Record<Stage, Task[]>;
             next = none(null); extent = none(0);

@@ -1,6 +1,6 @@
 import { batch, createSignal } from "solid-js";
 import type { TaskScope } from "../bridge";
-import { STAGES, object, taskItem, text, type Stage, type Task } from "../ui/screens/tasks-ui";
+import { STAGES, decodeTaskRows, object, text, type Stage, type Task } from "../ui/screens/tasks-ui";
 
 /** `hgs task list --session` of an older hgs (client/core `UPDATE_FOR_SESSION_PAGES`). */
 export const UPDATE_FOR_SESSION_PAGES = "Update hgs to read one session's tasks.";
@@ -37,13 +37,6 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
   let extent = none(0), fresh = none(false), reads = none(0), again = none(false);
 
   const busy = (stage: Stage, on: boolean) => setLoading({ ...loading(), [stage]: on });
-  const unique = (values: unknown, stage: Stage) => {
-    const seen = new Set<string>();
-    return (Array.isArray(values) ? values : []).flatMap((value) => {
-      const t = taskItem(value); if (!t.uuid || seen.has(t.uuid) || t.stage !== stage) return [];
-      seen.add(t.uuid); return [t];
-    });
-  };
   /** Totals of every stage from a reply read at change `seen`; never older than those shown. */
   const counted = (page: Page, seen: number) => {
     const c = object(page.counts);
@@ -74,7 +67,7 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
         const page = await (search ? read(owner, stage, limit, after, as, search) : read(owner, stage, limit, after, as)) as Page;
         if (at !== generation || mine !== reads[stage]) return;
         const cursor = text(object(page.page).next) || null;
-        found = unique([...found, ...(Array.isArray(page.tasks) ? page.tasks : [])], stage);
+        found = decodeTaskRows(Array.isArray(page.tasks) ? page.tasks : [], stage, found);
         counted(page, seen);
         // A cursor that does not advance ends the read rather than looping on it.
         after = cursor && cursor !== after ? cursor : null;
@@ -174,7 +167,7 @@ export function createSessionView(read: ScopedRead, window: number, pageLimit: n
       try {
         const page = await (query ? read(project, stage, window, after, scope, query) : read(project, stage, window, after, scope)) as Page;
         if (at !== generation || mine !== reads[stage]) return;
-        const rows = unique([...view().rows[stage], ...(Array.isArray(page.tasks) ? page.tasks : [])], stage);
+        const rows = decodeTaskRows(Array.isArray(page.tasks) ? page.tasks : [], stage, view().rows[stage]);
         extent = { ...extent, [stage]: rows.length };
         counted(page, seen);
         batch(() => { placed(stage, rows, text(object(page.page).next) || null); setError(""); });

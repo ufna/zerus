@@ -297,3 +297,99 @@ it("stream reconnect waits for retained window pages before showing their next-r
   expect(tail()?.textContent).toBe("Coordinator or reviewer next");
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(5);
 });
+
+it.each(["older first", "newer first"] as const)("bounds retained tail rereads and accepts only the latest Review window (%s)", async (order) => {
+  const { stream, search } = (await import("./fixtures/task-review-projected.json")).default;
+  const waiting: { after: string | null, limit: number, reply: (page: unknown) => void }[] = [];
+  let delay = false;
+  f.read.mockImplementation(async (_project, stage, limit, after) => {
+    expect(stage).toBe("review");
+    if (delay) return new Promise(reply => waiting.push({ after, limit, reply }));
+    expect(after).toBe("initial-tail");
+    return { ...search, tasks: search.tasks.slice(1) };
+  });
+  const windowed = { ...stream, payload: { ...stream.payload, tasks: stream.payload.tasks.slice(0, 1),
+    window: { window: { stages: { review: { total: 6, next: "initial-tail" } } } } } };
+  tasks.follow(f.project.id);
+  tasks.apply([windowed]);
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(TasksPanel, {}), host);
+  await tick();
+  host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
+  host.querySelector<HTMLButtonElement>(".tk-more")!.click(); await tick();
+  const label = (n: number) => host.querySelector(`[data-task="${search.tasks[n].uuid}"] .tk-review-owner`)?.textContent;
+  // The separate Show more test pins routing metadata on retained rows.
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(6);
+  delay = true;
+  tasks.apply([{ ...windowed, payload: { ...windowed.payload, digest: "older" } }]);
+  tasks.apply([{ ...windowed, kind: "ended", payload: null }]);
+  tasks.apply([{ ...windowed, payload: { ...windowed.payload, digest: "current" } }]);
+  await tick();
+  expect(waiting.map(({ after, limit }) => [after, limit])).toEqual([[null, 6], [null, 6]]);
+  expect(label(0)).toBe("Your decision");
+  expect(label(1)).toBeUndefined();
+  if (order === "older first") {
+    waiting[0].reply(search); await tick();
+    expect(label(1)).toBeUndefined();
+  }
+  waiting[1].reply({ ...search, tasks: search.tasks.slice(0, 2), page: { ...search.page, next: "current-tail" } });
+  await tick();
+  expect(waiting.map(({ after, limit }) => [after, limit])).toEqual([[null, 6], [null, 6], ["current-tail", 4]]);
+  expect(label(1)).toBeUndefined();
+  waiting[2].reply({ ...search, tasks: [search.tasks[4]] });
+  await tick();
+  expect(label(1)).toBe("Coordinator or reviewer next");
+  expect(label(4)).toBe("Coordinator to triage");
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(3);
+  if (order === "newer first") {
+    waiting[0].reply(search); await tick();
+    expect(host.querySelectorAll(".tk-card")).toHaveLength(3);
+    expect(label(1)).toBe("Coordinator or reviewer next");
+    expect(label(5)).toBeUndefined();
+  }
+});
+
+it.each(["project window", "scoped search"] as const)("Show more preserves the routing of existing rows in %s", async (mode) => {
+  const { stream, search } = (await import("./fixtures/task-review-projected.json")).default;
+  vi.useFakeTimers();
+  const first = search.tasks.slice(0, 4), tail = search.tasks.slice(4);
+  if (mode === "scoped search") {
+    // Request the normal 50-row head, so the store waits for Show more.
+    for (let n = 0; n < 46; n++) first.push({ ...search.tasks[2],
+      uuid: `10000000-0000-4000-8000-${String(n).padStart(12, "0")}` });
+  }
+  f.read.mockImplementation(async (_project, stage, _limit, after) => {
+    if (stage !== "review") return { ...search, tasks: [] };
+    const counts = { ...search.counts, review: first.length + tail.length };
+    if (after) return { ...search, counts, tasks: tail };
+    return { ...search, counts, tasks: first, page: { ...search.page, next: "show-more-tail" } };
+  });
+  const windowed = { ...stream, payload: { ...stream.payload, tasks: first,
+    window: { window: { stages: { review: { total: 6, next: "show-more-tail" } } } } } };
+  tasks.follow(f.project.id);
+  tasks.apply([mode === "project window" ? windowed : stream]);
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(TasksPanel, {}), host);
+  await tick();
+  host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
+  if (mode === "scoped search") {
+    const input = host.querySelector<HTMLInputElement>('.tk-search input')!;
+    input.value = "sample";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(200); await tick();
+  }
+  const labels = () => [...host.querySelectorAll(".tk-card")].map((card) => card.querySelector(".tk-review-owner")?.textContent);
+  const expectedHead = ["Your decision", "Coordinator or reviewer next", "Coordinator to triage", undefined];
+  expect(labels().slice(0, 4)).toEqual(expectedHead);
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(first.length);
+  host.querySelector<HTMLButtonElement>(".tk-more")!.click(); await tick();
+  if (mode === "scoped search") {
+    expect(host.querySelectorAll(".tk-card")).toHaveLength(2);
+    expect(labels()).toEqual(["Coordinator to triage", "Coordinator to triage"]);
+    host.querySelector<HTMLButtonElement>(".tasks-navigation button")!.click();
+    expect(host.querySelectorAll(".tk-card")).toHaveLength(50);
+  } else {
+    expect(host.querySelectorAll(".tk-card")).toHaveLength(6);
+  }
+  expect(labels().slice(0, 4)).toEqual(expectedHead);
+});

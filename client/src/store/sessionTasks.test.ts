@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTasks, WINDOW } from "./tasks";
-import { UPDATE_FOR_SESSION_PAGES } from "./sessionTasks";
+import { createSessionView, UPDATE_FOR_SESSION_PAGES } from "./sessionTasks";
 import type { TasksOut } from "../types";
 
 const row = (uuid: string, stage = "todo") => ({ uuid, id: `T-${uuid}`, stage, text: `Task ${uuid}` });
@@ -147,4 +147,53 @@ describe("one session's view of the task board", () => {
     store.session.show("p1", mine, ["review", "active"]); await tick();
     expect(read).toHaveBeenCalledTimes(6);
   });
+});
+
+it.each(["older first", "newer first"] as const)("keeps scoped routing through a multipage reread (%s)", async (order) => {
+  const { search } = (await import("../ui/screens/fixtures/task-review-projected.json")).default;
+  const [person, technical, legacy, team, conflict] = search.tasks;
+  const head = { ...search, tasks: [person, technical], page: { ...search.page, next: "initial-tail" } };
+  const tail = { ...search, tasks: [legacy, team] };
+  const waiting: ((reply: unknown) => void)[] = [];
+  const read = vi.fn().mockResolvedValueOnce(head).mockResolvedValueOnce(tail)
+    .mockImplementation(() => new Promise(resolve => { waiting.push(resolve); }));
+  const view = createSessionView(read, 2, 200, 64);
+  const fields = () => view.rows("review").map(task => [task.uuid, task.reviewAssignment?.owner, task.teamRouted]);
+  const expected = [
+    [person.uuid, "person", undefined],
+    [technical.uuid, "technical", undefined],
+    [team.uuid, undefined, true],
+    [conflict.uuid, "person", undefined],
+  ];
+
+  view.show("p1", mine, ["review"], "sample"); await tick();
+  await view.more("review");
+  expect(view.rows("review")).toHaveLength(4);
+
+  view.changed();
+  view.suspend();
+  view.unavailable();
+  view.show("p1", mine, ["review"], "sample");
+  expect(waiting).toHaveLength(2);
+  expect(read.mock.calls.slice(2).map(args => args.slice(2))).toEqual([
+    [4, null, mine, "sample"], [4, null, mine, "sample"],
+  ]);
+  expect(view.reviewStale()).toBe(true);
+  const outdated = { ...search, tasks: [legacy] };
+  if (order === "older first") {
+    waiting[0](outdated); await tick();
+    expect(view.reviewStale()).toBe(true);
+    expect(view.rows("review")).toHaveLength(4);
+  }
+  waiting[1]({ ...head, page: { ...head.page, next: "current-tail" } }); await tick();
+  expect(read).toHaveBeenLastCalledWith("p1", "review", 2, "current-tail", mine, "sample");
+  expect(view.reviewStale()).toBe(true);
+  waiting[2]({ ...search, tasks: [team, conflict] }); await tick();
+  expect(view.reviewStale()).toBe(false);
+  expect(fields()).toEqual(expected);
+  if (order === "newer first") {
+    waiting[0](outdated); await tick();
+    expect(view.reviewStale()).toBe(false);
+    expect(fields()).toEqual(expected);
+  }
 });

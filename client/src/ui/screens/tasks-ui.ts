@@ -48,6 +48,18 @@ export function taskItem(value: unknown, queue = 0): Task {
     author: reference(author.kind === "agent" ? author : undefined), targetKind: text(target.kind), worker: text(object(t.worker).name),
     attachments: Array.isArray(t.attachments) ? t.attachments.length : 0, ...(execution ? { execution } : {}), ...(executionUnavailable ? { executionUnavailable: true } : {}), ...(reviewAssignment ? { reviewAssignment } : {}), ...(teamRouted ? { teamRouted: true } : {}) };
 }
+/** Keep decoded rows in order and append only new UUIDs from the wire page. */
+export function decodeTaskRows(values: readonly unknown[], stage?: Stage, existing: readonly Task[] = []): Task[] {
+  const rows = [...existing];
+  const seen = new Set(existing.map((task) => task.uuid));
+  for (const value of values) {
+    const task = taskItem(value);
+    if (!task.uuid || seen.has(task.uuid) || (stage && task.stage !== stage)) continue;
+    seen.add(task.uuid);
+    rows.push(task);
+  }
+  return rows;
+}
 export function reviewNext(task: Task): string | undefined {
   if (task.stage !== "review" || task.teamRouted) return;
   if (task.cancelledAt || task.executionUnavailable || task.execution?.conflict
