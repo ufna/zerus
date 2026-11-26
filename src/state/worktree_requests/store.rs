@@ -4,15 +4,39 @@ use super::*;
 use crate::platform::FileIdentity;
 use crate::state::repositories::directory::Directory;
 use std::io::Read;
+#[cfg(target_os = "macos")]
+mod stable_identity;
 
 const ANCHOR: &str = "worktree-requests.identity.json";
+const STABLE_ANCHOR: &str = "worktree-requests.apfs-identity.json";
 const STORE_LOCK: &str = "worktree-requests.identity.lock";
 const LIMIT: usize = 32768;
+pub(super) const IDENTITY_UNCONFIRMED: &str =
+    "Worktree receipt store was replaced; its historical results are unknown";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    Original,
+    Fresh,
+}
+impl Lane {
+    fn names(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Original => ("worktree-requests", ANCHOR, STABLE_ANCHOR),
+            Self::Fresh => (
+                "worktree-requests-fresh",
+                "worktree-requests-fresh.identity.json",
+                "worktree-requests-fresh.apfs-identity.json",
+            ),
+        }
+    }
+}
 
 pub(super) struct Store {
     root: Arc<Directory>,
     directory: Directory,
-    anchor: Option<(File, FileIdentity)>,
+    anchors: Vec<Pin>,
+    lane: Lane,
 }
 fn same_named(directory: &Directory, name: &str, file: &File) -> Result<()> {
     let named = directory.read_private(name)?;
@@ -103,36 +127,179 @@ impl Pin {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn stable_anchor(
+    root: &Directory,
+    directory: &Directory,
+    legacy_file: &File,
+    legacy_bytes: &[u8],
+) -> Option<Value> {
+    let object = stable_identity::observe(directory.descriptor())?;
+    let state = stable_identity::observe(root.descriptor())?;
+    Some(
+        json!({"schema":1,"directory":object,"root":state,"legacy_anchor":stable_identity::observe(legacy_file)?,
+        "legacy_sha256":format!("{:x}",Sha256::digest(legacy_bytes))}),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn stable_anchor(
+    _root: &Directory,
+    _directory: &Directory,
+    _legacy_file: &File,
+    _legacy_bytes: &[u8],
+) -> Option<Value> {
+    None
+}
+
 impl Store {
+    fn has_fresh_anchor(root: &Directory) -> Result<bool> {
+        Ok(root.read_private_optional(Lane::Fresh.names().2)?.is_some())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn fresh_configured(path: &Path) -> Result<bool> {
+        Self::has_fresh_anchor(Self::root_at(path)?.as_ref())
+    }
+
+    pub(super) fn for_request(
+        path: &Path,
+        id: &str,
+        create: bool,
+        initialize: bool,
+    ) -> Result<Self> {
+        if create {
+            private_dir(path)?;
+        }
+        Self::acquire_for(Self::root_at(path)?, id, create, initialize)
+    }
+
+    pub(super) fn acquire_for(
+        root: Arc<Directory>,
+        id: &str,
+        create: bool,
+        initialize: bool,
+    ) -> Result<Self> {
+        if Self::has_fresh_anchor(&root)? {
+            let fresh = Self::acquire_lane(root, false, false, Lane::Fresh)?;
+            let name = format!("{id}.issued");
+            let file = fresh
+                .directory
+                .read_private_optional(&name)?
+                .ok_or(IDENTITY_UNCONFIRMED)?;
+            if bytes(&fresh.directory, &name, &file)? != b"fresh-worktree-request-v1" {
+                return Err(IDENTITY_UNCONFIRMED.into());
+            }
+            fresh.verify()?;
+            return Ok(fresh);
+        }
+        Self::acquire_root(root, create, initialize)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn activate_fresh(path: &Path) -> Result<()> {
+        let root = Self::root_at(path)?;
+        if Self::has_fresh_anchor(&root)? {
+            return Self::acquire_lane(root, false, false, Lane::Fresh).map(|_| ());
+        }
+        // Check what can be checked without inventing old custody. The old
+        // anchor remains in its original place, beyond all fresh writes.
+        Self::legacy_needs_recovery(&root)?;
+        Self::acquire_lane(root, true, true, Lane::Fresh).map(|_| ())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn issue(path: &Path) -> Result<String> {
+        let store = Self::acquire_lane(Self::root_at(path)?, false, false, Lane::Fresh)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        store
+            .directory
+            .write_new(&format!("{id}.issued"), b"fresh-worktree-request-v1")?;
+        store.verify()?;
+        Ok(id)
+    }
+
+    fn legacy_needs_recovery(root: &Directory) -> Result<()> {
+        if root.read_private_optional(STABLE_ANCHOR)?.is_some() {
+            return Err(
+                "An enrolled worktree receipt store requires its original directory".into(),
+            );
+        }
+        let file = root.read_private(ANCHOR)?;
+        let value: Value = serde_json::from_slice(&bytes(root, ANCHOR, &file)?)
+            .map_err(|_| "Unreadable worktree receipt store identity")?;
+        let (Some(device), Some(inode)) = (
+            value["directory_device"].as_u64(),
+            value["directory_inode"].as_u64(),
+        ) else {
+            return Err("Unreadable worktree receipt store identity".into());
+        };
+        if value != json!({"schema":1,"directory_device":device,"directory_inode":inode}) {
+            return Err("Unsupported worktree receipt store identity".into());
+        }
+        let directory = root.child(Lane::Original.names().0)?;
+        if !directory.private()? {
+            return Err("Worktree receipt store must be private".into());
+        }
+        let (live_device, live_inode) = directory.object()?;
+        if live_inode != inode {
+            return Err("A replaced worktree receipt store requires its original directory".into());
+        }
+        if live_device == device {
+            return Err("The original worktree receipt store is verified; use it normally".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn open(path: &Path, create: bool) -> Result<Self> {
         Self::acquire(path, create, true)
     }
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn observe(path: &Path) -> Result<Self> {
         Self::acquire(path, false, false)
     }
+    #[cfg(all(test, target_os = "linux"))]
     fn acquire(path: &Path, create: bool, initialize: bool) -> Result<Self> {
         if create {
             private_dir(path)?;
         }
+        Self::acquire_root(Self::root_at(path)?, create, initialize)
+    }
+    fn root_at(path: &Path) -> Result<Arc<Directory>> {
         // Configured root aliases are resolved once; every component BELOW
         // that trusted root remains no-follow. Both native routes use it.
         let path = crate::platform::canonical(path).map_err(|e| e.to_string())?;
-        let root = Arc::new(Directory::open(&path)?);
-        Self::acquire_root(root, create, initialize)
+        Ok(Arc::new(Directory::open(&path)?))
     }
     pub(super) fn acquire_root(
         root: Arc<Directory>,
         create: bool,
         initialize: bool,
     ) -> Result<Self> {
+        Self::acquire_lane(root, create, initialize, Lane::Original)
+    }
+
+    fn acquire_lane(
+        root: Arc<Directory>,
+        create: bool,
+        initialize: bool,
+        lane: Lane,
+    ) -> Result<Self> {
         root.verify()?;
         if !root.private()? {
             return Err("Worktree receipt root must be private".into());
         }
+        let (child, anchor, stable_anchor_name) = lane.names();
+        // Once the fresh-only recovery is active, this build never writes the
+        // old lane, even if a later boot reuses its device number.
+        if lane == Lane::Original && Self::has_fresh_anchor(&root)? {
+            return Err(IDENTITY_UNCONFIRMED.into());
+        }
         let directory = if create {
-            root.ensure_child("worktree-requests")?
+            root.ensure_child(child)?
         } else {
-            root.child("worktree-requests")?
+            root.child(child)?
         };
         if !directory.private()? {
             return Err("Worktree receipt store must be private".into());
@@ -154,34 +321,69 @@ impl Store {
         };
         let object = directory.object()?;
         let expected = json!({"schema":1,"directory_device":object.0,"directory_inode":object.1});
-        let anchor = match root.read_private_optional(ANCHOR)? {
-            Some(file) => {
-                let actual: Value = serde_json::from_slice(&bytes(&root, ANCHOR, &file)?)
-                    .map_err(|_| "Unreadable worktree receipt store identity")?;
-                if actual != expected {
-                    return Err(
-                        "Worktree receipt store was replaced; its historical results are unknown"
-                            .into(),
-                    );
-                }
-                Some(file)
+        if lane == Lane::Original && Self::has_fresh_anchor(&root)? {
+            return Err(IDENTITY_UNCONFIRMED.into());
+        }
+        let stable_file = root.read_private_optional(stable_anchor_name)?;
+        if lane == Lane::Fresh && stable_file.is_none() {
+            if !initialize {
+                return Err(IDENTITY_UNCONFIRMED.into());
             }
+            Self::legacy_needs_recovery(&root)?;
+        }
+        let legacy_file = match root.read_private_optional(anchor)? {
+            Some(file) => Some(file),
+            None if stable_file.is_some() => return Err(IDENTITY_UNCONFIRMED.into()),
             None if initialize => {
                 cut_write()?;
-                Some(root.write_new_file(ANCHOR, &expected.to_string().into_bytes())?)
+                Some(root.write_new_file(anchor, expected.to_string().as_bytes())?)
             }
             None => None,
+        };
+        let mut anchors = Vec::new();
+        if let Some(file) = legacy_file {
+            let original = Pin::new(anchor.into(), file)?;
+            let original_bytes = bytes(&root, anchor, &original.file)?;
+            let actual: Value = serde_json::from_slice(&original_bytes)
+                .map_err(|_| "Unreadable worktree receipt store identity")?;
+            if let Some(stable_file) = stable_file {
+                let stable = Pin::new(stable_anchor_name.into(), stable_file)?;
+                let saved: Value =
+                    serde_json::from_slice(&bytes(&root, stable_anchor_name, &stable.file)?)
+                        .map_err(|_| IDENTITY_UNCONFIRMED)?;
+                if stable_anchor(&root, &directory, &original.file, &original_bytes).as_ref()
+                    != Some(&saved)
+                {
+                    return Err(IDENTITY_UNCONFIRMED.into());
+                }
+                anchors.push(stable);
+            } else {
+                if actual != expected {
+                    return Err(IDENTITY_UNCONFIRMED.into());
+                }
+                if initialize {
+                    if let Some(identity) =
+                        stable_anchor(&root, &directory, &original.file, &original_bytes)
+                    {
+                        original.verify(&root)?;
+                        directory.verify()?;
+                        cut_write()?;
+                        let stable = root
+                            .write_new_file(stable_anchor_name, identity.to_string().as_bytes())?;
+                        anchors.push(Pin::new(stable_anchor_name.into(), stable)?);
+                    }
+                }
+            }
+            anchors.push(original);
         }
-        .map(|file| {
-            FileIdentity::of(&file)
-                .map(|identity| (file, identity))
-                .map_err(|e| e.to_string())
-        })
-        .transpose()?;
+        if lane == Lane::Fresh && anchors.len() != 2 {
+            return Err(IDENTITY_UNCONFIRMED.into());
+        }
         let store = Self {
             root,
             directory,
-            anchor,
+            anchors,
+            lane,
         };
         store.verify()?;
         // Explicit unlock prevents an unrelated fork retaining this lock until
@@ -195,11 +397,11 @@ impl Store {
     pub(super) fn verify(&self) -> Result<()> {
         self.root.verify()?;
         self.directory.verify()?;
-        if let Some((file, original)) = &self.anchor {
-            same_named(&self.root, ANCHOR, file)?;
-            if FileIdentity::of(file).map_err(|e| e.to_string())? != *original {
-                return Err("Worktree receipt store identity changed".into());
-            }
+        if self.lane == Lane::Original && Self::has_fresh_anchor(&self.root)? {
+            return Err(IDENTITY_UNCONFIRMED.into());
+        }
+        for anchor in &self.anchors {
+            anchor.verify(&self.root)?;
         }
         Ok(())
     }

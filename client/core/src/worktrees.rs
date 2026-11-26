@@ -512,6 +512,24 @@ pub fn receipt_invocation(
     invocation(args, 15)
 }
 
+/// Issue a new worktree ID on the actual computer after explicit store recovery.
+pub(crate) fn issue_invocation(computer: &ComputerId, expected_machine: &str) -> Invocation {
+    let mut args = hgs_args(computer, &["worktrees", "issue-request", "--json"]);
+    guard(&mut args, expected_machine);
+    invocation(args, 15)
+}
+
+pub(crate) fn issued(exit: Exit) -> Result<Value, String> {
+    let result = object(exit)?;
+    if result.get("schema") == Some(&Value::from(1))
+        && result.get("status").and_then(Value::as_str) == Some("issued")
+    {
+        Ok(Value::Object(result))
+    } else {
+        Err("The computer did not issue a new worktree request.".into())
+    }
+}
+
 /// A receipt names the same request with `schema` 1 and a string `status`.
 pub fn receipt(exit: Exit, request_id: &str) -> Result<Value, String> {
     let data = object(exit)?;

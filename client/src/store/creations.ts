@@ -9,7 +9,7 @@ import {
   machineFilter, projectFilter, accountFilter, folderFilter, search, selectedKey, setPage, setRevealing, setSelectedKey, setSubagentOpen, stateFilter,
 } from "./ui";
 import {
-  CARD_LIMIT, NOTICE_LIMIT, RESOLVED, creationOfRow, creationRowId, footerText, newestFirst, noticeOf, placeCreations, shownCards, statusMenu,
+  CARD_LIMIT, NOTICE_LIMIT, RESOLVED, WORKTREE_STORE_REFUSED, creationOfRow, creationRowId, footerText, newestFirst, noticeOf, placeCreations, shownCards, statusMenu,
   type CardScope, type ListScope, type Placement,
 } from "../ui/sessions/creations-ui";
 import type { CreationAction, CreationCard, CreationEvent, GroupingOut, LaunchPlan } from "../types";
@@ -245,7 +245,12 @@ export function createCreations(deps: CreationsDeps) {
   async function act(id: string, action: CreationAction): Promise<void> {
     try { await deps.bridge.creationAction(id, action); } catch (failure) {
       const text = errorText(failure);
-      if (text === RESOLVED || !cards[id]) return;
+      const card = cards[id];
+      if (text === RESOLVED || !card) return;
+      if (text === WORKTREE_STORE_REFUSED && card.worktree_refusal_id && card.error === text) {
+        notice(card, true);
+        return;
+      }
       deps.notify("error", text, true);
     }
   }

@@ -823,6 +823,7 @@ export interface CreationCard {
   show_pending: boolean; launch_dispatched: boolean; stop_requested: boolean; worktree_receipts: boolean;
   /** Metadata-only stop: the original UUID and its unknown past remain retained. */
   worktree_fenced?: boolean;
+  worktree_refusal_id?: string;
   worktree_pending?: boolean;
   can_resume: boolean; can_edit: boolean;
   /** The exact bound session's full name, empty until bound or on an older host. */

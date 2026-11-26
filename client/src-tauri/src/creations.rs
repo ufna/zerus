@@ -139,6 +139,8 @@ pub struct CreationCard {
     worktree_receipts: bool,
     worktree_pending: bool,
     worktree_fenced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree_refusal_id: Option<String>,
     can_resume: bool,
     can_edit: bool,
     bound_session: String,
@@ -173,6 +175,7 @@ impl CreationCard {
             worktree_fenced: operation["worktree_future_fence"].as_str()
                 == operation["worktree_id"].as_str()
                 && !text(operation, "worktree_id").is_empty(),
+            worktree_refusal_id: operation["worktree_refusal_id"].as_str().map(str::to_owned),
             can_resume: creation::can_resume(operation),
             can_edit,
             bound_session: text(operation, "bound_session").into(),

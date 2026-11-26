@@ -5096,6 +5096,7 @@
   "Worktree / branch": "Рабочее дерево / ветка",
   "Worktree cleanup for %1 on %2.\nFolder: %3\n%4": "Проверка рабочей копии сессии %1 на %2.\nПапка: %3\n%4",
   "Worktree created at %1 on %2. Select that folder to start a session.": "Рабочее дерево создано в %1 на %2. Выберите эту папку, чтобы начать сессию.",
+  "Worktree creation did not start. Zerus could not verify its worktree records on this computer.": "Создание рабочего дерева не началось. Zerus не смог проверить записи о рабочих деревьях на этом компьютере.",
   "Worktree details": "Подробности рабочего дерева",
   "Worktree options": "Параметры рабочего дерева",
   "Worktree panel closed.": "Панель рабочих деревьев закрыта.",

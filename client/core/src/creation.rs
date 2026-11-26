@@ -369,7 +369,13 @@ pub fn valid_operation(id: &str, value: &Value) -> bool {
             return false;
         }
     }
-    for key in ["launch_id", "clone_id", "worktree_id", "expected_machine"] {
+    for key in [
+        "launch_id",
+        "clone_id",
+        "worktree_id",
+        "worktree_refusal_id",
+        "expected_machine",
+    ] {
         if has(value, key) && !uuid(text(value, key)) {
             return false;
         }
@@ -633,6 +639,10 @@ pub enum Call {
     Catalog {
         host: String,
         path: String,
+        expected_machine: String,
+    },
+    IssueWorktree {
+        host: String,
         expected_machine: String,
     },
     CreateWorktree {
@@ -934,6 +944,14 @@ pub fn run_call(hgs: &Path, call: &Call) -> Answer {
                 .and_then(worktrees::verified);
             Answer::of(result)
         }
+        Call::IssueWorktree {
+            host,
+            expected_machine,
+        } => {
+            let computer = ComputerId::from(host.as_str());
+            let invocation = worktrees::issue_invocation(&computer, expected_machine);
+            Answer::of(guarded(hgs, &invocation, 4096).and_then(worktrees::issued))
+        }
         Call::CreateWorktree {
             host,
             path,
@@ -987,6 +1005,20 @@ pub fn run_call(hgs: &Path, call: &Call) -> Answer {
 
 /// A creation's answer; a receipt that names this request without
 /// `created` keeps its data, which says whether its effects started.
+pub const WORKTREE_STORE_REFUSED: &str = "Worktree creation did not start. Zerus could not verify its worktree records on this computer.";
+
+/// A live invocation refused before admission. This neither is nor settles an
+/// original receipt, even when the request ID is the same.
+pub fn worktree_store_refusal(value: &Value, id: &str) -> bool {
+    canonical_uuid(id)
+        && value["schema"] == 1
+        && value["request_id"] == id
+        && value["status"] == "refused"
+        && value["refusal"] == "receipt_store_identity"
+        && value["past_outcome"] == "unknown"
+        && value["effects_started"] == false
+}
+
 pub fn created(
     exit: Exit,
     request_id: &str,
@@ -995,6 +1027,21 @@ pub fn created(
     receipt: bool,
     destination: &str,
 ) -> Answer {
+    let refused = match &exit {
+        Exit::Code {
+            code: 1, stdout, ..
+        } if receipt => serde_json::from_slice::<Value>(stdout)
+            .ok()
+            .filter(|value| worktree_store_refusal(value, request_id)),
+        _ => None,
+    };
+    if let Some(data) = refused {
+        return Answer {
+            ok: false,
+            data,
+            error: WORKTREE_STORE_REFUSED.into(),
+        };
+    }
     let kept = match &exit {
         Exit::Code {
             code: 0, stdout, ..
@@ -1064,6 +1111,7 @@ enum Kind {
     Identity,
     Directory,
     Catalog,
+    IssueWorktree,
     Create,
     VerifyReceipt,
     Receipt,
@@ -1727,10 +1775,15 @@ impl Creations {
     }
 
     fn worktree_failed(&mut self, id: &str, result: &Value, error: &str) {
-        if text(result, "status") == "failed"
-            && result.get("effects_started") == Some(&Value::Bool(false))
+        let mut value = self.get(id);
+        let store_refused = worktree_store_refusal(result, text(&value, "worktree_id"));
+        if store_refused
+            || (text(result, "status") == "failed"
+                && result.get("effects_started") == Some(&Value::Bool(false)))
         {
-            let mut value = self.get(id);
+            if store_refused {
+                value["worktree_refusal_id"] = value["worktree_id"].clone();
+            }
             let mut previous = value["worktree_previous"]
                 .as_array()
                 .cloned()
@@ -1747,7 +1800,11 @@ impl Creations {
         }
         self.failed(
             id,
-            error,
+            if store_refused {
+                WORKTREE_STORE_REFUSED
+            } else {
+                error
+            },
             !matches!(text(result, "status"), "failed" | "refused"),
         );
     }
@@ -1788,6 +1845,16 @@ impl Creations {
                     self.directory_answer(&id, kind == Kind::Identity, answer, placement)
                 }
                 Kind::Catalog => self.catalog_answer(&id, answer),
+                Kind::IssueWorktree => {
+                    let request = text(&answer.data, "request_id");
+                    if answer.ok && canonical_uuid(request) && answer.data["status"] == "issued" {
+                        self.new_worktree(&id, request);
+                    } else {
+                        self.failed(&id, if answer.error.is_empty() {
+                            "The computer did not issue a new worktree request. Creation did not start."
+                        } else { &answer.error }, false);
+                    }
+                }
                 Kind::Create => {
                     if answer.ok {
                         self.prepared(&id, &answer.data, false);
@@ -1962,6 +2029,16 @@ impl Creations {
             }
             return;
         }
+        if has(&value, "worktree_id") {
+            // A catalog reply cannot renew a previous request's authority.
+            // Reconnect and restored drafts only read its original result.
+            if flag(&value, "worktree_receipts") {
+                self.receipt(Kind::Receipt, id, "status");
+            } else {
+                self.failed(id, "The original worktree result is unconfirmed. Check the destination before starting another creation.", true);
+            }
+            return;
+        }
         let raw = text(&result, "selected_root");
         let root = paths::clean(raw, style_of(raw));
         if root.is_empty() {
@@ -1979,15 +2056,44 @@ impl Creations {
             );
         }
         value["destination"] = Value::from(destination);
-        if text(&value, "worktree_id").is_empty() {
-            value["worktree_id"] = Value::from(self.uuid());
-        }
         // The request's source folder. Preparation later moves `target` to the
         // checkout; a service lookup of this original still needs its exact
         // admitted plan.
         value["worktree_source"] = value["target"].clone();
         value["worktree_receipts"] = Value::Bool(flag(&result, "creation_receipts_v1"));
         value["worktree_common"] = result["common_dir"].clone();
+        self.put(id, value);
+        if flag(&result, "creation_fresh_receipt_lane") {
+            let value = self.get(id);
+            if !flag(&value, "worktree_receipts")
+                || !canonical_uuid(text(&value, "expected_machine"))
+            {
+                return self.failed(
+                    id,
+                    "The computer could not verify the new worktree receipt store.",
+                    false,
+                );
+            }
+            self.flight(
+                Kind::IssueWorktree,
+                id,
+                Call::IssueWorktree {
+                    host: text(&value, "host").into(),
+                    expected_machine: text(&value, "expected_machine").into(),
+                },
+            );
+        } else {
+            let request_id = self.uuid();
+            self.new_worktree(id, &request_id);
+        }
+    }
+
+    fn new_worktree(&mut self, id: &str, request_id: &str) {
+        let mut value = self.get(id);
+        if flag(&value, "stop_requested") {
+            return self.stopped(id);
+        }
+        value["worktree_id"] = Value::from(request_id);
         self.put(id, value);
         self.stage(id, "worktree", "");
         self.persist(id, After::CreateWorktree);

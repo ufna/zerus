@@ -10,6 +10,12 @@ pub(super) fn outcome(receipt: Value) -> Result<Value> {
     let id = receipt["request_id"]
         .as_str()
         .ok_or("Original worktree request identity is unavailable; do not retry creation.")?;
+    if zerus_client_core::creation::worktree_store_refusal(&receipt, id) {
+        return Err(format!(
+            "{}\nEarlier attempts with this ID stay unconfirmed. To open a separate receipt store for future requests on macOS, run hgs worktrees recover-receipts --start-fresh --json on that Mac.",
+            zerus_client_core::creation::WORKTREE_STORE_REFUSED
+        ));
+    }
     let mut message = if receipt["status"] == "failed" {
         String::new()
     } else {

@@ -4372,6 +4372,24 @@ erasing its retained result. Missing, replaced or unverifiable receipt storage
 still refuses a fence. A fence alone never proves that an earlier worker,
 checkout or native resource has settled.
 
+On APFS, Zerus binds the worktree receipt store to its volume UUID and its
+persistent filesystem object. The old device-and-inode anchor is preserved.
+Zerus enrolls an existing store only while that old anchor still matches.
+
+If an older receipt store can no longer be verified, a new creation can stop
+before it starts. Check any destination and branch from an earlier attempt
+separately. To open a separate store for future requests, run
+
+```sh
+hgs worktrees recover-receipts --start-fresh --json
+```
+
+from a terminal on that Mac. This does not adopt, move or rewrite the original
+receipt store. Earlier results stay unconfirmed. A new **Start session** gets
+a new request ID from the Mac. For a standalone CLI creation, obtain that ID
+with `hgs worktrees issue-request --json` before running `worktrees create`
+with it. Keep older IDs for their original result only.
+
 **Check result** observes the original clone/worktree request, reads the original
 service launch receipt, or refreshes session evidence. An unknown outcome never
 permits another creation command. After a

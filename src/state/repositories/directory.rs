@@ -130,6 +130,11 @@ impl Directory {
             .map(|id| (id.device, id.inode)).map_err(|e| e.to_string())
     }
 
+    #[cfg(target_os = "macos")]
+    pub(in crate::state) fn descriptor(&self) -> &File {
+        &self.file
+    }
+
     /// One auxiliary exclusion file in this original directory. Opening it
     /// never follows a link or waits on a FIFO; the caller must try the lock.
     pub(in crate::state) fn open_private_lock(&self, name: &str) -> Result<File> {

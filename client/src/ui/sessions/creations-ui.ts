@@ -27,6 +27,7 @@ export const OLDER = trNoop("Older creations…");
 export const RESOLVED = trNoop("This creation has already been resolved.");
 export const NO_PENDING = trNoop("No pending session creations");
 export const PROGRESS = trNoop("Session creation progress");
+export const WORKTREE_STORE_REFUSED = trNoop("Worktree creation did not start. Zerus could not verify its worktree records on this computer.");
 export const BUTTON = {
   resume: trNoop("Continue setup"), check: trNoop("Check result"), stop: trNoop("Stop creating"), stopAfter: trNoop("Stop after preparation"),
   recreate: trNoop("Recreate…"), edit: trNoop("Edit choices…"), hide: trNoop("Hide status"), back: trNoop("Return to filters"),
@@ -57,7 +58,8 @@ export const accessibleText = (c: CreationCard) => `${c.tag}, ${computerOf(c)}, 
 
 /** The row's detail line: the error, else "Preparing the session in the background" only before the first stage writes the error field (384). */
 export function rowDetail(c: Pick<CreationCard, "error" | "caption" | "state">): string {
-  const detail = c.error || (c.state === "saving" ? tr(PREPARING) : "");
+  const error = c.error === WORKTREE_STORE_REFUSED ? tr(WORKTREE_STORE_REFUSED) : c.error;
+  const detail = error || (c.state === "saving" ? tr(PREPARING) : "");
   if (detail === c.caption) return "";
   return detail.startsWith(`${c.caption}: `) ? detail.slice(c.caption.length + 2) : detail;
 }
@@ -148,6 +150,9 @@ export function footerText(count: number, afterSessions: boolean): string {
 /** The sticky notice for a failed, unknown or unsaved creation (1579-1585), and the memory key it is shown once for. */
 export function noticeOf(c: CreationCard): { key: string; text: string } | undefined {
   if (c.state !== "failed" && c.state !== "unknown" && c.state !== "storage_error") return undefined;
+  if (c.state === "failed" && c.worktree_refusal_id && c.error === WORKTREE_STORE_REFUSED) {
+    return { key: `worktree receipt refusal ${c.worktree_refusal_id}`, text: tr(WORKTREE_STORE_REFUSED) };
+  }
   return { key: `${c.state}\n${c.error}`, text: tr("Creation %1: %2\n%3", c.tag, c.caption, c.error) };
 }
 
