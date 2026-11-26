@@ -416,6 +416,68 @@ struct Context {
     rejected: Arc<AtomicBool>,
     trace: Arc<Trace>,
 }
+
+/// Use the existing selected, immutable original helper boundary for an
+/// explicit local Send. Generic policy RPCs never submit this request.
+#[cfg(target_os = "linux")]
+pub(crate) fn verified_send(
+    service: Option<Arc<Service>>,
+    source: &(String, u64, u64),
+    session: &str,
+    session_id: &str,
+    checkpoint: &zerus_client_core::operation_recovery::deferred_input::Checkpoint,
+    stdin: &[u8],
+    hold: Arc<dyn Send + Sync>,
+) -> zerus_client_core::Outcome {
+    use zerus_client_core::{desktop::{deferred_send::Scope, verified_send as route}, Outcome};
+    let refused = |stage: &str| {
+        eprintln!("zerus-client: verified Send refused before offer ({stage})");
+        Outcome::Failed { detail: "Session availability unverified".into() }
+    };
+    let uncertain = || Outcome::Uncertain { detail: "Could not confirm whether the message was sent.".into() };
+    let Some(service) = service.filter(|service| service.verified_send_source(source)) else {
+        return refused("catalog source");
+    };
+    let context = match Context::new(service, hold) {
+        Ok(context) => context,
+        Err(reason) => return refused(&reason),
+    };
+    let scope = Scope { configuration: context.scope.configuration.clone(), service_epoch: context.scope.service_epoch.clone() };
+    let Some(send) = super::deferred_send::intent(&scope, session, checkpoint, stdin) else { return refused("draft encoding"); };
+    let intent = route::Intent { session_id: session_id.into(), send };
+    let too_large = || Outcome::Failed { detail: "Message and attachments exceed the send limit.".into() };
+    if stdin.len() > route::ENVELOPE_BYTES { return too_large(); }
+    if let Err(reason) = intent.verify() { return refused(reason); }
+    let help = Invocation { args: vec!["--help".into()], stdin: None, timeout: Duration::from_secs(5), request_id: None };
+    if !matches!(context.read(&help), Exit::Code { code: 0, stdout, .. }
+        if std::str::from_utf8(&stdout).is_ok_and(|text| text.lines().any(|line| line.trim() == route::HELP_MARKER)))
+        || !context.service.verified_send_source(source)
+    {
+        return refused("helper capability or source changed");
+    }
+    let registration = context.service.shared.responder.as_ref().and_then(|responder| {
+        responder.prepare_ui_request(uuid::Uuid::new_v4().to_string(),
+            Request::VerifiedSend { intent: Box::new(intent) }).ok()
+    });
+    let Some(registration) = registration else { return refused("original registration"); };
+    let Ok(body) = serde_json::to_vec(registration.envelope()) else { return refused("envelope encoding"); };
+    if body.len() > route::ENVELOPE_BYTES {
+        return too_large();
+    }
+    let result = context.rpc_with_input_bound(
+        vec!["desktop".into(), "verified-send".into(), "--json".into()],
+        Some(body), Some(registration), route::ENVELOPE_BYTES);
+    let Some(reply) = result.ok().and_then(|bytes| serde_json::from_slice::<route::Reply>(&bytes).ok())
+        .filter(|reply| reply.request_id == checkpoint.request_id && reply.run_id == checkpoint.run_id
+            && reply.conversation_id == checkpoint.conversation_id) else { return uncertain(); };
+    match reply.outcome {
+        route::Outcome::Submitted => Outcome::Done { receipt: json!({"request_id":reply.request_id}), cleanup: None },
+        route::Outcome::Refused { reason } => Outcome::Failed {
+            detail: zerus_client_core::desktop::deferred_send::refusal::MESSAGE.replace("%1", &reason),
+        },
+        route::Outcome::Unknown => uncertain(),
+    }
+}
 /// The logical action lane is independent of physical helper/pipe custody.
 /// All retained Context/CallLifetime clones see the same one-way revocation.
 struct Hold(Mutex<Option<Arc<dyn Send + Sync>>>);
@@ -673,10 +735,17 @@ impl Context {
         stdin: Option<Vec<u8>>,
         registration: Option<Registration>,
     ) -> Result<Vec<u8>, String> {
-        if stdin
-            .as_ref()
-            .is_some_and(|s| s.len() > zerus_watch_protocol::CONTROL_LINE_BYTES)
-        {
+        self.rpc_with_input_bound(args, stdin, registration, zerus_watch_protocol::CONTROL_LINE_BYTES)
+    }
+
+    fn rpc_with_input_bound(
+        self: &Arc<Self>,
+        args: Vec<String>,
+        stdin: Option<Vec<u8>>,
+        registration: Option<Registration>,
+        input_bound: usize,
+    ) -> Result<Vec<u8>, String> {
+        if stdin.as_ref().is_some_and(|s| s.len() > input_bound) {
             return Err(self.trace.refuse(Reason::InvalidInput));
         }
         let resources = self.start_call()?;

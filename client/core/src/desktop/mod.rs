@@ -23,6 +23,7 @@ pub mod creation_worktree;
 /// The deferred send leaf's closed wire (zerus-5wmh.66.4.4, slice 3).
 pub mod deferred_answer;
 pub mod deferred_send;
+pub mod verified_send;
 pub mod drain;
 pub mod notification_control;
 pub mod notifications;

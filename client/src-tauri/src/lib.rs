@@ -1026,6 +1026,40 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 app.manage(task_executor::TaskExecutors::start(app.handle()));
                 let composers = app.state::<composer::Composers>();
                 app.state::<actions::Actions>().on_writes(composers.changed_hook());
+                #[cfg(target_os = "linux")]
+                if desktop_service::mode() {
+                    let (checking, sending) = (app.handle().clone(), app.handle().clone());
+                    composers.set_verified_send(composer::handed::VerifiedRoute {
+                        current: std::sync::Arc::new(move |scope| {
+                            checking.state::<commands::AppState>().desktop_service()
+                                .is_some_and(|service| service.verified_send_source(scope))
+                        }),
+                        send: std::sync::Arc::new(move |target, session, checkpoint, stdin| {
+                            let bound = zerus_client_core::Target {
+                                computer: String::new(),
+                                name: session.to_owned(),
+                                run_id: checkpoint.run_id.clone(),
+                                conversation_id: checkpoint.conversation_id.clone(),
+                            };
+                            // Claim the ordinary Send lane for the physical
+                            // lifetime of the original native child.
+                            let action = zerus_client_core::Action::Send {
+                                text: String::new(), attachments: Vec::new(),
+                                agent_id: None, expected_compaction_id: None,
+                            };
+                            let hold = match sending.state::<actions::Actions>().begin_named(
+                                actions::Lane::key(&bound, &action), &action,
+                                zerus_client_core::source!("Send message"),
+                            ) {
+                                Ok(hold) => std::sync::Arc::new(hold),
+                                Err(detail) => return zerus_client_core::Outcome::Failed { detail },
+                            };
+                            desktop_service::termination_outcome::verified_send(
+                                sending.state::<commands::AppState>().desktop_service(),
+                                &target.source, session, &target.session_id, checkpoint, stdin, hold)
+                        }),
+                    });
+                }
                 // Sends the desktop service takes (deferred_send) on Linux and
                 // macOS in desktop-service mode; every other Send stays direct.
                 #[cfg(any(target_os = "linux", target_os = "macos"))]

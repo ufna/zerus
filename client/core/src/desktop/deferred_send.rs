@@ -516,6 +516,16 @@ impl Intent {
     }
     /// The person's deferred send, admitted only by their native UI permit.
     pub fn verify(self) -> Result<Verified, &'static str> {
+        self.verify_send(true)
+    }
+
+    /// The exact ordinary Send original. Its closed stdio caller applies its
+    /// own bound before starting a helper. The service still uses verify().
+    pub(super) fn verify_original(self) -> Result<Verified, &'static str> {
+        self.verify_send(false)
+    }
+
+    fn verify_send(self, service_control: bool) -> Result<Verified, &'static str> {
         if !self.scope.valid()
             || !local_name(&self.session)
             || !uuid(&self.request_id)
@@ -527,11 +537,11 @@ impl Intent {
         if !terminal_agent(&self.session) {
             return Err(AGENT_REFUSED);
         }
-        // The complete service line must fit the existing control frame; a
-        // larger original stays on the direct path, decided before any offer.
-        if !super::ui_requests::fits_frontend_line(&super::ui_requests::Request::DeferredSend {
-            intent: Box::new(self.clone()),
-        }) {
+        if service_control
+            && !super::ui_requests::fits_frontend_line(&super::ui_requests::Request::DeferredSend {
+                intent: Box::new(self.clone()),
+            })
+        {
             return Err("deferred_send_original_too_large");
         }
         // Typed, strict decoding: unknown and duplicate keys are refused, as

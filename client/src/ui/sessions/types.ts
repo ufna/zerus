@@ -1,4 +1,4 @@
-import type { ParentLinkOut, Reply } from "../../types";
+import type { NativeReadiness, ParentLinkOut, Reply } from "../../types";
 // View models the session list and Activity render. A `Session` is the
 // catalog store's row: the Rust view row plus the presentation fields derived
 // from it once per upsert (store/catalog.ts `toSession`).
@@ -107,6 +107,7 @@ export interface Session {
   launchId?: string;
   /** The listing's durable session ID, when canonical: it keys the drafts. */
   sessionId?: string;
+  nativeReadiness?: NativeReadiness;
   /** The session that launched or adopted this one; display and attention routing only. */
   parent?: ParentLinkOut;
   /** Supervised by a live parent and holding no request only the person can answer. */

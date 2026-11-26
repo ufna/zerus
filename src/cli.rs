@@ -721,6 +721,12 @@ pub(crate) struct VerifiedCodexInput(());
 
 #[cfg(not(windows))]
 pub(crate) fn dispatch_process(args: Vec<String>) -> Result<i32> {
+    #[cfg(target_os = "linux")]
+    if args == ["desktop", "verified-send", "--json"] {
+        platform::prepare_environment();
+        local_sessions()?;
+        return crate::desktop::verified_send::dispatch().map_err(|err| Error::new(1, err.to_string()));
+    }
     if args.first().is_some_and(|arg| arg == "send-verified") {
         #[cfg(target_os = "linux")]
         {
@@ -1130,6 +1136,8 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             print!("{}", help_text());
             #[cfg(target_os = "linux")]
             println!("       hgs send-verified <codex session> [--observe] --json   use an exact local Linux launch proof");
+            #[cfg(target_os = "linux")]
+            println!("{}", zerus_client_core::desktop::verified_send::HELP_MARKER);
             println!("Encrypted workspace ABI: guarded-local-v1");
             println!("Desktop creation ABI: guarded-create-v1");
             println!("Account transfer ABI: revision-copy-v1");

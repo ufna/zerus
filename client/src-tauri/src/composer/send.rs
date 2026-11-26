@@ -62,7 +62,7 @@ use zerus_client_core::operation_recovery::deferred_input::{
     message_sha256, Checkpoint, Intent, Kind, Start,
 };
 use zerus_client_core::send::{
-    self as rules, block_reason, BlockFacts, CompactSend, DraftMark, Session, StartChoice,
+    self as rules, BlockFacts, CompactSend, DraftMark, Session, StartChoice,
     StartQuestion, StartSend, Step,
 };
 use zerus_client_core::session_usage;
@@ -259,6 +259,15 @@ pub(crate) struct Context {
     pub(crate) online: bool,
     pub(crate) details: Option<Arc<Value>>,
     pub(crate) facts: BlockFacts,
+    verified_send: Option<VerifiedTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedTarget {
+    pub(crate) session_id: String,
+    run_id: String,
+    conversation_id: String,
+    pub(crate) source: (String, u64, u64),
 }
 
 fn native_run<'a>(row: &'a ViewRow, details: Option<&'a Value>) -> &'a str {
@@ -274,6 +283,15 @@ fn native_run<'a>(row: &'a ViewRow, details: Option<&'a Value>) -> &'a str {
 }
 
 pub(super) fn previous_message_pending(row: &ViewRow, target: (&str, &str), details: &Value) -> Option<bool> {
+    previous_message_pending_with_readiness(row, target, details, false)
+}
+
+fn previous_message_pending_with_readiness(
+    row: &ViewRow,
+    target: (&str, &str),
+    details: &Value,
+    verified: bool,
+) -> Option<bool> {
     let (run, conversation) = target;
     if run.is_empty()
         || conversation.is_empty()
@@ -285,14 +303,29 @@ pub(super) fn previous_message_pending(row: &ViewRow, target: (&str, &str), deta
             && (text(details, "account_id") != row.account_id
                 || text(details, "account_home") != row.account_home))
         || text(details, "runtime_state") != "live"
-        || text(details, "process_state") != "running"
+        || (!verified && text(details, "process_state") != "running")
     {
         return None;
     }
-    details["previous_message_pending"].as_bool()
+    if verified && details["process_state"] != "running" {
+        details["verified_previous_message_pending"].as_bool()
+    } else {
+        details["previous_message_pending"].as_bool()
+    }
 }
 
 impl Context {
+    fn verified_details(&self, details: &Value) -> bool {
+        self.verified_send.as_ref().is_some_and(|target| {
+            text(details, "session_id") == target.session_id
+                && text(details, "name") == self.row.name
+                && text(details, "agent") == "codex"
+                && text(details, "run_id") == target.run_id
+                && text(details, "conversation_id") == target.conversation_id
+                && text(details, "runtime_state") == "live"
+        })
+    }
+
     /// Only the open child's own inspection, never its parent's state or another child's.
     pub(crate) fn child_details(&self) -> Option<&Value> {
         let child = self
@@ -307,10 +340,11 @@ impl Context {
     }
 
     pub(crate) fn reason(&self) -> Option<String> {
-        if self.row.process_state == zerus_client_core::view::PROCESS_UNVERIFIED {
+        let verified = self.details.as_deref().is_some_and(|details| self.verified_details(details));
+        if self.row.process_state == zerus_client_core::view::PROCESS_UNVERIFIED && !verified {
             return Some("Session availability unverified".into());
         }
-        if let Some(reason) = block_reason(&self.facts, self.details.as_deref()) {
+        if let Some(reason) = rules::block_reason_with_readiness(&self.facts, self.details.as_deref(), verified) {
             return Some(reason);
         }
         self.session.subagent.as_ref()?;
@@ -327,11 +361,12 @@ impl Context {
     /// The earlier-input guard on this exact main conversation. It says
     /// nothing about the delivery of the current draft.
     pub(crate) fn previous_message_pending(&self) -> Option<bool> {
-        if self.recorded() || self.session.subagent.is_some() {
+        let details = self.details.as_deref()?;
+        let verified = self.verified_details(details);
+        if self.facts.inspect_error || (!verified && self.recorded()) || self.session.subagent.is_some() {
             return None;
         }
-        let details = self.details.as_deref()?;
-        previous_message_pending(&self.row, self.action_identity(), details)
+        previous_message_pending_with_readiness(&self.row, self.action_identity(), details, verified)
     }
 
     fn earlier_input_hold<'a>(&self, hub: &'a Hub) -> Option<&'a EarlierInputHold> {
@@ -363,6 +398,26 @@ impl Context {
 }
 
 impl Composers {
+    fn verified_target(&self, session: &SessionRef, row: &ViewRow, online: bool) -> Option<VerifiedTarget> {
+        if !online || !session.computer.is_empty() || session.archived() || session.subagent.is_some()
+            || !row.tracked || row.state != "running" || row.agent != "codex"
+            || row.process_state != zerus_client_core::view::PROCESS_UNVERIFIED
+        {
+            return None;
+        }
+        let source = row.catalog_source.as_ref()?;
+        let proof = row.native_readiness.as_ref()?;
+        let id = row.session_id.as_deref()?;
+        let run = row.run_id.as_deref()?;
+        let conversation = row.conversation_id.as_deref()?;
+        (proof.send && proof.matches(id, run, conversation)
+            && (self.verified_route()?.current)(source))
+            .then(|| VerifiedTarget {
+                session_id: id.into(), run_id: run.into(), conversation_id: conversation.into(),
+                source: source.clone(),
+            })
+    }
+
     pub(crate) fn now(&self) -> f64 {
         (self.0.deps.clock)()
     }
@@ -414,6 +469,7 @@ impl Composers {
             cmd: cmd(&row),
             inspect_error: followed && hub.followed.inspect_error.is_some(),
         };
+        let verified_send = self.verified_target(&session, &row, online);
         Some(Context {
             session,
             key,
@@ -421,6 +477,7 @@ impl Composers {
             online,
             details,
             facts,
+            verified_send,
         })
     }
 
@@ -456,7 +513,7 @@ impl Composers {
     ) -> bool {
         let pair = (target.run_id.as_str(), target.conversation_id.as_str());
         let Some(ctx) = self.context(hub).filter(|ctx| {
-            ctx.live_row()
+            (ctx.live_row() || ctx.verified_details(details))
                 && ctx.session.computer == target.computer
                 && ctx.session.name == target.name
                 && ctx
@@ -465,7 +522,9 @@ impl Composers {
         }) else {
             return false;
         };
-        let Some(pending) = previous_message_pending(&ctx.row, pair, details) else {
+        let Some(pending) = previous_message_pending_with_readiness(
+            &ctx.row, pair, details, ctx.verified_details(details),
+        ) else {
             return false;
         };
         let Some(composer) = hub.composers.get_mut(&ctx.key) else {
@@ -1139,6 +1198,7 @@ pub(crate) struct Delivery {
     /// Its one request id, reserved by `deliver` with the checkpoint saved
     /// in that "sending" save (zerus-5wmh.66.4.4); the dispatch uses it.
     pub(crate) request_id: String,
+    pub(super) verified_send: Option<VerifiedTarget>,
 }
 
 fn text<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -1241,7 +1301,7 @@ impl Composers {
     ) -> SendReply {
         self.edit(handle, rev, epoch, text.clone(), position, anchor);
         let mut hub = self.lock();
-        let reply = self.send_held(&mut hub, handle, epoch, &text);
+        let reply = self.send_held_from(&mut hub, handle, epoch, &text, true);
         if matches!(reply, SendReply::Busy | SendReply::Blocked { .. }) {
             self.hand_back(hub, handle);
         } else {
@@ -1257,9 +1317,16 @@ impl Composers {
         epoch: u64,
         text: &str,
     ) -> SendReply {
+        self.send_held_from(hub, handle, epoch, text, false)
+    }
+
+    fn send_held_from(&self, hub: &mut Hub, handle: u64, epoch: u64, text: &str, explicit_send: bool) -> SendReply {
         let Some(ctx) = self.context(hub) else {
             return SendReply::Busy;
         };
+        if !explicit_send && ctx.verified_send.is_some() {
+            return SendReply::Blocked { reason: "Session availability unverified".into() };
+        }
         let Some(composer) = hub.composers.get(&ctx.key).filter(|c| c.handle == handle) else {
             return SendReply::Busy;
         };
@@ -1346,7 +1413,10 @@ impl Composers {
             let token = self.ask(hub, ctx, retry);
             return SendReply::Cold { token, prompt };
         }
-        let delivery = self.delivery(hub, ctx, text, attachments, retry, None, false);
+        let mut delivery = self.delivery(hub, ctx, text, attachments, retry, None, false);
+        if delivery.retry_id.is_none() {
+            delivery.verified_send = ctx.verified_send.clone();
+        }
         if self.deliver(hub, delivery) {
             SendReply::Sending
         } else {
@@ -1393,6 +1463,7 @@ impl Composers {
             preserve,
             revision: 0,
             request_id: String::new(),
+            verified_send: None,
         }
     }
 
@@ -1678,6 +1749,13 @@ impl Composers {
             );
         }
         self.changed();
+        if let Some(verified) = &delivery.verified_send {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.offer_verified_send(&delivery, verified)
+            })).unwrap_or_else(|_| Outcome::Uncertain { detail: "The send ended abnormally.".into() });
+            self.delivered(&delivery, &outcome, false);
+            return;
+        }
         let target = Target {
             computer: delivery.session.computer.clone(),
             name: delivery.session.name.clone(),
@@ -1810,6 +1888,14 @@ impl Composers {
         {
             return false;
         }
+        let verified = self.verified_target(&delivery.session, &row, online);
+        if let Some(target) = &delivery.verified_send {
+            if verified.as_ref() != Some(target) || target.run_id != delivery.run
+                || target.conversation_id != delivery.conversation
+            {
+                return false;
+            }
+        }
         // A termination, or any session update or rename (Qt's `m_pending`).
         if (self.0.deps.facts)(
             &delivery.session.computer,
@@ -1853,7 +1939,11 @@ impl Composers {
             if text(details, "run_id") != delivery.run
                 || !identity
                 || text(details, "runtime_state") != "live"
-                || text(details, "process_state") != "running"
+                || (text(details, "process_state") != "running"
+                    && !delivery.verified_send.as_ref().is_some_and(|target| {
+                        text(details, "session_id") == target.session_id
+                            && text(details, "name") == row.name && text(details, "agent") == "codex"
+                    }))
                 || (delivery.session.subagent.is_none()
                     && !delivery.consent
                     && expired(Some(details)))
@@ -2542,6 +2632,7 @@ impl Composers {
             online,
             details: Some(Arc::new(details)),
             facts,
+            verified_send: None,
         };
         Some(clear_control(
             &hub,
@@ -3186,6 +3277,7 @@ impl Composers {
             preserve,
             revision: 0,
             request_id: String::new(),
+            verified_send: None,
         };
         if !self.deliver(&mut hub, delivery) {
             drop(hub);
@@ -4418,6 +4510,133 @@ pub(crate) mod tests {
         c.open(Some(session()));
         c.observe(&state(details));
         until(c, |v| v.loaded)
+    }
+
+    #[test]
+    fn scoped_verified_send_is_explicit_and_an_unknown_delivery_is_held() {
+        use crate::composer::handed::VerifiedRoute;
+        use zerus_client_core::desktop::verified_send::Readiness;
+
+        let root = dir("scoped-verified-send");
+        let (c, fake) = send_hub(&root);
+        let id = "11111111-1111-4111-8111-111111111111";
+        let name = "codex/sample-project/review";
+        let source = ("trusted-service-epoch".to_owned(), 7, 3);
+        *lock(&fake.row) = ViewRow {
+            agent: "codex".into(),
+            session_id: Some(id.into()),
+            process_state: "unverified".into(),
+            catalog_source: Some(source.clone()),
+            native_readiness: Some(Readiness {
+                version: 1,
+                session_id: id.into(),
+                run_id: "run-1".into(),
+                conversation_id: "conv-1".into(),
+                send: true,
+                pause: false,
+                terminate: false,
+                stop: false,
+            }),
+            ..row(name)
+        };
+        let mut details = ready();
+        details["name"] = json!(name);
+        details["agent"] = json!("codex");
+        details["session_id"] = json!(id);
+        details["process_state"] = json!("exited");
+        details["verified_previous_message_pending"] = json!(false);
+        *lock(&fake.inspected) = Some(details.clone());
+        c.open(Some(SessionRef {
+            computer: String::new(),
+            session_id: Some(id.into()),
+            name: name.into(),
+            ..session()
+        }));
+        let mut batch = state(details.clone());
+        batch.activity[0].computer = ComputerId::from("");
+        c.observe(&batch);
+        let view = until(&c, |v| v.loaded);
+        let message = "One private Desktop message".to_owned();
+        c.edit(view.handle, 1, view.text_epoch, message.clone(), 1, 1);
+        assert!(!c.current().unwrap().can_send, "old peer capability");
+
+        let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let offers = Arc::new(AtomicUsize::new(0));
+        let enabled = current.clone();
+        let count = offers.clone();
+        c.set_verified_send(VerifiedRoute {
+            current: Arc::new(move |scope| *scope == source && enabled.load(Ordering::SeqCst)),
+            send: Arc::new(move |target, session, checkpoint, stdin| {
+                let attempt = count.fetch_add(1, Ordering::SeqCst);
+                assert_eq!((target.session_id.as_str(), session), (id, name));
+                let value: Value = serde_json::from_slice(stdin).unwrap();
+                assert_eq!(value["request_id"], checkpoint.request_id);
+                assert_eq!(value["expected_run_id"], "run-1");
+                assert_eq!(value["expected_conversation_id"], "conv-1");
+                if attempt == 0 {
+                    Outcome::Failed {
+                        detail: refusal::MESSAGE.replace("%1",
+                            "previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal"),
+                    }
+                } else {
+                    Outcome::Uncertain { detail: "Private uncertain original".into() }
+                }
+            }),
+        });
+        let mut mismatched = details.clone();
+        mismatched["run_id"] = json!("other-run");
+        mismatched["conversation_id"] = json!("other-conversation");
+        mismatched["process_state"] = json!("running");
+        batch.activity[0].payload = json!({"value": mismatched, "rev": 2});
+        c.observe(&batch);
+        assert!(!c.current().unwrap().can_send, "unpaired Activity run");
+        let mut pending = details.clone();
+        pending["verified_previous_message_pending"] = json!(true);
+        batch.activity[0].payload = json!({"value": pending.clone(), "rev": 3});
+        c.observe(&batch);
+        assert!(!c.current().unwrap().can_send, "earlier submission pending");
+        batch.activity[0].payload = json!({"value": details.clone(), "rev": 4});
+        c.observe(&batch);
+        {
+            let mut row = lock(&fake.row);
+            row.native_readiness.as_mut().unwrap().run_id = "replaced-run".into();
+        }
+        assert!(!c.current().unwrap().can_send, "stale row proof");
+        lock(&fake.row).native_readiness.as_mut().unwrap().run_id = "run-1".into();
+        let view = until(&c, |v| v.can_send);
+        assert!(matches!(
+            c.send_held(&mut c.lock(), view.handle, view.text_epoch, &message),
+            SendReply::Blocked { .. }
+        ));
+        assert_eq!(offers.load(Ordering::SeqCst), 0);
+        current.store(false, Ordering::SeqCst);
+        assert!(!c.current().unwrap().can_send, "replaced service source");
+        current.store(true, Ordering::SeqCst);
+
+        *lock(&fake.inspected) = Some(pending);
+        assert!(matches!(
+            c.send_message(view.handle, 2, view.text_epoch, message.clone(), 1, 1),
+            SendReply::Sending
+        ));
+        let refused = until(&c, |v| v.earlier_input_held && v.previous_message_pending == Some(true));
+        assert_eq!(refused.text, message);
+        assert!(!refused.can_send);
+        *lock(&fake.inspected) = Some(details);
+        c.refresh_details();
+        let released = until(&c, |v| v.can_send && !v.earlier_input_held);
+        assert!(matches!(
+            c.send_message(released.handle, 3, released.text_epoch, message.clone(), 1, 1),
+            SendReply::Sending
+        ));
+        let held = until(&c, |v| v.uncertain);
+        assert_eq!(held.text, message);
+        assert!(!held.can_send);
+        assert!(matches!(
+            c.send_message(held.handle, 4, held.text_epoch, message, 1, 1),
+            SendReply::Busy
+        ));
+        assert_eq!(offers.load(Ordering::SeqCst), 2);
+        assert!(lock(&fake.calls).is_empty(), "no generic or queued fallback");
     }
 
     fn archive_session() -> SessionRef {

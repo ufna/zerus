@@ -36,6 +36,17 @@ export interface KeepWarmState {
   cache_expires_at?: number | null;
 }
 
+export interface NativeReadiness {
+  version: 1;
+  session_id: string;
+  run_id: string;
+  conversation_id: string;
+  send?: boolean;
+  pause?: boolean;
+  terminate?: boolean;
+  stop?: boolean;
+}
+
 export interface ViewRow {
   conversation_state?: string;
   /** This device's retained pre-cutover queue, not host acknowledgement. */
@@ -50,6 +61,7 @@ export interface ViewRow {
    * where it keys the drafts.
    */
   session_id?: string;
+  native_readiness?: NativeReadiness;
   title?: string;
   agent?: string;
   status?: string;

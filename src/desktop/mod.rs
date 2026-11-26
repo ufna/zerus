@@ -90,6 +90,8 @@ mod termination_outcome;
 mod transport;
 mod ui_authority;
 mod upgrade;
+#[cfg(target_os = "linux")]
+pub(crate) mod verified_send;
 #[cfg(windows)]
 mod windows_registration;
 #[cfg(any(windows, test))]
@@ -200,6 +202,9 @@ pub fn launch_configuration(args: &[String]) -> cli::Result<()> {
 }
 
 pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> cli::Result<i32> {
+    if args.first().is_some_and(|arg| arg == "verified-send") {
+        return Err(cli::Error::new(2, "verified send requires an original local native frontend child"));
+    }
     #[cfg(test)]
     use swarm_cli_test::Location;
     let run = || -> Result<()> {
@@ -606,6 +611,10 @@ fn projection(
             "feed_producers":1,"feed_frame_bytes":feed::LINE_BYTES,"connections":protocol::CONNECTIONS},
         "components":{"fleet":"awaiting_handoff","presence":"awaiting_handoff","reads":"awaiting_handoff","attention":"awaiting_handoff","approvals":"awaiting_handoff"}});
     delivery::decorate_passive(store, &mut value);
+    #[cfg(target_os = "linux")]
+    {
+        value["native_readiness"] = json!({"version":zerus_client_core::desktop::verified_send::VERSION,"send":true});
+    }
     question_route::decorate(&store.db, &mut value);
     task_controls::decorate(&mut value);
     value["desktop_ownership"] = ownership::status(store, &location.configuration)

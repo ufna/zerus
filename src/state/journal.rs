@@ -1146,6 +1146,15 @@ pub(super) fn inspection_with(
     {
         output["previous_message_pending"] = json!(input::previous_message_pending(&record));
     }
+    #[cfg(target_os = "linux")]
+    if archive_id.is_none()
+        && panes.is_some()
+        && output["process_state"] == "exited"
+        && catalog_process_unverified(&record)
+        && input::native_readiness::witness_for_inspection(&record)
+    {
+        output["verified_previous_message_pending"] = json!(input::previous_message_pending(&record));
+    }
     if archive_id.is_some() {
         output["state"] = json!("archived");
         // The same locked predicate as Restore admission. Standing resume
