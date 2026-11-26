@@ -689,7 +689,15 @@ fn live_display_row(
         !string(&record, "conversation_id").is_empty()
             && string(&record, "error").is_empty()
     );
-    let summary = journal::summary(&record, true);
+    let mut summary = journal::summary(&record, true);
+    if summary["process_state"] == "exited" && catalog_process_unverified(&record) {
+        summary["process_state"] = json!(zerus_client_core::view::PROCESS_UNVERIFIED);
+        if let Some(actions) = summary["allowed_actions"].as_array_mut() {
+            actions.retain(|action| action != "pause" && action != "terminate");
+        }
+        summary["action_reasons"]["pause"] = json!("Session availability unverified");
+        summary["action_reasons"]["terminate"] = json!("Session availability unverified");
+    }
     session["process_work"] = process_work.summary(&record, summary["activity"] == "idle" && summary["phase"] == "idle");
     session
         .as_object_mut()
@@ -708,6 +716,36 @@ fn live_display_row(
     keep_warm::enrich(session, shared.keep_warm, &record);
     question_routing::enrich(session, shared.question_routing);
     Ok(())
+}
+
+/// Display-only correction for a matching live pane. Current kernel births
+/// can disprove the wall-clock exit inference without qualifying native input.
+fn catalog_process_unverified(record: &Value) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::platform::ProcessState::{Running, Stopped};
+        if let Some((child, supervisor)) = original_process_states(record) {
+            return matches!((child, supervisor), (Running | Stopped, Some(Running | Stopped)));
+        }
+        // Older compact seeds omitted the launch pin. An occupied PID with a
+        // conflicting start cannot establish either original presence or exit.
+        // Keep this display-only and do not spend a canonical overlay on it.
+        if !storage::listing_scope::public(record) || record["_listing"]["process_pin_checked"] == true {
+            return false;
+        }
+        let saved_start = string(record, "process_start");
+        !saved_start.is_empty()
+            && record["pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .and_then(crate::platform::process_start_time)
+                .is_some_and(|current| !current.is_empty() && current != saved_start)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = record;
+        false
+    }
 }
 
 /// The last steps of every listed row. `names` holds the session names of the

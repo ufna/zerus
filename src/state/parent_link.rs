@@ -220,8 +220,8 @@ pub(super) fn listed(record: &Value) -> Option<Value> {
 }
 
 /// The live state of each listed row's parent, from the same listing:
-/// `live` (running, its agent not exited), `saved` (paused, stopped or
-/// exited), `archived`, or `missing` when this listing has no such session
+/// `live` (running, without an unavailable process), `saved` (paused, stopped
+/// or unverified availability), `archived`, or `missing` when this listing has no such session
 /// (gone, or on another computer). Session IDs are UUIDs, so no machine
 /// identity is read: a listing never waits on Swarm state (zerus-hycp0). A
 /// link another computer forwarded is unverified: always `missing`, whatever
@@ -230,7 +230,7 @@ pub(crate) fn decorate(sessions: &mut [Value]) {
     let state = |row: &Value| -> &'static str {
         match row["state"].as_str().unwrap_or("running") {
             "archived" => "archived",
-            "running" if row["process_state"] != "exited" => "live",
+            "running" if zerus_client_core::view::process_may_be_live(string(row, "process_state")) => "live",
             _ => "saved",
         }
     };
@@ -1665,5 +1665,8 @@ mod tests {
         let states = |rows: &[Value]| rows[4..].iter().map(|row| row["parent"]["state"].clone()).collect::<Vec<_>>();
         decorate(&mut rows);
         assert_eq!(states(&rows), [json!("live"), json!("saved"), json!("saved"), json!("missing")]);
+        rows[0]["process_state"] = json!(zerus_client_core::view::PROCESS_UNVERIFIED);
+        decorate(&mut rows);
+        assert_eq!(states(&rows)[0], "saved", "an unverified parent cannot suppress a child's work");
     }
 }

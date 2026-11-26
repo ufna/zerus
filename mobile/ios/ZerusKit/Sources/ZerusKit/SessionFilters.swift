@@ -48,9 +48,11 @@ public enum SessionFilters {
         return value.isEmpty ? (archived(session) ? "archived" : "running") : value
     }
 
+    static func processMayBeLive(_ state: String) -> Bool { state != "exited" && state != "unverified" }
+
     public static func currentActivity(_ session: Session, _ online: Bool) -> Bool {
         let raw = session.raw
-        return online && state(session) == "running" && raw.string("process_state") != "exited" && raw.string("activity") != "unknown" &&
+        return online && state(session) == "running" && processMayBeLive(raw.string("process_state")) && raw.string("activity") != "unknown" &&
             !(raw.string("conversation_state") == "ended" && raw.string("activity") != "idle")
     }
 
@@ -59,7 +61,7 @@ public enum SessionFilters {
         let recovery = raw.object("recovery")?.string("state") ?? ""
         let providerError = raw.object("provider_error")?.string("error_kind") ?? ""
         let phase = raw.string("phase")
-        return !archived(session) && state(session) == "running" && raw.string("process_state") != "exited" &&
+        return !archived(session) && state(session) == "running" && processMayBeLive(raw.string("process_state")) &&
             (["approval", "input"].contains(phase) ||
                 phase == "error" && (!["waiting", "dispatching", "retrying"].contains(recovery) || ["quota", "provider_policy"].contains(providerError)) ||
                 ["uncertain", "blocked", "exhausted"].contains(recovery))
@@ -95,7 +97,7 @@ public enum SessionFilters {
     public static func waitingIdle(_ session: Session) -> Bool {
         let raw = session.raw
         return raw.string("activity") == "idle" && raw.string("phase") == "idle" && state(session) == "running" &&
-            raw.string("process_state") != "exited" && !backgroundIdle(session) && !positiveCount(activeChildren(raw)) && hasCoordinationWait(session)
+            processMayBeLive(raw.string("process_state")) && !backgroundIdle(session) && !positiveCount(activeChildren(raw)) && hasCoordinationWait(session)
     }
 
     public static func waitingLabel(_ session: Session, includeProducer: Bool = true, compact: Bool = false, now: Double = Clock.seconds()) -> String {
@@ -255,6 +257,7 @@ public enum SessionFilters {
         if state(session) == "paused" { return "Paused" }
         if state(session) == "stopped" { return "Stopped" }
         if raw.string("process_state") == "exited" { return "Agent exited" }
+        if raw.string("process_state") == "unverified" { return "Session availability unverified" }
         if !raw.bool("tracked") && raw.string("activity").isEmpty { return "Not tracked" }
         switch raw.string("phase") {
         case "approval": return "Needs approval"
@@ -430,7 +433,7 @@ public enum DesktopSessionPalette {
         else if kind == .waiting { caption = SessionFilters.waitingLabel(session, includeProducer: false, compact: true) }
         else if unread && !attention { caption = "New reply" }
         else if online && !SessionFilters.archived(session) && !["paused", "stopped"].contains(SessionFilters.state(session)) &&
-            raw.string("process_state") != "exited" && !raw.bool("tracked") && raw.string("activity").isEmpty { caption = "Untracked" }
+            SessionFilters.processMayBeLive(raw.string("process_state")) && !raw.bool("tracked") && raw.string("activity").isEmpty { caption = "Untracked" }
         else { caption = state }
         return DesktopSessionBadge(caption: caption, kind: displayKind, additionalUnread: unread && (working || attention))
     }
@@ -462,6 +465,7 @@ public enum DesktopSessionPalette {
         if !online || SessionFilters.archived(session) { return .neutral }
         if SessionFilters.state(session) == "paused" { return .paused }
         if SessionFilters.state(session) == "stopped" || raw.string("process_state") == "exited" { return .neutral }
+        if raw.string("process_state") == "unverified" { return .error }
         if !raw.bool("tracked") && raw.string("activity").isEmpty { return .neutral }
         if ["approval", "input"].contains(phase) { return .attention }
         if ["waiting", "dispatching", "retrying"].contains(raw.object("recovery")?.string("state") ?? ""),

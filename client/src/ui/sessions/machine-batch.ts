@@ -1,5 +1,6 @@
 import type { MenuEntry } from "../../store/ui";
 import { trNoop, tr } from "../../i18n";
+import { processMayBeLive } from "./types";
 
 // The per-machine Pause all and Resume all entries of the batch menu, after
 // Qt's populateBatchActions (SessionsWindow.cpp 2844-2893). The client's menu
@@ -33,7 +34,7 @@ export function machineCounts(rows: readonly MachineRow[]): MachineCounts {
     if (s.cmd === "opencode" || !s.bulkLifecycle) { nativeControls = true; continue; }
     if (s.state === "running") {
       live++;
-      allIdle = allIdle && s.resumable && s.activity === "idle" && s.processState !== "exited";
+      allIdle = allIdle && s.resumable && s.activity === "idle" && processMayBeLive(s.processState);
     } else if (s.resumable) saved++;
   }
   return { live, saved, allIdle, nativeControls };

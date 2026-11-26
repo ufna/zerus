@@ -3,9 +3,50 @@ use super::types::*;
 
 pub(super) type Result<T> = std::result::Result<T, String>;
 
+pub(super) enum ValidationError {
+    ArchiveCoverage(String),
+    Retired(ObservationDisposition),
+    Refused(String),
+}
+
+impl ValidationError {
+    pub fn into_detail(self) -> String {
+        match self {
+            Self::ArchiveCoverage(detail) | Self::Refused(detail) => detail,
+            Self::Retired(_) => "The observation does not admit a standing confirmation".into(),
+        }
+    }
+}
+
+impl From<String> for ValidationError {
+    fn from(detail: String) -> Self {
+        Self::Refused(detail)
+    }
+}
+
+impl From<&str> for ValidationError {
+    fn from(detail: &str) -> Self {
+        Self::Refused(detail.into())
+    }
+}
+
 pub(super) trait Ports: Sized {
     fn facts(&mut self, binding: &Binding) -> Result<Facts>;
     fn observe(&mut self, binding: &Binding) -> Result<Snapshot>;
+    fn observe_for_validation(
+        &mut self,
+        binding: &Binding,
+    ) -> std::result::Result<Snapshot, ValidationError> {
+        self.observe(binding).map_err(ValidationError::Refused)
+    }
+    fn archive_coverage_deferred(&mut self, _detail: &str) {}
+    fn retire_observation(
+        &mut self,
+        _binding: &Binding,
+        _disposition: ObservationDisposition,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// None means an exact manual archive or a disproved projected exit.
     fn observe_member(&mut self, binding: &Binding) -> Result<Option<Snapshot>> {
         self.observe(binding).map(Some)

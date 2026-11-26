@@ -23,6 +23,7 @@ struct Fake {
     briefs: usize,
     unknown: bool,
     busy: bool,
+    validation_failure: Option<ValidationError>,
     before_original: Option<fn(&mut Fake)>,
     crash_after_audit: bool,
     crash_after_card: bool,
@@ -62,6 +63,7 @@ impl Fake {
             briefs: 0,
             unknown: false,
             busy: false,
+            validation_failure: None,
             before_original: None,
             crash_after_audit: false,
             crash_after_card: false,
@@ -103,6 +105,15 @@ impl Ports for Fake {
     }
     fn observe(&mut self, _: &Binding) -> Result<Snapshot> {
         Ok(self.snapshot.clone())
+    }
+    fn observe_for_validation(
+        &mut self,
+        binding: &Binding,
+    ) -> std::result::Result<Snapshot, ValidationError> {
+        if let Some(failure) = self.validation_failure.take() {
+            return Err(failure);
+        }
+        Ok(self.observe(binding)?)
     }
     fn ownership(&mut self, _: &Binding) -> Result<Ownership> {
         Ok(self.owner.clone())
@@ -408,6 +419,99 @@ fn three_resumes_per_hour_and_the_fourth_refused_across_restart() {
     assert_eq!(f.resumes, 3);
     assert_eq!(f.durable.borrow().cards.len(), 1);
     assert_eq!(f.durable.borrow().resumes.len(), 3);
+}
+
+#[test]
+fn an_archive_coverage_gap_leaves_the_fresh_resume_available_after_recovery() {
+    let mut f = Fake::new();
+    f.exited(1);
+    f.validation_failure = Some(ValidationError::ArchiveCoverage("archive gap".into()));
+    assert_eq!(f.run("epoch-1", 100).unwrap_err(), "archive gap");
+    assert!(f.durable.borrow().rows.is_empty());
+    assert!(f.durable.borrow().audits.is_empty());
+    assert!(f.durable.borrow().cards.is_empty());
+    f.run("epoch-2", 200).unwrap();
+    f.snapshot.ready = true;
+    f.run("epoch-2", 300).unwrap();
+    f.run("epoch-3", 400).unwrap();
+    assert_eq!(f.resumes, 1);
+    assert_eq!(f.briefs, 1);
+    assert_eq!(f.durable.borrow().audits.len(), 2);
+}
+
+#[test]
+fn an_archive_gap_cannot_turn_a_reserved_retry_into_another_original() {
+    let mut f = Fake::new();
+    f.exited(1);
+    let key = resume_key(&f.binding);
+    f.busy = true;
+    f.run("epoch-1", 100).unwrap();
+    let original = f.durable.borrow().rows[&key].original.clone();
+    assert_eq!(f.durable.borrow().rows[&key].state, "waiting");
+    f.busy = false;
+    f.validation_failure = Some(ValidationError::ArchiveCoverage("archive gap".into()));
+    f.run("epoch-2", 200).unwrap();
+    f.run("epoch-3", 300).unwrap();
+    let db = f.durable.borrow();
+    assert_eq!(db.rows[&key].original, original);
+    assert_eq!(db.rows[&key].state, "cancelled");
+    assert_eq!(db.audits[&key], "cancelled");
+    assert_eq!(db.cards.len(), 1);
+    assert_eq!(f.resumes, 0);
+}
+
+#[test]
+fn a_retired_revalidation_does_not_claim_a_fresh_or_expired_resume() {
+    for disposition in [
+        ObservationDisposition::ManualArchive,
+        ObservationDisposition::OriginalProcessesPresent,
+    ] {
+        for expired in [false, true] {
+            let mut f = Fake::new();
+            f.exited(1);
+            if expired {
+                f.snapshot.resume_wait = Some(ResumeWait {
+                    until: 99,
+                    reason: "settling the original".into(),
+                });
+            }
+            f.validation_failure = Some(ValidationError::Retired(disposition));
+            f.run("epoch", 100).unwrap();
+            let db = f.durable.borrow();
+            assert!(db.rows.is_empty() && db.audits.is_empty() && db.cards.is_empty());
+            assert_eq!(f.resumes, 0);
+        }
+    }
+}
+
+#[test]
+fn retirement_settles_a_waiting_or_audited_resume_without_delivery() {
+    for waiting in [false, true] {
+        let mut f = Fake::new();
+        f.exited(1);
+        let key = resume_key(&f.binding);
+        if waiting {
+            f.busy = true;
+            f.run("epoch-1", 100).unwrap();
+            assert_eq!(f.durable.borrow().rows[&key].state, "waiting");
+            f.busy = false;
+            f.validation_failure = Some(ValidationError::Retired(ObservationDisposition::ManualArchive));
+        } else {
+            f.before_original = Some(|f| {
+                f.validation_failure =
+                    Some(ValidationError::Retired(ObservationDisposition::ManualArchive));
+            });
+        }
+        f.run("epoch-2", 200).unwrap();
+        let original = f.durable.borrow().rows[&key].original.clone();
+        f.run("epoch-3", 300).unwrap();
+        let db = f.durable.borrow();
+        assert_eq!(db.rows[&key].original, original);
+        assert_eq!(db.rows[&key].state, "cancelled");
+        assert_eq!(db.audits[&key], "cancelled");
+        assert_eq!(db.cards.len(), 1);
+        assert_eq!(f.resumes, 0);
+    }
 }
 
 #[test]
@@ -1014,7 +1118,7 @@ fn an_earlier_trust_notice_row_for_an_ordinary_question_stays_history() {
     // question, refused by the policy, settled with its notice card.
     let question = f.snapshot.questions[0].clone();
     let plan = candidate(&f.binding, &f.snapshot, Kind::Trust, question);
-    execute(&mut f, plan, "epoch-0", 50).unwrap();
+    execute(&mut f, plan, "epoch-0", 50, ClaimPhase::Fresh).unwrap();
     let rows = f.durable.borrow().rows.clone();
     let cards = f.durable.borrow().cards.clone();
     assert_eq!((rows.len(), cards.len()), (1, 1));

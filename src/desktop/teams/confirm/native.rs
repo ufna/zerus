@@ -9,7 +9,7 @@ mod ownership;
 mod receipt;
 use super::{
     ledger::Ledger,
-    ports::{Ports, Result},
+    ports::{Ports, Result, ValidationError},
     types::*,
 };
 use crate::{config::Config, teams::store::Store};
@@ -107,11 +107,24 @@ impl Ports for Native<'_> {
     fn observe(&mut self, b: &Binding) -> Result<Snapshot> {
         self.snapshot(b)
     }
+    fn observe_for_validation(
+        &mut self,
+        b: &Binding,
+    ) -> std::result::Result<Snapshot, ValidationError> {
+        self.validation_snapshot(b)
+    }
+    fn archive_coverage_deferred(&mut self, detail: &str) {
+        self.observation = Some(Err(detail.into()));
+    }
+    fn retire_observation(&mut self, b: &Binding, disposition: ObservationDisposition) -> Result<()> {
+        self.observation = Some(Ok(()));
+        self.retire_exit_notice(b, disposition)
+    }
     fn observe_member(&mut self, b: &Binding) -> Result<Option<Snapshot>> {
         let result = self.observation(b);
         self.observation = Some(result.as_ref().map(|_| ()).map_err(String::clone));
         if let Some(disposition) = self.retired {
-            self.retire_exit_notice(b, disposition)?;
+            self.retire_observation(b, disposition)?;
         } else if let Ok(Some(snapshot)) = &result {
             let proved_exit = snapshot.ended
                 && !snapshot.paused
@@ -249,13 +262,21 @@ impl Native<'_> {
         let Some(row) = self.ledger.get(&key)? else {
             return Ok(());
         };
+        // Revalidation can lose archive coverage after observing the exit.
+        // Only the exact deliberate archive resolves that earlier notice.
+        let archived_after_gap = matches!(disposition, ObservationDisposition::ManualArchive)
+            && row.detail
+                == observation::unknown(
+                    &row.plan.snapshot.name,
+                    crate::state::archive_catalog::INCOMPLETE,
+                );
         if row.plan.binding != *b
             || row.plan.kind != Kind::Notice
             || row.state != "cancelled"
             || row.audit.is_some()
             || row.result.is_some()
             || !row.card_done
-            || row.detail != policy::NO_SUPERVISOR_EVIDENCE
+            || (row.detail != policy::NO_SUPERVISOR_EVIDENCE && !archived_after_gap)
         {
             return Ok(());
         }

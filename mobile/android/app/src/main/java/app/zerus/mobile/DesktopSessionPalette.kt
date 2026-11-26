@@ -43,7 +43,7 @@ object DesktopSessionPalette {
             kind == DesktopBadgeKind.Waiting -> SessionFilters.waitingLabel(session,includeProducer=false,compact=true)
             unread && !attention -> "New reply"
             online && !SessionFilters.archived(session) && SessionFilters.state(session) !in listOf("paused", "stopped") &&
-                raw.string("process_state") != "exited" && !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> "Untracked"
+                SessionFilters.processMayBeLive(raw.string("process_state")) && !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> "Untracked"
             else -> state
         }
         return DesktopSessionBadge(caption, kind, unread && (working || attention))
@@ -77,6 +77,7 @@ object DesktopSessionPalette {
             !online || SessionFilters.archived(session) -> DetailKind.Neutral
             SessionFilters.state(session) == "paused" -> DetailKind.Paused
             SessionFilters.state(session) == "stopped" || raw.string("process_state") == "exited" -> DetailKind.Neutral
+            raw.string("process_state") == "unverified" -> DetailKind.Error
             !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> DetailKind.Neutral
             phase in listOf("approval", "input") -> DetailKind.Attention
             raw.optJSONObject("recovery")?.string("state") in listOf("waiting", "dispatching", "retrying") &&

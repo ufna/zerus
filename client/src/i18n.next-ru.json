@@ -1878,6 +1878,7 @@
   "Session ID: %1": "ID сессии: %1",
   "Session action": "Действие с сессией",
   "Session archived": "Сессия архивирована",
+  "Session availability unverified": "Доступность сессии не подтверждена",
   "Session cards mark each account with a colored circle. Choose the color and emoji on the Accounts screen.": "Карточки сессий отмечают аккаунт цветным кружком. Цвет и эмодзи выбираются на экране «Аккаунты».",
   "Session cards show the emoji instead of the letter.": "Карточки сессий показывают эмодзи вместо буквы.",
   "Session cards show the emoji when Settings > Sessions uses emoji account marks.": "Карточки сессий покажут эмодзи, если в Настройках > Сессии выбраны значки-эмодзи для аккаунтов.",

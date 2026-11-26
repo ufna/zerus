@@ -361,10 +361,15 @@ pub(crate) fn probe(rows: &[&Value]) -> Result<Probe> {
         let quiet = string(&record, "conversation_id").is_empty()
             || record["last_event_at"].as_f64().unwrap_or(0.) == 0.;
         let idle = row["activity"] == "idle" && row["phase"] == "idle";
-        // As the summary decides `terminal_supported` of a live pane.
-        let terminal = string(&record, "archive_id").is_empty() && process_alive(&record);
+        let matched_pane = matches(&record, panes_of(&snapshot, &record));
+        let process_running = process_alive(&record);
+        // As live_display_row decides the catalog state. Child exit or PID
+        // replacement can settle it even when terminal support stays false.
+        let unverified = matched_pane && !process_running && catalog_process_unverified(&record);
+        let terminal = string(&record, "archive_id").is_empty() && process_running;
         if quiet
-            || !matches(&record, panes_of(&snapshot, &record))
+            || !matched_pane
+            || (row["process_state"] == zerus_client_core::view::PROCESS_UNVERIFIED) != unverified
             || row["terminal_supported"] != json!(terminal)
             || work(row["process_work"].clone()) != work(sample.summary(&record, idle))
         {
@@ -388,6 +393,39 @@ pub(crate) fn binding_identity(path: &Path) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_exact_live_launch_births_can_dispute_the_catalog_exit() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let mut record = json!({"agent":"codex", "session_id":uuid::Uuid::new_v4().to_string(),
+            "run_id":"fixture-run", "pid":child.id(), "process_start":"previous wall clock",
+            "supervisor":{"pid":std::process::id(), "start":"previous supervisor wall clock"}});
+        let original = crate::platform::process_identity(child.id()).unwrap();
+        process_index_writer::capture_spawn(&mut record, &original);
+        let disputed = catalog_process_unverified(&record);
+        let legacy_live = process_alive(&record);
+        let mut replacement = record.clone();
+        replacement["process_index_pin"]["child"]["birth"]["Linux"] = json!(0);
+        let rejected_replacement = !catalog_process_unverified(&replacement);
+        let mut old_seed = record.clone();
+        old_seed.as_object_mut().unwrap().remove("process_index_pin");
+        let mut checked_seed = old_seed.clone();
+        checked_seed["_listing"]["process_pin_checked"] = json!(true);
+        let no_canonical_pin = !catalog_process_unverified(&old_seed);
+        let (old_unverified, new_unpinned) = {
+            let _budget = storage::listing_scope::Scope::enter(std::time::Instant::now() + Duration::from_secs(1));
+            let _public = storage::listing_scope::Public::enter(&old_seed);
+            (catalog_process_unverified(&old_seed), !catalog_process_unverified(&checked_seed))
+        };
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let settled = catalog_process_unverified(&record);
+        assert!(disputed && !legacy_live);
+        assert!(rejected_replacement);
+        assert!(no_canonical_pin && old_unverified && new_unpinned);
+        assert!(!settled, "the original child's actual exit still settles the observation");
+    }
 
     #[test]
     fn writing_names_carry_their_latest_file_changing_call() {

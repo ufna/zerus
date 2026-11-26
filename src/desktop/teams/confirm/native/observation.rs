@@ -14,32 +14,47 @@ fn text(v: &Value, key: &str) -> String {
 enum MemberRead {
     Observed(Box<(Snapshot, Value)>),
     Retired(ObservationDisposition),
+    ArchiveCoverageIncomplete,
 }
 
 impl Native<'_> {
     pub(super) fn observation(&mut self, b: &Binding) -> Result<Option<Snapshot>> {
+        match self.validation_snapshot(b) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(ValidationError::Retired(_)) => Ok(None),
+            Err(error) => Err(error.into_detail()),
+        }
+    }
+
+    pub(super) fn validation_snapshot(
+        &mut self,
+        b: &Binding,
+    ) -> std::result::Result<Snapshot, ValidationError> {
         self.capture = None;
         self.retired = None;
         let (_, name) = self.binding(&b.team, &b.member)?;
         match self
             .read_member(b, &name)
-            .map_err(|why| unknown(&name, why))?
+            .map_err(|why| ValidationError::Refused(unknown(&name, &why)))?
         {
             MemberRead::Observed(read) => {
                 let (snapshot, raw) = *read;
                 self.capture = Some((snapshot.clone(), raw));
-                Ok(Some(snapshot))
+                Ok(snapshot)
             }
             MemberRead::Retired(disposition) => {
                 self.retired = Some(disposition);
-                Ok(None)
+                Err(ValidationError::Retired(disposition))
             }
+            MemberRead::ArchiveCoverageIncomplete => Err(ValidationError::ArchiveCoverage(unknown(
+                &name,
+                crate::state::archive_catalog::INCOMPLETE,
+            ))),
         }
     }
 
     pub fn snapshot(&mut self, b: &Binding) -> Result<Snapshot> {
-        self.observation(b)?
-            .ok_or_else(|| "The observation does not admit a standing confirmation".into())
+        self.validation_snapshot(b).map_err(ValidationError::into_detail)
     }
 
     #[cfg(test)]
@@ -47,6 +62,9 @@ impl Native<'_> {
         match self.read_member(b, name)? {
             MemberRead::Observed(read) => Ok(*read),
             MemberRead::Retired(disposition) => Err(disposition.reason().into()),
+            MemberRead::ArchiveCoverageIncomplete => {
+                Err(crate::state::archive_catalog::INCOMPLETE.into())
+            }
         }
     }
 
@@ -77,7 +95,12 @@ impl Native<'_> {
             return Ok(MemberRead::Observed(Box::new((snapshot, raw))));
         }
         let state = crate::platform::canonical(&self.config.state).map_err(|e| e.to_string())?;
-        let exact = crate::state::archive_catalog::find_run(&state, name, &b.run)?;
+        let exact = match crate::state::archive_catalog::find_run(&state, name, &b.run) {
+            Err(why) if why == crate::state::archive_catalog::INCOMPLETE => {
+                return Ok(MemberRead::ArchiveCoverageIncomplete);
+            }
+            other => other?,
+        };
         let Some(id) = exact else {
             return Err("No exact unique exit archive".into());
         };
@@ -163,13 +186,13 @@ pub(super) fn proved_exit(snapshot: &Snapshot, record: &Value) -> bool {
 /// cannot be read) is never an exit (zerus-63rru.56): nothing is planned, so
 /// nothing is resumed or claimed and the run keeps its one resume, and the
 /// scan reports why.
-fn unknown(name: &str, why: String) -> String {
+pub(super) fn unknown(name: &str, why: &str) -> String {
     format!("Whether member session {name} ended is unknown ({why}); nothing was resumed")
 }
 
 #[cfg(test)]
 fn observed(name: &str, read: Result<(Snapshot, Value)>) -> Result<(Snapshot, Value)> {
-    read.map_err(|why| unknown(name, why))
+    read.map_err(|why| unknown(name, &why))
 }
 
 fn no_current_record(roots: &Roots, b: &Binding, name: &str) -> bool {

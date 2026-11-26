@@ -68,7 +68,7 @@ pub(super) fn record<'a>(marks: &'a Value, owner: &str, conversation: &str) -> &
 /// differs from every signature `hgs read` can acknowledge.
 pub(super) fn signature(session: &Value, questions: Option<&[Value]>) -> Option<String> {
     let running = ["", "running"].contains(&string(session, "state"))
-        && string(session, "process_state") != "exited";
+        && zerus_client_core::view::process_may_be_live(string(session, "process_state"));
     if !running {
         return None;
     }

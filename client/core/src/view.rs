@@ -409,6 +409,13 @@ fn path_parts(path: &str) -> Vec<&str> {
 }
 
 /// The fields of one row the presentation reads.
+pub const PROCESS_UNVERIFIED: &str = "unverified";
+
+/// Legacy rows without a process observation retain their existing meaning.
+pub fn process_may_be_live(state: &str) -> bool {
+    !matches!(state, "exited" | PROCESS_UNVERIFIED)
+}
+
 struct Session<'a> {
     row: &'a Value,
     name: &'a str,
@@ -458,7 +465,7 @@ impl<'a> Session<'a> {
     }
 
     fn running(&self) -> bool {
-        self.state == "running" && self.process_state != "exited"
+        self.state == "running" && process_may_be_live(self.process_state)
     }
 
     fn error_kind(&self) -> &str {
@@ -669,6 +676,9 @@ impl<'a> Session<'a> {
         }
         if self.process_state == "exited" {
             return caption("ended", "Agent exited");
+        }
+        if self.process_state == PROCESS_UNVERIFIED {
+            return caption("error", "Session availability unverified");
         }
         if !self.tracked && self.activity.is_empty() {
             return caption("ready", "Not tracked");
@@ -1966,6 +1976,10 @@ mod tests {
         assert_eq!(
             status(json!({"tracked": true, "process_state": "exited"})),
             s("ended", "Agent exited")
+        );
+        assert_eq!(
+            status(json!({"tracked": true, "process_state": PROCESS_UNVERIFIED, "phase":"idle", "activity":"idle"})),
+            s("error", "Session availability unverified")
         );
         assert_eq!(
             status(json!({"tracked": true, "phase": "error", "activity": "idle"})),

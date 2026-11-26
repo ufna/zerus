@@ -8,6 +8,8 @@ use crate::{
 };
 const FIXTURE: &str = "desktop::teams::confirm::scan::tests::unknown_fixture";
 
+mod archive_gap;
+
 #[test]
 fn a_changed_unreadable_binding_closes_the_old_card_and_starts_a_new_hold() {
     let mut h = crate::desktop::teams::tests::bound151_fixture();
@@ -173,6 +175,17 @@ fn unknown_fixture() {
         crate::state::dispatch_test_archive_catalog_worker().unwrap(),
         0
     );
+    let mode = std::env::var("TEST_TEAMS_OBSERVATION").unwrap();
+    if matches!(
+        mode.as_str(),
+        "standing_archive_gap"
+            | "legacy_archive_gap"
+            | "complete_archive_revalidation"
+            | "complete_legacy_revalidation"
+    ) {
+        archive_gap::revalidation(&config, &binding, &name, &mut h.store, record, &mode);
+        return;
+    }
     producer::withhold_saved_record(&name, true).unwrap();
     test_inspect::use_cli_inspection();
     let machine = binding.machine.clone();
@@ -231,7 +244,6 @@ fn unknown_fixture() {
         !state.join("approval-audit").exists(),
         "unknown did not reserve an original"
     );
-    let mode = std::env::var("TEST_TEAMS_OBSERVATION").unwrap();
     if mode == "readable" {
         producer::withhold_saved_record(&name, false).unwrap();
         pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
@@ -263,7 +275,7 @@ fn unknown_fixture() {
         record["completion_source"] = serde_json::json!("manual_terminate");
         record["completion_reason"] = serde_json::json!("user_terminated");
         let mut drifted = record.clone();
-        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
         producer::archive(&drifted).unwrap();
         assert_eq!(
             crate::state::dispatch_test_archive_catalog_worker().unwrap(),

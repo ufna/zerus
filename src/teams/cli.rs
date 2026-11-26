@@ -77,6 +77,16 @@ fn run(
     }
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn fixture_lead_cards(
+    config: &Config,
+    team: &str,
+    lead: zerus_team_plan::model::SessionKey,
+) -> (Value, i32) {
+    let args = ["cards", "--team", team, "--limit", "50"].map(str::to_owned);
+    run(config, &actor::Caller::Session(lead), &args, None)
+}
+
 fn execute(
     config: &Config,
     caller: &actor::Caller,

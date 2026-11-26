@@ -216,6 +216,10 @@ pub(crate) fn archive(record: &Value) -> Result<String> {
 /// Let native save publish the archive while its incremental catalog
 /// transaction rolls back, leaving the existing SQLite cache in place.
 pub(crate) fn archive_with_catalog_gap(record: &Value) -> Result<String> {
+    with_archive_catalog_gap(|| archive(record))
+}
+
+pub(crate) fn with_archive_catalog_gap<T>(effect: impl FnOnce() -> Result<T>) -> Result<T> {
     if archive_catalog::worker()? != 0 {
         return Err("The fixture could not initialize the archive catalog".into());
     }
@@ -225,7 +229,7 @@ pub(crate) fn archive_with_catalog_gap(record: &Value) -> Result<String> {
         "CREATE TRIGGER fixture_catalog_rollback BEFORE INSERT ON archive_rows
          BEGIN SELECT RAISE(ABORT, 'fixture catalog publication rollback'); END;",
     ).map_err(|e| e.to_string())?;
-    let result = archive(record);
+    let result = effect();
     db.execute_batch("DROP TRIGGER fixture_catalog_rollback;").map_err(|e| e.to_string())?;
     result
 }

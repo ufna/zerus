@@ -5,6 +5,9 @@ import type { ParentLinkOut, Reply } from "../../types";
 
 export type AgentKind = "claude" | "codex" | "kimi" | "deepseek" | "opencode" | "sh";
 
+/** Legacy rows without a process observation retain their existing meaning. */
+export const processMayBeLive = (state: string): boolean => state !== "exited" && state !== "unverified";
+
 /** Presentation status, in the existing precedence order (design/webui). */
 export type Status =
   | "attention" // Needs attention: question, approval or explicit attention
