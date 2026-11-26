@@ -122,9 +122,11 @@ export function createCreations(deps: CreationsDeps) {
 
   function notice(c: CreationCard, known: boolean) {
     const n = noticeOf(c);
-    if (!n || notices.get(c.id) === n.key) return;
-    notices.delete(c.id);
-    notices.set(c.id, n.key);
+    if (!n) return;
+    const key = n.attempt ? `${c.id}/${n.attempt}` : c.id;
+    if (notices.get(key) === n.key) return;
+    notices.delete(key);
+    notices.set(key, n.key);
     if (notices.size > NOTICE_LIMIT) notices.delete(notices.keys().next().value!);
     // A failure that settled before this window started (first seen already
     // failed, last changed earlier) stays on its card; only a failure that happens

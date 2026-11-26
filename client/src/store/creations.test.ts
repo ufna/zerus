@@ -108,6 +108,7 @@ describe("the cards", () => {
     if (!replyFirst) await t.store.act(refusal.id, "show");
     expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED]);
     t.emit({ ...refusal, worktree_refusal_id: "ec423e21-d07b-4649-b972-689822dbb5b6" });
+    t.emit(refusal);
     expect(t.notices.map((notice) => notice.text)).toEqual([WORKTREE_STORE_REFUSED, WORKTREE_STORE_REFUSED]);
     t.dispose();
   });

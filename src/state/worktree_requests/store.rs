@@ -14,7 +14,7 @@ const STABLE_ANCHOR: &str = "worktree-requests.apfs-identity.json";
 const STORE_LOCK: &str = "worktree-requests.identity.lock";
 const LIMIT: usize = 32768;
 pub(super) const IDENTITY_UNCONFIRMED: &str =
-    "Worktree receipt store was replaced; its historical results are unknown";
+    "Zerus could not verify the worktree receipt store. Earlier results stay unconfirmed.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lane {

@@ -148,10 +148,10 @@ export function footerText(count: number, afterSessions: boolean): string {
 }
 
 /** The sticky notice for a failed, unknown or unsaved creation (1579-1585), and the memory key it is shown once for. */
-export function noticeOf(c: CreationCard): { key: string; text: string } | undefined {
+export function noticeOf(c: CreationCard): { key: string; text: string; attempt?: string } | undefined {
   if (c.state !== "failed" && c.state !== "unknown" && c.state !== "storage_error") return undefined;
   if (c.state === "failed" && c.worktree_refusal_id && c.error === WORKTREE_STORE_REFUSED) {
-    return { key: `worktree receipt refusal ${c.worktree_refusal_id}`, text: tr(WORKTREE_STORE_REFUSED) };
+    return { key: "worktree receipt refusal", text: tr(WORKTREE_STORE_REFUSED), attempt: c.worktree_refusal_id };
   }
   return { key: `${c.state}\n${c.error}`, text: tr("Creation %1: %2\n%3", c.tag, c.caption, c.error) };
 }
