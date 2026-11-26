@@ -2198,19 +2198,20 @@ const CALLBACK_PORT: u16 = 1455;
 /// local port is busy.
 const CALLBACK_FORWARD: [&str; 6] = ["-o", "ExitOnForwardFailure=no", "-o", "ControlPath=none", "-L", "1455:localhost:1455"];
 
-/// Whether a peer call signs an account in (`account login`, guarded or not).
-fn account_sign_in(command: &str, args: &[String]) -> bool {
+/// The account selected for a peer login, with or without a machine guard.
+fn account_sign_in<'a>(command: &str, args: &'a [String]) -> Option<&'a str> {
     let rest = if command == "--expect-machine" {
         if args.get(1).map(String::as_str) != Some("account") {
-            return false;
+            return None;
         }
         args.get(2..).unwrap_or_default()
     } else if command == "account" {
         args
     } else {
-        return false;
+        return None;
     };
-    rest.first().is_some_and(|operation| operation == "login")
+    rest.first().filter(|operation| *operation == "login")?;
+    Some(rest.get(1).map(String::as_str).unwrap_or_default())
 }
 
 /// The SSH line a peer command's dry run prints, for a person to read or
@@ -2239,6 +2240,11 @@ fn remote_via(
 ) -> Result<i32> {
     // Every route to another computer passes here, before any ssh is built.
     person_only_forwarding(command, args)?;
+    let login = account_sign_in(command, args);
+    let antigravity_login = login == Some("native-agy");
+    if antigravity_login && !global_dry && !has(args, "--dry-run") {
+        crate::accounts::require_antigravity_login_person()?;
+    }
     let answer_input = forwarded_answer_input(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
@@ -2261,6 +2267,12 @@ fn remote_via(
     let mut tab = None;
     let mut ssh = platform::ssh();
     let remote_args: Vec<String> = match command {
+        _ if antigravity_login => {
+            // The native login accepts a code in the remote terminal. It
+            // needs a tty, with no browser callback or local forwarding.
+            flags = ["-t", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].map(String::from).into();
+            std::iter::once(command.to_owned()).chain(args.clone()).collect()
+        }
         "ls" => {
             flags = vec![
                 "-o".into(),
@@ -2439,7 +2451,7 @@ fn remote_via(
             all
         }
     };
-    if account_sign_in(command, &args) {
+    if login.is_some() && !antigravity_login {
         // Codex finishes a browser sign-in on the signing computer's
         // localhost:1455, which a browser on this computer cannot reach.
         // Forward this computer's port there, as OpenAI documents for

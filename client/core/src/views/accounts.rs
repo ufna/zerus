@@ -316,7 +316,7 @@ fn launchable_for(entry: &FleetEntry, provider: &str, build: Style) -> bool {
         None | Some("") if local => build,
         platform => paths::of(platform, local),
     };
-    style == Style::Posix || !matches!(provider, "dsh" | "opencode")
+    style == Style::Posix || !matches!(provider, "dsh" | "opencode" | "agy")
 }
 
 fn usage_ref(host: &ComputerId, raw: &Value) -> UsageRef {

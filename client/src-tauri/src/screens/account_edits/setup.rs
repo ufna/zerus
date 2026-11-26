@@ -41,6 +41,8 @@ pub struct SetupHost {
     saved: Vec<Saved>,
     listed: Vec<String>,
     deepseek_installed: bool,
+    antigravity_installed: bool,
+    antigravity_sign_in: bool,
 }
 #[derive(Serialize)]
 pub struct SetupView {
@@ -162,9 +164,10 @@ impl Screens {
                 .iter()
                 .find(|e| e.computer == host.computer)
                 .ok_or(account_actions::CHANGED)?;
-            let providers: Vec<String> = ["codex", "claude", "kimi", "dsh", "opencode"]
+            let antigravity = policy::antigravity(catalog);
+            let providers: Vec<String> = ["codex", "claude", "kimi", "dsh", "opencode", "agy"]
                 .into_iter()
-                .filter(|p| accounts::launchable(entry, p))
+                .filter(|p| accounts::launchable(entry, p) && (*p != "agy" || antigravity.is_some()))
                 .map(str::to_owned)
                 .collect();
             let saved: Vec<_> = catalog["removed_profiles"]
@@ -211,6 +214,8 @@ impl Screens {
                             .any(|r| r["id"] == "native-dsh" && r["installed"] == true)
                     })
                 }),
+                antigravity_installed: antigravity.is_some_and(|row| row["installed"] == true),
+                antigravity_sign_in: binding.antigravity_login(catalog).is_ok(),
             });
             hosts.push(HostPlan {
                 binding,
@@ -376,6 +381,13 @@ impl Screens {
                 b.verify(&catalog)?;
             }
             match plan.kind {
+                SetupKind::Add if provider == "agy" => {
+                    if !request.saved.is_empty() || !request.label.is_empty() || !request.api_key.is_empty() {
+                        return Err(account_actions::CHANGED.into());
+                    }
+                    let call = host.binding.antigravity_login(&catalog)?;
+                    notices.extend(setup_terminal(dir, &self.0.hgs, &call.args)?);
+                }
                 SetupKind::Add if !request.saved.is_empty() => {
                     let saved = host
                         .saved

@@ -356,7 +356,8 @@ fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
             "label":"Google Antigravity","native":true,"installed":executable.is_some(),
             "executable":executable,"launch_supported":executable.is_some(),
             "auth_status":"unknown","credential_file":false,"portable":false,
-            "permission_mode_supported":false,"login_command":"agy acp --login"}));
+            "permission_mode_supported":false,"login_command":"agy acp --login",
+            "native_login_supported":executable.is_some()}));
     }
     for row in &mut rows {
         let provider = row["provider"].as_str().unwrap_or("").to_owned();
@@ -577,6 +578,18 @@ pub(crate) fn model_settings(config: &Config, id: &str) -> Result<Value> {
 }
 /// The providers `account ls --provider` accepts.
 const PROVIDERS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
+pub(crate) fn require_antigravity_login_person() -> Result<()> {
+    if crate::cli::agent_caller() {
+        return Err(Error::new(
+            1,
+            "Antigravity sign-in must be completed by the person in a terminal",
+        ));
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    crate::tasks::person::check()?;
+    Ok(())
+}
+
 pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     let dry = dry || args.iter().any(|arg| arg == "--dry-run");
     let operation = args.first().map(String::as_str).unwrap_or("ls");
@@ -729,6 +742,18 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             if id == "native-agy" {
                 const GUIDANCE: &str = "Sign in to Antigravity with `agy acp --login` in Terminal on this computer";
                 if dry { println!("{GUIDANCE}"); return Ok(0); }
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    use std::io::IsTerminal;
+                    require_antigravity_login_person()?;
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(Error::new(1, GUIDANCE));
+                    }
+                    let executable = crate::state::agy::executable()
+                        .ok_or_else(|| Error::new(1, "Install Antigravity CLI on this computer before signing in"))?;
+                    return platform::wait_interactive(std::process::Command::new(executable).args(["acp", "--login"]));
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 return Err(Error::new(1, GUIDANCE));
             }
             if id=="native-dsh" {return crate::native_ui::open(config,"","@account",None,dry);}

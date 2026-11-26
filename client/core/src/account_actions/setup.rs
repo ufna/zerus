@@ -4,6 +4,16 @@ use crate::{actions::Invocation, ComputerId};
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// The single native Antigravity account advertised by this catalog.
+pub fn antigravity(catalog: &Value) -> Option<&Value> {
+    let mut rows = catalog["profiles"]
+        .as_array()?
+        .iter()
+        .filter(|row| row["id"] == "native-agy");
+    let row = rows.next()?;
+    (rows.next().is_none() && row["provider"] == "agy" && row["native"] == true).then_some(row)
+}
+
 #[derive(Clone, Debug)]
 pub struct Host {
     pub computer: ComputerId,
@@ -67,6 +77,13 @@ impl Host {
             return Err("Update hgs on this machine to continue verified account setup.".into());
         }
         Ok(self.call(op, id))
+    }
+    pub fn antigravity_login(&self, catalog: &Value) -> Result<Invocation, String> {
+        self.verify(catalog)?;
+        let _ = antigravity(catalog)
+            .filter(|row| row["installed"] == true && row["native_login_supported"] == true)
+            .ok_or(CHANGED)?;
+        self.terminal_call("login", "native-agy")
     }
     pub fn fresh(&self, hgs: &Path) -> Result<Value, String> {
         let catalog = self.read(hgs)?;
@@ -211,5 +228,47 @@ mod tests {
         assert!(!valid_label("bad\nname"));
         assert!(valid_id("codex-example"));
         assert!(!valid_id("--other"));
+    }
+
+    #[test]
+    fn antigravity_login_requires_its_exact_native_account_and_current_capability() {
+        let machine = "11111111-1111-4111-8111-111111111111";
+        let raw = json!({"id":"native-agy","provider":"agy","native":true,"installed":true,
+            "native_login_supported":true,"portable":false,"auth_status":"unknown"});
+        let catalog = |row: Value| json!({"revision":"r1","setup_revision":true,"profiles":[row]});
+        let supported = catalog(raw.clone());
+        let host =
+            Host::capture(ComputerId("mac-fixture".into()), machine.into(), &supported).unwrap();
+        let call = host.antigravity_login(&supported).unwrap();
+        assert_eq!(
+            call.args,
+            [
+                "@mac-fixture",
+                "--expect-machine",
+                machine,
+                "account",
+                "login",
+                "native-agy",
+                "--revision",
+                "r1"
+            ]
+        );
+        assert!(call.stdin.is_none());
+        for (key, value) in [
+            ("installed", json!(false)),
+            ("native_login_supported", Value::Null),
+            ("native", json!(false)),
+            ("provider", json!("codex")),
+        ] {
+            let mut next = raw.clone();
+            next[key] = value;
+            assert!(host.antigravity_login(&catalog(next)).is_err(), "{key}");
+        }
+        let mut changed = supported.clone();
+        changed["revision"] = json!("r2");
+        assert!(host.antigravity_login(&changed).is_err());
+        changed = supported;
+        changed["profiles"].as_array_mut().unwrap().push(raw);
+        assert!(host.antigravity_login(&changed).is_err());
     }
 }
