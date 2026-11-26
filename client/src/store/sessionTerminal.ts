@@ -21,7 +21,7 @@ let confirmResume: ((row: ActionRow) => Promise<boolean>) | undefined;
 export function bindResumeTerminalConfirm(ask: (row: ActionRow) => Promise<boolean>) { confirmResume = ask; }
 
 const unavailable = (s: Pick<ActionRow, "cmd">) =>
-  s.cmd === "dsh" || s.cmd === "deepseek" ? tr("This native adapter does not provide Terminal.") : tr("Terminal is unavailable for this session.");
+  ["dsh", "deepseek", "agy"].includes(s.cmd) ? tr("This native adapter does not provide Terminal.") : tr("Terminal is unavailable for this session.");
 
 /** The identity-bound attach of a running row: `hgs a NAME --existing --run-id RUN` (tauri/session_folders.rs). */
 function openTerminal(row: ActionRow) {

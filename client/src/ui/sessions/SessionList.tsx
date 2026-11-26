@@ -241,7 +241,7 @@ function clearEntry(s: Session, prepared?: ClearRead): MenuEntry {
 
 export function sessionMenu(s: Session, inspected?: import("../../types").Details, preparedClear?: ClearRead): MenuEntry[] {
   const details = inspected ?? (s.key === selectedKey() && !subagentOpen() ? detailsFor(s, !computerOffline(s.computer), followedFor(s.key)) : undefined);
-  const act = actionEntries(s, undefined, { context: true });
+  const act = actionEntries(s, s.cmd === "agy" ? details : undefined, { context: true });
   const cp = copyEntries(s, details);
   const mute = muteEntry(s), mark = markEntry(s), fresh = freshActionEntry(s);
   const archived = s.state === "archived";
@@ -264,7 +264,7 @@ export function sessionMenu(s: Session, inspected?: import("../../types").Detail
     moveEntry(s),
     { separator: true },
     ...(act.archive ? [act.archive] : []),
-    act.end,
+    ...(s.cmd === "agy" ? [act.change] : [act.end]),
   ];
 }
 

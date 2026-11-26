@@ -133,6 +133,7 @@ const PROVIDER_GLYPH: Record<AgentKind, string> = {
   claude: Array.from({ length: 8 }, (_, i) => `<path transform="rotate(${i * 45} 6 6)" d="M6 8V11"/>`).join(""),
   kimi: `<path d="M3 2V10M3 6L9 2M3 6L9 10"/>`,
   opencode: `<path d="M4 3L1 6L4 9M8 3L11 6L8 9"/>`,
+  agy: `<path d="M1.5 9l3-4.5a1.8 1.8 0 0 1 3 0L10.5 9"/>`,
   codex: `<path d="M2 3L5 6L2 9M7 9H10"/>`,
   deepseek: `<path d="M2 3L5 6L2 9M7 9H10"/>`,
   sh: `<path d="M2 3L5 6L2 9M7 9H10"/>`,

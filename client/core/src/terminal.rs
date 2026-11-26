@@ -53,7 +53,7 @@ pub fn supported(facts: &TerminalFacts, details: &Value) -> bool {
     if let Some(supported) = flag(details, "terminal_supported") {
         return supported;
     }
-    if facts.cmd == "opencode" && !facts.terminal_reported {
+    if matches!(facts.cmd.as_str(), "opencode" | "agy") && !facts.terminal_reported {
         return false;
     }
     facts.terminal_supported

@@ -342,7 +342,9 @@ pub fn refs(fleet: &[FleetEntry], state: &AccountsState) -> Vec<(UsageRef, bool)
         };
         for raw in items(data, "profiles").iter().take(PROFILES_PER_HOST) {
             let r = usage_ref(&entry.computer, raw);
-            if flag(raw, "installed") && !r.id.is_empty() && launchable(entry, &r.provider) {
+            // This account reports discovery from the catalog. Sign-in is
+            // learned from ACP startup, so usage inspection cannot resolve it.
+            if r.provider != "agy" && flag(raw, "installed") && !r.id.is_empty() && launchable(entry, &r.provider) {
                 out.push((r, reachable(entry)));
             }
         }
@@ -356,6 +358,7 @@ pub fn provider_name(provider: &str) -> String {
         "codex" => "Codex",
         "kimi" => "Kimi",
         "opencode" => "OpenCode",
+        "agy" => "Google Antigravity",
         "dsh" => "DeepSeek",
         "sh" => "Shell",
         other => other,
@@ -378,6 +381,8 @@ fn profile_usage(entry: &FleetEntry, raw: &Value, r: &UsageRef, state: &Accounts
         None => Usage {
             status: if !reachable {
                 "offline"
+            } else if r.provider == "agy" {
+                "unknown"
             } else if slot.is_some_and(|slot| slot.failed) {
                 // The first inspect failed: settled, shown from the cache.
                 "unavailable"
@@ -450,6 +455,7 @@ fn member(
         match status {
             "configured" => (Apikey, crate::text!("API key configured on %1.", m())),
             "signed_out" if provider == "dsh" => (SignedOut, crate::text!("Set a DeepSeek API key on %1 to use API models.", m())),
+            "signed_out" if provider == "agy" => (SignedOut, crate::text!("On %1, run agy acp --login and complete sign-in, then refresh Accounts.", m())),
             "signed_out" => (SignedOut, crate::text!("Sign in on %1 to use this account.", m())),
             "credentials_locked" => (Keychain, crate::text!("The login Keychain on %1 is locked. Unlock it in Keychain Access, then refresh.", m())),
             "desktop_session_unavailable" => (Desktop, crate::text!("Desktop sign-in on %1 is unavailable. Log in to macOS and check the HGS installation.", m())),
@@ -642,6 +648,15 @@ fn profile(entry: &FleetEntry, raw: &Value, state: &AccountsState) -> Profile {
     let usage = profile_usage(entry, raw, &r, state);
     let (member_state, mut detail, signed_in) =
         member(online, installed, &r.provider, &usage, &machine);
+    if r.provider == "agy" && online && installed && member_state != MemberState::SignedOut {
+        detail = if !flag(raw, "launch_supported") {
+            crate::text!("Starting Google Antigravity is unavailable on this computer.")
+        } else if signed_in {
+            crate::text!("Ready on %1.", machine.clone())
+        } else {
+            crate::text!("Sign-in is checked when Google Antigravity starts.")
+        };
+    }
     if r.provider == "opencode" {
         // OpenCode keeps its own configuration (AccountsPage.cpp:657-663).
         let catalog = text(raw, "catalog_state");

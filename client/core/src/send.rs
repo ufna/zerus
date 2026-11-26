@@ -18,7 +18,7 @@ pub const NO_COLOR: &str = crate::source!(
 );
 
 /// The agents the composer sends to; any other is typed into in Terminal.
-pub const MESSAGE_AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
+pub const MESSAGE_AGENTS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
 
 /// What the client knows about a session besides its inspected details.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +111,17 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
         Some(details) if details.as_object().is_some_and(|object| !object.is_empty()) => details,
         _ => return block("Checking the session…"),
     };
+    if facts.cmd == "agy" {
+        if flag(details, "auth_required") {
+            return block(crate::source!("On this computer, run agy acp --login, then refresh the session. Your draft stays here."));
+        }
+        if !flag(details, "send_supported")
+            || !flag(details, "send_available")
+            || text(details, "conversation_id").is_empty()
+        {
+            return block(crate::source!("Sending to this Google Antigravity session is unavailable. Your draft stays here."));
+        }
+    }
     if !flag(details, "tracked") {
         return block("This session has no HGS tracking. Use Terminal to send a message.");
     }
@@ -127,7 +138,9 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
         return block("Sign in to DeepSeek above. Your draft stays here.");
     }
     if !text(details, "error").is_empty() {
-        return block(if opencode {
+        return block(if facts.cmd == "agy" {
+            crate::source!("Refresh the Google Antigravity session before sending. Your draft stays here.")
+        } else if opencode {
             "Refresh the native session and check OpenCode configuration on this computer before sending."
         } else {
             "Check the agent in the Terminal tab before sending."
@@ -153,7 +166,7 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
     }
     let phase = text(details, "phase");
     if phase == "approval" || phase == "input" {
-        return block(if opencode {
+        return block(if opencode || facts.cmd == "agy" {
             "Answer the pending native request in Activity before sending."
         } else {
             "Respond to the agent in the Terminal tab."
@@ -921,6 +934,23 @@ mod tests {
             block_reason(&facts, Some(&json!({}))).as_deref(),
             Some("Checking the session…")
         );
+    }
+
+    #[test]
+    fn antigravity_requires_positive_send_and_conversation_evidence() {
+        let (mut facts, mut details) = ready();
+        facts.cmd = "agy".into();
+        let unavailable = "Sending to this Google Antigravity session is unavailable. Your draft stays here.";
+        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
+        details["send_supported"] = json!(true);
+        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
+        details["send_available"] = json!(true);
+        assert_eq!(block_reason(&facts, Some(&details)), None);
+        details["conversation_id"] = json!("");
+        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
+        details["auth_required"] = json!(true);
+        assert_eq!(block_reason(&facts, Some(&details)).as_deref(),
+            Some("On this computer, run agy acp --login, then refresh the session. Your draft stays here."));
     }
 
     #[test]

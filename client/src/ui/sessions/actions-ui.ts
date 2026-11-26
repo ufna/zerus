@@ -13,7 +13,7 @@ import { tr, trNoop } from "../../i18n";
 export type ActionRow = Pick<Session,
   | "key" | "computer" | "name" | "machine" | "cmd" | "state" | "tracked" | "resumable" | "activity" | "processState"
   | "archiveId" | "attention" | "unread" | "sharedRead" | "allowed" | "archiveReason" | "terminateReason" | "forgetReason" | "restoreReason" | "phase"
-  | "restorePending"
+  | "restorePending" | "startupRetryAvailable"
   | "runId" | "conversationId" | "replyId" | "attentionSignature" | "created" | "fingerprint" | "sessionId"
   | "cwdPath" | "terminalSupported" | "terminalReported" | "terminalAttachSupported" | "terminalAttachReported"
   | "muted" | "sharedNotifications" | "notificationRevision" | "notificationConflict" | "gitWorktree">;
@@ -24,7 +24,7 @@ export function snapshotOf(s: ActionRow): ActionRow {
     key: s.key, computer: s.computer, name: s.name, machine: s.machine, cmd: s.cmd, state: s.state, tracked: s.tracked,
     resumable: s.resumable, activity: s.activity, processState: s.processState, archiveId: s.archiveId, attention: s.attention,
     unread: s.unread, sharedRead: s.sharedRead, allowed: s.allowed, archiveReason: s.archiveReason, terminateReason: s.terminateReason, forgetReason: s.forgetReason,
-    restoreReason: s.restoreReason, restorePending: s.restorePending,
+    restoreReason: s.restoreReason, restorePending: s.restorePending, startupRetryAvailable: s.startupRetryAvailable,
     phase: s.phase, runId: s.runId, conversationId: s.conversationId, replyId: s.replyId, attentionSignature: s.attentionSignature,
     created: s.created, fingerprint: s.fingerprint, sessionId: s.sessionId,
     cwdPath: s.cwdPath, terminalSupported: s.terminalSupported, terminalReported: s.terminalReported,
@@ -89,7 +89,7 @@ export function notificationsStillAllowed(live: ActionRow, shown: ActionRow, onl
 }
 
 export interface MenuState {
-  change: { label: "Pause session" | "Resume session" | "Restore session" | "Updating…"; enabled: boolean; reason?: string };
+  change: { label: "Pause session" | "Stop session…" | "Retry start" | "Resume session" | "Restore session" | "Updating…"; enabled: boolean; reason?: string };
   rename: boolean;
   archive: { visible: boolean; enabled: boolean; reason?: string };
   end: {
@@ -124,7 +124,7 @@ export function allowedOp(s: Pick<ActionRow, "allowed" | "cmd"> & Partial<Pick<A
   if (op === "terminate" && s.processState === "unverified") return false;
   if (details?.allowed_actions) return details.allowed_actions.includes(op);
   if (s.allowed !== undefined) return s.allowed.split(" ").includes(op);
-  return s.cmd !== "opencode" || op === "rename" || op === "forget";
+  return s.cmd !== "agy" && (s.cmd !== "opencode" || op === "rename" || op === "forget");
 }
 
 const reasonFor = (s: ActionRow, op: "archive" | "terminate" | "forget" | "restore", details?: Details) =>
@@ -154,8 +154,11 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   // native Pause capability may offer its existing exact-process stop path.
   const firstTurnPause = !s.conversationId && !details?.conversation_id
     && (details?.allowed_actions != null ? details.allowed_actions.includes("pause") : s.allowed?.split(" ").includes("pause") === true);
-  const canPause = running && processMayBeLive(s.processState) && (firstTurnPause
-    || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)));
+  const antigravity = s.cmd === "agy";
+  const retryStart = antigravity && !s.conversationId && (details?.startup_retry_available ?? s.startupRetryAvailable) === true;
+  const canPause = running && processMayBeLive(s.processState) && (antigravity
+    ? !!s.runId
+    : firstTurnPause || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)));
   // Restore (Qt canChange 5302-5304). The client's right-click selects the row
   // first, so its context menu is Qt's selected-row case, which reuses the
   // header's m_changeAction (5360). It also follows the computer's restore
@@ -164,7 +167,8 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   const restorable = allowedOp(s, "restore", details);
   const change = archived
     ? available && s.resumable && !!s.archiveId && (!options.occupied || !!s.restorePending) && restorable
-    : available && ((canPause && allowedOp(s, "pause", details)) || (!running && s.resumable && allowedOp(s, "resume", details)));
+    : available && ((canPause && allowedOp(s, "pause", details))
+      || (!running && s.resumable && (!antigravity || (!!s.runId && (!!s.conversationId || retryStart))) && allowedOp(s, "resume", details)));
   const [agent, project] = s.name.split("/", 2);
 
   const archives = archivesOnTerminate(s);
@@ -187,18 +191,19 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
     visible: working,
     enabled: working && online && interruptible && !options.interrupting,
     reason: options.interrupting ? trNoop("Interrupt is being sent…") : !online ? trNoop("Machine is offline")
-      : !interruptible ? trNoop("Interrupt is unavailable. Open Terminal to stop this turn.") : undefined,
+      : !interruptible ? (s.cmd === "agy" ? NO_REASON : trNoop("Interrupt is unavailable. Open Terminal to stop this turn.")) : undefined,
   };
 
   return {
     change: {
-      label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? trNoop("Pause session") : trNoop("Resume session"),
+      label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? (antigravity ? trNoop("Stop session…") : trNoop("Pause session")) : retryStart ? trNoop("Retry start") : trNoop("Resume session"),
       enabled: change,
-      reason: archived && !restorable ? reasonFor(s, "restore", details) : undefined,
+      reason: archived && !restorable ? reasonFor(s, "restore", details)
+        : antigravity && !change ? details?.action_reasons?.[running ? "pause" : "resume"] || NO_REASON : undefined,
     },
     rename: allowedOp(s, "rename", details) && available && !!agent && !!project && (!archived || !!s.archiveId),
     archive: {
-      visible: s.cmd !== "deepseek" && (s.state === "paused" || s.state === "stopped"),
+      visible: s.cmd !== "deepseek" && (s.cmd !== "agy" || allowedOp(s, "archive", details)) && (s.state === "paused" || s.state === "stopped"),
       enabled: (!options.context || online) && !updating && !options.batchRunning && allowedOp(s, "archive", details),
       reason: reasonFor(s, "archive", details),
     },
@@ -324,6 +329,7 @@ export function detailsFromInspection(value: unknown): Details | undefined {
     run_id: text(v.run_id),
     conversation_id: text(v.conversation_id),
     auth_required: v.auth_required === true,
+    startup_retry_available: typeof v.startup_retry_available === "boolean" ? v.startup_retry_available : undefined,
     expected_id: text(v.expected_id),
     resume_message_can_send: v.resume_message_can_send === true,
     fork_supported: v.fork_supported === true,
@@ -348,7 +354,7 @@ export function terminal(s: Pick<ActionRow, "cmd" | "terminalSupported" | "termi
     if (s.terminalAttachReported) return s.terminalAttachSupported;
   }
   if (typeof details?.terminal_supported === "boolean") return details.terminal_supported;
-  if (s.cmd === "opencode" && !s.terminalReported) return false;
+  if ((s.cmd === "opencode" || s.cmd === "agy") && !s.terminalReported) return false;
   return s.terminalSupported;
 }
 
@@ -361,7 +367,7 @@ export function terminal(s: Pick<ActionRow, "cmd" | "terminalSupported" | "termi
  */
 export function terminalAfterResume(s: Pick<ActionRow, "cmd" | "terminalAttachSupported" | "terminalAttachReported">, details?: Details): boolean {
   if (s.cmd === "dsh" || s.cmd === "deepseek") return false;
-  if (s.cmd === "opencode") {
+  if (s.cmd === "opencode" || s.cmd === "agy") {
     if (typeof details?.terminal_attach_supported === "boolean") return details.terminal_attach_supported;
     return s.terminalAttachReported && s.terminalAttachSupported;
   }
@@ -456,12 +462,12 @@ export function forgetOpening(menuRow: ActionRow, live: ActionRow, details?: Det
   return { row, bound: { binding, run: details ? details.run_id : row.runId ?? "", conversation: details ? details.conversation_id : row.conversationId ?? "" } };
 }
 
-export type DialogKind = "rename" | "terminate" | "fresh" | "forget" | "batch" | "fork" | "resume_terminal";
+export type DialogKind = "rename" | "stop_antigravity" | "terminate" | "fresh" | "forget" | "batch" | "fork" | "resume_terminal";
 /** What a forget dialog named: whether it forgets an OpenCode binding, and the run and conversation then in view. */
 export interface ForgetScope { binding: boolean; run: string; conversation: string }
 export type DialogOpen =
   | { kind: "fork"; row: ActionRow; details: Details }
-  | { kind: "rename" | "terminate" | "fresh" | "archive"; row: ActionRow }
+  | { kind: "rename" | "stop_antigravity" | "terminate" | "fresh" | "archive"; row: ActionRow }
   | { kind: "forget"; row: ActionRow; bound: ForgetScope }
   /** A selection's Forget or Terminate: `answer` gets true for the confirm button, false otherwise. */
   | { kind: "batch"; copy: BatchConfirmation; answer: (confirmed: boolean) => void }

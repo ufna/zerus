@@ -112,10 +112,14 @@ export class World {
     if (this.flags.has("removed")) rows = rows.filter(([id]) => id !== "work");
     if (this.flags.has("machine-accounts")) rows = (host === "mac" ? ["mac-claude"] : ["pc-claude", "pc-copy"]).map((id) => [id, "claude", "Review", { is_default: true }]);
     if (this.flags.has("opencode")) rows.push(["native-opencode", "opencode", "Native configuration", { is_default: true }]);
+    if (this.flags.has("agy")) rows.push(["native-agy", "agy", "Google Antigravity", {
+      native: true, detail: { source: "Sign-in is checked when Google Antigravity starts." },
+    }]);
     if (this.flags.has("empty-catalog")) rows = [];
     const profiles: Json[] = rows.map(([id, provider, label, extra]) => ({
       id, provider, label, home: `/profiles/${id}`, installed: true, is_default: !!extra.is_default,
       ...(provider === "opencode" && this.flags.has("opencode-models") ? this.rowCatalog(host) : {}),
+      ...(provider === "agy" && host === "" && this.flags.has("agy-launch") ? { launch_supported: true } : {}),
     }));
     const members = rows.map(([id, provider, label, extra]) => member(host, id, provider, label, { ...extra, usage: this.usage(host, id, provider) }));
     // machine-accounts: this computer's two rows are one account.
@@ -165,9 +169,12 @@ export function shownOf(f: LaunchForm): LaunchShown {
     : f.account_preset && !f.account_selected ? (f.account_loading ? "Loading this session's account…" : "This session's account is unavailable. Choose another account.")
       : f.account_count === 0 ? "Restore or add an account in Agent accounts to start this agent."
         : !repository && f.path && !f.folder_online ? "This computer is unavailable. Choose another folder or reconnect it." : null;
-  const notice = source === null ? null : { source };
+  const launchBlock = f.agent === "agy" && f.native_launch_supported !== true;
+  const notice = launchBlock && f.account_selected && !f.account_loading
+    ? { source: "Starting Google Antigravity is unavailable on this computer." }
+    : source === null ? null : { source };
   return {
-    start_enabled: !f.no_machine && f.account_selected && (!f.account_loading || f.agent === "sh") && !nameProblem && ready,
+    start_enabled: !launchBlock && !f.no_machine && f.account_selected && (!f.account_loading || f.agent === "sh") && !nameProblem && ready,
     start_text: { source: repository ? "Clone and start" : "Start session" },
     preview: f.prefill_pending ? { source: "Checking the session's main working folder…" } : f.path ? null : { source: "Browse to choose a folder on this computer." },
     outside_project: false, name_problem: nameProblem, notice, automatic, auto_enabled: false, none_enabled: true, worktree_target: "", worktree_tooltip: null,
@@ -188,7 +195,11 @@ export function bridgeOf(world: World): NewSessionBridge {
       world.onStart?.(world.count("newSessionStart"));
       return answer;
     },
-    newSessionPlan: async (input, choices) => { record("newSessionPlan", input, choices); return { cmd: choices.agent, tag: input.form.name } as never; },
+    newSessionPlan: async (input, choices) => {
+      record("newSessionPlan", input, choices);
+      await world.wait("creation-plan");
+      return { cmd: choices.agent, tag: input.form.name } as never;
+    },
     launchWarning: async (local, computer) => { record("launchWarning", local, computer); return world.warning; },
     repositoryFields: async (url, destination, style, custom, fresh = null) => {
       record("repositoryFields", url, destination, style, custom, fresh);

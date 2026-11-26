@@ -290,6 +290,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
   let accountRequest = 0;
   let accountLoaded = false;
   let accounts: Json[] = [];
+  let agyLaunchSupported = false;
   let groups: Account[] = [];
   let accountStatus = "";
   let rows: AccountRow[] = [];
@@ -366,6 +367,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
     const form: LaunchForm = {
       no_machine: machines.length === 0, can_enable_local_sessions: false, online: online(host()), agent: agent(), name,
       account_count: rows.length, account_selected: accountIndex >= 0, account_loading: accountRequest !== 0, account_preset: accountPreset,
+      native_launch_supported: accountHost === host() && agent() === "agy" && account() === "native-agy" && agyLaunchSupported,
       path: path(), listed_folder: listedKey() !== "", folder_online: folderIndex >= 0 && folderAvailable, prefill_pending: prefillRequest !== 0,
       catalog_pending: catalogRequest !== 0, catalog_worktrees: worktreeCatalog.stale !== true && array(worktreeCatalog.worktrees).length > 0,
       auto_preferred: autoPreferred, creation_failed: false, implicit_inbox: implicitInbox(), branch, style: style(host()), stage: "idle",
@@ -720,10 +722,19 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
 
   // Accounts (865-1023).
 
+  function agyAvailable(answer: LaunchAccounts) {
+    return answer.loaded && !answer.error && answer.profiles.slice(0, 256).some(row => {
+      const profile = object(row);
+      return profile.provider === "agy" && profile.id === "native-agy"
+        && profile.installed === true && profile.launch_supported === true;
+    });
+  }
+
   function loadAccounts(refresh = false) {
     if (!machines.length) {
       accountRequest = 0;
       accountLoaded = false;
+      agyLaunchSupported = false;
       accounts = [];
       groups = [];
       updateAccounts();
@@ -737,6 +748,8 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       accountLoaded = false;
     }
     accountHost = host();
+    agyLaunchSupported = false;
+    usageRequest = 0;
     accountStatus = tr("Loading accounts…");
     const request = next();
     accountRequest = request;
@@ -770,6 +783,7 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
     usageRequest = 0;
     accountLoaded = true;
     accounts = answer.profiles.slice(0, 256);
+    agyLaunchSupported = agyAvailable(answer);
     groups = answer.groups;
     accountStatus = answer.error ?? "";
     updateAccounts();
@@ -838,8 +852,17 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
         return fresh ? { ...g, usage: fresh.usage, members: g.members.map((m) => fresh.members.find((f) => f.provider === m.provider && f.id === m.id) ?? m) } : g;
       });
       rows = refreshRows(rows, groups, choiceOf());
-      emit();
-    }, () => {});
+      const launchSupported = agyAvailable(answer);
+      if (!accountRequest && agyLaunchSupported !== launchSupported) {
+        agyLaunchSupported = launchSupported;
+        updateForm();
+      } else emit();
+    }, () => {
+      if (closed || request !== usageRequest || computer !== host() || accountHost !== computer || accountRequest) return;
+      if (!agyLaunchSupported) return;
+      agyLaunchSupported = false;
+      updateForm();
+    });
   }
 
   function chooseAccount(index: number) {
@@ -926,6 +949,12 @@ function createDialog(deps: NewSessionDeps, context: NewSessionContext, init: { 
       emit();
       const plan = await b.newSessionPlan(input, picked);
       if (closed) return undefined;
+      if (picked.agent === "agy" && (picked.host !== host() || picked.account !== account()
+        || accountRequest || !formInput().form.native_launch_supported)) {
+        submitted = false;
+        updateForm();
+        return undefined;
+      }
       let admission: CreationAdmission;
       try {
         admission = init.task ? await b.taskExecutorSubmit({ ...init.task, plan }) : await b.creationSubmit(plan);

@@ -221,7 +221,8 @@ function Detail(props: { a: Account }) {
     });
   };
   const shown = () => visibleMembers(props.a, m().key);
-  const nativeConfig = () => props.a.provider === "opencode";
+  const antigravity = () => props.a.provider === "agy";
+  const nativeConfig = () => props.a.provider === "opencode" || antigravity();
   // zerus-f0uz8: one permission mode for the account unless it keeps one per computer.
   const perComputer = () => !!props.a.permissions_per_computer;
   const defaultable = () => props.a.provider !== "dsh" && !nativeConfig();
@@ -320,13 +321,13 @@ function Detail(props: { a: Account }) {
               </Show>
             </span>
           </Show>
-          <button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />{tr("Add to machine…")}</button>
+          <Show when={!antigravity()}><button class="btn small acct-add" disabled={managementBusy()} onClick={event=>{accountManagement.close();accountSetup.close();accountManagement.clearNotice();accountSetup.clearNotice();void accountDistribution.open(props.a.key,m().key,event.currentTarget);}}><Icon name="plus" size={12} />{tr("Add to machine…")}</button></Show>
         </div>
         <div class="acct-status">
           <Status kind={tone(m().state)}>{trText(m().detail)}</Status>
           <Actions>
             <Show when={loginLabel(m())}>{(label) => <button class="btn" disabled={!m().online||!m().installed||managementBusy()} title={m().provider==="dsh"?tr("Save a DeepSeek API key on %1.", m().machine):undefined} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open(m().provider==="dsh"?"key":"login",event.currentTarget,props.a.key,m().key);}}><Icon name="key-round" size={13} />{label()}</button>}</Show>
-            <Show when={!m().installed}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />{tr("Install agent…")}</button></Show>
+            <Show when={!m().installed && !antigravity()}><button class="btn" disabled={!m().online||m().provider==="opencode"||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("install",event.currentTarget,props.a.key,m().key);}}><Icon name="download" size={13} />{tr("Install agent…")}</button></Show>
             <Show when={m().opencode?.stopped}>
               <button class="btn" disabled={!m().online||managementBusy()} onClick={event=>{accountManagement.close();accountManagement.clearNotice();void accountSetup.open("start",event.currentTarget,props.a.key,m().key);}}><Icon name="play" size={13} />{tr("Start OpenCode on %1", m().machine)}</button>
             </Show>
@@ -347,7 +348,7 @@ function Detail(props: { a: Account }) {
             </Show>
           </>
         )}</Show>
-        <div class="acct-setting">
+        <Show when={!antigravity()}><div class="acct-setting">
           <span title={trText(m().permission_hint)}>
             {perComputer() ? tr("Permissions on %1:", m().machine) : tr("Permissions:")} <b classList={{ danger: m().permission === "bypass" }}>{trText(m().permission_label)}</b>
             <span class="dim acct-src">{m().permission_default ? tr("Zerus default") : m().permission_mode === "bypass" ? tr("set in Zerus") : tr("from provider settings")}</span>
@@ -359,7 +360,7 @@ function Detail(props: { a: Account }) {
             </Show>
             <button class="btn small" disabled={!m().online || nativeConfig() || managementBusy()} title={perComputer() ? tr("Change permission defaults on %1", m().machine) : tr("Change permission defaults on every computer with this account")} onClick={event=>void openCatalog("permissions",props.a.key,m().key,event.currentTarget)}>{tr("Change…")}</button>
           </span>
-        </div>
+        </div></Show>
         <Show when={!nativeConfig()}>
           <div class="acct-setting">
             <span class="dim">{perComputer() ? tr("Permissions are kept per computer.") : tr("Permissions are shared by every computer with this account.")}</span>

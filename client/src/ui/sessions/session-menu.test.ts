@@ -33,6 +33,7 @@ vi.mock("../../bridge", () => ({
   windowVisibility: { hidden: () => false, onChange: () => () => {} },
   composerOpen: vi.fn(async () => null), composerVisibility: vi.fn(async () => {}), composerEdit: vi.fn(async () => {}), composerPick: vi.fn(async () => {}), composerPasteImage: vi.fn(async () => {}),
   composerRemove: vi.fn(async () => {}), composerUndoRemove: vi.fn(async () => {}), composerAllowRetry: vi.fn(async () => {}), composerRefresh: vi.fn(async () => {}),
+  composerEnqueue: vi.fn(), composerRemoveWaiting: vi.fn(),
   composerTab: vi.fn(async () => {}), sendMessage: vi.fn(), sendAnswer: vi.fn(), sendCancel: vi.fn(async () => {}), sendInterrupted: vi.fn(async () => {}), sendInterruptFailed: vi.fn(async () => {}), clearContext: vi.fn(),
   localRetry: vi.fn(), localDelete: vi.fn(async () => {}), localInspect: vi.fn(async () => null), inboxRemove: vi.fn(async () => ({ outcome: "removed" as const })),
   savedDrafts: vi.fn(), draftConflicts: vi.fn(), savedDraft: vi.fn(), draftRecover: vi.fn(), draftRestore: vi.fn(),
@@ -337,4 +338,18 @@ it("does not open a row that went offline after the menu opened", () => {
   applyBatch({ ...emptyBatch(), computers: [{ computer: "", status: "ended", attempt: 0 }] });
   item.action?.(); expect(sessionTerminalOpen).not.toHaveBeenCalled();
   expect(menuItem("Open terminal", sessionMenu(target))).toMatchObject({ disabled: true, hint: "Machine unavailable. Reconnect when it is online." });
+});
+
+it("offers only individually supported Antigravity lifecycle in the ordinary row menu", () => {
+  applyBatch({ ...emptyBatch(), computers: [{ computer: "", status: "live", attempt: 0 }] });
+  const row = { name: "agy/project/example", agent: "agy", state: "running", status: "ready", run_id: "run-agy",
+    conversation_id: "conversation-agy", resumable: true };
+  const entries = (r: ViewRow) => sessionMenu(toSession("", "run:run-agy", r))
+    .filter((entry): entry is Extract<MenuEntry, { label: string }> => "label" in entry);
+  const actions = entries({ ...row, allowed_actions: ["pause"] });
+  expect(actions.find(item => item.label === "Stop session…")).toMatchObject({ disabled: false, danger: true });
+  expect(actions.some(item => item.label === "Terminate session…" || item.label === "Archive")).toBe(false);
+  expect(entries(row).find(item => item.label === "Stop session…")).toMatchObject({ disabled: true });
+  expect(entries({ ...row, state: "paused", allowed_actions: ["resume"] }).find(item => item.label === "Resume session"))
+    .toMatchObject({ disabled: false });
 });

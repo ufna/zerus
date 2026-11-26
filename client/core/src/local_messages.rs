@@ -94,6 +94,10 @@ pub enum Inspect {
 pub fn inspect(cmd: &str, terminal: bool, machine: &str) -> Inspect {
     if cmd == "dsh" {
         Inspect::NativeUi
+    } else if cmd == "agy" {
+        Inspect::Refresh {
+            notice: crate::source!("Refreshing Activity. Check the recorded messages before retrying.").into(),
+        }
     } else if terminal {
         Inspect::Terminal
     } else {

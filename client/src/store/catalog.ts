@@ -41,7 +41,7 @@ export interface CatalogState {
 }
 
 const KINDS = new Set<Status>(["attention", "working", "background", "scheduled", "ready", "error", "offline", "paused", "waiting", "starting", "ended"]);
-const AGENTS = new Set<AgentKind>(["claude", "codex", "kimi", "deepseek", "opencode", "sh"]);
+const AGENTS = new Set<AgentKind>(["claude", "codex", "kimi", "deepseek", "opencode", "agy", "sh"]);
 
 /** The presentation kind of a view row; Qt gives `sh` its own Shell badge. */
 export function agentKind(agent: string | undefined): AgentKind {
@@ -171,6 +171,7 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     state: typeof v.state === "string" ? v.state : "running",
     tracked: !!v.tracked,
     resumable: !!v.resumable,
+    startupRetryAvailable: v.startup_retry_available === true || undefined,
     activity: text(v.activity),
     processState: text(v.process_state),
     conversationState: text(v.conversation_state),
@@ -187,11 +188,11 @@ export function toSession(computer: ComputerId, key: string, v: ViewRow, marks: 
     cwdPath: text(v.cwd),
     cwdCanonical: text(v.cwd_canonical),
     gitRoot: text(v.git_root),
-    terminalSupported: v.terminal_supported ?? !["deepseek", "dsh", "opencode"].includes(text(v.agent)),
+    terminalSupported: v.terminal_supported ?? !["deepseek", "dsh", "opencode", "agy"].includes(text(v.agent)),
     terminalReported: !!v.terminal_reported,
     terminalAttachSupported: !!v.terminal_attach_supported,
     terminalAttachReported: !!v.terminal_attach_reported,
-    bulkLifecycle: v.bulk_lifecycle_supported ?? text(v.agent) !== "opencode",
+    bulkLifecycle: v.bulk_lifecycle_supported ?? !["opencode", "agy"].includes(text(v.agent)),
     // The host's values the marks overlay reads.
     created: typeof v.created === "number" ? Math.trunc(v.created) : 0,
     fingerprint: text(v.attention_fingerprint),

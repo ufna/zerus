@@ -118,6 +118,7 @@ export interface ViewRow {
   state?: string;
   tracked?: boolean;
   resumable?: boolean;
+  startup_retry_available?: boolean;
   activity?: string;
   process_state?: string;
   /** `process_work.count`, -1 when unknown. */
@@ -482,6 +483,7 @@ export interface Details {
   run_id: string;
   conversation_id: string;
   auth_required: boolean;
+  startup_retry_available?: boolean;
   expected_id: string;
   resume_message_can_send: boolean;
   fork_supported?: boolean;
@@ -696,6 +698,7 @@ export interface LaunchRepository {
 export interface LaunchForm {
   no_machine: boolean; can_enable_local_sessions: boolean; online: boolean; agent: string; name: string;
   account_count: number; account_selected: boolean; account_loading: boolean; account_preset: boolean;
+  native_launch_supported?: boolean;
   path: string; listed_folder: boolean; folder_online: boolean; prefill_pending: boolean;
   /** Qt's `m_catalogRequest`. */
   catalog_pending: boolean;

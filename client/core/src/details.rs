@@ -14,6 +14,8 @@ pub struct Details {
     pub run_id: String,
     pub conversation_id: String,
     pub auth_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_retry_available: Option<bool>,
     pub expected_id: String,
     pub resume_message_can_send: bool,
     #[serde(default)]
@@ -220,6 +222,7 @@ pub fn parse_details(target: &Target, exit: Exit) -> Option<Details> {
         run_id,
         conversation_id,
         auth_required: flag(&value, "auth_required"),
+        startup_retry_available: value["startup_retry_available"].as_bool(),
         expected_id: text(&value, "expected_id"),
         resume_message_can_send: flag(&value, "resume_message_can_send"),
         fork_supported: flag(&value, "fork_supported"),

@@ -131,7 +131,7 @@ function Header() {
     { separator: true },
     ...(slot() === "fresh" && fresh() ? [fresh()!] : slot() === "clear" ? [clearEntry()] : []),
     ...(act().archive ? [act().archive!] : []),
-    act().end,
+    ...(s().cmd === "agy" ? [] : [act().end]),
   ];
   return (
     <header class="detail-head">
@@ -298,6 +298,16 @@ export function SessionDetail() {
     return s?.agent === "deepseek" && s.state === "running" && !computerOffline(s.computer)
       && detailsFor(s, true, followedFor(s.key))?.auth_required;
   });
+  const antigravitySignIn = createMemo(() => {
+    const row = selected();
+    if (row?.cmd !== "agy" || row.archiveId || computerOffline(row.computer)) return undefined;
+    const inspection = detailsFor(row, true, followedFor(row.key));
+    if (!inspection?.auth_required) return undefined;
+    if (row.conversationId) return tr("On this computer, run agy acp --login. Then resume this session.");
+    return (inspection.startup_retry_available ?? row.startupRetryAvailable)
+      ? tr("On this computer, run agy acp --login. Then choose Retry start in the session actions.")
+      : tr("On this computer, run agy acp --login. Then start a new Google Antigravity session.");
+  });
   const toggle = onCommand("panel.toggle", () => { if (page() === "sessions" && selected()) setInspectorOpen(!inspectorOpen()); });
   onCleanup(toggle);
   createEffect(() => {
@@ -338,6 +348,9 @@ export function SessionDetail() {
                           <p class="qcard-body">{tr("Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.")}</p>
                           <div class="qcard-actions"><button class="btn small" onClick={() => nativeRoute(selected())()}>{tr("Sign in to DeepSeek…")}</button></div>
                         </div></div></Show>
+                        <Show when={antigravitySignIn()}>{(message) => <div class="cmp-col">
+                          <div class="qcard" role="status"><p class="qcard-body">{message()}</p></div>
+                        </div>}</Show>
                         <HeldMessage /><PendingZerusSubmission /><QueuePanel /><QuestionSlot />
                       </Show>
                       <div class="cmp-col"><Composer /></div>

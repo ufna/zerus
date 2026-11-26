@@ -500,6 +500,12 @@ pub fn invocation(
                 None,
             )
         }
+        Action::Pause if name.starts_with("agy/") => {
+            return scoped_lifecycle_invocation(target, "pause", request_id, 45, 60);
+        }
+        Action::Resume if name.starts_with("agy/") => {
+            return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
+        }
         Action::Pause => (vec!["pause".to_owned(), name], None, 45, 45, None),
         Action::Resume => (
             vec!["resume".to_owned(), name, "-d".to_owned()],
@@ -1269,6 +1275,9 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Recovery { job_id, action } => {
             classify_recovery(target, invocation, job_id, *action, exit)
         }
+        Action::Pause | Action::Resume if target.name.starts_with("agy/") => {
+            classify_scoped_lifecycle(target, invocation, exit, "The session change did not complete.")
+        }
         Action::ForgetBinding => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not forgotten.")
         }
@@ -1745,7 +1754,12 @@ fn classify_send(
         Exit::Abnormal { stderr } => uncertain(detail(&stderr, -1)),
         Exit::Code { code, stderr, .. } if code != 0 => {
             let text = detail(&stderr, code);
-            if code != 1 || stderr.to_lowercase().contains("delivery uncertain") {
+            // ACP can lose the reply after the provider has taken input.
+            // This adapter has no private structured pre-offer witness.
+            if target.name.starts_with("agy/")
+                || code != 1
+                || stderr.to_lowercase().contains("delivery uncertain")
+            {
                 uncertain(text)
             } else {
                 failed(text)
@@ -1981,7 +1995,11 @@ pub(crate) fn cleanup_line(stderr: &str) -> Option<WorktreeCleanup> {
 pub fn allowed(row: &ViewRow, operation: &str) -> bool {
     match &row.allowed_actions {
         Some(list) => list.iter().any(|action| action == operation),
-        None => row.agent != "opencode" || matches!(operation, "rename" | "forget"),
+        None => match row.agent.as_str() {
+            "agy" => false,
+            "opencode" => matches!(operation, "rename" | "forget"),
+            _ => true,
+        },
     }
 }
 
@@ -3138,6 +3156,56 @@ mod tests {
             "Create an independent conversation from this saved context.\nWorking folder: /home/example/project"
         );
         assert_eq!(fork_texts::forking("studio"), "Forking session on studio…");
+    }
+
+    #[test]
+    fn antigravity_lifecycle_binds_the_original_session_and_validates_completion() {
+        let t = Target { name: "agy/project/session".into(), ..target("mac") };
+        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
+        for (action, op) in [(Action::Pause, "pause"), (Action::Resume, "resume")] {
+            let inv = invocation(&t, &action, id).unwrap();
+            assert_eq!(inv.args, ["@mac", "session-action", &t.name, "--json"]);
+            assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(), json!({
+                "request_id": id, "action": op, "expected_run_id": t.run_id, "expected_conversation_id": t.conversation_id
+            }));
+            let mut reply = json!({"request_id":id,"name":t.name,"run_id":t.run_id,
+                "conversation_id":t.conversation_id,"status":"completed"});
+            let result = |reply: &Value| classify(&t, &action, &inv, exit(0, &serde_json::to_vec(reply).unwrap(), ""));
+            assert!(matches!(result(&reply), Outcome::Done { .. }));
+            reply["conversation_id"] = json!("different");
+            assert!(matches!(result(&reply), Outcome::Failed { .. }));
+        }
+    }
+
+    #[test]
+    fn antigravity_does_not_expose_regular_retry_after_possible_delivery() {
+        let t = Target { name: "agy/project/session".into(), ..target("mac") };
+        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
+        let action = Action::Send {
+            text: "Private fixture".into(), attachments: vec![],
+            agent_id: None, expected_compaction_id: None,
+        };
+        let inv = invocation(&t, &action, id).unwrap();
+        let receipt = |status| serde_json::to_vec(&json!({
+            "request_id": id, "name": t.name, "run_id": t.run_id,
+            "conversation_id": t.conversation_id, "status": status
+        })).unwrap();
+        for failure in [
+            exit(1, &receipt("uncertain"), ""),
+            exit(1, b"", "hgs: Antigravity control reply is unavailable"),
+            exit(1, b"", "hgs: Antigravity control delivery is unconfirmed"),
+            Exit::TimedOut,
+        ] {
+            let outcome = classify(&t, &action, &inv, failure);
+            assert!(matches!(outcome, Outcome::Uncertain { .. }));
+            let key = "draft";
+            let mut messages = crate::local_messages::LocalMessages::default();
+            messages.sending(key, id, None, "Private fixture", &[], &t.run_id, &t.conversation_id, 1.0);
+            messages.finished(key, id, &outcome);
+            assert!(messages.retryable(key, id, &t.run_id, &t.conversation_id).is_none());
+        }
+        assert!(matches!(classify(&t, &action, &inv, exit(0, &receipt("submitted"), "")), Outcome::Done { .. }));
+        assert!(matches!(classify(&t, &action, &inv, Exit::StartFailed("no executable".into())), Outcome::Failed { .. }));
     }
 
     #[test]
