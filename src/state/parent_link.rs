@@ -13,6 +13,8 @@ use super::*;
 use std::{fs, io::Read};
 
 mod advisory;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use advisory::activity as policy_activity;
 
 /// The launching hgs's proven caller for a new session, as compact JSON. The
 /// launcher always sets it, empty when no live tracked agent owns it, so an
