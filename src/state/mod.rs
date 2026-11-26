@@ -7,6 +7,7 @@ mod agent_hint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod agy;
 mod archive;
+mod native_archive_store;
 mod record_source;
 pub(crate) mod archive_catalog;
 mod archive_references;
@@ -949,7 +950,9 @@ pub fn fork_session(
 
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
-    if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
+    if archive.is_empty() && opencode::exists(name) {
+        return opencode::inspect(name, if agent.is_empty() { None } else { Some(agent) });
+    }
     if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
@@ -977,6 +980,7 @@ pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference)
     let _guard = lock(None)?;
     let mut candidates = if reference.archive.is_empty() { records()? }
         else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else if reference.name.starts_with("opencode/") { opencode::archives::STORE.by_id(&reference.archive)?.into_iter().collect() }
         else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
@@ -1890,11 +1894,11 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if command == "send" && args.iter().any(|arg| arg == "--when-idle") {
         return input::dispatch(args);
     }
-    if args.first().is_some_and(|name| opencode::exists(name)) {
-        return opencode::dispatch(command, args);
-    }
     let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
         && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| opencode::exists(name)) {
+        return opencode::dispatch(command, args);
+    }
     if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }

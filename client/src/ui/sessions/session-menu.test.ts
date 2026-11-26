@@ -112,6 +112,20 @@ describe("the owner's compact session row menu", () => {
     expect(menuItem("Forget saved session…", entries)).toMatchObject({ icon: "trash", danger: true });
   });
 
+  it("offers Archive separately from Forget when a running OpenCode binding allows it", () => {
+    const row: ViewRow = {
+      name: "opencode/example/ready", agent: "opencode", state: "running", status: "ready",
+      run_id: "opencode-ready", conversation_id: "ses_fixture", allowed_actions: ["rename", "archive", "forget"],
+    };
+    const entries = (raw: ViewRow) => sessionMenu(toSession("", "run:opencode-ready", raw));
+    expect(menuItem("Archive", entries(row))).toMatchObject({ disabled: false, icon: "archive" });
+    expect(menuItem("Forget saved session…", entries(row))).toMatchObject({ icon: "trash", danger: true });
+    const busy = { ...row, allowed_actions: ["rename", "forget"] };
+    expect(labels(entries(busy))).not.toContain("Archive");
+    const reason = "OpenCode still has a running child session. End its work in OpenCode before archiving.";
+    expect(menuItem("Archive", entries({ ...busy, action_reasons: { archive: reason } }))).toMatchObject({ disabled: true, hint: reason });
+  });
+
   it("Clear session checks an unselected row and opens the same dialog for it", async () => {
     const row: ViewRow = { name: "codex/example/live", agent: "codex", state: "running", status: "ready", run_id: "run-live", conversation_id: "conv-live" };
     applyBatch({ ...emptyBatch(), computers: [{ computer: "", status: "live", attempt: 0 }], upserts: [{ computer: "", key: "run:run-live", row }] });

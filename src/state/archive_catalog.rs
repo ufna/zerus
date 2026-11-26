@@ -259,11 +259,17 @@ pub(crate) fn revision() -> Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         _ => return Err(INCOMPLETE.into()),
     };
-    let legacy = format!("{directory}\n{published}");
-    Ok(query_hash(&match dsh::native_archives::revision()? {
-        Some(native) => format!("{legacy}\n{native}"),
-        None => legacy,
-    }))
+    let mut revision = format!("{directory}\n{published}");
+    for (provider, store) in native_stores() {
+        if let Some(stamp) = store.revision()? {
+            if provider == "dsh_archive" {
+                revision.push_str(&format!("\n{stamp}"));
+            } else {
+                revision.push_str(&format!("\n{provider}\n{stamp}"));
+            }
+        }
+    }
+    Ok(query_hash(&revision))
 }
 
 pub(crate) fn read_query() -> Result<Value> {
@@ -302,7 +308,7 @@ pub(crate) fn lookup(value: &Value) -> Result<Value> { lookup_scoped(value,false
 pub(crate) fn lookup_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
     let (name, id) = validate_lookup(value)?;
     let _guard = lock(None)?;
-    if !name.starts_with("dsh/") {
+    if !name.starts_with("dsh/") && !name.starts_with("opencode/") {
         let path = archive::path(id)?;
         if !fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_file() {
             return Err("archive record is not a regular file".into());
@@ -574,6 +580,35 @@ pub(super) fn preview(marks: &Value, name_taken: Option<&dyn Fn(&str) -> bool>) 
     Ok(page)
 }
 
+fn native_stores() -> [(&'static str, native_archive_store::Store); 2] {
+    [
+        ("dsh_archive", dsh::native_archives::STORE),
+        ("opencode_archive", opencode::archives::STORE),
+    ]
+}
+
+/// One pinned view joins the bounded catalog pages without changing any
+/// legacy tables or mixing native providers into Windows mobile requests.
+fn attach_native(db: &Connection, mut catalog: String) -> Result<String> {
+    let mut select = String::from("SELECT id, name, at, search FROM main.archive_rows");
+    let mut changed = false;
+    for (alias, store) in native_stores() {
+        if let Some(id) = store.attach(db, alias)? {
+            select.push_str(&format!(" UNION ALL SELECT id, name, at, search FROM {alias}.archive_rows"));
+            catalog = if alias == "dsh_archive" && db.path().is_none_or(str::is_empty) {
+                id
+            } else {
+                query_hash(&format!("{catalog}\n{id}"))
+            };
+            changed = true;
+        }
+    }
+    if changed {
+        sql(db.execute_batch(&format!("CREATE TEMP VIEW archive_rows AS {select}")))?;
+    }
+    Ok(catalog)
+}
+
 fn page_with_bounds(
     value: &Value,
     bounds: Option<Bounds>,
@@ -591,11 +626,7 @@ fn page_with_bounds(
         |r| r.get(0),
     ))?;
     let catalog = if include_native {
-        match dsh::native_archives::attach(&db)? {
-            Some(id) if db.path().is_none_or(str::is_empty) => id,
-            Some(id) => query_hash(&format!("{catalog}\n{id}")),
-            None => catalog,
-        }
+        attach_native(&db, catalog)?
     } else { catalog };
     let cursor = if q.cursor.is_empty() {
         None

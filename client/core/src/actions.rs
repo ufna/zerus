@@ -734,6 +734,17 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
+        Action::Restore { archive_id } if target.name.starts_with("opencode/") => {
+            if !crate::creation::canonical_uuid(archive_id) || target.conversation_id.is_empty() {
+                return Err("Missing exact OpenCode archive identity".into());
+            }
+            let mut scoped = scoped_lifecycle_invocation(target, "restore", request_id, 30, 45)?;
+            let mut body: Value = serde_json::from_slice(scoped.stdin.as_deref().unwrap())
+                .map_err(|error| error.to_string())?;
+            body["archive_id"] = json!(archive_id);
+            scoped.stdin = Some(serde_json::to_vec(&body).map_err(|error| error.to_string())?);
+            return Ok(scoped);
+        }
         Action::Restore { archive_id } | Action::ForgetArchive { archive_id } => {
             // Archive identity must never collapse to a generic resume or
             // kill of a reused name (`restoreArchive`, `forgetArchive`).
@@ -1303,6 +1314,9 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         }
         Action::Pause if invocation.request_id.is_some() => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not paused.")
+        }
+        Action::Restore { archive_id } if target.name.starts_with("opencode/") => {
+            classify_open_code_lifecycle(target, invocation, exit, Some(archive_id))
         }
         Action::ForgetBinding => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not forgotten.")
@@ -1875,6 +1889,57 @@ pub fn clearable(details: &Value) -> bool {
         && (flag("clear_context_supported") || flag("clear_context_dismiss"))
 }
 
+/// An unproved response after offering an OpenCode archive action must not
+/// imply that a new request is safe. Only the exact original receipt can settle it.
+pub(crate) fn classify_open_code_lifecycle(
+    target: &Target,
+    invocation: &Invocation,
+    exit: Exit,
+    restored_archive: Option<&str>,
+) -> Outcome {
+    const UNKNOWN: &str = "The OpenCode action is unconfirmed. Refresh the session and Archive before trying again.";
+    if let Exit::StartFailed(error) = exit {
+        return failed(error);
+    }
+    let Exit::Code { code: 0, stdout, .. } = exit else {
+        return uncertain(UNKNOWN);
+    };
+    if stdout.len() > 64 * 1024 {
+        return uncertain(UNKNOWN);
+    }
+    let Ok(receipt) = serde_json::from_slice::<Value>(&stdout) else {
+        return uncertain(UNKNOWN);
+    };
+    if invocation.request_id.is_none()
+        || receipt["request_id"].as_str() != invocation.request_id.as_deref()
+        || receipt["name"] != target.name
+        || receipt["run_id"] != target.run_id
+        || receipt["conversation_id"] != target.conversation_id
+        || receipt["archive_id"].as_str() != restored_archive
+    {
+        return uncertain(UNKNOWN);
+    }
+    if receipt["status"] == "failed" {
+        return failed(receipt["error"].as_str().unwrap_or("OpenCode refused this action."));
+    }
+    let result = &receipt["result_target"];
+    let exact_result = result["name"] == target.name
+        && result["conversation_id"] == target.conversation_id
+        && if restored_archive.is_some() {
+            result["archive_id"].is_null()
+                && result["run_id"] != target.run_id
+                && result["run_id"].as_str().is_some_and(crate::creation::canonical_uuid)
+        } else {
+            result["archive_id"].as_str().is_some_and(crate::creation::canonical_uuid)
+                && result["run_id"] == target.run_id
+        };
+    if receipt["status"] == "completed" && exact_result {
+        done(receipt, None)
+    } else {
+        uncertain(UNKNOWN)
+    }
+}
+
 /// The scoped `runSessionAction` (`HgsClient.cpp:2169-2245`) for the OpenCode
 /// forget: only a `completed` receipt naming this request, session, run and
 /// conversation is done; a durable `failed` or `uncertain` one is never retried.
@@ -2040,6 +2105,30 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opencode_restore_names_the_archive_and_classifies_only_the_original_receipt() {
+        let mut target = target("fixture-peer");
+        target.name = "opencode/example/restore".into();
+        let archive_id = "22222222-2222-4222-8222-222222222222";
+        let request = "11111111-1111-4111-8111-111111111111";
+        let action = Action::Restore { archive_id: archive_id.into() };
+        let inv = invocation(&target, &action, request).unwrap();
+        assert_eq!(inv.args, ["@fixture-peer", "session-action", "opencode/example/restore", "--json"]);
+        assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(),
+            json!({"action":"restore","archive_id":archive_id,"request_id":request,
+                   "expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id}));
+        let receipt = json!({"request_id":request,"status":"completed","name":target.name,
+            "run_id":target.run_id,"conversation_id":target.conversation_id,"archive_id":archive_id,
+            "result_target":{"name":target.name,"run_id":"33333333-3333-4333-8333-333333333333",
+            "conversation_id":target.conversation_id}});
+        let outcome = |value: &Value| classify(&target, &action, &inv,
+            Exit::Code {code:0,stdout:value.to_string().into_bytes(),stderr:String::new()});
+        assert!(matches!(outcome(&receipt), Outcome::Done { .. }));
+        let mut wrong = receipt;
+        wrong["archive_id"] = json!("44444444-4444-4444-8444-444444444444");
+        assert!(matches!(outcome(&wrong), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn opencode_compact_classifies_the_exact_native_receipt() {
         let mut target = target("");

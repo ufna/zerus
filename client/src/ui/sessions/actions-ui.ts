@@ -215,7 +215,10 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
     },
     rename: allowedOp(s, "rename", details) && available && !!agent && !!project && (!archived || !!s.archiveId),
     archive: {
-      visible: s.cmd !== "deepseek" && (s.cmd !== "agy" || allowedOp(s, "archive", details)) && (s.state === "paused" || s.state === "stopped"),
+      visible: s.cmd === "opencode"
+        ? !archived && (allowedOp(s, "archive", details)
+          || reasonFor(s, "archive", details) === trNoop("OpenCode still has a running child session. End its work in OpenCode before archiving."))
+        : s.cmd !== "deepseek" && (s.cmd !== "agy" || allowedOp(s, "archive", details)) && (s.state === "paused" || s.state === "stopped"),
       enabled: (!options.context || online) && !updating && !options.batchRunning && allowedOp(s, "archive", details),
       reason: reasonFor(s, "archive", details),
     },
