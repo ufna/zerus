@@ -1082,6 +1082,9 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   expect(userRows()[0].querySelector(".act-receipt")?.textContent).toBe(lang === "ru" ? "Отправлено" : "Sent");
   expect(userRows()[1].querySelector(".act-stamp")?.textContent).toBe(lang === "ru" ? "Доставка не подтверждена" : "Delivery not confirmed");
   expect(userRows()[1].querySelector(".act-receipt")).toBeNull();
+  const guidance = lang === "ru" ? "Доставка не подтверждена. Перед повторной попыткой проверьте активность." : unknown.error;
+  expect(userRows()[1].querySelector(".act-error")?.textContent).toBe(guidance);
+  expect(host.querySelector(".cmp-status")?.getAttribute("aria-label")).toBe(guidance);
   expect(sendDraft().disabled).toBe(true);
   sendDraft().click();
   host.querySelector(".cmp-editor")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));

@@ -13,6 +13,7 @@ export const EARLIER_INPUT_PENDING = trNoop("Wait for the agent to accept the ea
 export const EARLIER_INPUT_CLEARED = trNoop("The earlier input is no longer pending. Your draft is kept.");
 export const EARLIER_INPUT_UNOBSERVED = trNoop("Check Terminal. Send and Retry stay paused until this host confirms the earlier input cleared. Update hgs on older hosts.");
 export const DRAFT_KEPT = trNoop("Your draft is kept.");
+export const AGY_DELIVERY_UNCONFIRMED = trNoop("Delivery is not confirmed. Review Activity before retrying.");
 
 export function earlierInputRefusal(text: string): boolean {
   return text.startsWith(PREFIX) && EARLIER_INPUT_REFUSALS.includes(text.slice(PREFIX.length));
@@ -45,6 +46,7 @@ const NATIVE_REFUSALS = [
 
 /** Translate the known refusal inside the direct or deferred CLI diagnostic. */
 export function sendErrorText(text: string): string {
+  if (text === AGY_DELIVERY_UNCONFIRMED) return tr(AGY_DELIVERY_UNCONFIRMED);
   if (text.startsWith(PREFIX)) {
     const reason = text.slice(PREFIX.length);
     const known = NATIVE_REFUSALS.find((source) => reason === source);
