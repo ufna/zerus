@@ -41,6 +41,18 @@ manager = web.get_user_content_manager()
 manager.register_script_message_handler("result")
 rows = []
 finished = False
+list_cases = iter(
+    (kind, case, before, after, start, end)
+    for kind in ("composer", "task")
+    for case, before, after, start, end in (
+        ("continues an ordered list over a selection", "9. item selected tail", "9. item\n10.  tail", 7, 16),
+        ("leaves nested fenced code literal", "1. outer\n   - inner\n     ```js\n     - literal",
+         "1. outer\n   - inner\n     ```js\n     - literal\n", None, None),
+        ("ends an empty list", "- ", "", None, None),
+        ("plain Enter submits", "1. submit me", None, None, None),
+    )
+)
+list_case = None
 
 # Actual X11 events go only to this fixture's own XID on its private display.
 x11 = ctypes.CDLL("libX11.so.6")
@@ -66,6 +78,25 @@ def keys(symbols):
 
 def js(code):
     web.evaluate_javascript(code, -1, None, None, None, None, None)
+
+
+def next_list_case():
+    global list_case, finished
+    list_case = next(list_cases, None)
+    if list_case is None:
+        finished = True
+        Gtk.main_quit()
+        return
+    kind, case, before, _, start, end = list_case
+    js("textEditFixture.prepareList(..." + json.dumps([
+        kind, before, len(before) if start is None else start, len(before) if end is None else end,
+        case.startswith("continues"),
+    ]) + ")")
+
+
+def list_snapshot(stage):
+    js("textEditFixture.listSnapshot(..." + json.dumps([list_case[0], stage]) + ")")
+    return False
 
 
 def receive(_manager, message):
@@ -106,8 +137,32 @@ def receive(_manager, message):
         GLib.timeout_add(150, lambda: snapshot("paste-redo"))
     elif data.get("stage") == "paste-redo":
         rows.append({"name": "actual Ctrl+Y redo", "pass": data["value"] == "paste fixture" and data["draft"] == data["value"], "detail": data})
-        finished = True
-        Gtk.main_quit()
+        next_list_case()
+    elif data.get("stage") == "list-ready":
+        kind, case, _, after, _, _ = list_case
+        if case.startswith("continues"):
+            rows.append({"name": kind + " preserves composition-final Enter", "pass": True})
+        keys([0xff0d] if after is None else [0xffe1, 0xff0d])
+        GLib.timeout_add(180, lambda: list_snapshot("list-edited"))
+    elif data.get("stage") == "list-edited":
+        kind, case, before, after, start, _ = list_case
+        if after is None:
+            rows.append({"name": kind + " " + case, "pass": data["submissions"] == [before], "detail": data})
+            next_list_case()
+        else:
+            caret = len(after) if start is None else start + len("\n10. ")
+            matched = data["value"] == after and data["draft"] == after and not data["submissions"]
+            rows.append({"name": kind + " " + case, "pass": matched and data["start"] == data["end"] == caret,
+                         "detail": data})
+            keys([0xffe3, ord("z")])
+            GLib.timeout_add(150, lambda: list_snapshot("list-undone"))
+    elif data.get("stage") == "list-undone":
+        kind, case, before, _, start, end = list_case
+        selection = start is None or (data["start"], data["end"]) == (start, end)
+        rows.append({"name": kind + " native undo: " + case,
+                     "pass": data["value"] == data["draft"] == before and selection,
+                     "detail": data})
+        next_list_case()
 
 
 def snapshot(stage):

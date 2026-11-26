@@ -1,9 +1,12 @@
 import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { Composer } from "../../src/ui/sessions/Composer";
+import { TaskInput } from "../../src/ui/screens/TaskInput";
+import { taskItem } from "../../src/ui/screens/tasks-ui";
+import { loadMarkdown } from "../../src/ui/sessions/markdown";
 import { TextInput, TextArea } from "../../src/ui/lib/TextField";
 import { installTextEditingKeys, replaceText } from "../../src/ui/lib/text-edit";
-import { model, open, handBack, edits, sends } from "./model";
+import { model, open, handBack, sends, seedTask, taskModel, taskSaves } from "./model";
 
 const results: {name:string;pass:boolean;detail?:unknown}[]=[];
 const eq=(name:string,actual:unknown,expected:unknown)=>{
@@ -17,14 +20,47 @@ installTextEditingKeys(window,mac);
 const [dialog,setDialog]=createSignal(""),[epoch,setEpoch]=createSignal(1);
 const [number,setNumber]=createSignal(10);
 const [change,setChange]=createSignal(""),[ime,setIme]=createSignal("");
+const [taskNumber, setTaskNumber] = createSignal(0);
 let inputs=0;
 render(()=><><Composer/><TextInput id="dialog" value={dialog()} historyKey={epoch()} onInput={e=>{inputs++;setDialog(e.currentTarget.value);}}/>
  <TextInput id="change" value={change()} onChange={e=>setChange(e.currentTarget.value)}/>
  <TextInput id="number" type="number" value={number()} onInput={e=>setNumber(e.currentTarget.valueAsNumber)}/>
- <TextArea id="ime" value={ime()} onInput={e=>setIme(e.currentTarget.value)}/></>,document.getElementById("fixture")!);
+ <TextArea id="ime" value={ime()} onInput={e=>setIme(e.currentTarget.value)}/>
+ <div id="task-fixture"><TaskInput project="fixture" task={taskItem({ uuid: "task-" + taskNumber(), stage: "active" })} describing={true}
+   cancel={() => {}} saved={() => {}} /></div></>,document.getElementById("fixture")!);
 const editor=()=>document.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
+type EditorKind = "composer" | "task";
+const listEditor = (kind: EditorKind) => kind === "composer" ? editor() : document.querySelector<HTMLTextAreaElement>("#task-fixture .cmp-editor")!;
+const submitted = (kind: EditorKind) => kind === "composer" ? sends : taskSaves;
+const post = (data: unknown) => (window as any).webkit?.messageHandlers.result.postMessage(JSON.stringify(data));
+function listSnapshot(kind: EditorKind, stage: string) {
+  const el = listEditor(kind);
+  post({ stage, value: el.value, draft: kind === "composer" ? model.text() : taskModel.view()?.text,
+    start: el.selectionStart, end: el.selectionEnd, submissions: submitted(kind) });
+}
+async function prepareList(kind: EditorKind, text: string, start: number, end: number, composition: boolean) {
+  if (kind === "composer") handBack(text);
+  else {
+    seedTask(text);
+    setTaskNumber(n => n + 1);
+  }
+  await tick();
+  const el = listEditor(kind);
+  if (el.value !== text || el.readOnly || el.disabled) throw Error(kind + ": draft is not ready");
+  el.focus();
+  el.setSelectionRange(start, end, start === end ? "none" : "backward");
+  if (composition) {
+    el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    const enter = key(el, "Enter");
+    const newline = el.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertLineBreak", bubbles: true, cancelable: true }));
+    if (!enter || !newline || el.value !== text || submitted(kind).length) throw Error(kind + ": composition caused an edit or submission");
+    el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    await tick();
+  }
+  listSnapshot(kind, "list-ready");
+}
 async function run(){
- await open();await tick();let el=editor();el.focus();command("insertText","hello");await tick(300);
+ await loadMarkdown();await open();await tick();let el=editor();el.focus();command("insertText","hello");await tick(300);
  eq("typing reaches optimistic draft",model.text(),"hello");
  key(el,"z",{ctrlKey:true});eq("typing undo reaches draft",model.text(),"");
  key(el,"y",{ctrlKey:true});eq("typing redo reaches draft",model.text(),"hello");
@@ -60,7 +96,8 @@ async function run(){
  } finally {document.execCommand=native;}
  eq("refused native replacement preserves original caret",[d().value,d().selectionStart,d().selectionEnd],["ABCDEF",2,2]);
  // No synthetic key here: the Python driver also runs real X11 key events.
- (window as any).textEditFixture={results,editor,model,replaceText,sends};
- (window as any).webkit?.messageHandlers.result.postMessage(JSON.stringify({stage:"ready",results}));
+ (window as any).textEditFixture={results,editor,model,replaceText,sends,listSnapshot,
+   prepareList: (...args: Parameters<typeof prepareList>) => prepareList(...args).catch(e => post({error:String(e),stack:e.stack}))};
+ post({stage:"ready",results});
 }
-run().catch(e=>(window as any).webkit?.messageHandlers.result.postMessage(JSON.stringify({error:String(e),stack:e.stack})));
+run().catch(e=>post({error:String(e),stack:e.stack}));

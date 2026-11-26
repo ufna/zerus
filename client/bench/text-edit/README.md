@@ -1,7 +1,7 @@
 # Native text editing regression
 
-This renders the production Composer and its real optimistic draft store, plus
-shared input/textarea fields. Only surrounding services, chips and bridge replies
+This renders the production Composer and TaskInput with their real optimistic
+draft stores, plus shared input and textarea fields. Surrounding services and bridge replies
 are synthetic. It does not start an agent or send a message. The browser engine
 owns undo history; no JavaScript history implementation is substituted.
 
@@ -24,9 +24,11 @@ settles its HTTP server at exit; the check has a 25-second bound.
 Checks cover typing, Tab suggestion acceptance, delayed model echoes, native
 multiline insertion, dialog updates, context/history reset and composition-event
 ordering. The driver additionally exercises real Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y,
-Cut and Paste while checking both DOM text and the draft store. Composition
-ordering is simulated; this does not qualify a particular operating-system IME
-or microphone. Session voice delivery still uses its existing send/preview
+Cut and Paste while checking both DOM text and the draft store. The two
+production editors also exercise real Shift+Enter over a selection, inside
+nested fenced code, and on an empty list item, with native undo after each edit.
+Plain Enter exercises send and description save against fixture ports.
+Composition ordering is simulated. Session voice delivery still uses its existing send/preview
 contract, rather than inserting text into a draft.
 
 Changing composer handle/text epoch starts another history. Ordinary edits and
