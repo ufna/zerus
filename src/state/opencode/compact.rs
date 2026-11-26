@@ -133,26 +133,90 @@ pub(super) fn decorate(native: &dyn Native, record: &Value, seen: &Observed, row
     }
 }
 
-pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -> Result<Value> {
-    if !session_id::canonical(&request.request_id)
-        || request.request_id == "00000000-0000-0000-0000-000000000000"
-    {
+fn receipt_path(id: &str) -> Result<PathBuf> {
+    if !session_id::canonical(id) || id == "00000000-0000-0000-0000-000000000000" {
         return Err("Invalid compact request identity".into());
     }
+    Ok(root()
+        .join("opencode/compact-receipts")
+        .join(format!("{id}.json")))
+}
+
+/// Publish a proven terminal outcome before a later offer can replace the
+/// session's current attempt. Inspect only projects the native evidence.
+fn settle_current(native: &dyn Native, record: &mut Value, until: Instant) -> Result<Value> {
+    let original = &record[FIELD];
+    let settled = reconcile(native, record, original, &[], until);
+    if pending(original) && !pending(&settled) {
+        let path = receipt_path(string(original, "request_id"))?;
+        let saved = read(&path)?.ok_or("OpenCode compact receipt is unavailable")?;
+        if [
+            "request_id",
+            "session_id",
+            "run_id",
+            "conversation_id",
+            "native_message_id",
+        ]
+        .into_iter()
+        .any(|key| saved[key] != original[key])
+        {
+            return Err("OpenCode compact receipt changed".into());
+        }
+        // Once the receipt is terminal, subsequent observations may update
+        // the binding even after an interrupted final write.
+        atomic(&path, &settled.to_string())?;
+        record[FIELD] = settled.clone();
+        save(record)?;
+    }
+    Ok(settled)
+}
+
+fn repeat(record: &mut Value, previous: Value) -> Value {
+    if !pending(&previous) || record[FIELD]["request_id"] != previous["request_id"] {
+        return previous;
+    }
+    let until = Instant::now() + Duration::from_secs(2);
+    let Ok(service) = service::connect_within(until) else {
+        return previous;
+    };
+    let native = Bounded {
+        service: &service,
+        deadline: until,
+    };
+    let observed =
+        verify_session(&native, record).and_then(|_| settle_current(&native, record, until));
+    match observed {
+        Ok(receipt) if receipt.is_object() && !pending(&receipt) => receipt,
+        _ => previous,
+    }
+}
+
+fn definite_refusal(reply: &Response, record: &Value) -> bool {
+    // Only this released native error names the exact session. A gateway,
+    // unbound validation/auth error, or conflicting admission body cannot
+    // prove a negative effect even when its HTTP status is a 4xx.
+    reply.status == 404
+        && reply.body["_tag"] == "SessionNotFoundError"
+        && reply.body["sessionID"] == record["conversation_id"]
+        && reply.body["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty())
+        && reply.body.as_object().is_some_and(|body| body.len() == 3)
+}
+
+pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -> Result<Value> {
+    let path = receipt_path(&request.request_id)?;
     let _guard =
         try_bindings(Duration::from_millis(500)).ok_or("OpenCode session state is busy")?;
     let mut record = binding(name)?;
     let expected = json!({"expected_run_id":request.expected_run_id,"expected_conversation_id":request.expected_conversation_id});
     check_request_identity(&record, &expected)?;
     terminating::check_mutation(&record)?;
-    let path = root()
-        .join("opencode/compact-receipts")
-        .join(format!("{}.json", request.request_id));
     if let Some(previous) = read(&path)? {
         if !matches_request(&previous, &record, request) {
             return Err("This request ID belongs to another OpenCode compaction".into());
         }
-        return Ok(previous);
+        return Ok(repeat(&mut record, previous));
     }
 
     let until = Instant::now() + Duration::from_secs(8);
@@ -165,7 +229,7 @@ pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -
         deadline: until,
     };
     verify_session(&native, &record)?;
-    let previous = reconcile(&native, &record, &record[FIELD], &[], until);
+    let previous = settle_current(&native, &mut record, until)?;
     if pending(&previous) {
         return Err(PENDING.into());
     }
@@ -185,13 +249,14 @@ pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -
     }
 
     ensure_session_id(&mut record);
-    let mut receipt = json!({"request_id":request.request_id,"name":name,"session_id":record["session_id"],
+    let reserved = json!({"request_id":request.request_id,"name":name,"session_id":record["session_id"],
         "run_id":record["run_id"],"conversation_id":record["conversation_id"],"native_message_id":new_id("msg_"),
         "at":now(),"status":"uncertain","error":UNCERTAIN});
-    atomic(&path, &receipt.to_string())?;
-    record[FIELD] = receipt.clone();
+    atomic(&path, &reserved.to_string())?;
+    record[FIELD] = reserved.clone();
     save(&mut record)?;
 
+    let mut receipt = reserved.clone();
     let reply = native.raw(
         "POST",
         &session_path(&record, "/compact"),
@@ -210,17 +275,54 @@ pub(in crate::state) fn submit(name: &str, request: &compact_context::Request) -
                 .as_object_mut()
                 .expect("compact receipt")
                 .remove("error");
-        } else if matches!(reply.status, 400 | 401 | 404) {
+        } else if definite_refusal(&reply, &record) {
             receipt["status"] = json!("failed");
             receipt["error"] = json!("OpenCode refused this compaction.");
         }
     }
-    if receipt != record[FIELD] {
-        // A failure publishing either outcome leaves at least the original
-        // durable no-replay marks and can only make the result uncertain.
+    if receipt != reserved {
+        // Both writes follow the native offer. Keep the typed, reserved
+        // uncertain receipt if either write cannot publish the new outcome.
         record[FIELD] = receipt.clone();
-        save(&mut record).map_err(|_| UNCERTAIN)?;
-        atomic(&path, &receipt.to_string()).map_err(|_| UNCERTAIN)?;
+        if atomic(&path, &receipt.to_string())
+            .and_then(|()| save(&mut record))
+            .is_err()
+        {
+            return Ok(reserved);
+        }
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_native_missing_session_refusal_can_release_the_fence() {
+        let record = json!({"conversation_id":"ses_current"});
+        let native = json!({"_tag":"SessionNotFoundError","sessionID":"ses_current","message":"Missing session"});
+        assert!(definite_refusal(
+            &Response {
+                status: 404,
+                body: native.clone()
+            },
+            &record
+        ));
+        assert!(!definite_refusal(
+            &Response {
+                status: 400,
+                body: native.clone()
+            },
+            &record
+        ));
+        for body in [
+            Value::Null,
+            json!({"message":"Missing session"}),
+            json!({"_tag":"SessionNotFoundError","sessionID":"ses_other","message":"Missing session"}),
+            json!({"_tag":"SessionNotFoundError","sessionID":"ses_current","message":"Missing session","data":{"delivery":"queue"}}),
+        ] {
+            assert!(!definite_refusal(&Response { status: 404, body }, &record));
+        }
+    }
 }

@@ -62,7 +62,12 @@ fn last_step<'a>(messages: &'a [Value], model: &Value) -> Option<&'a Value> {
         match string(message, "type") {
             "model-switched" => return None,
             "compaction" if message["status"] == "completed" => return None,
-            "assistant" if number(&message["time"]["completed"]).is_some_and(|time| time > 0) => {
+            "assistant"
+                if number(&message["time"]["completed"]).is_some_and(|time| time > 0)
+                    && matches!(string(message, "finish"), "stop" | "length" | "tool-calls")
+                    && message["error"].is_null()
+                    && message["retry"].is_null() =>
+            {
                 return same_model(&message["model"], model).then_some(message);
             }
             _ => {}
@@ -132,25 +137,43 @@ mod tests {
         let model = json!({"id":"local","providerID":"fixture"});
         let session = json!({"model":model,"tokens":{"input":500,"output":40,"reasoning":20,
             "cache":{"read":100,"write":10}}});
-        let complete = json!({"type":"assistant","model":model,"time":{"completed":1000},
+        let complete = json!({"type":"assistant","model":model,"time":{"completed":1000},"finish":"stop",
             "tokens":{"input":100,"output":20,"reasoning":10,"cache":{"read":200,"write":5}}});
         let streaming = json!({"type":"assistant","model":model,"time":{"created":1001},
             "tokens":{"input":900,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}});
+        let mut error = complete.clone();
+        error["finish"] = json!("error");
+        error["error"] = json!({"_tag":"APIError"});
+        error["tokens"]["input"] = json!(800);
+        let mut retry = complete.clone();
+        retry["retry"] = json!({"attempt":1,"at":1002,"error":{"_tag":"APIError"}});
+        retry["tokens"]["input"] = json!(1000);
+        let mut tool_step = complete.clone();
+        tool_step["finish"] = json!("tool-calls");
+        tool_step["tokens"]["input"] = json!(400);
         let limits = json!({"limit":16000,"output_limit":1000});
         let view = |messages: &[Value]| usage(&session, messages, &limits);
-        let measured = view(&[complete.clone(), streaming]);
+        let measured = view(&[complete.clone(), streaming, error.clone(), retry.clone()]);
         assert_eq!(measured["context"]["used"], 335);
         assert_eq!(measured["totals"]["total"], 670);
         assert_eq!(measured["totals"]["output"], 60);
         for boundary in [
             json!({"type":"compaction","status":"completed","reason":"manual","tokens":session["tokens"]}),
             json!({"type":"model-switched","model":model}),
-            json!({"type":"assistant","model":{"providerID":"other","id":"local"},"time":{"completed":1002},"tokens":session["tokens"]}),
+            json!({"type":"assistant","model":{"providerID":"other","id":"local"},"time":{"completed":1002},"finish":"stop","tokens":session["tokens"]}),
         ] {
-            let refreshed = view(&[complete.clone(), boundary]);
+            let refreshed = view(&[
+                complete.clone(),
+                boundary.clone(),
+                error.clone(),
+                retry.clone(),
+            ]);
             assert!(refreshed["context"]["used"].is_null());
             assert!(refreshed["prompt_cache"].is_null());
             assert_eq!(refreshed["totals"], measured["totals"]);
+            let next = view(&[boundary, error.clone(), tool_step.clone(), retry.clone()]);
+            assert_eq!(next["context"]["used"], 635);
+            assert_eq!(next["totals"], measured["totals"]);
         }
     }
 }

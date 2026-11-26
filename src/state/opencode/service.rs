@@ -602,7 +602,11 @@ fn connect_from_until(
 fn requirement_digest() -> String {
     format!(
         "{:x}",
-        Sha256::digest(json!([REQUIRED, "manual-compact-v1"]).to_string().as_bytes())
+        Sha256::digest(
+            json!([REQUIRED, "manual-compact-v2"])
+                .to_string()
+                .as_bytes()
+        )
     )
 }
 
@@ -616,15 +620,103 @@ fn verdict(openapi: &Value) -> Result<Compatibility> {
     if !openapi["paths"].is_object() {
         return Err("OpenCode returned an invalid API description".into());
     }
+    Ok(Compatibility {
+        missing: missing_operations(openapi),
+        manual_compact: manual_compact_request(openapi),
+    })
+}
+
+// The reviewed request is one ordinary object with both fields present.
+// Refuse schemas with conditions or unrecognized constraints. A component
+// elsewhere in the description cannot authorize what this operation accepts.
+fn manual_compact_request(openapi: &Value) -> bool {
     let operation = &openapi["paths"]["/api/session/{sessionID}/compact"]["post"];
     let schema = &operation["requestBody"]["content"]["application/json"]["schema"];
     let response = &operation["responses"]["200"]["content"]["application/json"]["schema"];
-    let delivery = &openapi["components"]["schemas"]["Session.Inbox.Delivery"]["enum"];
-    let manual_compact = operation["operationId"] == "session.compact"
+    let allowed = |key: &str| matches!(key, "id" | "delivery");
+    let only_object_fields = schema.as_object().is_some_and(|object| {
+        object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "type" | "properties" | "required" | "additionalProperties" | "description"
+            )
+        })
+    });
+    let required_fields_fit = schema.get("required").is_none_or(|required| {
+        required.as_array().is_some_and(|fields| {
+            fields
+                .iter()
+                .all(|field| field.as_str().is_some_and(allowed))
+        })
+    });
+    operation["operationId"] == "session.compact"
+        && schema["type"] == "object"
+        && only_object_fields
+        && required_fields_fit
+        && compact_string_field(openapi, &schema["properties"]["id"], CompactField::Id, 8)
+        && compact_string_field(
+            openapi,
+            &schema["properties"]["delivery"],
+            CompactField::Delivery,
+            8,
+        )
         && schema_has_field(openapi, response, "data", 8)
-        && delivery.as_array().is_some_and(|options| options.iter().any(|value| value == "queue"))
-        && ["id", "delivery"].into_iter().all(|field| schema_has_field(openapi, schema, field, 8));
-    Ok(Compatibility { missing: missing_operations(openapi), manual_compact })
+}
+
+#[derive(Clone, Copy)]
+enum CompactField {
+    Id,
+    Delivery,
+}
+
+// Accept the exact string fields that this service advertises, following the
+// operation's actual references and nullable alternatives within a fixed depth.
+fn compact_string_field(openapi: &Value, schema: &Value, field: CompactField, depth: u8) -> bool {
+    let Some(object) = schema.as_object().filter(|_| depth > 0) else {
+        return false;
+    };
+    if let Some(reference) = schema["$ref"].as_str() {
+        return object
+            .keys()
+            .all(|key| matches!(key.as_str(), "$ref" | "description"))
+            && reference
+                .strip_prefix("#/components/schemas/")
+                .is_some_and(|name| {
+                    compact_string_field(
+                        openapi,
+                        &openapi["components"]["schemas"][name],
+                        field,
+                        depth - 1,
+                    )
+                });
+    }
+    if let Some(variants) = schema["anyOf"].as_array() {
+        return object
+            .keys()
+            .all(|key| matches!(key.as_str(), "anyOf" | "description"))
+            && variants
+                .iter()
+                .any(|variant| compact_string_field(openapi, variant, field, depth - 1));
+    }
+    schema["type"] == "string"
+        && match field {
+            CompactField::Id => {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "pattern" | "description"))
+                    && schema
+                        .get("pattern")
+                        .is_none_or(|pattern| pattern == "^msg_")
+            }
+            CompactField::Delivery => {
+                object
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "enum" | "description"))
+                    && schema["enum"]
+                        .as_array()
+                        .is_some_and(|options| options.iter().any(|value| value == "queue"))
+            }
+        }
 }
 
 /// The OpenAPI verdict, cached per service identity and requirement digest in
@@ -862,6 +954,35 @@ pub(super) fn ensure_started() -> Result<Service> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_queue_capability_checks_the_operations_actual_request_fields() {
+        let request = json!({"type":"object","properties":{
+            "id":{"anyOf":[{"type":"string","pattern":"^msg_"},{"type":"null"}]},
+            "delivery":{"$ref":"#/components/schemas/QueueDelivery"}},
+            "additionalProperties":false});
+        let mut openapi = json!({"components":{"schemas":{
+            "QueueDelivery":{"type":"string","enum":["queue","steer"]},
+            "Session.Inbox.Delivery":{"type":"string","enum":["queue","steer"]}
+        }},"paths":{"/api/session/{sessionID}/compact":{"post":{
+            "operationId":"session.compact",
+            "requestBody":{"content":{"application/json":{"schema":request}}},
+            "responses":{"200":{"content":{"application/json":{"schema":{"properties":{"data":{}}}}}}}
+        }}}});
+        assert!(manual_compact_request(&openapi));
+        openapi["components"]["schemas"]["QueueDelivery"]["enum"] = json!(["steer"]);
+        assert!(!manual_compact_request(&openapi));
+        openapi["components"]["schemas"]["QueueDelivery"]["enum"] = json!(["queue"]);
+        const REQUEST: &str = "/paths/~1api~1session~1{sessionID}~1compact/post/requestBody/content/application~1json/schema";
+        let incompatible = &mut openapi["paths"]["/api/session/{sessionID}/compact"]["post"]["requestBody"]
+            ["content"]["application/json"]["schema"];
+        incompatible["properties"]["id"] = json!({"type":"string","pattern":"^other_"});
+        assert!(!manual_compact_request(&openapi));
+        let replaced = openapi.pointer_mut(REQUEST).unwrap();
+        *replaced = request;
+        replaced["oneOf"] = json!([{"required":["id"]},{"not":{"required":["id"]}}]);
+        assert!(!manual_compact_request(&openapi));
+    }
 
     #[test]
     fn registration_has_no_state_field_and_requires_loopback_and_pid() {

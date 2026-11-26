@@ -126,6 +126,14 @@ class OpenCodeContext(fixture.OpenCodeNative):
         return self.hgs(['compact-context', session['name'], '--json'],
                         self.payload(session) if payload is None else payload, success=success)
 
+    def assert_settled_receipt(self, session, request, observed):
+        terminal = self.compact(session, request)
+        self.assertEqual(terminal['status'], 'completed')
+        self.assertEqual(terminal['request_id'], request['request_id'])
+        self.assertEqual(terminal['native_message_id'], observed['native_message_id'])
+        saved = self.state / 'opencode/compact-receipts' / (request['request_id'] + '.json')
+        self.assertEqual(json.loads(saved.read_text()), terminal)
+
     def assert_native_total(self, row, expected):
         usage = row['session_usage']
         native = self.session(row['conversation_id'])['tokens']
@@ -156,10 +164,10 @@ class OpenCodeContext(fixture.OpenCodeNative):
         request = self.payload(ready)
         receipt = self.compact(ready, request)
         self.assertEqual(receipt['status'], 'submitted')
-        self.assertEqual(self.compact(ready, request), receipt)
         after = self.wait(ready['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
         self.assertEqual(after['conversation_id'], ready['conversation_id'])
         self.assertEqual(after['compact_context_request']['request_id'], request['request_id'])
+        self.assert_settled_receipt(ready, request, receipt)
         self.assertIsNone(after['session_usage']['context']['used'])
         self.assertIsNone(after['session_usage']['prompt_cache'])
         self.assert_native_total(after, 2780)
@@ -182,11 +190,13 @@ class OpenCodeContext(fixture.OpenCodeNative):
         self.assert_native_total(refreshed, 3520)
 
     @contextmanager
-    def proxy(self, *, drop_compact=False, without_compact=False, reported_version=None):
+    def proxy(self, *, compact_response=None, without_compact=False, steer_only=False, reported_version=None):
         registration = self.registration()
         original_bytes = self.registration_path().read_bytes()
         origin = registration['url'].rstrip('/')
         requests = []
+        receipts = self.state / 'opencode/compact-receipts'
+        saved_receipts = receipts.with_name('private-fault-compact-receipts')
 
         class Proxy(http.server.BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -208,12 +218,22 @@ class OpenCodeContext(fixture.OpenCodeNative):
                     response = error
                 with response:
                     status, raw = response.status, response.read(32 * 1024 * 1024 + 1)
-                if compact and drop_compact:
+                if compact and compact_response == 'lost':
                     self.close_connection = True
                     return
-                if without_compact and self.path == '/openapi.json':
+                if compact and compact_response == 'unbound-400':
+                    status, raw = 400, b'{"message":"unbound refusal after admission"}'
+                if compact and compact_response == 'receipt-write-failed' and status == 200:
+                    receipts.rename(saved_receipts)
+                    receipts.touch(exist_ok=False)
+                if (without_compact or steer_only) and self.path == '/openapi.json':
                     description = json.loads(raw)
-                    description['paths'].pop('/api/session/{sessionID}/compact', None)
+                    if without_compact:
+                        description['paths'].pop('/api/session/{sessionID}/compact', None)
+                    else:
+                        operation = description['paths']['/api/session/{sessionID}/compact']['post']
+                        properties = operation['requestBody']['content']['application/json']['schema']['properties']
+                        properties['delivery'] = {'type': 'string', 'enum': ['steer']}
                     raw = json.dumps(description).encode()
                 if reported_version and self.path == '/api/info':
                     info = json.loads(raw)
@@ -237,11 +257,14 @@ class OpenCodeContext(fixture.OpenCodeNative):
                 self.registration_path().write_bytes(original_bytes)
                 server.shutdown()
                 serving.join(2)
+                if saved_receipts.is_dir():
+                    receipts.unlink()
+                    saved_receipts.rename(receipts)
 
     def test_unknown_compact_is_never_replayed_and_reconciles_exact_id(self):
         first = self.turn(self.start(), 'Measure before the lost compact response')
         self.model.hold_compact = True
-        with self.proxy(drop_compact=True) as requests:
+        with self.proxy(compact_response='lost') as requests:
             attempt = self.payload(first)
             unknown = self.compact(first, attempt)
             self.assertEqual(unknown['status'], 'uncertain')
@@ -253,7 +276,48 @@ class OpenCodeContext(fixture.OpenCodeNative):
             self.model.compact_release.set()
             done = self.wait(first['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
             self.assertEqual(done['compact_context_request']['native_message_id'], unknown['native_message_id'])
+            self.assert_settled_receipt(first, attempt, unknown)
             self.assertEqual(sum(method == 'POST' and route.endswith('/compact') for method, route in requests), 1)
+
+    def test_admitted_compact_with_unbound_400_stays_uncertain(self):
+        first = self.turn(self.start(), 'Measure before an unbound compact response')
+        self.model.hold_compact = True
+        with self.proxy(compact_response='unbound-400') as requests:
+            attempt = self.payload(first)
+            uncertain = self.compact(first, attempt)
+            self.assertTrue(self.model.compacting.wait(5), 'The forwarded native compact was admitted')
+            self.assertEqual(uncertain['status'], 'uncertain')
+            self.assertEqual(self.compact(first, attempt), uncertain)
+            self.compact(first, success=False)
+            self.model.compact_release.set()
+            done = self.wait(first['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
+            self.assertEqual(done['compact_context_request']['native_message_id'], uncertain['native_message_id'])
+            self.assert_settled_receipt(first, attempt, uncertain)
+            self.assertEqual(sum(method == 'POST' and path.endswith('/compact') for method, path in requests), 1)
+
+    def test_receipt_write_failure_after_offer_returns_typed_uncertainty(self):
+        first = self.turn(self.start(), 'Measure before the private receipt storage fault')
+        self.model.hold_compact = True
+        attempt = self.payload(first)
+        with self.proxy(compact_response='receipt-write-failed') as requests:
+            uncertain = self.compact(first, attempt)
+            self.assertEqual(uncertain['status'], 'uncertain')
+            self.assertEqual(uncertain['request_id'], attempt['request_id'])
+            self.assertTrue(self.model.compacting.wait(5), 'The exact native compact was admitted')
+            self.assertEqual(sum(method == 'POST' and path.endswith('/compact') for method, path in requests), 1)
+        self.assertEqual(self.compact(first, attempt), uncertain)
+        self.compact(first, success=False)
+        self.model.compact_release.set()
+        self.wait(first['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
+        self.assert_settled_receipt(first, attempt, uncertain)
+
+    def test_steer_only_operation_cannot_offer_compact(self):
+        first = self.turn(self.start(), 'Measure where the compact request cannot queue')
+        with self.proxy(steer_only=True) as requests:
+            observed = self.hgs(['inspect', first['name']])
+            self.assertFalse(observed['compact_context_supported'])
+            self.compact(first, success=False)
+            self.assertFalse(any(method == 'POST' for method, _ in requests))
 
     def test_missing_native_compact_capability_keeps_usage(self):
         first = self.turn(self.start(), 'Measure on a service without the optional route')

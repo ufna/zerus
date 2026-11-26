@@ -5351,6 +5351,7 @@
   "OpenCode compaction is unconfirmed. Check this conversation before trying again.": "Сжатие OpenCode не подтверждено. Проверьте этот разговор перед повторной попыткой.",
   "Compaction is unconfirmed. Check this conversation before trying again.": "Сжатие не подтверждено. Проверьте этот разговор перед повторной попыткой.",
   "OpenCode refused this compaction.": "OpenCode отклонил запрос на сжатие.",
+  "OpenCode cancelled this compaction.": "OpenCode отменил сжатие.",
   "Context compaction requested.": "Запрошено сжатие контекста.",
   "Refresh the session before compacting its context.": "Обновите сеанс перед сжатием контекста.",
   "Context from the last completed OpenCode model step.": "Контекст по последнему завершённому шагу модели OpenCode.",

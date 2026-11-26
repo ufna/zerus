@@ -1250,13 +1250,21 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
             ..
         } => classify_settings(target, invocation, model, effort, *without_terminal, exit),
         Action::CompactContext if target.name.starts_with("opencode/") => {
-            let outcome = classify_typed(target, invocation, exit, &["submitted", "uncertain", "failed"]);
+            let outcome = classify_typed(
+                target,
+                invocation,
+                exit,
+                &["submitted", "uncertain", "failed", "completed", "cancelled"],
+            );
             match &outcome {
                 Outcome::Done { receipt, .. } if receipt["status"] == "uncertain" => {
                     uncertain("OpenCode compaction is unconfirmed. Check this conversation before trying again.")
                 }
                 Outcome::Done { receipt, .. } if receipt["status"] == "failed" => {
                     failed("OpenCode refused this compaction.")
+                }
+                Outcome::Done { receipt, .. } if receipt["status"] == "cancelled" => {
+                    failed("OpenCode cancelled this compaction.")
                 }
                 _ => outcome,
             }
@@ -2041,9 +2049,12 @@ mod tests {
             classify(&target, &action, &invocation, exit(0, receipt.to_string().as_bytes(), ""))
         };
         assert!(matches!(result("original", "submitted"), Outcome::Done { .. }));
+        assert!(matches!(result("original", "completed"), Outcome::Done { .. }));
+        assert!(matches!(result("original", "cancelled"), Outcome::Failed { .. }));
         assert!(matches!(result("original", "failed"), Outcome::Failed { .. }));
         assert!(matches!(result("original", "uncertain"), Outcome::Uncertain { .. }));
         assert!(matches!(result("other", "submitted"), Outcome::Uncertain { .. }));
+        assert!(matches!(result("other", "completed"), Outcome::Uncertain { .. }));
     }
 
     #[test]
