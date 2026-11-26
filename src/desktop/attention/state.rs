@@ -319,7 +319,7 @@ pub(super) const STARTUP_CURRENT: &str = "SELECT r.key FROM desktop_catalog_rows
       AND CASE WHEN json_valid(r.json) THEN json_extract(r.json,'$.run_id') END=?3
       AND COALESCE(json_extract(r.json,'$.conversation_id'),'')=''
       AND COALESCE(json_extract(r.json,'$.state'),'running')='running'
-      AND COALESCE(json_extract(r.json,'$.process_state'),'')<>'exited' ORDER BY r.id LIMIT 2";
+      AND COALESCE(json_extract(r.json,'$.process_state'),'') NOT IN ('exited','unverified') ORDER BY r.id LIMIT 2";
 pub(super) fn current_key(
     db: &Connection,
     computer: &str,
@@ -331,7 +331,7 @@ pub(super) fn current_key(
       AND CASE WHEN json_valid(r.json) THEN json_extract(r.json,'$.cmd') END=?2
       AND CASE WHEN json_valid(r.json) THEN json_extract(r.json,'$.conversation_id') END=?3
       AND COALESCE(json_extract(r.json,'$.state'),'running')='running'
-      AND COALESCE(json_extract(r.json,'$.process_state'),'')<>'exited' ORDER BY r.id LIMIT 2"})?;
+      AND COALESCE(json_extract(r.json,'$.process_state'),'') NOT IN ('exited','unverified') ORDER BY r.id LIMIT 2"})?;
     let rows = q
         .query_map(
             params![

@@ -455,6 +455,9 @@ fn presence_reads_the_same_facts_and_unknown_counts_give_none() {
     use super::rows::seed_row;
     let idle = Facts::of(&seed_row("claude", &[])).seen().unwrap();
     assert!(idle.live && !idle.working && !idle.background && !idle.pending);
+    let unverified = Facts::of(&seed_row("codex", &[("process_state", json!("unverified"))]));
+    assert!(!unverified.live && !unverified.ready && !unverified.free_with_first(true));
+    assert!(!unverified.seen().unwrap().live);
     let child = Facts::of(&seed_row("claude", &[("subagent_active_count", json!(2))]));
     assert!(child.seen().unwrap().working && !child.free());
     for (path, value) in [

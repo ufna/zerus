@@ -369,10 +369,29 @@ impl Seed {
         // overlay; it is never performed by a publisher or from cached pins.
         journal::repair_kimi_main(&mut public);
         journal::repair_claude_internal(&mut public);
-        let digest = storage::label_key(&serde_json::to_string(&public)?);
-        let encoded = serde_json::to_string(
-            &json!({"version":SEED_VERSION,"record":public,"digest":digest}),
-        )?;
+        let encode = |public: &Value| -> anyhow::Result<String> {
+            let digest = storage::label_key(&serde_json::to_string(public)?);
+            Ok(serde_json::to_string(
+                &json!({"version":SEED_VERSION,"record":public,"digest":digest}),
+            )?)
+        };
+        #[cfg(target_os = "linux")]
+        if public["_listing"]["live_public"] == true {
+            use process_index::pins::{FIELD, Pin};
+            if let Some(pin) = Pin::display_seed(record) {
+                public[FIELD] = serde_json::to_value(pin)?;
+            }
+            public["_listing"]["process_pin_checked"] = json!(true);
+            let extended = encode(&public)?;
+            if extended.len() <= SEED_BYTES {
+                return Ok(extended);
+            }
+            // This optional evidence must never invalidate a previously
+            // representable seed. Keep the legacy shape at the byte boundary.
+            public.as_object_mut().unwrap().remove(FIELD);
+            public["_listing"].as_object_mut().unwrap().remove("process_pin_checked");
+        }
+        let encoded = encode(&public)?;
         anyhow::ensure!(
             encoded.len() <= SEED_BYTES,
             "Display seed exceeds its bound"

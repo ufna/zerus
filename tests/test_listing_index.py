@@ -817,12 +817,13 @@ class LiveListingIndex(test_pause.Harness):
         self.assertEqual(len(names),len(set(names)),'one live native identity appeared on multiple explicit pages')
         self.assertEqual(set(names),{r['name'] for r in expected})
 
-    def page_rows(self):
+    def page_rows(self, size=1):
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
             rows=[];counts=[];cursor=None;generation=None;retry=False
             for _ in range(32):
-                args=['ls','--json','--local','--no-archives','--paged','--page-size','1']
+                args=['ls','--json','--local','--no-archives','--paged']
+                if size is not None:args+=['--page-size',str(size)]
                 if cursor:args+=['--cursor',cursor]
                 result=subprocess.run([str(HGS),*args],env=self.env,capture_output=True,text=True,timeout=12)
                 if result.returncode:
@@ -1170,6 +1171,163 @@ class LiveListingIndex(test_pause.Harness):
         self.hgs('listing-index','disable','--json');expected=self.projected()
         self.hgs('listing-index','enable','--json');actual=self.ready_rows();self.assert_rows(expected,actual)
         self.assertIn(renamed,[row['name'] for row in actual])
+
+    def shifted_start_binding(self, name):
+        from datetime import datetime, timedelta
+
+        record = self.binding(name)
+        pin = record['process_index_pin']
+        state = self.root / 'state'
+        candidates = [state / (hashlib.sha256(name.encode()).hexdigest() + '.json'),
+                      state / 'sessions' / (record['session_id'] + '.json')]
+        path = next(path for path in candidates if path.is_file() and json.loads(path.read_text()) == record)
+        self.assertEqual(pin['child']['pid'], record['pid'])
+        self.assertEqual(pin['supervisor']['pid'], record['supervisor']['pid'])
+        for role in ('child', 'supervisor'):
+            proc = Path(f"/proc/{pin[role]['pid']}/stat").read_text().rsplit(')', 1)[1].split()
+            self.assertEqual(int(proc[19]), pin[role]['birth']['Linux'])
+
+        # Shift the persisted compatibility text without changing either native
+        # birth. A fresh hgs process sees an exact pane and the real kernel PIDs.
+        form = '%a %b %d %H:%M:%S %Y'
+        shifted = datetime.strptime(record['process_start'], form) - timedelta(seconds=1)
+        record['process_start'] = pin['child_start'] = shifted.strftime('%a %b %e %H:%M:%S %Y')
+        return path, record
+
+    def save_listing_binding(self, path, record):
+        pending = path.with_suffix('.test-pending')
+        pending.write_text(json.dumps(record))
+        pending.replace(path)
+
+    def test_native_birth_disagreement_is_unverified_in_listing_and_watch(self):
+        from test_watch import Stream
+
+        name = self.start('codex', 'clock-drift')
+        self.send_event(name, 'Stop', last_assistant_message='Private fixture reply')
+        path, record = self.shifted_start_binding(name)
+
+        def selected(rows):
+            return next(row for row in rows if row['name'] == name)
+
+        self.save_listing_binding(path, record)
+        canonical = selected(self.projected())
+        self.assertEqual((canonical['runtime_state'], canonical['process_state']), ('live', 'unverified'))
+        self.assertFalse(canonical['terminal_supported'])
+        self.assertNotIn('pause', canonical['allowed_actions'])
+        self.assertNotIn('terminate', canonical['allowed_actions'])
+        self.hgs('listing-index', 'enable', '--json')
+        indexed = selected(self.ready_rows())
+        self.assertEqual(indexed['process_state'], 'unverified')
+        self.assertFalse(indexed['terminal_supported'])
+        self.assertEqual(self.binding(name), record)
+
+        stream = Stream(self, executable=HGS)
+        snapshot = stream.next(lambda frame: frame['t'] == 'snapshot' and frame['topic'] == 'catalog')
+        self.assertEqual(selected(item['row'] for item in snapshot['items'])['process_state'], 'unverified')
+        observed = subprocess.run([str(HGS), 'send', name, '--observe', '--json'], env=self.env,
+                                  input=json.dumps({'expected_run_id': record['run_id'],
+                                                    'expected_conversation_id': record['conversation_id']}),
+                                  capture_output=True, text=True, timeout=5, check=True)
+        readiness = json.loads(observed.stdout)
+        self.assertFalse(readiness['ready'])
+        self.assertIn('the exact agent process is no longer running', readiness['reason'])
+        blocked = subprocess.run([str(HGS), 'terminate', name, '--expected-run-id', record['run_id']],
+                                 env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertIn('Agent process identity changed; terminal kept', blocked.stderr)
+        self.assertEqual(self.binding(name), record)
+
+        # The PID is still occupied, but its reported birth must match the pin.
+        record['process_index_pin']['child']['birth']['Linux'] += 1
+        self.save_listing_binding(path, record)
+        update = stream.next(lambda frame: frame['t'] == 'delta' and frame['topic'] == 'catalog' and
+                             any(item['row']['name'] == name and item['row']['process_state'] == 'exited'
+                                 for item in frame['upsert']))
+        self.assertFalse(selected(item['row'] for item in update['upsert'])['terminal_supported'])
+        self.assertEqual(stream.close(), 0)
+
+    def test_correlated_clock_disagreement_keeps_indexed_page_available(self):
+        # The explicit page permits only 16 canonical overlays. Produce an
+        # ordinary public inventory where more than 16 saved starts disagree.
+        frame = '› \n\n  gpt-6 high · /srv/example\n'
+        code = self.bin / 'codex'
+        script = code.read_text()
+        entry = '\nfor line in sys.stdin:'
+        self.assertIn(entry, script)
+        code.write_text(script.replace(entry, f'\nprint({frame!r}, flush=True){entry}', 1))
+        owners = [self.start('codex', f'clock-drift-page-{i}') for i in range(19)]
+        for name in owners:
+            self.send_event(name, 'Stop', last_assistant_message='Private fixture reply')
+        replaced, unpinned = owners[-2:]
+        for name in owners:
+            path, record = self.shifted_start_binding(name)
+            if name == replaced:
+                record['process_index_pin']['child']['birth']['Linux'] += 1
+            if name == unpinned:
+                del record['process_index_pin']
+            self.save_listing_binding(path, record)
+
+        self.hgs('listing-index', 'enable', '--json')
+        rows, counts = self.page_rows(size=None)
+        self.assertEqual(counts, [len(owners)])
+        self.assertEqual(len(rows), len(owners))
+        expected = {name: 'exited' if name in (replaced, unpinned) else 'unverified' for name in owners}
+        self.assertEqual({row['name']: row['process_state'] for row in rows}, expected)
+        for row in rows:
+            self.assertFalse(row['terminal_supported'])
+            self.assertNotIn('process_index_pin', row)
+        self.assertEqual({row['name']: row['process_state'] for row in self.ready_rows()}, expected)
+
+    def test_large_native_prompt_can_keep_the_previous_listing_seed(self):
+        from contextlib import closing
+        import sqlite3
+
+        # Let the private agent's real hook child read the long prompt from a
+        # fixture file. The synthetic hook-control socket has a smaller bound.
+        code = self.bin / 'codex'
+        script = code.read_text()
+        entry = '    if line.strip() == "switch":'
+        self.assertIn(entry, script)
+        code.write_text(script.replace(entry, '''    if line.strip() == "listing-size-fixture":
+        event("UserPromptSubmit", prompt=(home / "listing-size-prompt").read_text())
+    elif line.strip() == "switch":''', 1))
+        name = self.start('codex', 'listing-large-prompt')
+        self.hgs('listing-index', 'enable', '--json')
+        database = self.root / 'state/listing-metadata/certified/index.sqlite3'
+        source = hashlib.sha256(name.encode()).hexdigest() + '.json'
+
+        def seed_for(prompt):
+            (self.root / 'listing-size-prompt').write_text(prompt)
+            self.t('send-keys', '-t', self.binding(name)['pane'], 'listing-size-fixture', 'Enter')
+            self.wait(lambda: self.binding(name).get('recovery_user_text') == prompt)
+            self.assertIn(name, [row['name'] for row in self.ready_rows()])
+            with closing(sqlite3.connect(f'{database.as_uri()}?mode=ro', uri=True)) as db:
+                seed, = db.execute('SELECT seed FROM sources WHERE source=? AND issue IS NULL', (source,)).fetchone()
+            self.assertEqual(json.loads(seed)['record']['recovery_user_text'], prompt)
+            return seed
+
+        def size(value):
+            return len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode())
+
+        anchor = json.loads(seed_for('"' * 1024))
+        pin = anchor['record'].pop('process_index_pin')
+        self.assertTrue(anchor['record']['_listing'].pop('process_pin_checked'))
+        anchor['record']['recovery_user_text'] = ''
+        limit = 256 << 10
+        escaped_bytes = limit - size(anchor) - 96
+        prompt = '"' * (escaped_bytes // 2) + 'x' * (escaped_bytes % 2)
+        self.assertLessEqual(len(prompt), limit // 2)
+        preserved = seed_for(prompt)
+        self.assertGreater(len(preserved.encode()), limit - 192)
+        self.assertLessEqual(len(preserved.encode()), limit)
+        legacy = json.loads(preserved)
+        self.assertTrue(legacy['record']['_listing']['live_public'])
+        self.assertNotIn('process_index_pin', legacy['record'])
+        self.assertNotIn('process_pin_checked', legacy['record']['_listing'])
+        legacy['record']['process_index_pin'] = pin
+        legacy['record']['_listing']['process_pin_checked'] = True
+        self.assertGreater(size(legacy), limit)
+        self.assertEqual(self.page_rows(size=None)[1], [1])
 
 
 import test_process_control

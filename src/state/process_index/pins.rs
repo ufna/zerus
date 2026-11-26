@@ -105,6 +105,13 @@ impl Pin {
             })
             .transpose()
     }
+    /// A private listing seed retains only well-formed launch metadata. The
+    /// catalog reader separately verifies the current scope and kernel births.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn display_seed(record: &Value) -> Option<Self> {
+        let boot = record[FIELD]["boot"].as_str()?;
+        Self::read(record, boot).ok().flatten()
+    }
     pub(crate) fn publication(
         &self,
         record: &Value,

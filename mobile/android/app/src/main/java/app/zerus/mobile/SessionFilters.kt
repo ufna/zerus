@@ -25,14 +25,15 @@ object SessionFilters {
     }
     fun archived(session: Session) = session.target.archiveId.isNotBlank() || session.raw.string("state") == "archived"
     fun state(session: Session) = session.raw.string("state").ifBlank { if (archived(session)) "archived" else "running" }
+    fun processMayBeLive(state: String) = state != "exited" && state != "unverified"
     fun currentActivity(session: Session, online: Boolean) = online && state(session) == "running" &&
-        session.raw.string("process_state") != "exited" && session.raw.string("activity") != "unknown" &&
+        processMayBeLive(session.raw.string("process_state")) && session.raw.string("activity") != "unknown" &&
         !(session.raw.string("conversation_state") == "ended" && session.raw.string("activity") != "idle")
     fun needsAction(session: Session): Boolean {
         val recovery = session.raw.optJSONObject("recovery")?.string("state").orEmpty()
         val providerError = session.raw.optJSONObject("provider_error")?.string("error_kind").orEmpty()
         val phase = session.raw.string("phase")
-        return !archived(session) && state(session) == "running" && session.raw.string("process_state") != "exited" &&
+        return !archived(session) && state(session) == "running" && processMayBeLive(session.raw.string("process_state")) &&
             (phase in listOf("approval", "input") || phase == "error" &&
                 (recovery !in listOf("waiting", "dispatching", "retrying") || providerError in listOf("quota", "provider_policy")) ||
                 recovery in listOf("uncertain", "blocked", "exhausted"))
@@ -49,7 +50,7 @@ object SessionFilters {
             wait.string("conversation_id") == session.target.conversation && positiveCount(wait.opt("count")) && wait.optDouble("count") <= 1024
     }
     fun waitingIdle(session: Session) = session.raw.string("activity") == "idle" && session.raw.string("phase") == "idle" &&
-        state(session) == "running" && session.raw.string("process_state") != "exited" && !backgroundIdle(session) &&
+        state(session) == "running" && processMayBeLive(session.raw.string("process_state")) && !backgroundIdle(session) &&
         !positiveCount(session.raw.opt("subagent_active_count") as? Number ?: session.raw.opt("subagent_count")) && hasCoordinationWait(session)
     fun waitingLabel(session: Session, includeProducer: Boolean = true, compact: Boolean = false): String {
         val wait = session.raw.optJSONObject("coordination_wait") ?: return "Waiting for agent"
@@ -164,6 +165,7 @@ object SessionFilters {
             state(session) == "paused" -> "Paused"
             state(session) == "stopped" -> "Stopped"
             raw.string("process_state") == "exited" -> "Agent exited"
+            raw.string("process_state") == "unverified" -> "Session availability unverified"
             !raw.optBoolean("tracked") && raw.string("activity").isBlank() -> "Not tracked"
             raw.string("phase") == "approval" -> "Needs approval"
             raw.string("phase") == "input" -> "Needs input"

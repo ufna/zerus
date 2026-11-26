@@ -1,4 +1,4 @@
-import type { Session, Subagent } from "./types";
+import { processMayBeLive, type Session, type Subagent } from "./types";
 
 export type SubagentMap = Record<string, Record<string, unknown>>;
 
@@ -8,7 +8,7 @@ export const childState = (child: Record<string, unknown>) => text(child.display
 
 /** Qt/Android currentActivity: recorded children never establish current work. */
 export const currentChildren = (row: Session, online: boolean) => online && !row.archiveId
-  && row.state === "running" && row.processState !== "exited" && row.activity !== "unknown"
+  && row.state === "running" && processMayBeLive(row.processState) && row.activity !== "unknown"
   && !(row.conversationState === "ended" && row.activity !== "idle");
 export const workingChildren = (row: Session, online: boolean) => currentChildren(row, online)
   ? (row.subagents ?? []).filter((child) => child.state === "working").length : 0;

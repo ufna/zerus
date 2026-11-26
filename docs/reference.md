@@ -9760,6 +9760,14 @@ array when no launch has ended; its newest-first, 32-entry shape is the same as
 an older peer as a reason to retain its bounded `ls --json` binding poll, and an
 explicit empty array as supported with no results.
 
+On Linux, a tracked catalog row can report `process_state: "unverified"` when
+the original launch's kernel process identities still exist and the legacy
+wall-clock readiness check disagrees. The pane can still be `runtime_state:
+"live"`. An older indexed summary may also report `unverified` while the PID
+exists and the summary lacks the original process identity needed to settle the
+disagreement. Unverified rows do not establish session readiness, terminal input,
+or permission to send, stop or recover a session.
+
 ```json
 {"op":"subscribe","topic":"activity","session":{"name":"claude/sample-project/review","run_id":"RUN","conversation_id":"CONVERSATION"},"after":123,"tail":50}
 {"op":"unsubscribe","topic":"activity","session":{"name":"claude/sample-project/review","run_id":"RUN"}}

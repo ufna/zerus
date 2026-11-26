@@ -47,6 +47,8 @@ fn only_supported_live_candidates_with_both_identities_are_considered() {
     r = row();
     r.process_state = "exited".into();
     assert!(candidate("peer", &r).is_none());
+    r.process_state = crate::view::PROCESS_UNVERIFIED.into();
+    assert!(candidate("peer", &r).is_none());
     r = row();
     r.phase = Some("input".into());
     assert!(candidate("peer", &r).is_none());

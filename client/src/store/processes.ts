@@ -1,7 +1,7 @@
 import { createEffect, createSignal } from "solid-js";
 import * as bridge from "../bridge";
 import type { ProcessesView, ProcessTarget } from "../types";
-import type { Session } from "../ui/sessions/types";
+import { processMayBeLive, type Session } from "../ui/sessions/types";
 import type { MenuEntry } from "./ui";
 import { tr } from "../i18n";
 
@@ -77,7 +77,7 @@ export const visibleRows = (view: ProcessesView, collapsed: Readonly<Record<stri
  * its details' `host_generation`.
  */
 export function processTarget(s: Session, facts: { online: boolean; generation: string | null; inspectFailed: boolean }): ProcessTarget {
-  const recorded = !facts.online || s.state === "archived" || s.state === "paused" || s.processState === "exited" || facts.inspectFailed;
+  const recorded = !facts.online || s.state === "archived" || s.state === "paused" || !processMayBeLive(s.processState) || facts.inspectFailed;
   return {
     computer: s.computer, key: s.catalogKey, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "",
     archive_id: s.archiveId ?? null, machine: s.rawMachine, online: facts.online, live: !recorded, generation: facts.generation,

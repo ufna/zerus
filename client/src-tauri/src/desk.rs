@@ -558,7 +558,7 @@ fn resolve_service(
                 && row.conversation_id.as_deref().unwrap_or("") == target.conversation
                 && target.startup_question.as_deref().is_none_or(|question| {
                     row.state == "running"
-                        && row.process_state != "exited"
+                        && zerus_client_core::view::process_may_be_live(&row.process_state)
                         && row.notify.needs_action
                         && row.notify.attention_id == question
                 })

@@ -101,7 +101,7 @@ pub(super) fn project(
         "invalid attention identity"
     );
     let logical_session = session(computer, &row)?;
-    let current = row.state == "running" && row.process_state != "exited";
+    let current = row.state == "running" && view::process_may_be_live(&row.process_state);
     let focused = foreground || !policy.enabled || !current;
     let mut tracker =
         attention::Tracker::new(Map::from_iter([(computer.into(), Value::Object(previous))]));

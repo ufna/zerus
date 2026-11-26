@@ -1,6 +1,6 @@
 import type { Action } from "../../types";
 import { allowedOp, forgetsBindingOnly, snapshotOf, type ActionRow } from "./actions-ui";
-import type { Session } from "./types";
+import { processMayBeLive, type Session } from "./types";
 import { trNoop, tr } from "../../i18n";
 
 // What a multi-selection can do, after the Qt SessionSelection.cpp:
@@ -98,7 +98,7 @@ export function selectionApplies(s: ActionRow, a: SelectionAction, c: ApplyConte
   }
   if (!c.online || c.updating || !allowedOp(s, selectionOperation(s, a))) return false;
   switch (a) {
-    case "pause": return s.state === "running" && s.resumable && s.activity === "idle" && s.processState !== "exited";
+    case "pause": return s.state === "running" && s.resumable && s.activity === "idle" && processMayBeLive(s.processState);
     case "resume": return s.resumable && s.state !== "running"
       && (s.state !== "archived" || (!!s.archiveId && (!c.occupied || !!s.restorePending)));
     case "archive": return s.state === "paused" || s.state === "stopped";

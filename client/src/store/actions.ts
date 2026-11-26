@@ -170,6 +170,11 @@ export function createActions(
   async function end(row: ActionRow, action: "terminate" | "kill" | Extract<Action, { kind: "terminate_shell" }>, cleanupId?: string): Promise<Outcome> {
     if (!online(row.computer)) return failed("offline");
     const live = catalog.rows[row.key];
+    if (row.processState === "unverified" || live?.processState === "unverified") {
+      const reason = tr("Session availability unverified");
+      notify("error", reason, true);
+      return failed(reason);
+    }
     if (live && terminates(live) !== terminates(row)) {
       notify("error", tr(STATE_CHANGED), true);
       return failed(STATE_CHANGED);
