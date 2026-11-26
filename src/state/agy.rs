@@ -112,9 +112,9 @@ fn worker_live(record: &Value) -> bool {
 }
 
 fn original_exited(record: &Value) -> bool {
-    ["agy_worker", "agy_provider"]
-        .into_iter()
-        .all(|key| pinned_state(&record[key]) == Some(crate::platform::ProcessState::Exited))
+    ["agy_worker", "agy_provider"].into_iter().all(|key| {
+        record.get(key).and_then(pinned_state) == Some(crate::platform::ProcessState::Exited)
+    })
 }
 
 fn folder_id(path: &Path) -> Result<Value> {
@@ -255,7 +255,7 @@ pub(crate) fn launch(
         let home = home_path()?;
         start(json!({
             "version":1,"name":name,"agent":"agy","backend":"agy","run_identity_version":1,
-            "session_id":uuid::Uuid::new_v4(),"run_id":uuid::Uuid::new_v4(),
+            "session_id":uuid::Uuid::new_v4().to_string(),"run_id":uuid::Uuid::new_v4().to_string(),
             "conversation_id":"","launch_id":launch_id.unwrap_or(&launch),"created":now(),
             "cwd":cwd,"launch_dir":cwd,"account_id":ACCOUNT,"agent_home":home,"agy_account_location":folder_id(&home)?,"agy_workspace":folder_id(&cwd)?,
             "agy_events":[],"agy_seq":0
@@ -289,7 +289,7 @@ fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
             );
         }
         scope.changing();
-        record["run_id"] = json!(uuid::Uuid::new_v4());
+        record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
         start(record)?
     };
     let current = spawn_worker(&record)?;

@@ -1,6 +1,5 @@
 """Run the real Antigravity CLI against a disposable, loopback model endpoint."""
 from contextlib import contextmanager
-import fcntl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
@@ -244,6 +243,8 @@ class AntigravityNative(unittest.TestCase):
             self.assertEqual(model.offers, [])
 
     def test_interrupt_reservation_has_bounded_writer_admission(self):
+        import fcntl
+
         with self.model() as model:
             row = self.launch("interrupt-writer")
             original = self.offer(row, self.identity_request(row, text="HOLD-NATIVE-TEST"))

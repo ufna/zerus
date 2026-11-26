@@ -97,7 +97,7 @@ fn agy_interrupt(name: &str, request: &Request, id: uuid::Uuid) -> Result<i32> {
         (record, path)
     };
     agy::interrupt(&record, request.expected_turn_started)?;
-    let receipt = json!({"status":"submitted","confirmed":true,"request_id":id,
+    let receipt = json!({"status":"submitted","confirmed":true,"request_id":id.to_string(),
         "name":name,"run_id":request.expected_run_id,"conversation_id":request.expected_conversation_id});
     agy::state_guard()
         .and_then(|_guard| atomic(&path, &receipt.to_string()))
