@@ -11,6 +11,8 @@ mod stable_identity;
 
 const ANCHOR: &str = "worktree-requests.identity.json";
 const STABLE_ANCHOR: &str = "worktree-requests.apfs-identity.json";
+const RECOVERY_FENCE: &str = "worktree-requests.fresh-only";
+const RECOVERY_BYTES: &[u8] = b"fresh-worktree-receipts-v1";
 const STORE_LOCK: &str = "worktree-requests.identity.lock";
 const LIMIT: usize = 32768;
 pub(super) const IDENTITY_UNCONFIRMED: &str =
@@ -161,13 +163,18 @@ fn stable_anchor(
 }
 
 impl Store {
-    fn has_fresh_anchor(root: &Directory) -> Result<bool> {
-        Ok(root.read_private_optional(Lane::Fresh.names().2)?.is_some())
+    fn has_recovery_evidence(root: &Directory) -> bool {
+        let (directory, anchor, stable) = Lane::Fresh.names();
+        // A directory or an unreadable entry also counts. Only exact absence
+        // of all recovery evidence permits use of the original lane.
+        [RECOVERY_FENCE, directory, anchor, stable]
+            .into_iter()
+            .any(|name| !matches!(root.read_private_optional(name), Ok(None)))
     }
 
     #[cfg(target_os = "macos")]
     pub(super) fn fresh_configured(path: &Path) -> Result<bool> {
-        Self::has_fresh_anchor(Self::root_at(path)?.as_ref())
+        Ok(Self::has_recovery_evidence(Self::root_at(path)?.as_ref()))
     }
 
     pub(super) fn for_request(
@@ -188,7 +195,7 @@ impl Store {
         create: bool,
         initialize: bool,
     ) -> Result<Self> {
-        if Self::has_fresh_anchor(&root)? {
+        if Self::has_recovery_evidence(&root) {
             let fresh = Self::acquire_lane(root, false, false, Lane::Fresh)?;
             let name = format!("{id}.issued");
             let file = fresh
@@ -206,14 +213,7 @@ impl Store {
 
     #[cfg(target_os = "macos")]
     pub(super) fn activate_fresh(path: &Path) -> Result<()> {
-        let root = Self::root_at(path)?;
-        if Self::has_fresh_anchor(&root)? {
-            return Self::acquire_lane(root, false, false, Lane::Fresh).map(|_| ());
-        }
-        // Check what can be checked without inventing old custody. The old
-        // anchor remains in its original place, beyond all fresh writes.
-        Self::legacy_needs_recovery(&root)?;
-        Self::acquire_lane(root, true, true, Lane::Fresh).map(|_| ())
+        Self::acquire_lane(Self::root_at(path)?, true, true, Lane::Fresh).map(|_| ())
     }
 
     #[cfg(target_os = "macos")]
@@ -298,20 +298,6 @@ impl Store {
         if !root.private()? {
             return Err("Worktree receipt root must be private".into());
         }
-        let (child, anchor, stable_anchor_name) = lane.names();
-        // Once the fresh-only recovery is active, this build never writes the
-        // old lane, even if a later boot reuses its device number.
-        if lane == Lane::Original && Self::has_fresh_anchor(&root)? {
-            return Err(IDENTITY_UNCONFIRMED.into());
-        }
-        let directory = if create {
-            root.ensure_child(child)?
-        } else {
-            root.child(child)?
-        };
-        if !directory.private()? {
-            return Err("Worktree receipt store must be private".into());
-        }
         // The anchor is OUTSIDE the replaceable receipt namespace. Installing
         // it for a legacy store protects its future incarnation only; it is
         // deliberately never a no-past-effects witness.
@@ -327,19 +313,57 @@ impl Store {
         } else {
             None
         };
-        let object = directory.object()?;
-        let expected = json!({"schema":1,"directory_device":object.0,"directory_inode":object.1});
-        if lane == Lane::Original && Self::has_fresh_anchor(&root)? {
+        let (child, anchor, stable_anchor_name) = lane.names();
+        let recovered = Self::has_recovery_evidence(&root);
+        // Keep the original lane closed even if the fresh custody files are
+        // lost and a later boot reuses the original legacy device number.
+        if lane == Lane::Original && recovered {
             return Err(IDENTITY_UNCONFIRMED.into());
         }
-        let stable_file = root.read_private_optional(stable_anchor_name)?;
-        if lane == Lane::Fresh && stable_file.is_none() {
-            if !initialize {
+        let activating = lane == Lane::Fresh && initialize && !recovered;
+        let mut anchors = Vec::new();
+        if lane == Lane::Fresh {
+            let file = if activating {
+                Self::legacy_needs_recovery(&root)?;
+                #[cfg(target_os = "macos")]
+                if stable_identity::observe(root.identity_file()).is_none() {
+                    return Err("A separate receipt store requires verified APFS identity".into());
+                }
+                // The independent fence reaches disk before the fresh lane
+                // exists. An interrupted publication must never reopen or
+                // silently initialize either receipt store.
+                cut_write()?;
+                root.write_new_file(RECOVERY_FENCE, RECOVERY_BYTES)?
+            } else {
+                root.read_private_optional(RECOVERY_FENCE)?
+                    .ok_or(IDENTITY_UNCONFIRMED)?
+            };
+            let fence = Pin::new(RECOVERY_FENCE.into(), file)?;
+            if bytes(&root, RECOVERY_FENCE, &fence.file)? != RECOVERY_BYTES {
                 return Err(IDENTITY_UNCONFIRMED.into());
             }
-            Self::legacy_needs_recovery(&root)?;
+            anchors.push(fence);
+        }
+        let directory = if activating {
+            root.create(child, &format!(".fresh-directory-{}", uuid::Uuid::new_v4()))?
+        } else if lane == Lane::Original && create {
+            root.ensure_child(child)?
+        } else {
+            root.child(child)?
+        };
+        if !directory.private()? {
+            return Err("Worktree receipt store must be private".into());
+        }
+        let object = directory.object()?;
+        let expected = json!({"schema":1,"directory_device":object.0,"directory_inode":object.1});
+        let stable_file = root.read_private_optional(stable_anchor_name)?;
+        if (activating && stable_file.is_some())
+            || (lane == Lane::Fresh && !activating && stable_file.is_none())
+        {
+            return Err(IDENTITY_UNCONFIRMED.into());
         }
         let legacy_file = match root.read_private_optional(anchor)? {
+            Some(_) if activating => return Err(IDENTITY_UNCONFIRMED.into()),
             Some(file) => Some(file),
             None if stable_file.is_some() => return Err(IDENTITY_UNCONFIRMED.into()),
             None if initialize => {
@@ -348,7 +372,6 @@ impl Store {
             }
             None => None,
         };
-        let mut anchors = Vec::new();
         if let Some(file) = legacy_file {
             let original = Pin::new(anchor.into(), file)?;
             let original_bytes = bytes(&root, anchor, &original.file)?;
@@ -384,7 +407,7 @@ impl Store {
             }
             anchors.push(original);
         }
-        if lane == Lane::Fresh && anchors.len() != 2 {
+        if lane == Lane::Fresh && anchors.len() != 3 {
             return Err(IDENTITY_UNCONFIRMED.into());
         }
         let store = Self {
@@ -405,7 +428,7 @@ impl Store {
     pub(super) fn verify(&self) -> Result<()> {
         self.root.verify()?;
         self.directory.verify()?;
-        if self.lane == Lane::Original && Self::has_fresh_anchor(&self.root)? {
+        if self.lane == Lane::Original && Self::has_recovery_evidence(&self.root) {
             return Err(IDENTITY_UNCONFIRMED.into());
         }
         for anchor in &self.anchors {

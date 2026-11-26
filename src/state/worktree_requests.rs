@@ -350,7 +350,7 @@ fn create_receipt(
     );
     let store = match store::Store::for_request(&root(), &id, true, true) {
         Ok(store) => Arc::new(store),
-        Err(error) if control.is_none() && error == store::IDENTITY_UNCONFIRMED => {
+        Err(_) if control.is_none() => {
             // This reply describes only this invocation. No original request
             // lock, reservation or effect was attempted. It is never written
             // as a historical receipt and must not settle an earlier result.

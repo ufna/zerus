@@ -4389,7 +4389,8 @@ receipt store. Earlier results stay unconfirmed. A new **Start session** gets
 a new request ID from the Mac. For a standalone CLI creation, obtain that ID
 with `hgs worktrees issue-request --json`, then pass it to `worktrees create`
 with `--request-id UUID --receipt --json`. Keep older IDs for their original
-result only.
+result only. If the separate store or its identity files become unavailable,
+Zerus keeps both receipt lanes closed until the original files are available.
 
 **Check result** observes the original clone/worktree request, reads the original
 service launch receipt, or refreshes session evidence. An unknown outcome never

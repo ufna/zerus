@@ -20,7 +20,8 @@ fn fresh_activation_mints_ids_without_accepting_the_old_store_or_a_replacement()
     // writer above supplied the original receipt and its outside anchor.
     std::fs::rename(path.join(STABLE_ANCHOR), path.join("fixture-v2-anchor")).unwrap();
     let anchor = path.join(ANCHOR);
-    let mut legacy: Value = serde_json::from_slice(&std::fs::read(&anchor).unwrap()).unwrap();
+    let matched_legacy = std::fs::read(&anchor).unwrap();
+    let mut legacy: Value = serde_json::from_slice(&matched_legacy).unwrap();
     legacy["directory_device"] = json!(legacy["directory_device"].as_u64().unwrap() + 1);
     let legacy = legacy.to_string();
     std::fs::write(&anchor, &legacy).unwrap();
@@ -50,6 +51,29 @@ fn fresh_activation_mints_ids_without_accepting_the_old_store_or_a_replacement()
     assert_eq!(std::fs::read(&old_path).unwrap(), original_bytes);
     assert_eq!(std::fs::read_to_string(&anchor).unwrap(), legacy);
 
+    // Even the old numbers becoming valid again cannot reopen the lane.
+    std::fs::write(&anchor, &matched_legacy).unwrap();
+    let stable = path.join(Lane::Fresh.names().2);
+    let withheld = path.join("withheld-fresh-identity");
+    std::fs::rename(&stable, &withheld).unwrap();
+    assert!(path.join(RECOVERY_FENCE).is_file());
+    assert!(Store::for_request(path, &old_id, true, true).is_err());
+    assert!(Store::for_request(path, &issued, false, false).is_err());
+    assert!(Store::activate_fresh(path).is_err());
+    assert!(
+        !stable.exists(),
+        "recovery never re-enrolls vanished custody"
+    );
+    std::fs::rename(&withheld, &stable).unwrap();
+    assert_eq!(
+        Store::for_request(path, &issued, false, false)
+            .unwrap()
+            .read(&issued)
+            .unwrap()
+            .unwrap()["request_id"],
+        issued
+    );
+
     let fresh_path = path.join("worktree-requests-fresh");
     let retired = path.join("retained-fresh");
     std::fs::rename(&fresh_path, &retired).unwrap();
@@ -60,5 +84,6 @@ fn fresh_activation_mints_ids_without_accepting_the_old_store_or_a_replacement()
     assert!(Store::activate_fresh(path).is_err());
     assert_eq!(std::fs::read_dir(fresh_path).unwrap().count(), 0);
     assert!(retired.join(format!("{issued}.json")).is_file());
+    assert_eq!(std::fs::read(&anchor).unwrap(), matched_legacy);
     assert_eq!(std::fs::read(&old_path).unwrap(), original_bytes);
 }
