@@ -419,7 +419,7 @@ pub(crate) fn rows(root: &Path, wanted: &BTreeSet<(String, String)>) -> Result<V
     let mut selected = Vec::new();
     for row in cache.entries.into_values().filter_map(|entry| entry.row) {
         // Two distinct sources already prove ambiguity. Keep exact-name and
-        // alias evidence separately, preserving the resolver's precedence.
+        // alias evidence separately so the resolver can see conflicts between them.
         let mut needed = ids.get_mut(identity(&row).as_str()).is_some_and(keep);
         if let Some(count) = names.get_mut(string(&row, "name")) {
             needed |= keep(&mut count[0]);
