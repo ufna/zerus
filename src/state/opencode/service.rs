@@ -611,7 +611,7 @@ fn requirement_digest() -> String {
 }
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-struct Compatibility {
+pub(super) struct Compatibility {
     missing: Vec<String>,
     manual_compact: bool,
 }
