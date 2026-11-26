@@ -4060,7 +4060,7 @@ mod tests {
         );
         assert_eq!(
             value["compact_context_reason"],
-            "OpenCode compaction arrives in a later update"
+            "Manual compaction is unavailable on this OpenCode service."
         );
         assert!(value.get("attention_id").is_none());
     }
