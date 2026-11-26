@@ -1622,7 +1622,7 @@ fn classify_answer(
 
 /// OpenCode's message ID as `hgs` checks it: `msg_` and at most 128 ASCII
 /// letters, digits, `_` and `-`.
-pub(crate) fn native_message_id(id: &str) -> bool {
+pub fn native_message_id(id: &str) -> bool {
     id.strip_prefix("msg_").is_some_and(|rest| {
         (1..=124).contains(&rest.len())
             && rest
@@ -1833,11 +1833,16 @@ fn classify_send(
 fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
     use sha2::{Digest, Sha256};
 
+    let opencode = target.name.starts_with("opencode/");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         if receipt["schema"] == 1
             && receipt["status"] == "waiting_for_idle"
-            && receipt["proof"] == "native_input_lock"
+            && receipt["proof"] == if opencode {
+                "native_opencode_queue"
+            } else {
+                "native_input_lock"
+            }
             && receipt["request_id"].as_str().zip(invocation.request_id.as_deref()).is_some_and(|(actual, expected)| actual == expected)
             && receipt["name"] == target.name
             && receipt["run_id"] == target.run_id
@@ -1848,12 +1853,56 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         {
             return done(receipt, None);
         }
+        if opencode
+            && (receipt["transport"] != "native_opencode"
+                || !receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        {
+            return uncertain("The original OpenCode Send is unconfirmed.");
+        }
     }
     let started = !matches!(exit, Exit::StartFailed(_));
     match classify_send(target, invocation, None, exit) {
         Outcome::Failed { detail } if started => uncertain(detail),
         outcome => outcome,
     }
+}
+
+/// Read one original guarded OpenCode offer by its exact stdin hash.
+pub fn opencode_outbox_status(
+    target: &Target,
+    action: &Action,
+    request_id: &str,
+) -> Result<Invocation, String> {
+    use sha2::{Digest, Sha256};
+
+    if !target.name.starts_with("opencode/") || !matches!(action, Action::SendWhenIdle { .. }) {
+        return Err("Expected an original OpenCode outbox request.".into());
+    }
+    let original = invocation(target, action, request_id)?;
+    let input = original.stdin.ok_or("The original OpenCode input is unavailable.")?;
+    let mut args = vec!["delivery".into(), "outbox-status".into(), target.name.clone(), "--json".into()];
+    let remote = prepend_alias(&mut args, &target.computer);
+    let query = json!({"request_id": request_id, "expected_run_id":target.run_id,
+        "expected_conversation_id":target.conversation_id, "input_sha256":format!("{:x}", Sha256::digest(input))});
+    Ok(Invocation {
+        args, stdin: Some(serde_json::to_vec(&query).map_err(|e| e.to_string())?),
+        timeout: Duration::from_secs(if remote { 10 } else { 3 }), request_id: Some(request_id.into()),
+    })
+}
+
+pub fn opencode_outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
+    let Exit::Code { code: 0, stdout, .. } = exit else { return None };
+    if stdout.len() > 8192 { return None; }
+    let receipt: Value = serde_json::from_slice(&stdout).ok()?;
+    let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+    (receipt["schema"] == 1 && receipt["status"] == "submitted"
+        && receipt["proof"] == "native_opencode_receipt" && receipt["transport"] == "native_opencode"
+        && receipt["request_id"].as_str() == query.request_id.as_deref()
+        && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
+        && receipt["name"] == target.name && receipt["run_id"] == target.run_id
+        && receipt["conversation_id"] == target.conversation_id
+        && receipt["native_message_id"].as_str().is_some_and(native_message_id))
+        .then_some(receipt)
 }
 
 /// A stop receipt names the same process, run and conversation, and says

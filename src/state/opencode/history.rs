@@ -262,14 +262,22 @@ fn scan(
     let mut truncated = false;
     let mut older: Option<&Cache> = None;
     let mut splice = 0;
+    let mut page_limit = PAGE;
     'pages: loop {
         let query = match &cursor {
-            None => format!("/message?limit={PAGE}&order=desc"),
-            Some(next) => format!("/message?limit={PAGE}&cursor={}", encode(next)),
+            None => format!("/message?limit={page_limit}&order=desc"),
+            Some(next) => format!("/message?limit={page_limit}&cursor={}", encode(next)),
         };
         let response = match native.raw_until("GET", &session_path(record, &query), None, deadline)
         {
             Ok(response) => response,
+            // Inline file bodies can exceed the HTTP budget even when the
+            // projected message window is small. Retry the same cursor with
+            // fewer messages and keep the original deadline.
+            Err(error) if error == super::service::RESPONSE_TOO_LARGE && page_limit > 1 => {
+                page_limit /= 10;
+                continue;
+            }
             // A later page that runs out of time leaves the newest window.
             Err(_) if cursor.is_some() && Instant::now() >= deadline => {
                 truncated = true;
@@ -291,13 +299,15 @@ fn scan(
             if !valid(message) || !seen.insert(string(message, "id").to_owned()) {
                 continue;
             }
+            let mut message = message.clone();
+            super::outbox::strip_file_bodies(&mut message);
             let size = message.to_string().len();
             if fresh.len() >= bounds.messages || bytes.saturating_add(size) > bounds.bytes {
                 truncated = true;
                 break 'pages;
             }
             bytes += size;
-            fresh.push(message.clone());
+            fresh.push(message);
             added = true;
         }
         if let (Some(cache), Some(oldest)) = (cached, fresh.last()) {

@@ -1889,9 +1889,11 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
         return agy::dispatch(command, name, rest);
     }
-    // The Composer's automatic offer must reach the terminal input lock.
-    // Provider routes that do not implement this admission cannot take it.
+    // The Composer needs its own exact pre-offer witness for either route.
     if command == "send" && args.iter().any(|arg| arg == "--when-idle") {
+        if args.first().is_some_and(|name| name.starts_with("opencode/") || opencode::exists(name)) {
+            return opencode::send_when_idle(args);
+        }
         return input::dispatch(args);
     }
     let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")

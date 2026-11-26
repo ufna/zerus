@@ -1492,6 +1492,13 @@ pub(crate) async fn dispatch_outbox_as(
     Ok((!was_unoffered.load(Ordering::Relaxed)).then_some(outcome))
 }
 
+pub(crate) fn check_outbox_receipt(target: &Target, action: &Action, id: &str) -> Option<serde_json::Value> {
+    if blocked() { return None; }
+    let query = zerus_client_core::actions::opencode_outbox_status(target, action, id).ok()?;
+    let result = run(&default_hgs(), &query);
+    zerus_client_core::actions::opencode_outbox_receipt(target, &query, result)
+}
+
 /// The image seam cannot choose an action or runner. It uses ordinary StageFiles
 /// admission/classification, but refuses changed source bytes BEFORE helper start.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

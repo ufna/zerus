@@ -102,6 +102,7 @@ pub(super) fn view(
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
             can_check_terminal: entry.state == State::Unknown
+                && !native_outbox(entry)
                 && entry.draft_key == key
                 && context.is_some_and(|ctx| {
                     ctx.online
@@ -125,6 +126,22 @@ fn target(ctx: &super::send::Context) -> Target {
     }
 }
 
+fn supported_agent(agent: &str) -> bool {
+    matches!(agent, "codex" | "kimi" | "opencode")
+}
+
+fn native_outbox(entry: &Entry) -> bool {
+    entry.target.name.starts_with("opencode/")
+}
+
+fn guarded_action(entry: &Entry) -> Action {
+    Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
+}
+
+fn can_probe(entry: &Entry) -> bool {
+    entry.state == State::Waiting || entry.state == State::Unknown && native_outbox(entry)
+}
+
 impl Context {
     pub(super) fn terminal_submission_shown(&self, composer: &Composer) -> bool {
         composer.outbox.is_empty()
@@ -140,7 +157,7 @@ impl Context {
     pub(super) fn outbox_candidate(&self) -> bool {
         self.session.subagent.is_none()
             && !self.session.archived()
-            && matches!(self.row.agent.as_str(), "codex" | "kimi")
+            && supported_agent(&self.row.agent)
     }
 
     fn exact_outbox_details(&self, details: &Value) -> bool {
@@ -159,6 +176,10 @@ impl Context {
 impl Composers {
     pub(crate) fn set_outbox_dispatch(&self, dispatch: super::OutboxDispatch) {
         assert!(self.0.outbox_dispatch.set(dispatch).is_ok());
+    }
+
+    pub(crate) fn set_outbox_status(&self, status: super::OutboxStatus) {
+        assert!(self.0.outbox_status.set(status).is_ok());
     }
 
     fn offer_guarded(
@@ -381,7 +402,7 @@ impl Composers {
         hub.composers.iter().any(|(key, c)| {
             c.outbox
                 .first()
-                .is_some_and(|head| head.state == State::Waiting && &head.draft_key == key)
+                .is_some_and(|head| can_probe(head) && &head.draft_key == key)
         })
     }
 
@@ -401,7 +422,7 @@ impl Composers {
                     && c.storage_error.is_none()
                     && c.outbox
                         .first()
-                        .is_some_and(|head| head.state == State::Waiting && &head.draft_key == *key)
+                        .is_some_and(|head| can_probe(head) && &head.draft_key == *key)
             })
             .min_by(|(_, a), (_, b)| a.queue_check_at.total_cmp(&b.queue_check_at))
         else {
@@ -415,14 +436,27 @@ impl Composers {
         drop(hub);
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| me.check_outbox(&entry)));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if entry.state == State::Unknown {
+                    me.check_outbox_receipt(&entry)
+                } else {
+                    me.check_outbox(&entry)
+                }
+            }));
             let mut hub = me.lock();
             hub.outbox_probe = false;
             if hub.outbox_route_revision != route_revision {
                 return;
             }
-            if let Ok(Some(details)) = result {
-                me.reserve_head(&mut hub, key, entry, details);
+            if let Ok(Some(result)) = result {
+                if entry.state == State::Unknown {
+                    if me.outbox_row(&entry).is_some() {
+                        let outcome = Outcome::Done { receipt: result, cleanup: None };
+                        me.settle_head_locked(&mut hub, key, entry, Some(outcome), State::Unknown);
+                    }
+                } else {
+                    me.reserve_head(&mut hub, key, entry, result);
+                }
             }
         }));
     }
@@ -436,7 +470,7 @@ impl Composers {
             && row.conversation_id.as_deref() == Some(&t.conversation_id)
             && row.process_state == "running"
             && row.state == "running"
-            && matches!(row.agent.as_str(), "codex" | "kimi")
+            && supported_agent(&row.agent)
             && (self.0.deps.facts)(&t.computer, &t.name, &t.run_id).is_none())
         .then_some(row)
     }
@@ -445,10 +479,16 @@ impl Composers {
         let row = self.outbox_row(entry)?;
         // Wait for an eligible idle turn. A present native queue, question,
         // or unconfirmed earlier input gives no permission to type.
-        if row.phase.as_deref() != Some("idle") {
+        if entry.state == State::Waiting && row.phase.as_deref() != Some("idle") {
             return None;
         }
         (self.0.deps.inspect)(&entry.target, None, None).ok()
+    }
+
+    fn check_outbox_receipt(&self, entry: &Entry) -> Option<serde_json::Value> {
+        self.outbox_row(entry)?;
+        let status = self.0.outbox_status.get()?;
+        status(&entry.target, &guarded_action(entry), &entry.request_id)
     }
 
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
@@ -565,10 +605,7 @@ impl Composers {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = Action::SendWhenIdle {
-                text: entry.text.clone(),
-                attachments: entry.attachments.clone(),
-            };
+            let action = guarded_action(&entry);
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
             })) {
@@ -587,13 +624,26 @@ impl Composers {
 
     // None means this process retained the reservation and made no native call.
     fn settle_head(&self, key: String, entry: Entry, outcome: Option<Outcome>) {
-        let mut hub = self.lock();
+        self.settle_head_locked(&mut self.lock(), key, entry, outcome, State::Reserved);
+    }
+
+    fn settle_head_locked(
+        &self,
+        hub: &mut Hub,
+        key: String,
+        entry: Entry,
+        outcome: Option<Outcome>,
+        expected: State,
+    ) {
         let Some(c) = hub.composers.get_mut(&key) else {
             return;
         };
         if c.outbox
             .first()
-            .is_none_or(|head| head.state != State::Reserved || head.request_id != entry.request_id)
+            .is_none_or(|head| {
+                head.state != expected || head.request_id != entry.request_id
+            })
+            || c.queue_editing || c.queue_writing
         {
             return;
         }
@@ -609,13 +659,17 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
+        if expected == State::Unknown && !exact {
+            return;
+        }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
             && entry.target.name.starts_with("codex/")
             && entry.attachments.is_empty();
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
-                receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
+                receipt["status"] == "waiting_for_idle"
+                    && receipt["proof"] == if native_outbox(&entry) { "native_opencode_queue" } else { "native_input_lock" }
             });
         let mut entries = c.outbox.clone();
         if exact {
@@ -658,12 +712,9 @@ impl Composers {
                     // transport. Only the native history can identify a turn.
                     c.last_terminal_submission = terminal_only.then(|| entry.target.clone());
                     if exact && !terminal_only {
-                        hub.local.sent_from_outbox(
-                            &key,
-                            &entry,
-                            outcome.as_ref().expect("submitted outcome"),
-                            me.now(),
-                        );
+                        if let Some(outcome) = outcome.as_ref() {
+                            hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
+                        }
                     }
                 }
                 drop(hub);

@@ -253,6 +253,11 @@ impl LocalMessages {
     /// from the original entry. It has no editable-draft or cache path.
     pub fn sent_from_outbox(&mut self, key: &str, entry: &Entry, outcome: &Outcome, now: f64) {
         let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
+        let source = if entry.target.name.starts_with("opencode/") {
+            OPENCODE_SOURCE
+        } else {
+            OUTBOX_SOURCE
+        };
         self.record_sending(
             key,
             &entry.request_id,
@@ -261,7 +266,7 @@ impl LocalMessages {
             files,
             &entry.target.run_id,
             &entry.target.conversation_id,
-            Some(OUTBOX_SOURCE),
+            Some(source),
             now,
         );
         self.finished(key, &entry.request_id, outcome);

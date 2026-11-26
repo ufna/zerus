@@ -75,7 +75,7 @@ fn settle_next(
 
 #[test]
 fn ordinary_send_accepts_a_busy_draft_without_native_input() {
-    for agent in ["codex", "kimi"] {
+    for agent in ["codex", "kimi", "opencode"] {
         let root = dir("ordinary-send-busy");
         let (c, fake) = send_hub_on(&drafts(&root));
         let target = target_session(agent);
@@ -999,4 +999,72 @@ fn host_busy_after_the_observation_releases_only_the_exact_pre_input_reservation
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].2, original.request_id);
     assert_eq!(calls[1].2, original.request_id);
+}
+
+#[test]
+fn opencode_lost_acknowledgement_advances_only_on_exact_receipt_after_reopen() {
+    let root = dir("opencode-outbox-lost-acknowledgement");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("opencode");
+    present(&c, &fake, &session, "opencode");
+    let queued = enqueue(&c, "same");
+    let first = queued.waiting_in_zerus[0].request_id.clone();
+    let queued = enqueue(&c, "same");
+    let second = queued.waiting_in_zerus[1].request_id.clone();
+    assert_ne!(first, second);
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "lost stdout".into() });
+    lock(&fake.row).phase = Some("idle".into());
+    let idle = details(&session, "opencode", false, Some(false));
+    settle_next(&c, &fake, &store, idle.clone());
+    until(&c, |v| v.waiting_in_zerus.first().is_some_and(|m| m.state == State::Unknown));
+    assert_eq!(lock(&fake.calls).iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), [first.as_str()]);
+    drop(c);
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    present(&c, &fake, &session, "opencode");
+    let reply = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+    let reply_for_status = reply.clone();
+    c.set_outbox_status(std::sync::Arc::new(move |target, action, id| {
+        use zerus_client_core::actions::{opencode_outbox_receipt, opencode_outbox_status};
+        let query = opencode_outbox_status(target, action, id).ok()?;
+        let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+        let mut response = lock(&reply_for_status).clone()?;
+        if response["input_sha256"].is_null() {
+            response["input_sha256"] = input["input_sha256"].clone();
+        }
+        opencode_outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+            code: 0, stdout: serde_json::to_vec(&response).unwrap(), stderr: String::new(),
+        })
+    }));
+    let accepted = json!({"schema": 1, "status": "submitted", "transport": "native_opencode",
+        "proof": "native_opencode_receipt", "name": session.name, "native_message_id": "msg_Original",
+        "run_id": "run-1", "conversation_id": "conv-1", "request_id": first});
+    let mut wrong = accepted.clone();
+    wrong["conversation_id"] = json!("replacement");
+    *lock(&reply) = Some(wrong);
+    settle_next(&c, &fake, &store, idle.clone());
+    let mut wrong = accepted.clone();
+    wrong["input_sha256"] = json!("wrong input");
+    *lock(&reply) = Some(wrong);
+    settle_next(&c, &fake, &store, idle.clone());
+    assert_eq!(c.current().unwrap().waiting_in_zerus.len(), 2);
+    assert!(lock(&fake.calls).is_empty());
+
+    *lock(&reply) = Some(accepted);
+    settle_next(&c, &fake, &store, details(&session, "opencode", true, Some(true)));
+    let remaining = until(&c, |v| v.waiting_in_zerus.len() == 1);
+    assert_eq!(remaining.waiting_in_zerus[0].request_id, second);
+    assert!(lock(&fake.calls).is_empty(), "the accepted turn is still working");
+
+    lock(&fake.row).phase = Some("idle".into());
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
+        receipt: json!({"status": "submitted", "transport": "native_opencode", "request_id": request,
+            "name": name, "run_id": "run-1", "conversation_id": "conv-1", "native_message_id": "msg_Second"}),
+        cleanup: None,
+    });
+    settle_next(&c, &fake, &store, idle);
+    until(&c, |v| v.waiting_in_zerus.is_empty());
+    assert_eq!(lock(&fake.calls).iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), [second.as_str()]);
 }

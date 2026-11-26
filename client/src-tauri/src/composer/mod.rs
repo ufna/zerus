@@ -82,6 +82,7 @@ pub type Dispatch = Arc<dyn Fn(Target, Action, String) -> Result<Outcome, String
 pub(crate) type OutboxDispatch = Arc<
     dyn Fn(Target, Action, String, OutboxAdmission) -> Result<Option<Outcome>, String> + Send + Sync,
 >;
+pub(crate) type OutboxStatus = Arc<dyn Fn(&Target, &Action, &str) -> Option<Value> + Send + Sync>;
 pub(crate) use outbox::OutboxAdmission;
 
 const COMPOSERS: usize = 64;
@@ -759,6 +760,7 @@ pub(crate) struct Shared {
     /// lock is released; this callback only wakes its worker.
     pub(crate) draft_listener: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
     outbox_dispatch: std::sync::OnceLock<OutboxDispatch>,
+    outbox_status: std::sync::OnceLock<OutboxStatus>,
     /// Wakes the ticker, which sleeps while no composer is open.
     opened: Condvar,
     /// The selected desktop service's deferred send route, if any.
@@ -826,6 +828,7 @@ impl Composers {
             changes: AtomicU64::new(0),
             draft_listener: Default::default(),
             outbox_dispatch: Default::default(),
+            outbox_status: Default::default(),
             opened: Condvar::new(),
             deferred: Mutex::new(None),
             verified_send: Mutex::new(None),

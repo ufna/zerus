@@ -2709,14 +2709,16 @@ with `agent busy` before submission; wait or inspect Terminal rather than typing
 through that refusal.
 
 **Send** and Enter in Desktop Composer send to a ready agent immediately.
-For a busy live Codex or Kimi conversation, or one with earlier Zerus messages
+For a busy live Codex, Kimi or supported OpenCode conversation, or one with earlier Zerus messages
 waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
 outgoing row with **Queued in Zerus**, its original local enqueue time, and
 its attachments. The agent receives no input during that save. The desktop
 checks the original run and sends in order when it confirms an idle input
-with no earlier message pending. The host checks idle again under its native
-input lock before offering the message. If it confirms that the agent became
+with no earlier message pending. For Codex and Kimi, the host checks idle again
+under its native input lock before offering the message. OpenCode checks the
+exact conversation and makes a queue-only offer. Any messages already parked
+in the OpenCode inbox keep their order. If the host confirms that the agent became
 busy before any input was offered, that same message waits with its original
 request ID. Queueing requires guarded Send support from the computer running
 the session. A ready session on an older computer still uses ordinary Send.
@@ -2728,9 +2730,11 @@ from the editable draft so an older desktop can edit that draft during rollback.
 
 The native queue shown in Activity has its own **Send now** action. It
 operates only on the native queue already shown there. A refused or unknown
-delivery pauses the Zerus queue at that message. Check the agent's Terminal
-before deciding whether to remove an unknown message from the Zerus queue.
-A new run or a renamed session cannot inherit the earlier run's delivery.
+delivery pauses the Zerus queue at that message. For OpenCode, Zerus can check
+the original native message and settle the original receipt without another offer.
+Check Activity or Terminal before deciding whether to remove an unknown message
+from the Zerus queue. A new run or a renamed session cannot inherit the earlier
+run's delivery.
 
 A successful plain-text Codex terminal submission shows **Submitted to
 terminal** in the composer. Its outgoing message appears in Activity when

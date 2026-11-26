@@ -125,7 +125,7 @@ pub(super) fn terminal_text(text: &str, files: &[Value]) -> String {
     result
 }
 
-fn public_files(receipt: &Value) -> Vec<Value> {
+pub(super) fn public_files(receipt: &Value) -> Vec<Value> {
     receipt["attachments"].as_array().into_iter().flatten().take(8).enumerate()
         .map(|(index,file)|json!({"request_id":receipt["request_id"],"index":index,"name":file["name"],"mime":file["mime"],"bytes":file["bytes"],"reference":file["reference"]})).collect()
 }
@@ -302,6 +302,10 @@ pub(super) struct NativeStage {
 }
 
 impl NativeStage {
+    pub(super) fn files(&self) -> &Value {
+        &self.files
+    }
+
     pub fn keep(self) -> Value {
         if let Some(directory) = self.directory {
             let _ = directory.keep();
@@ -311,7 +315,7 @@ impl NativeStage {
 }
 
 pub(super) fn prepare_native(request: &Value) -> Result<NativeStage> {
-    if request["attachments"].is_null() {
+    if request["attachments"].is_null() || request["attachments"].as_array().is_some_and(Vec::is_empty) {
         return Ok(NativeStage {
             files: json!([]),
             directory: None,

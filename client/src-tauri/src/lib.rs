@@ -1032,6 +1032,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                         &actions, target, action, id, admission,
                     ))
                 }));
+                composers.set_outbox_status(std::sync::Arc::new(actions::check_outbox_receipt));
                 #[cfg(target_os = "linux")]
                 if desktop_service::mode() {
                     let (checking, sending) = (app.handle().clone(), app.handle().clone());

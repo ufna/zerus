@@ -905,11 +905,9 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         },
         reason.is_some(),
     );
-    let attachments_available = ctx.facts.cmd != "opencode"
-        && details
-            .get("attachments_supported")
-            .and_then(Value::as_bool)
-            .unwrap_or(ctx.facts.cmd != "agy");
+    let attachments_available = details["attachments_supported"]
+        .as_bool()
+        .unwrap_or(!matches!(ctx.facts.cmd.as_str(), "agy" | "opencode"));
     let attachments_reason = details
         .get("attachments_reason")
         .and_then(Value::as_str)
