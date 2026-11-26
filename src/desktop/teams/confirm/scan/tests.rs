@@ -263,7 +263,7 @@ fn unknown_fixture() {
         record["completion_source"] = serde_json::json!("manual_terminate");
         record["completion_reason"] = serde_json::json!("user_terminated");
         let mut drifted = record.clone();
-        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
         producer::archive(&drifted).unwrap();
         assert_eq!(
             crate::state::dispatch_test_archive_catalog_worker().unwrap(),
