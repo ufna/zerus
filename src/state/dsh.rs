@@ -481,7 +481,6 @@ const HOST_UNAVAILABLE: &str = "DeepSeek host is unavailable; resume the session
 /// (zerus-1wchz, pinned by `the_bridge_runs_only_a_newline_terminated_request`).
 const INCOMPLETE: &str = "The DeepSeek host never received a complete request";
 const PREPARE_FILES_RPC: &str = "prepare-files";
-#[cfg(unix)]
 const FILE_PREPARATION_UNCONFIRMED: &str =
     "DeepSeek did not confirm attachment preparation. No message was sent.";
 #[cfg(unix)]

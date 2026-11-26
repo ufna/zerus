@@ -35,7 +35,7 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
 fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> ComposerView {
     let mut row = lock(&fake.row);
     row.name.clone_from(&target.name);
-    row.agent = agent.into();
+    row.agent = if agent == "dsh" { "deepseek" } else { agent }.into();
     row.process_state = "running".into();
     row.phase = Some("tool".into());
     drop(row);

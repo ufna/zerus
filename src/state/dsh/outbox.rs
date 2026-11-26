@@ -3,6 +3,7 @@ use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use std::io::Read;
+use std::time::Duration;
 
 const WAIT_PROOF: &str = "native_dsh_idle_guard";
 const RECEIPT_PROOF: &str = "native_dsh_receipt";
