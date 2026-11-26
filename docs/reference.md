@@ -5507,6 +5507,60 @@ reports bounded pages and counts. The lanes are `all`, `person`,
 `review_counts` and echoes `review_lane`. Cursor scope includes the chosen
 lane, session and search.
 
+Quick review records one decision about a settled ordinary report. Read
+`review_report_id` and `history_revision` from the task. The report ID is the
+opaque ID shown on the exact report in a paged history with `--attachments
+metadata`. If the task has no exact settled report, quick review is unavailable.
+This includes ambiguous legacy results, unresolved delivery or execution, and
+competing quick review decisions. Team review continues through its own lane and
+uses its existing Team acceptance rules.
+
+`hgs task quick-review REF --json` takes one JSON object on stdin. For `op: "set"`,
+send the expected `history_revision`, `report_id`, and one `disposition`:
+
+| `kind` | Required fields |
+| --- | --- |
+| `ready` | `evidence` describing the existing verification |
+| `check` | `criterion` and one `assignee` with `machine` and `session_id` |
+| `rework` | `defect` describing the failure and expected result |
+| `parked` | `reopen_when` naming the evidence needed for reevaluation |
+
+Text fields must be nonblank and at most 1024 UTF-8 bytes. The assignee's
+identity is the computer UUID and exact `launch_id:…` or `run_id:…` session
+key, up to 200 bytes. Choose a named session verified on the computer handling
+the request. The pilot refuses peer assignees before writing. Displayed names
+are hints. The request is limited to 8192
+bytes and report IDs to 512 bytes. A decision records metadata and history; it
+does not send a task, change its stage or assign a new task executor. To
+reevaluate a parked report, explicitly set a new disposition against a fresh
+read. A later report or cycle leaves earlier decisions in history and requires
+a new decision.
+
+For `op: "accept"`, send only the same two guards and the operation. This
+accepts a current `ready` report using the existing ordinary Done transition
+when invoked by the person or the task's exact verified executor. A different
+report, stale revision, or non-ready disposition refuses. Replies echo `op`,
+`report_id`, `project_uuid`, `task_uuid` and the resulting `task`.
+
+To send a decided rework to its original executor, use `hgs task
+message-reviewed REF --mode reopen` with the usual message content,
+`--request-id`, `--expect-dispatch`, plus `--expect-history-revision` and
+`--expect-report-id`. Fresh admission checks the exact current report and its
+rework decision under the task lock. This uses the existing reopen reservation
+and delivery protocol. Check the same original request to recover a receipt.
+Its unknown outcome grants no second offer. The separate verb makes an older
+helper refuse before ordinary message dispatch.
+
+Paged Review lists support `--quick-review work|all|ready|check|rework|parked|unclassified|unresolved`.
+`work` includes checks, rework, and unclassified tasks with an exact settled
+report. `all` includes the ordinary ready, parked and unresolved groups as
+well. Team tasks remain in `--review-lane team`. Review list replies expose
+scope-wide `quick_review_counts` and echo a selected `quick_review_lane`.
+Cursors bind the selected queue, session and search. Rows show
+`quick_review_status` and, for a usable report, `review_report_id` and an
+optional current `quick_review` disposition. Legacy review-lane replies keep
+their existing fields and counts.
+
 Both report commands add the report to history. For a managed execution an
 agent uses `hgs task report-attempt REF --attempt UUID`, with the UUID supplied
 by its original dispatch or start acknowledgement. The named immutable attempt

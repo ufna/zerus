@@ -87,10 +87,12 @@ export const resolveTaskReference = (project: string, reference: string) => desk
 /** One further page of a board stage after a cursor (`task list --stage --limit --after`). */
 /** One session's view of a stage: its identity (`launch_id:...` or `run_id:...`) on its computer (empty: this one). */
 export type TaskScope = { host: string; sessionId: string };
-export const readTaskPage = (project: string, stage: string, limit: number, after: string | null, scope?: TaskScope, query?: string, reviewLane?: string, reviewBefore?: string) =>
-  desktop<unknown>("task_page", { project, stage, limit, after, ...(scope ? { session: scope.sessionId, host: scope.host || null } : {}), ...(query ? { query } : {}), ...(reviewLane ? { reviewLane, reviewBefore: reviewBefore || null } : {}) });
+export const readTaskPage = (project: string, stage: string, limit: number, after: string | null, scope?: TaskScope, query?: string, reviewLane?: string, reviewBefore?: string, quickReviewLane?: string) =>
+  desktop<unknown>("task_page", { project, stage, limit, after, ...(scope ? { session: scope.sessionId, host: scope.host || null } : {}), ...(query ? { query } : {}), ...(reviewLane ? { reviewLane } : {}), ...(quickReviewLane ? { quickReviewLane } : {}), ...(reviewLane || quickReviewLane ? { reviewBefore: reviewBefore || null } : {}) });
 export const classifyTaskReview = (project: string, task: string, revision: string, owner: string, criterion: string) =>
   desktop<void>("task_classify_review", { project, task, revision, owner, criterion });
+export const changeTaskQuickReview = (project: string, task: string, change: import("./ui/screens/quick-review").QuickReviewChange) =>
+  desktop<void>("task_quick_review", { project, task, change });
 export const openTaskAttachment = (path: string) => desktop<string | null>("task_attachment_open", { path });
 /** One file of a task, read when its card needs it, checked against its page and kept in the private cache. */
 export const readTaskAttachment = (project: string, task: string, source: TaskFileSource) =>

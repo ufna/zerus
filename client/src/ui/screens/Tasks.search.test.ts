@@ -15,7 +15,9 @@ vi.mock("../../i18n", async (original) => {
   const module = await original<typeof import("../../i18n")>();
   const catalog = (await import("../../i18n.ru.json")).default;
   return { ...module, tr: (source: string, ...args: import("../../i18n").TranslationArgument[]) =>
-    module.translateWithCatalog(catalog, f.locale, source, ...args) };
+    module.translateWithCatalog(catalog, f.locale, source, ...args),
+    trc: (context: string, source: string, ...args: import("../../i18n").TranslationArgument[]) =>
+      module.translateWithCatalog(f.locale === "ru" ? { ...catalog, [source]: catalog[`${context}\u0004${source}` as keyof typeof catalog] ?? catalog[source as keyof typeof catalog] } : catalog, f.locale, source, ...args) };
 });
 vi.mock("../../bridge", async (original) => {
   const module = await original<typeof import("../../bridge")>();
@@ -172,9 +174,9 @@ it.each([
 });
 
 it.each([
-  ["en", "Your decision", "Coordinator or reviewer next", "Coordinator to triage"],
-  ["ru", "Вам на решение", "Дальше проверяет координатор или ревьюер", "Координатору нужно уточнить, что дальше"],
-] as const)("uses projected execution across the normal board and bounded search in %s", async (locale, person, technical, triage) => {
+  ["en", "Your decision", "Coordinator or reviewer next", "Coordinator to triage", "Team review"],
+  ["ru", "Вам на решение", "Дальше проверяет координатор или ревьюер", "Координатору нужно уточнить, что дальше", "Проверка командой"],
+] as const)("uses projected execution across the normal board and bounded search in %s", async (locale, person, technical, triage, team) => {
   const { stream, search } = (await import("./fixtures/task-review-projected.json")).default;
   expect(search.tasks[4].execution?.conflict).toBe(true);
   expect(search.tasks[4].execution?.has_unknown).toBe(false);
@@ -193,7 +195,7 @@ it.each([
   await tick();
   host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
   const labels = () => [...host.querySelectorAll(".tk-card")].map((card) => card.querySelector(".tk-review-owner")?.textContent);
-  const expected = [person, technical, triage, undefined, triage, triage];
+  const expected = [person, technical, triage, team, triage, triage];
   expect(labels()).toEqual(expected);
   expect(f.read).not.toHaveBeenCalled();
 
@@ -246,7 +248,7 @@ it("stream reconnect keeps old search routing labels hidden until the scoped Rev
   input.value = "sample";
   input.dispatchEvent(new Event("input", { bubbles: true }));
   await vi.advanceTimersByTimeAsync(200); await tick();
-  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(5);
+  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(6);
   reconnect = true;
   tasks.session.changed(); await tick();
   expect(pending).toHaveLength(1);
@@ -259,7 +261,7 @@ it("stream reconnect keeps old search routing labels hidden until the scoped Rev
   expect(pending).toHaveLength(2);
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(0);
   pending[1](search); await tick();
-  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(5);
+  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(6);
 });
 
 it("stream reconnect waits for retained window pages before showing their next-reviewer labels", async () => {
@@ -283,7 +285,7 @@ it("stream reconnect waits for retained window pages before showing their next-r
   const showMore = host.querySelector<HTMLButtonElement>(".tk-more")!;
   expect(showMore).not.toBeNull();
   showMore.click(); await tick();
-  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(5);
+  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(6);
   tasks.apply([{ ...windowed, kind: "failed", payload: { message: "project stream ended" } }]);
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(0);
   reconnect = true;
@@ -295,7 +297,7 @@ it("stream reconnect waits for retained window pages before showing their next-r
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(1);
   resolveReview(search); await tick();
   expect(tail()?.textContent).toBe("Coordinator or reviewer next");
-  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(5);
+  expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(6);
 });
 
 it.each(["older first", "newer first"] as const)("bounds retained tail rereads and accepts only the latest Review window (%s)", async (order) => {
@@ -379,7 +381,7 @@ it.each(["project window", "scoped search"] as const)("Show more preserves the r
     await vi.advanceTimersByTimeAsync(200); await tick();
   }
   const labels = () => [...host.querySelectorAll(".tk-card")].map((card) => card.querySelector(".tk-review-owner")?.textContent);
-  const expectedHead = ["Your decision", "Coordinator or reviewer next", "Coordinator to triage", undefined];
+  const expectedHead = ["Your decision", "Coordinator or reviewer next", "Coordinator to triage", "Team review"];
   expect(labels().slice(0, 4)).toEqual(expectedHead);
   expect(host.querySelectorAll(".tk-card")).toHaveLength(first.length);
   host.querySelector<HTMLButtonElement>(".tk-more")!.click(); await tick();
@@ -446,5 +448,66 @@ it.each([
   host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
   await tick();
   expect(host.querySelectorAll(".tk-card").length).toBeGreaterThan(0);
+  expect(f.write).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["en", "Review work", "Ready to accept", "Parked", "History reconciliation", "All ordinary reviews", "Team review"],
+  ["ru", "Проверки к выполнению", "Готово к приёмке", "Отложено", "Сверка истории", "Все обычные проверки", "Проверка командой"],
+] as const)("shows independent quick scopes and shares outcomes with bounded search in %s", async (locale, work, ready, parked, unresolved, all, team) => {
+  const { stream } = (await import("./fixtures/task-review-projected.json")).default;
+  const [a, b, c, d, e] = stream.payload.tasks;
+  const report = { history_revision: "e".repeat(64), review_report_id: "report:fixture" };
+  const rows = [
+    { ...a, ...report, quick_review_status: "ready", quick_review: { kind: "ready", evidence: "Existing trace" } },
+    { ...b, ...report, quick_review_status: "parked", quick_review: { kind: "parked", reopen_when: "Run a new witness" } },
+    { ...c, ...report, quick_review_status: "unclassified" },
+    { ...d, quick_review_status: "team" },
+    { ...e, quick_review_status: "unresolved", execution: null },
+  ];
+  const counts = { all: 4, work: 1, ready: 1, parked: 1, check: 0, rework: 0, unclassified: 1, unresolved: 1, team: 1 };
+  const expectRows = (lane: string) => lane === "work" ? [rows[2]] : lane === "unresolved" ? [rows[4]]
+    : lane === "all" ? rows.filter(r => r.quick_review_status !== "team") : rows.filter(r => r.quick_review_status === lane);
+  f.locale = locale;
+  vi.useFakeTimers();
+  f.reviewRead.mockImplementation(async (_p, _s, _l, _after, _scope, _query, legacy, _before, quick) => ({
+    ...(quick ? { quick_review_lane: quick } : { review_lane: legacy,
+      review_counts: { person: 0, technical: 0, triage: 4, team: 1 } }),
+    revision: "rev-fixture", quick_review_counts: counts, damaged_total: 0, tasks: quick ? expectRows(quick) : rows.slice(0, 1),
+    page: { position: 0, total: quick ? expectRows(quick).length : 5, next: null },
+  }));
+  f.read.mockImplementation(async (_p, stage) => ({
+    tasks: stage === "review" ? rows : [], page: { next: null },
+    counts: { review: 5, active: 0, todo: 0, backlog: 0, done: 0 },
+  }));
+  tasks.follow(f.project.id);
+  tasks.apply([{ ...stream, payload: { ...stream.payload, tasks: rows } }]);
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(TasksPanel, {}), host);
+  await tick();
+  const labels = () => [...host.querySelectorAll(".tk-review-owner")].map(r => r.textContent);
+  expect(labels()).toContain(team);
+  expect(host.querySelector('[data-filter="current"] .tk-tile-count')?.textContent).toBe("5");
+  const aggregate = host.querySelector<HTMLButtonElement>('[data-filter="current"]')!;
+  host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
+  await tick();
+  const queue = (label: string, count: number) => [...host.querySelectorAll<HTMLButtonElement>(".tk-review-queues button")].find(el => el.textContent === label + count)!;
+  expect(queue(all, 4).getAttribute("aria-pressed")).toBe("true");
+  expect(labels().some(v => v?.startsWith(ready))).toBe(true);
+  expect(labels()).toContain(parked); expect(labels()).toContain(unresolved);
+  expect(labels()).not.toContain(team);
+  queue(work, 1).click(); await tick();
+  expect(f.reviewRead).toHaveBeenLastCalledWith(f.project.id, "review", 50, null, undefined, "", undefined, undefined, "work");
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(1);
+  queue(unresolved, 1).click(); await tick();
+  expect(labels()).toEqual([unresolved]);
+
+  aggregate.click();
+  const input = host.querySelector<HTMLInputElement>(".tk-search input")!;
+  input.value = "fixture"; input.dispatchEvent(new Event("input", { bubbles: true }));
+  await vi.advanceTimersByTimeAsync(200); await tick();
+  expect(labels()).toContain(team);
+  const teamRow = host.querySelector(`[data-task="${d.uuid}"]`)!;
+  expect(teamRow.querySelector(".tk-primary")).toBeNull();
   expect(f.write).not.toHaveBeenCalled();
 });

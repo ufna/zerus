@@ -4,7 +4,7 @@ import { notify } from "./actions";
 import { exitFlush } from "./exitFlush";
 import type { Fetched } from "../types";
 export type TaskEditorMode = "note" | "description";
-export interface TaskMessageDelivery { mode: "note" | "queue" | "send" | "reopen"; stage_at: number; dispatch_id: string }
+export interface TaskMessageDelivery { mode: "note" | "queue" | "send" | "reopen"; stage_at: number; dispatch_id: string; review?: import("../ui/screens/quick-review").ReportGuard }
 export interface TaskRecoveryRecord { id: string; snapshot: string }
 export interface TaskEditorTarget<M extends string = TaskEditorMode> { project: string; task: string; mode: M }
 export interface TaskEditorView<M extends string = TaskEditorMode> extends TaskEditorTarget<M> {

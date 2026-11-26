@@ -10,7 +10,7 @@ use std::sync::{
     Arc,
 };
 use tauri::{Manager, State};
-use zerus_client_core::tasks::{add_review_lane, check_review_lane, checked_queried_page, queried_page_call, PageScope};
+use zerus_client_core::tasks::{add_quick_review_counts, add_quick_review_lane, add_review_lane, check_quick_review_lane, check_review_lane, checked_queried_page, queried_page_call, PageScope};
 use zerus_client_core::{attachments, reads::CachedAttachment, task_details, tasks_write};
 
 #[derive(Clone, Default)]
@@ -205,6 +205,7 @@ pub async fn task_page(
     query: Option<String>,
     review_lane: Option<String>,
     review_before: Option<String>,
+    quick_review_lane: Option<String>,
 ) -> Result<Value, String> {
     if crate::actions::blocked() {
         return Err(crate::screens::REPLAY_NEEDS_HGS.into());
@@ -220,14 +221,19 @@ pub async fn task_page(
         page_scope(&session, &host),
         query.as_deref(),
     )?;
-    if let Some(lane) = &review_lane {
+    if quick_review_lane.is_some() && review_lane.is_some() {
+        return Err("Choose one review queue.".into());
+    }
+    if let Some(lane) = &quick_review_lane {
+        add_quick_review_lane(&mut call, &stage, lane, review_before.as_deref())?;
+    } else if let Some(lane) = &review_lane {
         add_review_lane(&mut call, &stage, lane, review_before.as_deref())?;
     } else if review_before.is_some() {
         return Err("A review cursor needs a review queue.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let reply = tasks_write::run(&zerus_client_core::default_hgs(), &call)?;
-        let page = checked_queried_page(
+        let mut page = checked_queried_page(
             &reply,
             &project,
             &stage,
@@ -235,6 +241,12 @@ pub async fn task_page(
             page_scope(&session, &host),
             query.as_deref(),
         )?;
+        if let Some(lane) = quick_review_lane {
+            return check_quick_review_lane(&reply, page, &lane);
+        }
+        if stage == "review" {
+            add_quick_review_counts(&reply, &mut page);
+        }
         match review_lane {
             Some(lane) => check_review_lane(&reply, page, &lane),
             None => Ok(page),
@@ -669,6 +681,28 @@ pub async fn task_classify_review(
             return Err("Review assignment could not be verified. Refresh the task.".into());
         }
         Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Save or accept a review outcome bound to the report shown by the UI.
+#[tauri::command]
+pub async fn task_quick_review(
+    state: State<'_, TaskWrites>,
+    project: String,
+    task: String,
+    change: zerus_client_core::task_quick_review::Change,
+) -> Result<(), String> {
+    if crate::actions::blocked() {
+        return Err(crate::screens::REPLAY_NEEDS_HGS.into());
+    }
+    let call = change.call(&project, &task)?;
+    let permit = state.begin()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let reply = tasks_write::run(&zerus_client_core::default_hgs(), &call)?;
+        change.check_reply(&reply, &project, &task)
     })
     .await
     .map_err(|error| error.to_string())?

@@ -711,6 +711,181 @@ class DeliveryFixture(Fixture):
         self.hgs("settings", "--project", "orchard", "--set", text=json.dumps(settings))
 
 class TaskDelivery(DeliveryFixture):
+    def test_quick_review_pages_and_guarded_original_executor_reopen(self):
+        join(self.env, "project-1", self.name)
+
+        def get(task):
+            return self.hgs("get", task["ref"], "--history-limit", "15",
+                            "--attachments", "metadata")["task"]
+
+        def decide(task, disposition=None, report_id=None, ok=True):
+            request = dict(op="set" if disposition else "accept",
+                           history_revision=task["history_revision"],
+                           report_id=report_id or task["review_report_id"])
+            if disposition:
+                request["disposition"] = disposition
+            return self.hgs("quick-review", task["ref"], "--json",
+                            text=json.dumps(request), ok=ok)
+
+        def listing(*options, **kwargs):
+            return self.hgs("list", "--project", "orchard", "--stage", "review", "--limit", "1",
+                            *options, **kwargs)
+
+        ready, parked, checking = [
+            json.loads(self.as_agent("add", "--project", "orchard", "--json",
+                                     text=f"Review condition {n}"))["task"]
+            for n in range(3)
+        ]
+        for task in (ready, parked, checking):
+            report = json.loads(self.as_agent("report", task["ref"], "--json", text="Original result"))
+            self.assertTrue(report["moved_to_review"])
+            seen = get(task)
+            self.assertEqual(seen["quick_review_status"], "unclassified")
+            self.assertEqual(seen["review_report_id"],
+                             next(entry["id"] for entry in seen["log"] if entry["kind"] == "report"))
+
+        unresolved = json.loads(self.as_agent("add", "--project", "orchard", "--start", "--json",
+                                              text="Review condition needs reconciliation"))["task"]
+        self.hgs("cancel", unresolved["ref"], "--reason", "Executor stopped")
+        self.confirm()
+        self.assertEqual(get(unresolved)["quick_review_status"], "unresolved")
+
+        proof = dict(kind="ready", evidence="The existing smoke trace covers the original request.")
+        waiting = dict(kind="parked", reopen_when="Reevaluate if the next installed build reproduces.")
+        checking = get(checking)
+        assigned = dict(kind="check", criterion="Inspect the one observed refusal.",
+                        assignee={key: checking["session"][key] for key in ("machine", "session_id")})
+        ready = get(ready)
+        self.assertIn("does not belong", decide(ready, proof, checking["review_report_id"], ok=False))
+        result = decide(ready, proof)
+        self.assertEqual((result["op"], result["report_id"], result["task_uuid"], result["project_uuid"]),
+                         ("set", ready["review_report_id"], ready["uuid"], ready["project"]))
+        ready = result["task"]
+        parked = decide(get(parked), waiting)["task"]
+        checking = decide(checking, assigned)["task"]
+        self.assertEqual(checking["quick_review"]["assignee"]["session"], self.name)
+        before_refusal = get(checking)
+        peer = str(uuid.uuid4())
+        catalog = self.root / "config" / "swarm" / "catalog.json"
+        configuration = json.loads(catalog.read_text())
+        configuration.setdefault("bindings", {})["sample-peer"] = dict(id=peer, verified=True)
+        catalog.write_text(json.dumps(configuration))
+        invented = "launch_id:" + str(uuid.uuid4())
+        unborn = dict(assigned, assignee=dict(assigned["assignee"], session_id=invented))
+        self.assertIn("unavailable", decide(checking, unborn, ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(
+            checking, dict(unborn, assignee=dict(machine=peer, session_id=invented)), ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(checking, dict(
+            assigned, assignee=dict(assigned["assignee"], machine=peer)), ok=False))
+        self.assertEqual(get(checking), before_refusal)
+        self.assertIn("not ready", decide(parked, ok=False))
+
+        actionable = listing("--quick-review", "work", "--query", "review condition")
+        self.assertEqual(actionable["quick_review_lane"], "work")
+        self.assertEqual(actionable["page"]["total"], 1)
+        self.assertEqual(actionable["tasks"][0]["uuid"], checking["uuid"])
+        counts = dict(all=4, work=1, ready=1, parked=1, check=1, rework=0,
+                      unclassified=0, unresolved=1, team=0)
+        self.assertEqual(actionable["quick_review_counts"], counts)
+        history = listing("--quick-review", "unresolved")
+        self.assertEqual(history["tasks"][0]["uuid"], unresolved["uuid"])
+        self.assertNotIn("review_report_id", history["tasks"][0])
+        all_rows = listing("--quick-review", "all")
+        self.assertEqual(all_rows["page"]["total"], 4)
+        self.assertTrue(all_rows["page"]["next"])
+        self.assertIn("cursor", listing("--quick-review", "ready", "--after",
+                                        all_rows["page"]["next"], ok=False))
+        legacy = listing("--review-lane", "all")
+        self.assertEqual(legacy["review_counts"], dict(person=0, technical=0, triage=4, team=0))
+        self.assertEqual(legacy["quick_review_counts"], counts)
+        self.assertEqual(decide(ready)["task"]["stage"], "done")
+
+        task = self.reviewed("Retain the original managed executor")
+        defect = dict(kind="rework", defect="The example omits the second item.")
+        original = decide(task, defect)["task"]
+        paused = decide(original, waiting)["task"]
+        self.assertEqual(paused["dispatch_id"], original["dispatch_id"])
+        identity = str(uuid.uuid4())
+
+        def reopen(seen, request_id, ok=True):
+            return self.hgs("message-reviewed", seen["ref"], "--mode", "reopen",
+                            "--request-id", request_id, "--expect-dispatch", seen["dispatch_id"],
+                            "--expect-history-revision", seen["history_revision"],
+                            "--expect-report-id", seen["review_report_id"],
+                            text=defect["defect"], ok=ok)
+
+        before = self.received()
+        self.assertIn("Refresh", reopen(original, identity, ok=False))
+        self.assertIn("does not request rework", reopen(paused, identity, ok=False))
+        self.assertEqual(self.received(), before)
+        self.assertFalse(self.notes(task, identity))
+
+        frozen = decide(paused, defect)["task"]
+        release = self.held(
+            "message-reviewed", frozen["ref"], "--mode", "reopen",
+            "--request-id", identity, "--expect-dispatch", frozen["dispatch_id"],
+            "--expect-history-revision", frozen["history_revision"],
+            "--expect-report-id", frozen["review_report_id"], text=defect["defect"])
+        parked_again = decide(frozen, waiting)["task"]
+        self.assertEqual(parked_again["dispatch_id"], frozen["dispatch_id"])
+        code, _, err = release()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Refresh", err)
+        self.assertEqual(self.received(), before)
+        self.assertFalse(self.notes(task, identity))
+
+        selected = decide(parked_again, defect)["task"]
+        first = reopen(selected, identity)
+        self.assertEqual(first["task"]["stage"], "active")
+        self.assertEqual(first["task"]["session"], task["session"])
+        self.assertNotIn("quick_review_status", first["task"])
+        self.wait_received(defect["defect"])
+        self.confirm()
+        again = reopen(selected, identity)
+        self.assertEqual(again["attempt"]["id"], first["attempt"]["id"])
+        self.assertEqual(self.received().count(defect["defect"]), 1)
+
+        self.as_agent("report-attempt", task["ref"], "--attempt", identity,
+                      text="Applied the fixes and checked again.")
+        current = get(task)
+        self.assertEqual(current["quick_review_status"], "unclassified")
+        self.assertNotEqual(current["review_report_id"], selected["review_report_id"])
+        self.assertIn("exact settled", decide(current, proof, selected["review_report_id"], ok=False))
+        self.assertEqual([e["quick_review"]["disposition"]["kind"] for e in current["log"]
+                          if e["kind"] == "quick_review"], ["rework", "parked", "rework", "parked", "rework"])
+
+    def test_quick_review_recovers_unknown_reopen_without_reoffering(self):
+        task = self.reviewed("An uncertain reviewed reopen")
+        request = dict(op="set", history_revision=task["history_revision"],
+                       report_id=task["review_report_id"],
+                       disposition=dict(kind="rework", defect="Show the missing observation."))
+        selected = self.hgs("quick-review", task["ref"], "--json",
+                            text=json.dumps(request))["task"]
+
+        def deliver(identity, *extra, **kwargs):
+            return self.hgs(
+                "message-reviewed", task["ref"], "--mode", "reopen", "--request-id", identity,
+                "--expect-dispatch", selected["dispatch_id"],
+                "--expect-history-revision", selected["history_revision"],
+                "--expect-report-id", selected["review_report_id"], *extra,
+                text=request["disposition"]["defect"], **kwargs)
+
+        identity = str(uuid.uuid4())
+        receipts = self.state / "input_receipts"
+        receipts.chmod(0o500)
+        self.addCleanup(receipts.chmod, 0o700)
+        unknown = deliver(identity)
+        receipts.chmod(0o700)
+        self.assertEqual(unknown["attempt"]["state"], "uncertain")
+        current = self.hgs("get", task["ref"])["task"]
+        self.assertEqual(current["stage"], "review")
+        self.assertEqual(current["quick_review_status"], "unresolved")
+        self.assertNotIn("review_report_id", current)
+        self.assertEqual(deliver(identity, "--recover-only")["attempt"]["state"], "uncertain")
+        self.assertIn("Refresh", deliver(str(uuid.uuid4()), ok=False))
+        self.assertEqual(len(self.notes(task, identity)), 1)
+        self.assertEqual(self.received().count(request["disposition"]["defect"]), 0)
+
     def test_review_queue_classifies_the_exact_existing_report(self):
         join(self.env, "project-1", self.name)
         first, second = [

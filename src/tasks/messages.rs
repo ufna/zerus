@@ -4,7 +4,7 @@
 use super::*;
 use zerus_replica::TaskDelivery;
 
-pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
+pub(super) fn execute(config: &Config, args: &[String], reviewed: bool) -> Result<Value> {
     // A reopen's attempt has one budget from here (C3 A3).
     let deadline = std::time::Instant::now() + super::attempts::BUDGET;
     let content = stdin_content(args)?;
@@ -14,6 +14,10 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let mode = option(args, "--mode")?
         .ok_or_else(|| fail("message needs --mode queue|send|reopen|note"))?;
     let dispatch = option(args, "--expect-dispatch")?.unwrap_or_default();
+    let review = quick_review::ReopenGuard::parse(args, mode)?;
+    if reviewed && review.is_none() {
+        return Err(fail("message-reviewed requires an exact history revision and report ID."));
+    }
     // A reopen reads the catalog and waits for the project within its one
     // budget, from here (#1519 review, zerus-9gzdp).
     let reopen = mode == "reopen";
@@ -37,6 +41,20 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     };
     let mut task = store.find(&r.task).map_err(fail)?;
     if let Some(actor) = super::teams::actor_for_marked_task(config, &machines, args, true, &task)? { who = actor; }
+    if let Some(guard) = review {
+        let current = task.view().map_err(fail)?;
+        let known = task.attempt(id).map_err(fail)?.is_some() || current.log.iter().any(|entry| {
+            entry.kind == "message" && entry.request_id.as_deref() == Some(id)
+        });
+        if !known {
+            if current.team.is_some() || current.team_invalid {
+                return Err(fail("Team tasks use Team review."));
+            }
+            if !flag(args, "--recover-only") {
+                guard.check(&task, &r.project.0)?;
+            }
+        }
+    }
     // The person's request a live team's reopen needs (zerus-46l1q), kept
     // and checked again before its commit.
     let mut person = {
@@ -79,7 +97,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         let alias = reach(config, &machines, &r.project.0, to).map_err(fail)?;
         let mut remote = vec![
             "task".into(),
-            "message".into(),
+            if review.is_some() { "message-reviewed" } else { "message" }.into(),
             uuid.clone(),
             "--project".into(),
             r.project.0.clone(),
@@ -92,6 +110,12 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             "--content-json".into(),
             "--json".into(),
         ];
+        if let Some(review) = review {
+            remote.extend([
+                "--expect-history-revision".into(), review.revision.into(),
+                "--expect-report-id".into(), review.report.into(),
+            ]);
+        }
         if let Actor::Agent(own) = &who {
             remote.extend([
                 "--agent".into(),
@@ -171,6 +195,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
                 args,
                 deadline,
                 person.as_ref(),
+                review,
             )?;
             if let Some(out) = reopened {
                 return Ok(out);
@@ -180,6 +205,9 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             super::attempts::pause_at(id, "legacy_reload");
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
+            if let Some(guard) = review {
+                guard.check(&task, &r.project.0)?;
+            }
             let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
             person = super::teams::guard(
                 config,

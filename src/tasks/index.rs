@@ -37,7 +37,8 @@ pub(super) const FILE: &str = "task-index-v4.sqlite3";
 /// holds the project document's version (zerus-cg5h.26, zerus-cg5h.21).
 /// 6: normalized full task text, title and short reference for search.
 /// 7: the effective Review queue, derived from the canonical report and its assignment.
-const ROWS: i64 = 7;
+/// 8: report-bound quick review status.
+const ROWS: i64 = 8;
 /// The index's version: its rows' shape and the replica's mark format, since
 /// a row remembers whether its task loaded, which the mark decides. An index
 /// made under another mark rule (before the seal, for one) is built again.
@@ -46,7 +47,7 @@ const SCHEMA: i64 = ROWS * 1000 + zerus_replica::MARK_FORMAT;
 /// the store's inventory does, repairing a lowered execution schema first
 /// (zerus-cg5h.21). Review assignment is optional projected data, so older
 /// cached headers are refreshed without changing the SQLite schema.
-const DERIVED: &str = "repaired-3-review-assignment";
+const DERIVED: &str = "repaired-4-quick-review";
 /// The histories kept: the most recently read tasks.
 const HISTORIES: i64 = 16;
 /// The one-task history cache this index replaces.
@@ -313,6 +314,7 @@ enum Derived {
         row: String,
         search: String,
         review: Option<&'static str>,
+        quick_review: Option<&'static str>,
         sends: Vec<i64>,
         held: Option<Held>,
     },
@@ -391,6 +393,7 @@ fn derive_from(loaded: zerus_replica::Result<TaskDoc>) -> Derived {
         .map(|e| e.at)
         .collect();
     let review = view.review_lane();
+    let quick_review = view.quick_review_status.map(|status| status.as_str());
     match row(view, task.revision()) {
         Ok(row) => Derived::Row {
             stage,
@@ -398,6 +401,7 @@ fn derive_from(loaded: zerus_replica::Result<TaskDoc>) -> Derived {
             id,
             search: search_text(&row),
             review,
+            quick_review,
             row: capped(row).to_string(),
             sends,
             held,
@@ -463,6 +467,7 @@ pub(super) struct Scope {
     owner: String,
     query: Option<String>,
     review: Option<ReviewLane>,
+    quick_review: Option<QuickReviewLane>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -505,12 +510,56 @@ impl ReviewLane {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum QuickReviewLane {
+    All, Work, Ready, Check, Rework, Parked, Unclassified, Unresolved,
+}
+
+impl QuickReviewLane {
+    const GROUPS: [Self; 6] = [
+        Self::Ready, Self::Check, Self::Rework, Self::Parked, Self::Unclassified, Self::Unresolved,
+    ];
+
+    pub(super) fn parse(value: &str) -> Result<Self> {
+        [Self::All, Self::Work].into_iter().chain(Self::GROUPS)
+            .find(|lane| lane.as_str() == value)
+            .ok_or_else(|| fail("Unknown quick review queue."))
+    }
+
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Work => "work",
+            Self::Ready => "ready",
+            Self::Check => "check",
+            Self::Rework => "rework",
+            Self::Parked => "parked",
+            Self::Unclassified => "unclassified",
+            Self::Unresolved => "unresolved",
+        }
+    }
+
+    fn predicate(self) -> &'static str {
+        match self {
+            Self::All => "quick_review!='team' AND ",
+            Self::Work => "quick_review IN ('check','rework','unclassified') AND ",
+            Self::Ready => "quick_review='ready' AND ",
+            Self::Check => "quick_review='check' AND ",
+            Self::Rework => "quick_review='rework' AND ",
+            Self::Parked => "quick_review='parked' AND ",
+            Self::Unclassified => "quick_review='unclassified' AND ",
+            Self::Unresolved => "quick_review='unresolved' AND ",
+        }
+    }
+}
+
 impl Scope {
     pub(super) fn new(machine: &str, session_id: &str) -> Self {
         Self {
             owner: owner_key(machine, session_id),
             query: None,
             review: None,
+            quick_review: None,
         }
     }
 
@@ -528,13 +577,28 @@ impl Scope {
             owner: owner.map_or_else(String::new, |s| s.owner),
             query: Some(query),
             review: None,
+            quick_review: None,
         }
     }
 
     pub(super) fn review(scope: Option<Self>, lane: ReviewLane) -> Self {
-        let mut scope = scope.unwrap_or(Self { owner: String::new(), query: None, review: None });
+        let mut scope = scope.unwrap_or_else(Self::project);
         scope.review = Some(lane);
         scope
+    }
+
+    pub(super) fn project() -> Self {
+        Self { owner: String::new(), query: None, review: None, quick_review: None }
+    }
+
+    pub(super) fn quick_review(scope: Option<Self>, lane: QuickReviewLane) -> Self {
+        let mut scope = scope.unwrap_or_else(Self::project);
+        scope.quick_review = Some(lane);
+        scope
+    }
+
+    pub(super) fn quick_review_lane(&self) -> Option<QuickReviewLane> {
+        self.quick_review
     }
 
     pub(super) fn review_lane(&self) -> Option<ReviewLane> {
@@ -547,6 +611,9 @@ impl Scope {
 
     /// Search cursors cannot be reused for another query or session scope.
     pub(super) fn cursor_project(&self, project: &str) -> String {
+        if let Some(lane) = self.quick_review {
+            return format!("{project}\nquick-review\n{}\n{}\n{}", lane.as_str(), self.owner, self.query.as_deref().unwrap_or(""));
+        }
         if let Some(lane) = self.review {
             return format!("{project}\nreview\n{}\n{}\n{}", lane.as_str(), self.owner, self.query.as_deref().unwrap_or(""));
         }
@@ -570,7 +637,8 @@ impl Scope {
 fn scoped_predicate(part: &Part, scope: &Scope) -> String {
     let search = if scope.query.is_some() { "instr(search, ?6)>0 AND " } else { "" };
     let review = scope.review.map_or("", ReviewLane::predicate);
-    format!("{}{search}{review}", part.predicate())
+    let quick_review = scope.quick_review.map_or("", QuickReviewLane::predicate);
+    format!("{}{search}{review}{quick_review}", part.predicate())
 }
 
 fn search_text(row: &Value) -> String {
@@ -734,11 +802,11 @@ fn connect(dir: &Path) -> Outcome<Connection> {
         "SELECT count(*) FROM sqlite_schema WHERE name IN
             ('meta', 'tasks', 'sends', 'tasks_order', 'tasks_short', 'tasks_checked', 'tasks_untrusted',
              'sends_at', 'sends_uuid', 'histories', 'entries', 'entries_place', 'entries_id',
-             'tasks_owner', 'tasks_unassigned', 'tasks_held', 'tasks_review')",
+             'tasks_owner', 'tasks_unassigned', 'tasks_held', 'tasks_review', 'tasks_quick_review')",
         [],
         |r| r.get(0),
     )?;
-    if version != SCHEMA || objects != 17 {
+    if version != SCHEMA || objects != 18 {
         // The one-task history cache before this index; nothing has it open
         // while the project lock is held.
         for suffix in ["", "-journal", "-wal", "-shm"] {
@@ -752,11 +820,12 @@ fn connect(dir: &Path) -> Outcome<Connection> {
             CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE tasks(uuid TEXT NOT NULL UNIQUE, files TEXT NOT NULL, stage TEXT, rank TEXT,
                 short_id TEXT, row TEXT, error TEXT, checked INTEGER NOT NULL, trusted INTEGER NOT NULL,
-                owner TEXT, unassigned INTEGER NOT NULL DEFAULT 0, version TEXT, done INTEGER, repaired INTEGER, search TEXT, review TEXT);
+                owner TEXT, unassigned INTEGER NOT NULL DEFAULT 0, version TEXT, done INTEGER, repaired INTEGER, search TEXT, review TEXT, quick_review TEXT);
             CREATE INDEX tasks_order ON tasks(stage, rank, uuid);
             CREATE INDEX tasks_owner ON tasks(owner, stage, rank, uuid);
             CREATE INDEX tasks_unassigned ON tasks(stage, rank, uuid) WHERE unassigned = 1;
             CREATE INDEX tasks_review ON tasks(review, rank, uuid) WHERE stage='review';
+            CREATE INDEX tasks_quick_review ON tasks(quick_review, rank, uuid) WHERE stage='review';
             CREATE INDEX tasks_held ON tasks(done, uuid) WHERE version IS NOT NULL;
             CREATE INDEX tasks_short ON tasks(short_id);
             CREATE INDEX tasks_checked ON tasks(checked);
@@ -1181,6 +1250,7 @@ impl<'a> Index<'a> {
                         row,
                         search,
                         review,
+                        quick_review,
                         sends,
                         held,
                     }) => {
@@ -1188,9 +1258,9 @@ impl<'a> Index<'a> {
                         let (version, done) = held.map(|h| (h.version, h.done)).unzip();
                         tx.execute(
                             "INSERT INTO tasks(uuid, files, stage, rank, short_id, row, checked, trusted, owner, unassigned,
-                                version, done, repaired, search, review)
-                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-                            params![uuid, files, stage, rank, id, row, checked, trusted, owner, unassigned, version, done, epoch, search, review],
+                                version, done, repaired, search, review, quick_review)
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                            params![uuid, files, stage, rank, id, row, checked, trusted, owner, unassigned, version, done, epoch, search, review, quick_review],
                         )?;
                         for at in sends {
                             tx.execute("INSERT INTO sends VALUES(?1, ?2)", params![uuid, at])?;
@@ -1720,6 +1790,25 @@ impl<'a> Index<'a> {
             let (lane, count) = count?;
             *totals.get_mut(&lane).ok_or(Failure::Damaged)? = count;
         }
+        Ok(totals)
+    }
+
+    pub(super) fn quick_review_counts(&self, scope: &Scope) -> Outcome<BTreeMap<String, usize>> {
+        let mut totals = QuickReviewLane::GROUPS.into_iter()
+            .map(|lane| (lane.as_str().to_owned(), 0))
+            .chain([("team".into(), 0)])
+            .collect::<BTreeMap<_, _>>();
+        let mut query = self.db.prepare_cached(
+            "SELECT quick_review, count(*) FROM tasks WHERE stage='review'
+                AND (?1='' OR owner=?1) AND (?2 IS NULL OR instr(search, ?2)>0)
+                GROUP BY quick_review",
+        )?;
+        for count in query.query_map(params![scope.owner, scope.query], |r| Ok((r.get::<_, String>(0)?, r.get::<_, usize>(1)?)))? {
+            let (lane, count) = count?;
+            *totals.get_mut(&lane).ok_or(Failure::Damaged)? = count;
+        }
+        totals.insert("all".into(), totals.values().sum::<usize>() - totals["team"]);
+        totals.insert("work".into(), totals["check"] + totals["rework"] + totals["unclassified"]);
         Ok(totals)
     }
 

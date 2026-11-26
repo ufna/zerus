@@ -345,6 +345,11 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const [available, setAvailable] = createSignal<boolean>();
   const [off, setOff] = createSignal<"inactive" | "unavailable" | null>(null);
   const [followed, setFollowed] = createSignal<string>();
+  const [teamReadable, setTeamReadable] = createSignal(false);
+  const currentTeam = () => {
+    const shown = team();
+    return teamReadable() && shown?.bar.id === followed() ? shown : undefined;
+  };
   const [visible, setVisible] = createSignal(true);
   const [catalog, setCatalog] = createSignal<TeamCatalog>();
   const [catalogError, setCatalogError] = createSignal("");
@@ -356,8 +361,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const [inFlight, setInFlight] = createSignal<ReadonlyMap<string, string>>(new Map());
   const sending = () => [...inFlight().keys()];
   const [createIntent, setCreateIntent] = createSignal<CreateIntent | null>(null);
-  /** Resolvers by team id, for the decisions that wait for that team's revision. */
-  const pendingViews = new Map<string, Set<(view: TeamView | null) => void>>();
+  /** Bounded native reads waiting on an exact Team and, optionally, its known revision. */
+  const pendingViews = new Map<string, Set<(view: TeamView | null) => boolean>>();
   /** List page cursors asked for and not yet answered, so one is never asked twice. */
   const requestedPages = new Set<string>();
   /** The list page this store last selected for the reader; null is the first. */
@@ -440,7 +445,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     stopped = true;
     batch(() => {
       setAvailable(false); setOff(code === "unavailable" ? "unavailable" : "inactive");
-      setListPagesBy(new Map()); setListPage(undefined); setTeam(undefined); setWaitingView(undefined); setWaitingFirst(undefined);
+      setListPagesBy(new Map()); setListPage(undefined); setTeam(undefined); setTeamReadable(false); setWaitingView(undefined); setWaitingFirst(undefined);
     });
     requestedPages.clear();
     listSelected = null;
@@ -573,17 +578,21 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
           // A view is shown only for the followed team; a late view after
           // unfollow is dropped. A decision waiting for this team's revision
           // takes it without showing it.
-          if (view.bar.id === followed()) { batch(() => { setTeam(view); setAvailable(true); }); readSucceeded(entry.key); }
-          settleViews(view.bar.id, view);
+          if (view.bar.id !== id) continue;
+          if (id === followed()) batch(() => { setTeam(view); setTeamReadable(true); setAvailable(true); readSucceeded(entry.key); });
+          if (settleViews(id, view)) readSucceeded(entry.key);
         } else if (entry.kind === "failed") {
           const shown = team();
+          if (shown?.bar.id === id) setTeamReadable(false);
           if (shown?.bar.id === id && (shown.plan?.observed || shown.plan?.estimates)) {
             setTeam({ ...shown, plan: { ...shown.plan!, observed: null, estimates: null } });
           }
           if (payload.code !== "cursor_reset") settleViews(id, null);
         } else if (entry.kind === "ended") {
           const shown = team();
-          if (!shown || entry.key === `team:${shown.bar.id}` || entry.key === `team:${followed()}`) setTeam(undefined);
+          if (!shown || entry.key === `team:${shown.bar.id}` || entry.key === `team:${followed()}`) {
+            batch(() => { setTeam(undefined); setTeamReadable(false); });
+          }
           settleViews(id, null);
         }
       }
@@ -592,9 +601,13 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   function settleViews(id: string, view: TeamView | null) {
     const waiters = pendingViews.get(id);
-    if (!waiters) return;
-    pendingViews.delete(id);
-    for (const settle of waiters) settle(view);
+    if (!waiters) return false;
+    let accepted = false;
+    for (const settle of waiters) {
+      if (settle(view)) { waiters.delete(settle); accepted = true; }
+    }
+    if (!waiters.size) pendingViews.delete(id);
+    return accepted;
   }
 
   function clearObservedEstimates() {
@@ -646,13 +659,16 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   /** A Team tab follows its team beside the list and the waiting read. With
    * Teams off nothing is followed: only the application's recheck restarts. */
   async function openTeam(id: string) {
-    if (followed() !== id) clearObservedEstimates();
+    if (followed() !== id) {
+      clearObservedEstimates();
+      setTeamReadable(false);
+    }
     setFollowed(id);
     if (stopped) return;
     await follow(scope());
   }
   async function closeTeam() {
-    batch(() => { setFollowed(undefined); setTeam(undefined); });
+    batch(() => { setFollowed(undefined); setTeam(undefined); setTeamReadable(false); });
     if (stopped) return;
     await follow(scope());
   }
@@ -691,23 +707,30 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const waitingLater = () => !!waitingView()?.after;
 
   /**
-   * The revision of a team a decision is made on. The resolver is registered
+   * Borrow one bounded native Team view. The resolver is registered
    * before the follow is sent, a read failure or an end settles it at once,
    * and [`REVISION_WAIT_MS`] settles a silent read. Afterwards the scope the
    * views want is followed again, unless another follow was sent meanwhile.
    */
-  async function revisionOf(id: string): Promise<number | undefined> {
-    const shown = team();
-    if (shown?.bar.id === id && followed() === id) return shown.revision;
+  async function readTeamSnapshot(id: string, minimumRevision = 0): Promise<TeamView | undefined> {
     if (stopped) return undefined;
-    let settle!: (view: TeamView | null) => void;
-    const answer = new Promise<number | undefined>((resolve) => { settle = (view) => resolve(view?.revision); });
+    const key = `team:${id}`, shown = currentTeam();
+    const matches = (view: TeamView) => view.bar.id === id && view.revision >= minimumRevision;
+    if (shown && !readFailureFor(key) && matches(shown)) return shown;
+    let settle!: (view: TeamView | null) => boolean;
+    const answer = new Promise<TeamView | null>((resolve) => {
+      settle = (view) => {
+        if (view && !matches(view)) return false;
+        resolve(view);
+        return true;
+      };
+    });
     const waiters = pendingViews.get(id) ?? new Set();
     waiters.add(settle);
     pendingViews.set(id, waiters);
     const timer = setTimeout(() => { pendingViews.get(id)?.delete(settle); settle(null); }, REVISION_WAIT_MS);
     const borrowed: TeamFollow = { list: true, waiting: true, team: id };
-    const sent = follow(borrowed);
+    const sent = follow(borrowed, !!readFailureFor(key) || team()?.bar.id === id);
     const generation = followGeneration;
     try {
       await sent;
@@ -715,13 +738,19 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       pendingViews.get(id)?.delete(settle);
       settle(null);
     }
-    const revision = await answer;
+    const snapshot = await answer;
     clearTimeout(timer);
     const left = pendingViews.get(id);
     if (left) { left.delete(settle); if (!left.size) pendingViews.delete(id); }
     if (generation === followGeneration && !stopped && !sameFollow(borrowed, scope())) await follow(scope()).catch(() => {});
-    return revision;
+    return snapshot ?? undefined;
   }
+  async function revisionOf(id: string): Promise<number | undefined> {
+    const shown = team();
+    if (shown?.bar.id === id && followed() === id) return shown.revision;
+    return (await readTeamSnapshot(id))?.revision;
+  }
+
   async function decide(card: WaitingItem, decision: string, source = "waiting"): Promise<TeamOutcome | undefined> {
     const expected_revision = await revisionOf(card.team);
     if (expected_revision === undefined) return undefined;
@@ -958,9 +987,9 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const listNext = () => chainOf(listPagesBy()).next;
 
   return {
-    list, listPage, firstListPage, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending, base,
+    list, listPage, firstListPage, listed, listPages, listNext, team, currentTeam, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending, base,
     waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, readLeadNotice, revisionOf,
-    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
+    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, readTeamSnapshot, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }
 

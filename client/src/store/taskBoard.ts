@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import { taskBoardAction } from "../bridge";
 import { notify } from "./actions";
 import { tasks } from "./tasks";
-import { STAGES, type Task } from "../ui/screens/tasks-ui";
+import { STAGES, ordinaryReviewReturn, reportReviewOnly, type Task } from "../ui/screens/tasks-ui";
 import { tr, trNoop } from "../i18n";
 
 export type BoardAction = { kind: "to_backlog" | "to_todo" | "back_to_todo" | "accept" | "top" }
@@ -62,6 +62,8 @@ export async function actOnTask(project: string, task: Task, action: BoardAction
   if (writingTask() || action.kind === "send_to_team") return;
   const fresh = tasks.project() === project ? tasks.find(task.uuid) : undefined;
   const anchor = action.kind === "reorder" ? tasks.find(action.anchor) : undefined;
+  if (action.kind === "accept" && (reportReviewOnly(task) || fresh && reportReviewOnly(fresh))) return;
+  if (action.kind === "back_to_todo" && (!ordinaryReviewReturn(task) || fresh && !ordinaryReviewReturn(fresh))) return;
   if (!fresh || !canDrag(fresh) || fresh.stage !== task.stage || (action.kind === "reorder"
     ? !anchor || !anchor.writable || anchor.uuid === task.uuid || anchor.stage !== fresh.stage
     : !boardActions(fresh.stage).includes(action.kind))) {

@@ -757,6 +757,7 @@ pub(super) fn reopen(
     args: &[String],
     deadline: Instant,
     held: Option<&crate::caller::PersonRequest>,
+    review: Option<super::quick_review::ReopenGuard<'_>>,
 ) -> Result<Option<Value>> {
     pause(id);
     let detail = std::cell::RefCell::new(String::new());
@@ -765,6 +766,11 @@ pub(super) fn reopen(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
+        if let Some(guard) = review {
+            if let Err(error) = guard.check(task, &project.0) {
+                return refuse("changed", error.message);
+            }
+        }
         let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
         let person =
             match super::teams::guard(config, machines, task, "reopen", args, &mut meeting, held) {

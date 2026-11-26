@@ -385,6 +385,9 @@ pub fn present(
         "execution",
         "execution_unavailable",
         "review_assignment",
+        "review_report_id",
+        "quick_review",
+        "quick_review_status",
         "review_lane",
         "review_editable",
         "history_revision",
@@ -427,9 +430,11 @@ pub fn present(
                 "attachments",
                 "stale",
                 "attempt",
+                "quick_review",
             ]
             .contains(&key.as_str())
         });
+        crate::task_quick_review::present_history(object);
         let id = entry["id"].as_str().map(str::to_owned);
         entry["attachments"] = files(&entry["attachments"], id.as_deref())?;
         if let Some(delivery) = entry["delivery"].as_object_mut() {
