@@ -711,6 +711,52 @@ class DeliveryFixture(Fixture):
         self.hgs("settings", "--project", "orchard", "--set", text=json.dumps(settings))
 
 class TaskDelivery(DeliveryFixture):
+    def test_review_queue_classifies_the_exact_existing_report(self):
+        join(self.env, "project-1", self.name)
+        first, second = [
+            json.loads(self.as_agent("add", "--project", "orchard", "--json", text=f"Release evidence {n}"))["task"]
+            for n in (0, 1)
+        ]
+        for task in (first, second):
+            report = json.loads(self.as_agent("report", task["ref"], "--json", text="Original result"))
+            self.assertTrue(report["moved_to_review"])
+        third = self.reviewed("Managed result")
+        self.assertFalse(third["execution"]["current"].get("legacy", False))
+        self.assertEqual(third["execution"]["current"]["phase"], "ready")
+
+        def get(task):
+            return self.hgs("get", task["ref"], "--history-limit", "1")["task"]
+
+        def choose(task, owner, criterion="", ok=True):
+            return self.hgs("review-owner", task["ref"], owner, "--expect-revision",
+                            task["history_revision"], "--json", text=criterion, ok=ok)
+
+        def review(lane, *args):
+            return self.hgs("list", "--project", "orchard", "--stage", "review", "--limit", "1",
+                            "--review-lane", lane, *args)
+
+        seen = get(first)
+        self.assertTrue(seen["review_editable"])
+        self.assertEqual(seen["review_lane"], "triage")
+        self.assertEqual(review("all")["review_counts"], dict(person=0, technical=0, triage=3, team=0))
+        changed = choose(seen, "person", "Check the release screen")["task"]
+        self.assertEqual(changed["review_lane"], "person")
+        for field in ("uuid", "stage", "stage_at", "session", "dispatch_id", "summary"):
+            self.assertEqual(changed[field], seen[field], field)
+        self.assertNotEqual(changed["history_revision"], seen["history_revision"])
+        self.assertIn("Refresh", choose(seen, "unspecified", ok=False))
+        self.assertEqual(choose(get(third), "technical", "Read the artifact")["task"]["review_lane"], "technical")
+        scope = ("--session", seen["session"]["session_id"], "--query", "release evidence")
+        scoped = review("person", *scope)
+        self.assertEqual(scoped["review_counts"], dict(person=1, technical=0, triage=1, team=0))
+        self.assertEqual(scoped["page"]["total"], 1)
+        self.assertEqual(scoped["tasks"][0]["uuid"], first["uuid"])
+        whole = review("all")
+        self.assertEqual(whole["page"]["total"], 3)
+        self.assertTrue(whole["page"]["next"])
+        self.assertEqual(choose(get(first), "unspecified")["task"]["review_lane"], "triage")
+        self.assertEqual(self.hgs("stage", first["ref"], "done")["task"]["stage"], "done")
+
     def message(self, task, text, mode="send", identity=None, dispatch=None, extra=(), **kw):
         return self.hgs("message", task["ref"], "--content-json", "--mode", mode, *extra,
                         "--request-id", identity or str(uuid.uuid4()), "--expect-dispatch", dispatch or task.get("dispatch_id") or "",

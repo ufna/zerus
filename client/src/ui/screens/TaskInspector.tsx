@@ -2,6 +2,7 @@ import { selected as selectedSession } from "../../store/ui";
 import { writingTask } from "../../store/taskBoard";
 import { openTaskAssignment } from "../../store/taskAssignment";
 import { pendingExecutor, taskExecutors, setTaskExecutorReview } from "../../store/taskExecutors";
+import { TaskReviewEditor } from "./TaskReviewEditor";
 import { onTaskExecutors } from "../../bridge";
 import { taskStarts, supportsTaskStart, taskStartBlocker, pendingStart, reviewTaskStart } from "../../store/taskStart";
 import { PAUSE_REASON, requestAttemptCancellation } from "../../store/taskCancel";
@@ -104,7 +105,10 @@ export function TaskInspector(props: { project: string; task: Task; presentation
             }>
               <Show when={!detailStale() && props.task.stage === d().stage && reviewNext(d())}>{(next) => <div>{next()}</div>}</Show>
             </Show>
-            <Show when={d().reviewAssignment}>{(assignment) => <div>{tr("Acceptance criterion: %1", assignment().criterion)}</div>}</Show>
+            <Show when={(d().stage !== "review" || !d().reviewLane || d().reviewLane === d().reviewAssignment?.owner) ? d().reviewAssignment : undefined}>{(assignment) => <div>{tr("Acceptance criterion: %1", assignment().criterion)}</div>}</Show>
+            <Show keyed when={identity()}>{(_key) =>
+              <TaskReviewEditor project={props.project} task={d()} stale={detailStale() || props.task.stage !== "review"} />
+            }</Show>
           </section>
         </Show>
       </Show>

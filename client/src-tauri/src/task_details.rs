@@ -10,7 +10,7 @@ use std::sync::{
     Arc,
 };
 use tauri::{Manager, State};
-use zerus_client_core::tasks::{checked_queried_page, queried_page_call, PageScope};
+use zerus_client_core::tasks::{add_review_lane, check_review_lane, checked_queried_page, queried_page_call, PageScope};
 use zerus_client_core::{attachments, reads::CachedAttachment, task_details, tasks_write};
 
 #[derive(Clone, Default)]
@@ -194,6 +194,7 @@ fn page_scope<'a>(session: &'a Option<String>, host: &'a Option<String>) -> Opti
 /// With `session` (an identity, `launch_id:...` or `run_id:...`) and its
 /// computer's `host`, a page of that session's view only (`--session`).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn task_page(
     project: String,
     stage: String,
@@ -202,6 +203,8 @@ pub async fn task_page(
     session: Option<String>,
     host: Option<String>,
     query: Option<String>,
+    review_lane: Option<String>,
+    review_before: Option<String>,
 ) -> Result<Value, String> {
     if crate::actions::blocked() {
         return Err(crate::screens::REPLAY_NEEDS_HGS.into());
@@ -209,7 +212,7 @@ pub async fn task_page(
     if session.is_none() && host.is_some() {
         return Err("Invalid task page request.".into());
     }
-    let call = queried_page_call(
+    let mut call = queried_page_call(
         &project,
         &stage,
         limit,
@@ -217,16 +220,25 @@ pub async fn task_page(
         page_scope(&session, &host),
         query.as_deref(),
     )?;
+    if let Some(lane) = &review_lane {
+        add_review_lane(&mut call, &stage, lane, review_before.as_deref())?;
+    } else if review_before.is_some() {
+        return Err("A review cursor needs a review queue.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let reply = tasks_write::run(&zerus_client_core::default_hgs(), &call)?;
-        checked_queried_page(
+        let page = checked_queried_page(
             &reply,
             &project,
             &stage,
             limit,
             page_scope(&session, &host),
             query.as_deref(),
-        )
+        )?;
+        match review_lane {
+            Some(lane) => check_review_lane(&reply, page, &lane),
+            None => Ok(page),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -620,6 +632,46 @@ mod assignment_tests {
         row.run_id = Some("new".into());
         assert!(assignment_target(&row, &target, "launch_id:launch").is_err());
     }
+}
+
+/// Classify an already reported task at the revision shown in the inspector.
+#[tauri::command]
+pub async fn task_classify_review(
+    state: State<'_, TaskWrites>,
+    project: String,
+    task: String,
+    revision: String,
+    owner: String,
+    criterion: String,
+) -> Result<(), String> {
+    if crate::actions::blocked() {
+        return Err(crate::screens::REPLAY_NEEDS_HGS.into());
+    }
+    let call = tasks_write::TaskCall::classify_review(&project, &task, &revision, &owner, &criterion)?;
+    let permit = state.begin()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let reply = tasks_write::run(&zerus_client_core::default_hgs(), &call)?;
+        let saved = reply.get("task").ok_or("Review assignment could not be verified.")?;
+        let assignment = &saved["review_assignment"];
+        let matches = if owner == "unspecified" {
+            assignment.is_null()
+        } else {
+            assignment["owner"].as_str() == Some(owner.as_str())
+                && assignment["criterion"].as_str() == Some(criterion.trim())
+        };
+        if saved["project"].as_str() != Some(project.as_str())
+            || saved["uuid"].as_str() != Some(task.as_str())
+            || saved["stage"] != "review"
+            || saved["review_editable"] != true
+            || !matches
+        {
+            return Err("Review assignment could not be verified. Refresh the task.".into());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// The person confirmed the disposition of this exact unknown attempt.

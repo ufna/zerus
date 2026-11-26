@@ -22,6 +22,8 @@ export interface Task {
   execution?: SavedExecution;
   executionUnavailable?: true;
   reviewAssignment?: ReviewAssignment;
+  reviewLane?: "person" | "technical" | "triage" | "team";
+  reviewEditable?: true;
   teamRouted?: true;
 }
 const reference = (v: unknown): TaskRef => {
@@ -41,12 +43,16 @@ export function taskItem(value: unknown, queue = 0): Task {
       && !/[\p{Cc}\u2028-\u202e\u2066-\u2069]/u.test(criterion)
       ? { owner, criterion }
       : undefined;
+  const lane = t.review_lane;
+  const reviewLane = lane === "person" || lane === "technical" || lane === "triage" || lane === "team" ? lane : undefined;
   return { uuid: text(t.uuid), id: text(t.id), ref: text(t.ref), title: text(t.title) || text(t.text).split("\n", 1)[0],
     text: text(t.text), stage: text(t.stage), summary: text(t.summary), cancelReason: text(t.cancel_reason), historyRevision: text(t.history_revision), dispatchId: text(t.dispatch_id),
     createdAt: number(t.created_at), stageAt: number(t.stage_at), cancelledAt: number(t.cancelled_at), queue, writable: t.writable !== false,
     target: reference(target.kind === "any" ? undefined : target.parent ?? target), executor: reference(t.session),
     author: reference(author.kind === "agent" ? author : undefined), targetKind: text(target.kind), worker: text(object(t.worker).name),
-    attachments: Array.isArray(t.attachments) ? t.attachments.length : 0, ...(execution ? { execution } : {}), ...(executionUnavailable ? { executionUnavailable: true } : {}), ...(reviewAssignment ? { reviewAssignment } : {}), ...(teamRouted ? { teamRouted: true } : {}) };
+    attachments: Array.isArray(t.attachments) ? t.attachments.length : 0, ...(execution ? { execution } : {}), ...(executionUnavailable ? { executionUnavailable: true } : {}), ...(reviewAssignment ? { reviewAssignment } : {}), ...(teamRouted ? { teamRouted: true } : {}),
+    ...(reviewLane ? { reviewLane } : {}),
+    ...(t.review_editable === true && !teamRouted && !executionUnavailable && /^[0-9a-f]{64}$/.test(text(t.history_revision)) ? { reviewEditable: true } : {}) };
 }
 /** Keep decoded rows in order and append only new UUIDs from the wire page. */
 export function decodeTaskRows(values: readonly unknown[], stage?: Stage, existing: readonly Task[] = []): Task[] {
@@ -66,7 +72,7 @@ export function reviewNext(task: Task): string | undefined {
     || task.execution?.has_unknown || task.execution?.has_unexplained) {
     return tr("Coordinator to triage");
   }
-  switch (task.reviewAssignment?.owner) {
+  switch (task.reviewLane ?? task.reviewAssignment?.owner) {
     case "person": return tr("Your decision");
     case "technical": return tr("Coordinator or reviewer next");
     default: return tr("Coordinator to triage");

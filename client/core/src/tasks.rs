@@ -114,6 +114,61 @@ pub fn checked_queried_page(
     Ok(out)
 }
 
+const REVIEW_GROUPS: [&str; 4] = ["person", "technical", "triage", "team"];
+
+pub fn add_review_lane(call: &mut TaskCall, stage: &str, lane: &str, before: Option<&str>) -> Result<(), String> {
+    if stage != "review" || lane != "all" && !REVIEW_GROUPS.contains(&lane) {
+        return Err("Invalid review queue.".into());
+    }
+    if let Some(before) = before {
+        if before.is_empty() || before.len() > 512 || before.chars().any(char::is_control)
+            || call.args.iter().any(|argument| argument == "--after")
+        {
+            return Err("Invalid review queue cursor.".into());
+        }
+        call.args.extend(["--before".into(), before.into()]);
+    }
+    call.args.extend(["--review-lane".into(), lane.into()]);
+    Ok(())
+}
+
+pub fn check_review_lane(
+    reply: &Map<String, Value>,
+    mut page: Value,
+    lane: &str,
+) -> Result<Value, String> {
+    if reply.get("review_lane").and_then(Value::as_str) != Some(lane) {
+        return Err("Update hgs to use review queues.".into());
+    }
+    let invalid = || "Invalid review queue response.".to_owned();
+    let counts = reply.get("review_counts").ok_or_else(invalid)?;
+    let mut total = 0u64;
+    for group in REVIEW_GROUPS {
+        let count = counts[group].as_u64().ok_or_else(invalid)?;
+        if matches!(lane, "all") || lane == group {
+            total = total.checked_add(count).ok_or_else(invalid)?;
+        }
+    }
+    let position = page["page"]["position"].as_u64().ok_or_else(invalid)?;
+    let rows = page["tasks"].as_array().ok_or_else(invalid)?;
+    if page["page"]["total"].as_u64() != Some(total)
+        || !page["page"]["previous"].is_null() && !page["page"]["previous"].is_string()
+        || position.checked_add(rows.len() as u64).is_none_or(|end| end > total)
+        || rows.iter().any(|row| {
+            !row["review_lane"].as_str().is_some_and(|group| {
+                REVIEW_GROUPS.contains(&group) && (lane == "all" || lane == group)
+            })
+        })
+        || !page["revision"].as_str().is_some_and(|rev| !rev.is_empty() && rev.len() <= 128)
+    {
+        return Err(invalid());
+    }
+    page["review_counts"] = counts.clone();
+    page["review_lane"] = json!(lane);
+    page["damaged_total"] = json!(reply.get("damaged_total").and_then(Value::as_u64).ok_or_else(invalid)?);
+    Ok(page)
+}
+
 /// [`page_call`], of one session's view when `scope` is set.
 pub fn scoped_page_call(
     project: &str,
@@ -429,6 +484,27 @@ mod tests {
             "needle"
         );
         assert!(checked_queried_page(&reply, "p1", "todo", 50, None, None).is_ok());
+    }
+
+    #[test]
+    fn review_lane_requires_echo_and_uses_the_selected_scope_total() {
+        let mut call = queried_page_call("p1", "review", 1, None, None, None).unwrap();
+        add_review_lane(&mut call, "review", "person", Some("previous")).unwrap();
+        assert_eq!(&call.args[call.args.len() - 4..], ["--before", "previous", "--review-lane", "person"]);
+        let page = json!({
+            "revision": "r1", "tasks": [{"stage": "review", "review_lane": "person"}],
+            "page": {"position": 0, "total": 85, "next": "n", "previous": null},
+        });
+        let mut response = Map::new();
+        assert!(check_review_lane(&response, page.clone(), "person").is_err());
+        response.extend([
+            ("review_lane".into(), json!("person")),
+            ("review_counts".into(), json!({"person": 85, "technical": 10, "triage": 311, "team": 1})),
+            ("damaged_total".into(), json!(0)),
+        ]);
+        assert_eq!(check_review_lane(&response, page.clone(), "person").unwrap()["review_counts"]["triage"], 311);
+        response.get_mut("review_counts").unwrap()["person"] = json!(1);
+        assert!(check_review_lane(&response, page, "person").is_err());
     }
 
     fn page(key: &str, tasks: &[&str], page: u32, last: Option<&str>) -> Snapshot {

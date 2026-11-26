@@ -7,7 +7,7 @@ import type { Session } from "../sessions/types";
 import { toSession } from "../../store/catalog";
 
 const f = vi.hoisted(() => ({
-  read: vi.fn(), write: vi.fn(), project: { id: "example-project", name: "Example", accessible: true },
+  read: vi.fn(), reviewRead: vi.fn(), write: vi.fn(), project: { id: "example-project", name: "Example", accessible: true },
   setSelected: (_session: Session | undefined) => {}, setOnly: (_only: boolean) => {},
   locale: "en" as "en" | "ru",
 }));
@@ -19,7 +19,7 @@ vi.mock("../../i18n", async (original) => {
 });
 vi.mock("../../bridge", async (original) => {
   const module = await original<typeof import("../../bridge")>();
-  return { ...module, taskBoardAction: f.write };
+  return { ...module, taskBoardAction: f.write, readTaskPage: f.reviewRead };
 });
 vi.mock("../../store/ui", async (original) => {
   const module = await original<typeof import("../../store/ui")>();
@@ -392,4 +392,59 @@ it.each(["project window", "scoped search"] as const)("Show more preserves the r
     expect(host.querySelectorAll(".tk-card")).toHaveLength(6);
   }
   expect(labels().slice(0, 4)).toEqual(expectedHead);
+});
+
+
+it.each([
+  ["en", "Your decision", "Technical review", "Coordinator triage"],
+  ["ru", "Вам на решение", "Техническая проверка", "Разбор координатором"],
+] as const)("opens the full scoped review queues and leaves old peers' counts blank in %s", async (locale, personLabel, technicalLabel, triageLabel) => {
+  const { stream } = (await import("./fixtures/task-review-projected.json")).default;
+  const base = stream.payload.tasks[0];
+  f.locale = locale;
+  const started: ((page: unknown) => void)[] = [];
+  f.reviewRead.mockImplementation(() => new Promise((resolve) => started.push(resolve)));
+  f.read.mockResolvedValue({ tasks: [], page: { next: null }, counts: Object.fromEntries(STAGES.map((stage) => [stage, 0])) });
+  tasks.follow(f.project.id);
+  tasks.apply([stream]);
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(TasksPanel, {}), host);
+  await tick();
+  const queues = () => [...host.querySelectorAll<HTMLButtonElement>(".tk-review-queues button")];
+  const page = (lane: string, counts: Record<string, number>, rows: unknown[] = [], cursor: string | null = null) => ({
+    review_lane: lane, review_counts: { ...counts, team: 0 }, damaged_total: 0,
+    revision: "rev-1", tasks: rows, page: { next: cursor, position: 0, total: lane === "all" ? 484 : counts[lane] },
+  });
+  expect(f.reviewRead).toHaveBeenLastCalledWith(f.project.id, "review", 1, null, undefined, "", "all", undefined);
+  started[0](page("all", { person: 123, technical: 50, triage: 311 }));
+  await tick();
+  expect(queues().map((button) => button.textContent)).toEqual([
+    personLabel + "123", technicalLabel + "50", triageLabel + "311",
+  ]);
+
+  queues()[0].click(); await tick();
+  expect(f.reviewRead).toHaveBeenLastCalledWith(f.project.id, "review", 50, null, undefined, "", "person", undefined);
+  started[1](page("person", { person: 2, technical: 50, triage: 311 }, [{ ...base, review_lane: "person" }], "person cursor"));
+  await tick();
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(1);
+  host.querySelector<HTMLButtonElement>(".tasks-navigation button:last-child")!.click(); await tick();
+  expect(f.reviewRead).toHaveBeenLastCalledWith(f.project.id, "review", 50, "person cursor", undefined, "", "person", undefined);
+
+  f.setSelected(toSession("", "launch:identified", { name: "codex/example/identified", launch_id: "identified" }));
+  f.setOnly(true);
+  started[2](page("person", { person: 2, technical: 50, triage: 311 }, [{ ...base, uuid: "stale" }]));
+  await tick();
+  expect(f.reviewRead).toHaveBeenLastCalledWith(f.project.id, "review", 50, null, { host: "", sessionId: "launch_id:identified" }, "", "person", undefined);
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(0);
+  // An old CLI can return a successful ordinary page after ignoring the lane flag.
+  started[3]({ tasks: [base], page: { next: null } });
+  await tick();
+  expect(host.querySelectorAll(".tk-card")).toHaveLength(0);
+  expect(queues().map((button) => button.textContent)).toEqual([personLabel, technicalLabel, triageLabel]);
+  expect(host.querySelector(".tk-review-queues + [role=status]")).not.toBeNull();
+  f.setOnly(false);
+  host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
+  await tick();
+  expect(host.querySelectorAll(".tk-card").length).toBeGreaterThan(0);
+  expect(f.write).not.toHaveBeenCalled();
 });

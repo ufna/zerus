@@ -74,6 +74,11 @@ fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
 }
 
+pub(crate) fn valid_revision(revision: &str) -> bool {
+    revision.len() == 64
+        && revision.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 impl TaskCall {
     fn new(args: Vec<String>, input: impl Into<String>) -> TaskCall {
         TaskCall {
@@ -97,6 +102,30 @@ impl TaskCall {
             timeout: Duration::from_secs(if long { 90 } else { 30 }),
             request_id: None,
         }
+    }
+
+    pub fn classify_review(
+        project: &str,
+        task: &str,
+        revision: &str,
+        owner: &str,
+        criterion: &str,
+    ) -> Result<Self, String> {
+        let criterion = criterion.trim();
+        if !crate::tasks::valid_project(project)
+            || !crate::creation::canonical_uuid(task)
+            || !valid_revision(revision)
+            || !matches!(owner, "person" | "technical" | "unspecified")
+            || (owner == "unspecified") != criterion.is_empty()
+            || criterion.len() > 512
+            || criterion.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        {
+            return Err("Invalid review assignment.".into());
+        }
+        Ok(Self::new(
+            with_project(words(&["review-owner", task, owner, "--expect-revision", revision]), project),
+            criterion,
+        ))
     }
 
     /// A new task from the composer for the open session (`addTask`): the

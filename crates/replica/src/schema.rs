@@ -273,6 +273,71 @@ pub struct TaskView {
 }
 
 impl TaskView {
+    /// The report that put this ordinary task in Review. Two matching
+    /// reports, an unsettled execution or a historical result prove no owner.
+    pub(crate) fn review_report(&self) -> Option<usize> {
+        use crate::execution::Phase;
+
+        #[cfg(not(feature = "test-without-team"))]
+        if self.team.is_some() || self.team_invalid {
+            return None;
+        }
+        if self.stage != Stage::Review || !self.writable || self.cancelled_at.is_some()
+            || self.summary.trim().is_empty()
+        {
+            return None;
+        }
+        let mut attempt = None;
+        if let Some(execution) = &self.execution {
+            let current = execution.current.as_ref()?;
+            if execution.conflict || !execution.unknown.is_empty()
+                || !execution.unexplained.is_empty() || current.phase != Phase::Ready
+            {
+                return None;
+            }
+            if !current.legacy {
+                attempt = Some(current.id.as_str());
+            }
+        }
+        // Legacy writers have no attempt ID. Two current reports merged
+        // from different replicas still provide no single settled result.
+        let opened = self.log.iter().rposition(|entry| {
+            entry.kind == "resumed"
+                || entry.kind == "stage" && matches!(entry.text.as_str(), "todo" | "backlog")
+        }).map_or(0, |position| position + 1);
+        let mut reports = self.log.iter().enumerate().skip(opened).filter(|(_, entry)| {
+            entry.kind == "report" && entry.stale.is_none()
+                && (entry.reported_attempt.as_deref() == attempt
+                    || (entry.reported_attempt.is_none() && entry.actor == Actor::Person))
+        });
+        let (index, report) = reports.next()?;
+        let reporter_matches = match &report.actor {
+            Actor::Person => true,
+            Actor::Agent(session) => self.session.as_ref() == Some(session),
+        };
+        (reports.next().is_none() && reporter_matches
+            && report.at == self.stage_at && report.text == self.summary).then_some(index)
+    }
+
+    pub fn review_editable(&self) -> bool {
+        self.review_report().is_some()
+    }
+
+    pub fn review_lane(&self) -> Option<&'static str> {
+        if self.stage != Stage::Review {
+            return None;
+        }
+        #[cfg(not(feature = "test-without-team"))]
+        if self.team.is_some() && !self.team_invalid {
+            return Some("team");
+        }
+        Some(if self.review_editable() {
+            self.review_assignment.as_ref().map_or("triage", |assignment| assignment.owner.as_str())
+        } else {
+            "triage"
+        })
+    }
+
     /// Dispatch receipt, or an explicit direct-work acknowledgement. Names do
     /// not identify an execution. This anchor is not a distributed claim.
     pub fn execution_id(&self) -> Option<String> {
