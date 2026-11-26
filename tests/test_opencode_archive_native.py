@@ -158,18 +158,39 @@ class OpenCodeArchive(fixture.OpenCodeContext):
         self.assertEqual(self.hgs(['inspect', name])['run_id'], current['run_id'])
 
 
-    @unittest.skipUnless(sys.platform.startswith('linux'), 'private Unix permissions fault')
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'private Linux unlink fault')
     def test_partial_archive_fences_mutation_and_reuses_the_published_archive(self):
         row = self.start()
         name = row['name']
         binding = self.binding_path(name)
         original = binding.read_bytes()
         request = self.payload(row, action='archive')
-        binding.parent.chmod(0o500)
-        try:
-            refused = self.hgs(['session-action', name, '--json'], request)
-        finally:
-            binding.parent.chmod(0o700)
+        source = self.root / 'archive-unlink.c'
+        gate = self.root / 'archive-unlink.so'
+        source.write_text(r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int unlink(const char *path) {
+    const char *blocked = getenv("FIXTURE_ARCHIVE_BINDING");
+    if (blocked && strcmp(blocked, path) == 0) {
+        errno = EIO;
+        return -1;
+    }
+    int (*original)(const char *) = dlsym(RTLD_NEXT, "unlink");
+    return original(path);
+}
+""")
+        subprocess.run(['cc', '-shared', '-fPIC', str(source), '-ldl', '-o', str(gate)],
+                       env=self.env, cwd=self.workspace, capture_output=True, check=True, timeout=30)
+        environment = {**self.env, 'LD_PRELOAD': str(gate), 'FIXTURE_ARCHIVE_BINDING': str(binding)}
+        result = subprocess.run([str(native.HGS), 'session-action', name, '--json'],
+                                env=environment, cwd=self.workspace, input=json.dumps(request),
+                                text=True, capture_output=True, check=True, timeout=20)
+        refused = json.loads(result.stdout)
         self.assertEqual(refused['status'], 'uncertain', refused)
         self.assertEqual(binding.read_bytes(), original)
         db_path = self.state / 'opencode/archives-v1.sqlite3'

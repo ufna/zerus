@@ -1232,7 +1232,11 @@ impl Inspector {
             Err(reason) => return failed(reason.clone()),
         };
         let mut row = parent_view(native, &current, active, detail).unwrap_or_else(failed);
-        archives::decorate(&mut row, &current, native, active, &mut self.archive_ancestors);
+        let archive_native = Bounded {
+            service,
+            deadline: bounded.deadline.min(Instant::now() + Duration::from_secs(3)),
+        };
+        archives::decorate(&mut row, &current, &archive_native, active, &mut self.archive_ancestors);
         row
     }
     fn finish(self) {
