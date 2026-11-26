@@ -1,8 +1,8 @@
-import type { ActivityEvent, ComposerView, EventAttachment, LocalMessage, QueueView } from "../../types";
+import type { ActivityEvent, ComposerView, LocalMessage, QueueView } from "../../types";
 import type { AttachmentScope } from "../../store/activitySource";
 import type { FollowTarget } from "../../store/activity";
 import type { ActivityItem, Session } from "./types";
-import { attachments } from "./transcript";
+import { attachments, receiptFiles } from "./transcript";
 import { draftKey } from "../../store/draftKeys";
 import { tr } from "../../i18n";
 
@@ -171,13 +171,11 @@ function envelopePreview(text: string): Pick<ActivityItem, "body" | "sender"> | 
 
 interface Receipt { id: string; submitted: string; body: string; files: ActivityItem["attachments"]; metadata: string }
 function receipt(id: unknown, submitted: unknown, body: unknown, files: unknown): Receipt | undefined {
-  if (typeof id !== "string" || !id || typeof submitted !== "string" || !canonical(submitted) || typeof body !== "string" || !Array.isArray(files) || files.length > 8) return;
-  if (!files.every((file, index) => file && typeof file === "object" && file.request_id === id && file.index === index
-    && typeof file.name === "string" && typeof file.mime === "string" && typeof file.reference === "string"
-    && typeof file.bytes === "number" && Number.isFinite(file.bytes) && file.bytes >= 0)) return;
-  const metadata = JSON.stringify((files as EventAttachment[]).map(f => ({ request_id: f.request_id, index: f.index,
+  if (typeof id !== "string" || !id || typeof submitted !== "string" || !canonical(submitted)
+    || typeof body !== "string" || !receiptFiles(id, files)) return;
+  const metadata = JSON.stringify(files.map(f => ({ request_id: f.request_id, index: f.index,
     name: f.name, mime: f.mime, bytes: f.bytes, reference: f.reference })));
-  return { id, submitted: canonical(submitted), body, files: attachments({ attachments: files as EventAttachment[] }), metadata };
+  return { id, submitted: canonical(submitted), body, files: attachments({ attachments: files }), metadata };
 }
 
 /** Full, unique receipt equality only; the native queue's push-prefix test is NOT a display match. */
@@ -201,7 +199,9 @@ export function queuedMessages(queue: QueueView, local: readonly LocalMessage[],
     }
     if (summary?.run_id === queue.run_id && summary.conversation_id === queue.conversation_id && Array.isArray(summary.attachment_messages)) {
       for (const event of (summary.attachment_messages as ActivityEvent[]).slice(-100)) {
-        if (event?.source === "hgs_delivery" && !event.agent_id) add(receipt(event.message_id, event.submitted_text, event.detail, event.attachments));
+        if (event?.source === "hgs_delivery" && !event.agent_id && event.claude_outbox !== true) {
+          add(receipt(event.message_id, event.submitted_text, event.detail, event.attachments));
+        }
       }
     }
   }

@@ -193,7 +193,7 @@ fn checked_record_gate(
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
     if request.only_when_idle {
         if !idle_reminder_ready(&record)
-            || (record["agent"] == "claude" && input_queue::claude_waiting(&record)?)
+            || (record["agent"] == "claude" && input_queue::claude_waiting(&record).unwrap_or(true))
         {
             return Err(Gate::NotIdle);
         }

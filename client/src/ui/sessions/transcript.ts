@@ -1,4 +1,4 @@
-import type { ActivityEvent, LocalMessage, Reply } from "../../types";
+import type { ActivityEvent, EventAttachment, LocalMessage, Reply } from "../../types";
 import { eventKey, opencodePromptId } from "../../store/activity";
 import type { ActivityItem, InboxItem, LocalItem, MediaMessage, OutboxItem, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
 import type { RouteActivity } from "../../store/questionRouteActivity";
@@ -148,25 +148,34 @@ function echoMatchesFiles(text: string, files: ActivityEvent["attachments"]): bo
   });
 }
 
+function claudePromptMatch(event: ActivityEvent, prompt: unknown, run: unknown, conversation: unknown): boolean {
+  return event.type === "UserPromptSubmit" && !event.agent_id && !event.origin && !event.inherited_from
+    && (!event.turn_origin || event.turn_origin === "user")
+    && typeof prompt === "string" && !!prompt && event.claude_prompt_id === prompt
+    && typeof run === "string" && !!run && event.run_id === run
+    && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
+}
+
+/** Files are addressed by the original request and native receipt index. */
+export function receiptFiles(id: string, files: unknown): files is EventAttachment[] {
+  return Array.isArray(files) && files.length <= 8 && files.every((file, index) =>
+    file && typeof file === "object" && file.request_id === id && file.index === index
+    && typeof file.name === "string" && typeof file.mime === "string" && typeof file.reference === "string"
+    && typeof file.bytes === "number" && Number.isFinite(file.bytes) && file.bytes >= 0);
+}
+
 /**
  * Reconciles a native numbered prompt echo with its one exact delivery receipt.
  * Public receipt metadata supplies the request and index; an echoed host path
  * is never used to read a file. Unknown or ambiguous echoes stay untouched.
  */
-function claudePromptMatch(event: ActivityEvent, prompt: string | undefined, run: string | undefined,
-  conversation: string | undefined): boolean {
-  return event.type === "UserPromptSubmit" && !event.agent_id && !event.origin && !event.inherited_from
-    && (!event.turn_origin || event.turn_origin === "user")
-    && !!prompt && event.claude_prompt_id === prompt && !!run && event.run_id === run
-    && !!conversation && event.conversation_id === conversation;
-}
-
 export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
   const receipts = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
   if (!receipts.length) return given;
   const events = [...given];
   const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.attachments?.length
-    && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim() && echoMatchesFiles(receipt.submitted_text, receipt.attachments));
+    && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim()
+    && (receipt.claude_outbox === true || echoMatchesFiles(receipt.submitted_text, receipt.attachments)));
   const own = (event: ActivityEvent) => event.source !== "hgs_voice" && !childEvent(event) && !event.origin
     && (!event.turn_origin || event.turn_origin === "user") && !event.inherited_from && PROMPTS.has(event.type ?? "");
   const requests = (event: ActivityEvent): string[] => [...new Set([
@@ -179,13 +188,15 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     const request = typeof receipt.message_id === "string" ? receipt.message_id : "";
     const submitted = String(receipt.submitted_text).trim();
     if (!request || receipts.filter(other => other.message_id === request).length !== 1) continue;
-    if (!receipt.claude_outbox && receipts.filter(other => typeof other.submitted_text === "string"
+    if (receipt.claude_outbox === true && (!receiptFiles(request, receipt.attachments)
+      || receipt.attachments.some(file => file.reference !== "" && !/^\[(Image|File) #[1-9][0-9]{0,8}\]$/.test(file.reference ?? "")))) continue;
+    if (receipt.claude_outbox !== true && receipts.filter(other => typeof other.submitted_text === "string"
       && other.submitted_text.trim() === submitted).length !== 1) continue;
     // Every already bound row reserves its request, including complete rows,
     // local cards and rows that are no longer eligible for body replacement.
     const owners = events.flatMap((event, index) => requests(event).includes(request) ? [index] : []);
     if (owners.length > 1) continue;
-    const exact = receipt.claude_outbox
+    const exact = receipt.claude_outbox === true
       ? events.flatMap((event, index) => claudePromptMatch(event, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id)
         && requests(event).every(id => id === request) ? [index] : [])
       : owners.length ? owners : events.flatMap((event, index) => own(event) && !opencodePromptId(event)
@@ -411,8 +422,9 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       });
     }
     if (sent && row.source === CLAUDE_OUTBOX_SOURCE) {
-      match = source.findIndex((e, i) => eligible(e, i)
-        && claudePromptMatch(e, row.message_id, row.run_id, row.conversation_id));
+      const matches = source.flatMap((e, i) => eligible(e, i)
+        && claudePromptMatch(e, row.message_id, row.run_id, row.conversation_id) ? [i] : []);
+      if (matches.length === 1) match = matches[0];
     }
     const ordinary = (e: ActivityEvent, i: number) => row.source !== OPENCODE_SOURCE
       && row.source !== CLAUDE_OUTBOX_SOURCE && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);

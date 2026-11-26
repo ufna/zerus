@@ -112,3 +112,23 @@ class NativeClaudeOutbox(busy.NativeBusyClaude):
         recovered = self.call(args, b'')
         self.assertEqual(base64.b64decode(recovered['data_base64']), body)
         self.assertEqual(sum(row.get('uuid') == receipt['native_input']['uuid'] for row in self.rows()), 1)
+
+    def test_unavailable_native_queue_view_defers_before_input(self):
+        prompt = 'Send after the private capture returns'
+        offer = self.guarded(text=prompt)
+        command = ['send', self.name, '--when-idle', '--json']
+        wrapper = self.bin / 'tmux'
+        retained = wrapper.read_bytes()
+        try:
+            wrapper.write_bytes(retained.replace(b'\nexec ', b'\n[ "$1" != capture-pane ] || exit 41\nexec ', 1))
+            self.assertNotEqual(wrapper.read_bytes(), retained)
+            refused = self.call(command, offer)
+            self.assertEqual(refused['status'], 'waiting_for_idle')
+            self.assertEqual(refused['request_id'], json.loads(offer)['request_id'])
+            self.assertEqual(refused['input_sha256'], hashlib.sha256(offer).hexdigest())
+        finally:
+            wrapper.write_bytes(retained)
+        self.assertEqual(self.new_rows(prompt), [])
+        self.original(offer, success=False)
+        self.assertEqual(self.call(command, offer)['status'], 'submitted')
+        self.assertEqual(len(self.new_rows(prompt)), 1)

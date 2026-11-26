@@ -746,3 +746,17 @@ it("keeps equal Claude prompts separate and attaches each outbox file only to it
   expect(projection.build([first, second], undefined, [row]).map(item => item.id)).toEqual(["local-first", "s2"]);
   expect(projection.build([second], undefined, [row])).toHaveLength(2);
 });
+
+it("uses the exact Claude prompt to render files even when the author reordered their references", () => {
+  const text = '[File #2] (Read the attached file at "/root/attachments/message-X1/02-two.txt") then [File #1] (Read the attached file at "/root/attachments/message-X1/01-one.txt")';
+  const files = ["one.txt", "two.txt"].map((name, index) => ({ request_id: "original", index,
+    reference: `[File #${index + 1}]`, mime: "text/plain", name, bytes: 3 }));
+  const event = { type: "UserPromptSubmit", run_id: "run", conversation_id: "conversation",
+    claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22", detail: text };
+  const receipt = { ...event, source: "hgs_delivery", message_id: "original", submitted_text: text,
+    detail: "[File #2] then [File #1]", attachments: files, claude_outbox: true };
+  const [rendered] = mergeAttachmentMessages([event], { attachment_messages: [receipt] });
+  expect(rendered).toMatchObject({ attachment_request_id: "original", attachments: files, detail: receipt.detail });
+  const mismatched = { ...receipt, attachments: [{ ...files[0], request_id: "other" }, files[1]] };
+  expect(mergeAttachmentMessages([event], { attachment_messages: [mismatched] })).toEqual([event]);
+});

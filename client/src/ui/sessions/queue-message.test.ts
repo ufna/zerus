@@ -188,3 +188,11 @@ it.each([
   const [message] = queuedMessages(queue({ text: `❯ ${text}` }), []);
   expect(message).toMatchObject({ body: "Message preview unavailable in Terminal", sender, attachments: undefined });
 });
+
+it("never uses a marked Claude outbox file receipt for a native queue row without a prompt identity", () => {
+  const host = summary();
+  host.attachment_messages = host.attachment_messages.map(receipt => ({
+    ...receipt, claude_outbox: true, claude_prompt_id: "a9970498-1588-4794-8cc6-d45bd6c33d22",
+  }));
+  expect(queuedMessages(queue(), [], host)[0].attachments).toBeUndefined();
+});

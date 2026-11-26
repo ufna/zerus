@@ -1860,7 +1860,9 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
-        if claude && !claude_outbox_submitted(&receipt) {
+        if claude && !(claude_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+            receipt["digest"] == format!("{:x}", Sha256::digest(input))
+        })) {
             return uncertain("The original Claude Send is unconfirmed.");
         }
     }
@@ -2179,6 +2181,31 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_outbox_submission_requires_the_original_input_digest() {
+        use sha2::{Digest, Sha256};
+
+        let target = Target {
+            name: "claude/sample/review".into(),
+            computer: String::new(),
+            run_id: "run".into(),
+            conversation_id: "conversation".into(),
+        };
+        let action = Action::SendWhenIdle { text: "same prompt".into(), attachments: vec![] };
+        let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
+        let invocation = invocation(&target, &action, request).unwrap();
+        let input = invocation.stdin.as_deref().unwrap();
+        let digest = format!("{:x}", Sha256::digest(input));
+        let accepted = |digest: &str| Exit::Code {
+            code: 0, stderr: String::new(),
+            stdout: serde_json::to_vec(&json!({"claude_outbox":true,"transport":"terminal",
+              "native":"queue","status":"submitted","request_id":request,"name":target.name,
+              "run_id":target.run_id,"conversation_id":target.conversation_id,"digest":digest})).unwrap(),
+        };
+        assert!(matches!(classify(&target, &action, &invocation, accepted(&digest)), Outcome::Done { .. }));
+        assert!(matches!(classify(&target, &action, &invocation, accepted(&"0".repeat(64))), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn opencode_restore_names_the_archive_and_classifies_only_the_original_receipt() {
         let mut target = target("fixture-peer");

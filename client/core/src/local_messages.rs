@@ -463,7 +463,7 @@ impl LocalMessages {
                         .is_some_and(|messages| messages.iter().any(|event| {
                             event["message_id"] == row.id && claude_outbox_echo(row, event, id)
                         })))
-                    && events.iter().any(|event| claude_outbox_echo(row, event, id));
+                    && events.iter().filter(|event| claude_outbox_echo(row, event, id)).take(2).count() == 1;
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -638,6 +638,8 @@ fn claude_outbox_echo(row: &LocalMessage, event: &Value, id: &str) -> bool {
     event["type"] == "UserPromptSubmit" && event["claude_prompt_id"] == id
         && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
         && event["agent_id"].as_str().unwrap_or("").is_empty()
+        && event["origin"].as_str().unwrap_or("").is_empty()
+        && matches!(event["turn_origin"].as_str(), None | Some("" | "user"))
 }
 
 fn opencode_echo(row: &LocalMessage, event: &Value) -> bool {
