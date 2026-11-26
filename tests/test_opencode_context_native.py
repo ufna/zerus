@@ -164,7 +164,10 @@ class OpenCodeContext(fixture.OpenCodeNative):
         request = self.payload(ready)
         receipt = self.compact(ready, request)
         self.assertEqual(receipt['status'], 'submitted')
-        after = self.wait(ready['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed')
+        # The native completion row and session counters travel on different
+        # endpoints and can straddle publication during one inspection.
+        after = self.wait(ready['name'], lambda row: row.get('compact_context_request', {}).get('status') == 'completed'
+                          and row['session_usage']['totals']['total'] == 2780)
         self.assertEqual(after['conversation_id'], ready['conversation_id'])
         self.assertEqual(after['compact_context_request']['request_id'], request['request_id'])
         self.assert_settled_receipt(ready, request, receipt)
