@@ -4,7 +4,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { taskDetails, type TaskDetail } from "../../store/taskDetails";
 import reviewRows from "./fixtures/task-review-assignment.json";
-const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, classify: vi.fn(), quickReview: vi.fn(), submit: vi.fn(), teamRead: vi.fn(), read: vi.fn(), setLinkError: (_message: string) => {} }));
+const state = vi.hoisted(() => ({ detail: undefined as TaskDetail | undefined, error: "", offline: "", project: "orchard", locale: "en" as "en" | "ru", projected: false, classify: vi.fn(), quickReview: vi.fn(), submit: vi.fn(), teamRead: vi.fn(), teamLive: vi.fn(), teamListed: vi.fn(), setTeamFailure: (_failed: boolean) => {}, read: vi.fn(), setLinkError: (_message: string) => {} }));
 vi.mock("../../i18n", async (original) => {
   const module = await original<typeof import("../../i18n")>();
   const catalog = (await import("../../i18n.ru.json")).default;
@@ -48,7 +48,14 @@ vi.mock("../../store/taskContext", () => ({ projectSessions: () => [
   { computer: "", name: "codex/local-checker", runId: "local-run" },
   { computer: "peer", name: "codex/peer-checker", runId: "peer-run" },
 ] }));
-vi.mock("../../store/teams", () => ({ teams: { team: () => undefined, listed: () => [], available: () => true, readTeamSnapshot: state.teamRead } }));
+vi.mock("../../store/teams", async () => {
+  const { createSignal } = await import("solid-js");
+  const [failed, setFailed] = createSignal(false);
+  state.setTeamFailure = setFailed;
+  return { teams: { currentTeam: state.teamLive, listed: () => state.teamListed() ?? [],
+    available: () => true, readFailureFor: () => failed() ? { code: "storage_error" } : null,
+    readTeamSnapshot: state.teamRead } };
+});
 vi.mock("../teams/team-navigation", () => ({ openTeamPage: vi.fn() }));
 vi.mock("./TaskWorkflow", () => ({ TaskWorkflow: () => null }));
 vi.mock("./TaskTitle", () => ({ TaskTitle: () => null }));
@@ -57,10 +64,11 @@ vi.mock("../lib/icons", () => ({ Icon: () => null }));
 vi.mock("../sessions/Activity", () => ({ Body: () => null }));
 import { TaskInspector } from "./TaskInspector";
 import { taskItem } from "./tasks-ui";
+import { reviewOutcome } from "./TaskReviewOutcome";
 
 const tick = async () => { for (let n = 0; n < 15; n++) await Promise.resolve(); };
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.classify.mockReset(); state.quickReview.mockReset(); state.submit.mockReset(); state.teamRead.mockReset(); state.setLinkError(""); });
+afterEach(() => { dispose?.(); document.body.replaceChildren(); state.error = ""; state.offline = ""; state.project = "orchard"; state.locale = "en"; state.projected = false; state.read.mockReset(); state.classify.mockReset(); state.quickReview.mockReset(); state.submit.mockReset(); state.teamRead.mockReset(); state.teamLive.mockReset(); state.teamListed.mockReset(); state.setTeamFailure(false); state.setLinkError(""); });
 function mount(reviewRow?: unknown, projected = false) {
   const task = taskItem(reviewRow ?? { uuid: "task", id: "T-234567", stage: "active", writable: false });
   const execution = reviewRow ? undefined : { requirement: 3, attempts: 1, current: null, conflict: false, has_unknown: true, has_unexplained: false };
@@ -281,7 +289,7 @@ it.each(["en", "ru"] as const)("shows native Team facts only from the selected T
   const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", home = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const selected = { ...details[2], quick_review_status: "team", team: { team: id, home } };
   const native = {
-    bar: { id, home, project: selected.project }, settings: { phase_acceptance: "person" },
+    bar: { id, home, project: selected.project }, revision: 9, settings: { phase_acceptance: "person" },
     plan: { list: { rows: [{ n: 2, acceptance: "lead" }] } },
     groups: [{ cards: [{
       node: 6, kind: "task", task: { uuid: selected.uuid, project: selected.project },
@@ -295,7 +303,7 @@ it.each(["en", "ru"] as const)("shows native Team facts only from the selected T
   state.teamRead.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
   const host = mount(selected, true);
   await tick();
-  expect(state.teamRead).toHaveBeenCalledExactlyOnceWith(id);
+  expect(state.teamRead).toHaveBeenCalledExactlyOnceWith(id, 0);
   expect(host.textContent).not.toContain("fixture-current-holder");
   pending.shift()!({ ...native, bar: { ...native.bar, home: id } }); await tick();
   expect(host.textContent).not.toContain("fixture-current-holder");
@@ -308,5 +316,34 @@ it.each(["en", "ru"] as const)("shows native Team facts only from the selected T
   expect(active.textContent).toContain(locale === "en" ? "Team stage: Submitted" : "Этап команды:");
   expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Руководитель команды");
   expect(active.textContent).not.toContain(locale === "en" ? "Accept result" : "Принять результат");
+  state.setTeamFailure(true); await tick();
+  expect(active.textContent).not.toContain("fixture-current-holder");
+  expect(active.textContent).not.toContain(locale === "en" ? "Team stage: Submitted" : "Этап команды:");
+  expect(state.teamRead).toHaveBeenCalledTimes(3);
+  state.setTeamFailure(false);
+  pending.shift()!({ ...native, revision: 10, groups: [{ cards: [{
+    ...native.groups[0].cards[0], stages: [{ state: "reported", holder: "fresh-holder" }],
+  }] }] });
+  await tick();
+  expect(active.textContent).toContain("fresh-holder");
   expect(state.quickReview).not.toHaveBeenCalled();
+});
+
+it("a compact Team row waits for the known revision and hides a failed current read", async () => {
+  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+  const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", home = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const selected = { ...details[2], quick_review_status: "team", team: { team: id, home } };
+  const binding = { id, home, project: selected.project };
+  const native = { bar: binding, revision: 9, groups: [{ cards: [{
+    node: 6, kind: "task", task: { uuid: selected.uuid, project: selected.project },
+    phase: 2, state: "reported", holder: "previous-holder", stages: [],
+  }] }] };
+  state.teamListed.mockReturnValue([{ ...binding, revision: 10 }]);
+  state.teamLive.mockReturnValue(native);
+  const outcome = () => reviewOutcome(selected.project, taskItem(selected));
+  expect(outcome()).toEqual({ label: "Team review", actor: undefined });
+  state.teamLive.mockReturnValue({ ...native, revision: 10 });
+  expect(outcome()?.actor).toBe("previous-holder");
+  state.setTeamFailure(true);
+  expect(outcome()).toEqual({ label: "Team review", actor: undefined });
 });

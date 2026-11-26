@@ -279,3 +279,26 @@ it("borrows a bounded Team view without publishing or keeping it as the selected
   expect(teams.followed()).toBeUndefined();
   expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: null });
 });
+
+
+it("keeps a failed Team page visible but borrows only a fresh exact revision", async () => {
+  const { transport, calls } = fake();
+  const teams = createTeams(transport);
+  const key = `team:${TEAM_ID}`, before = { ...teamView, revision: 9 };
+  await teams.openTeam(TEAM_ID);
+  teams.apply([entry(key, "team", before)]);
+  teams.apply([entry(key, "failed", { code: "storage_error", message: "Selected source unavailable" })]);
+  expect(teams.team()?.revision).toBe(9);
+  expect(teams.currentTeam()).toBeUndefined();
+
+  let complete = false;
+  const refresh = teams.readTeamSnapshot(TEAM_ID, 10).then(view => { complete = true; return view; });
+  expect(calls.follow.filter(follow => follow.team === TEAM_ID)).toHaveLength(2);
+  teams.apply([entry(key, "team", before)]);
+  await Promise.resolve();
+  expect(complete).toBe(false);
+  teams.apply([entry(key, "team", { ...before, revision: 10 })]);
+  expect(await refresh).toMatchObject({ revision: 10 });
+  expect(teams.currentTeam()?.revision).toBe(10);
+  expect(teams.readFailureFor(key)).toBeNull();
+});

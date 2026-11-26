@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createResource, createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, on, createResource, createSignal, onCleanup, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { machineCards } from "../../store/machines";
 import { projectSessions } from "../../store/taskContext";
@@ -25,7 +25,7 @@ export const reviewSessionChoices = createMemo(() => {
 });
 
 type TeamBinding = { project: string; uuid: string; id: string; home: string };
-type TeamFacts = { state: string; actor?: string; phasePolicy?: string; defaultPhasePolicy?: string };
+type TeamFacts = { revision: number; state: string; actor?: string; phasePolicy?: string; defaultPhasePolicy?: string };
 
 function teamBinding(project: string, task: Task): TeamBinding | undefined {
   return task.team && { project, uuid: task.uuid, ...task.team };
@@ -33,8 +33,15 @@ function teamBinding(project: string, task: Task): TeamBinding | undefined {
 const bindingKey = (binding: TeamBinding) => JSON.stringify([binding.project, binding.uuid, binding.id, binding.home]);
 const policyLabel = (policy: unknown) => policy === "lead" ? tr("Team lead") : policy === "person" ? tr("Person") : undefined;
 
+const teamReadFailed = (binding: TeamBinding) => !!teams.readFailureFor(`team:${binding.id}`);
+const minimumTeamRevision = (binding: TeamBinding) => teams.listed()
+  .find((entry) => entry.id === binding.id && entry.home === binding.home && entry.project === binding.project)?.revision ?? 0;
+const currentFacts = (binding: TeamBinding, facts: TeamFacts | undefined) => facts
+  && !teamReadFailed(binding) && facts.revision >= minimumTeamRevision(binding) ? facts : undefined;
+
 function nativeTeamFacts(binding: TeamBinding, view: TeamView | undefined): TeamFacts | undefined {
-  if (view?.bar.id !== binding.id || view.bar.home !== binding.home || view.bar.project !== binding.project) return;
+  if (view?.bar.id !== binding.id || view.bar.home !== binding.home || view.bar.project !== binding.project
+    || !Number.isSafeInteger(view.revision) || view.revision < 0) return;
   const cards = view.groups.flatMap((group) => group.cards)
     .filter((card) => card.kind !== "stage" && card.task?.project === binding.project && card.task.uuid === binding.uuid);
   if (cards.length !== 1) return;
@@ -47,6 +54,7 @@ function nativeTeamFacts(binding: TeamBinding, view: TeamView | undefined): Team
     : undefined;
   const concretePolicy = policyLabel(phase?.acceptance);
   return {
+    revision: view.revision,
     state: taskState(stage ? { ...card, state: stage.state, held: false } : card),
     actor: holder || undefined,
     phasePolicy: concretePolicy,
@@ -62,8 +70,8 @@ function teamFacts(project: string, task: Task): TeamFacts | undefined {
   const binding = teamBinding(project, task);
   if (!binding) return;
   const pane = inspected();
-  return nativeTeamFacts(binding, teams.team())
-    ?? (pane?.binding === bindingKey(binding) ? pane.facts : undefined);
+  return currentFacts(binding, nativeTeamFacts(binding, teams.currentTeam()))
+    ?? currentFacts(binding, pane?.binding === bindingKey(binding) ? pane.facts : undefined);
 }
 
 function executorLabel(task: Task): string | undefined {
@@ -102,23 +110,31 @@ export function TaskTeamReview(props: { project: string; task: Task }) {
   const request = createMemo(() => {
     const task = binding();
     if (!task || teams.available() !== true) return;
-    const revision = teams.listed()
-      .find((entry) => entry.id === task.id && entry.home === task.home && entry.project === task.project)?.revision;
+    const revision = minimumTeamRevision(task);
     return { task, revision, key: JSON.stringify([bindingKey(task), revision]) };
   }, undefined, { equals: (previous, next) => previous?.key === next?.key });
-  const [snapshot] = createResource(request, async (pinned) => {
-    const view = await teams.readTeamSnapshot(pinned.task.id);
-    const fresh = view && (pinned.revision === undefined || view.revision >= pinned.revision);
-    return { key: pinned.key, facts: fresh ? nativeTeamFacts(pinned.task, view) : undefined };
+  const [snapshot, { mutate, refetch }] = createResource(request, async (pinned) => {
+    const view = await teams.readTeamSnapshot(pinned.task.id, pinned.revision);
+    return { key: pinned.key, facts: nativeTeamFacts(pinned.task, view) };
   });
+  let mounted = true;
+  createEffect(on(() => {
+    const task = binding();
+    return task ? teamReadFailed(task) : false;
+  }, (failed) => {
+    if (!failed) return;
+    mutate(undefined);
+    const pinned = request();
+    queueMicrotask(() => {
+      if (mounted && pinned && request()?.key === pinned.key && teamReadFailed(pinned.task)) void refetch();
+    });
+  }, { defer: true }));
   const facts = createMemo(() => {
     const pinned = request();
     if (!pinned) return;
-    const live = teams.team();
-    const observed = live && (pinned.revision === undefined || live.revision >= pinned.revision)
-      ? nativeTeamFacts(pinned.task, live) : undefined;
+    const live = currentFacts(pinned.task, nativeTeamFacts(pinned.task, teams.currentTeam()));
     const current = snapshot();
-    return observed ?? (current?.key === pinned.key ? current.facts : undefined);
+    return live ?? currentFacts(pinned.task, current?.key === pinned.key ? current.facts : undefined);
   });
   const clear = () => setInspected((current) => current?.owner === owner ? undefined : current);
   createEffect(() => {
@@ -126,7 +142,7 @@ export function TaskTeamReview(props: { project: string; task: Task }) {
     if (known && task) setInspected({ owner, binding: bindingKey(task), facts: known });
     else clear();
   });
-  onCleanup(clear);
+  onCleanup(() => { mounted = false; clear(); });
   return <section class="tv-doc" aria-label={tr("Team review")}>
     <header><span class="eyebrow">{tr("Team review")}</span></header>
     <Show when={facts()}>{(facts) => <>
