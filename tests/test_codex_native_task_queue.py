@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -116,6 +118,50 @@ class FakeNativeTaskQueue(unittest.TestCase):
         self.assert_refusal(request, reason)
         self.assertFalse(self.queue_log.exists(), 'refusal must precede the first Codex invocation')
         self.assertEqual(self.received(), b'')
+
+    def busy_queue(self):
+        self.prepare_queue()
+        self.record.pop("codex_native_tasks")
+        self.record.update(activity="busy", phase="tool")
+        self.write_record()
+        return self.payload(only_when_idle=True, text="Exact message for the original private task")
+
+    def busy_send(self, request):
+        return subprocess.run([str(test_input.HGS), "send", self.name, "--codex-queue", "--json"],
+                              input=json.dumps(request), env=self.env, text=True, capture_output=True, timeout=15)
+
+    def test_lost_busy_native_reply_never_reoffers_or_uses_the_terminal(self):
+        request = self.busy_queue()
+        self.env["FIXTURE_QUEUE_ID"] = "malformed-ack"
+        until = time.monotonic() + 8
+        while True:
+            answer = self.busy_send(request)
+            if answer.returncode or time.monotonic() > until:
+                break
+            self.assertEqual(json.loads(answer.stdout)["status"], "waiting_for_idle")
+            time.sleep(.1)
+        self.assertNotEqual(answer.returncode, 0)
+        original_calls = self.queue_log.read_text()
+        self.assertEqual(sum(s.startswith("queue ") and not s.startswith("queue --help") for s in original_calls.splitlines()), 1)
+        self.env["FIXTURE_QUEUE_ID"] = self.queue_id
+        self.assertNotEqual(self.busy_send(request).returncode, 0)
+        self.assertEqual(self.queue_log.read_text(), original_calls)
+        self.assertEqual(self.received(), b"")
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'requires the original Linux mapped image')
+    def test_replaced_busy_executable_cannot_admit_the_native_queue(self):
+        request = self.busy_queue()
+        exe = self.bin / "codex"
+        replacement = self.bin / "replacement"
+        replacement.write_text("#!/bin/sh\nexit 1\n")
+        replacement.chmod(0o755)
+        replacement.replace(exe)
+        for _ in range(3):
+            answer = self.busy_send(request)
+            self.assertEqual(answer.returncode, 0, answer.stderr)
+            self.assertEqual(json.loads(answer.stdout)["status"], "waiting_for_idle")
+        self.assertFalse(self.queue_log.exists())
+        self.assertEqual(self.received(), b"")
 
     def test_native_account_uses_default_for_every_queue_command(self):
         self.assert_queued(self.prepare_queue())

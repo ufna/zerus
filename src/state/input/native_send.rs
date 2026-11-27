@@ -669,6 +669,18 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        assert_eq!(original.matches("mode.check_send_gate(").count(), 3);
+        original = original.replace("mode.check_send_gate(", "checked_send_gate(");
+        for (new, prior) in [
+            (r#"Some(codex_queue::Queue::prepare(&record, &text, mode == SendMode::CodexQueue)
+            .map_err(|e| if mode == SendMode::CodexQueue { gated(typed, Gate::NotIdle) } else { refused(typed, e) })?)"#,
+             "Some(codex_queue::Queue::prepare(&record, &text).map_err(|e| refused(typed, e))?)"),
+            ("mode == SendMode::CodexQueue || codex_tasks::multiple(&record)", "codex_tasks::multiple(&record)"),
+            ("    if mode == SendMode::CodexQueue { receipt[\"codex_outbox\"] = json!(true); }\n", ""),
+        ] {
+            assert_eq!(original.matches(new).count(), 1);
+            original = original.replace(new, prior);
+        }
         // Desktop's outbox can verify an empty interrupted Codex prompt. The
         // ordinary and Team entry points continue to use their own idle guard.
         for (new, prior, count) in [

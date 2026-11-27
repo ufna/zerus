@@ -47,6 +47,12 @@ pub enum Action {
         text: String,
         attachments: Vec<Attachment>,
     },
+    /// Constructed only by the native Composer's reserved FIFO head.
+    #[serde(skip_deserializing)]
+    SendToCodexQueue {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// Qt's guarded `hgs settings NAME --json`, including pending applies.
     Settings {
         model: String,
@@ -567,7 +573,15 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
-        Action::SendWhenIdle { text, attachments } => {
+        Action::SendWhenIdle { text, attachments } | Action::SendToCodexQueue { text, attachments } => {
+            let flag = if matches!(action, Action::SendToCodexQueue { .. }) {
+                if !target.name.starts_with("codex/") {
+                    return Err("The native queue needs a Codex session.".into());
+                }
+                "--codex-queue"
+            } else {
+                "--when-idle"
+            };
             if target.conversation_id.is_empty() {
                 return Err("Queued input needs an exact conversation.".into());
             }
@@ -575,7 +589,7 @@ pub fn invocation(
             input["only_when_idle"] = json!(true);
             let input = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
             (
-                vec!["send".to_owned(), name, "--when-idle".to_owned(), "--json".to_owned()],
+                vec!["send".to_owned(), name, flag.to_owned(), "--json".to_owned()],
                 Some(input),
                 30,
                 45,
@@ -1299,7 +1313,9 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
-        Action::SendWhenIdle { .. } => classify_idle_send(target, invocation, exit),
+        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } => classify_idle_send(
+            target, invocation, exit, matches!(action, Action::SendToCodexQueue { .. }),
+        ),
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
         Action::SendNow { queue_id } => classify_send_now(target, invocation, queue_id, exit),
         Action::RemoveQueued { .. } => classify_remove_queued(target, invocation, exit),
@@ -1830,7 +1846,7 @@ fn classify_send(
 /// A positive pre-input refusal comes from this opt-in invocation's exact
 /// native input-lock witness. An older helper or a generic refusal supplies
 /// no permission for the queue to reoffer.
-fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
+fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, codex_queue: bool) -> Outcome {
     use sha2::{Digest, Sha256};
 
     let opencode = target.name.starts_with("opencode/");
@@ -1853,7 +1869,9 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             && invocation.stdin.as_deref().is_some_and(|input| {
                 receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
             });
-        if exact_pre_offer && receipt["status"] == "waiting_for_idle" {
+        if exact_pre_offer && receipt["status"] == "waiting_for_idle"
+            && (!codex_queue || terminal_outbox_refusal(target, &receipt))
+        {
             return done(receipt, None);
         }
         if let (true, Some(reason)) = (
@@ -1867,6 +1885,11 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
                 || !receipt["native_message_id"].as_str().is_some_and(native_message_id))
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
+        }
+        if codex_queue && !(codex_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+            receipt["digest"] == format!("{:x}", Sha256::digest(input))
+        })) {
+            return uncertain("The original Codex queue submission is unconfirmed.");
         }
         if claude && !(claude_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
             receipt["digest"] == format!("{:x}", Sha256::digest(input))
@@ -1895,7 +1918,7 @@ pub fn outbox_status(
     use sha2::{Digest, Sha256};
 
     if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
-        || !matches!(action, Action::SendWhenIdle { .. })
+        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. })
     {
         return Err("Expected an original outbox request.".into());
     }
@@ -1909,6 +1932,11 @@ pub fn outbox_status(
         args, stdin: Some(serde_json::to_vec(&query).map_err(|e| e.to_string())?),
         timeout: Duration::from_secs(if remote { 10 } else { 3 }), request_id: Some(request_id.into()),
     })
+}
+
+pub fn codex_outbox_submitted(receipt: &Value) -> bool {
+    receipt["codex_outbox"] == true && receipt["transport"] == "codex_queue" && receipt["status"] == "submitted"
+        && receipt["native_queued_message_id"].as_str().is_some_and(crate::creation::canonical_uuid)
 }
 
 fn claude_outbox_submitted(receipt: &Value) -> bool {
@@ -1947,7 +1975,9 @@ pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option
     let receipt: Value = serde_json::from_slice(&stdout).ok()?;
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
     let terminal_refusal = terminal_outbox_refusal(target, &receipt);
-    let provider = if target.name.starts_with("claude/") {
+    let provider = if target.name.starts_with("codex/") {
+        receipt["proof"] == "native_codex_receipt" && codex_outbox_submitted(&receipt)
+    } else if target.name.starts_with("claude/") {
         receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
     } else if target.name.starts_with("dsh/") {
         dsh_outbox_submitted(&receipt)
@@ -2230,6 +2260,51 @@ mod tests {
         assert!(matches!(result(&refusal), Outcome::Failed { .. }));
         refusal["input_sha256"] = json!("b".repeat(64));
         assert!(matches!(result(&refusal), Outcome::Uncertain { .. }));
+    }
+
+    #[test]
+    fn codex_native_queue_claim_binds_the_original_offer_and_status_query() {
+        use sha2::{Digest, Sha256};
+
+        let mut target = target("");
+        target.name = "codex/sample/review".into();
+        let action = Action::SendToCodexQueue { text: "queued text".into(), attachments: vec![] };
+        let request = "11111111-1111-4111-8111-111111111111";
+        let inv = invocation(&target, &action, request).unwrap();
+        let query = outbox_status(&target, &action, request).unwrap();
+        let digest = format!("{:x}", Sha256::digest(inv.stdin.as_deref().unwrap()));
+        let old = invocation(&target, &Action::SendWhenIdle { text: "queued text".into(), attachments: vec![] }, request).unwrap();
+        assert_eq!(old.stdin, inv.stdin);
+        assert!(inv.args.iter().any(|arg| arg == "--codex-queue"));
+        assert!(old.args.iter().any(|arg| arg == "--when-idle"));
+        let receipt = json!({"schema":1,"transport":"codex_queue","codex_outbox":true,"proof":"native_codex_receipt",
+            "status":"submitted","native_queued_message_id":"99999999-9999-4999-8999-999999999999",
+            "request_id":request,"name":target.name,"run_id":target.run_id,
+            "conversation_id":target.conversation_id,"input_sha256":digest,"digest":digest});
+        let reply = |value: &Value| exit(0, value.to_string().as_bytes(), "");
+        let accepted = |value: &Value| matches!(classify(&target, &action, &inv, reply(value)), Outcome::Done { .. });
+        let recovered = |value: &Value| outbox_receipt(&target, &query, reply(value)).is_some();
+        assert!(accepted(&receipt) && recovered(&receipt));
+        for (field, value) in [
+            ("native_queued_message_id", Value::Null), ("transport", json!("terminal")), ("codex_outbox", Value::Null),
+            ("native_queued_message_id", json!("00000000-0000-0000-0000-000000000000")),
+            ("status", json!("in_progress")), ("conversation_id", json!("other")),
+            ("run_id", json!("other")), ("request_id", json!("other")),
+        ] {
+            let mut wrong = receipt.clone();
+            wrong[field] = value;
+            assert!(!accepted(&wrong) && !recovered(&wrong), "{field}");
+        }
+        let mut held = receipt.clone();
+        held["proof"] = json!("native_input_lock");
+        held["status"] = json!("waiting_for_idle");
+        assert!(!accepted(&held) && !recovered(&held));
+        held["transport"] = json!("terminal");
+        assert!(accepted(&held) && recovered(&held));
+        let mut wrong = receipt;
+        wrong["digest"] = json!("0".repeat(64));
+        wrong["input_sha256"] = wrong["digest"].clone();
+        assert!(!accepted(&wrong) && !recovered(&wrong));
     }
 
     #[test]

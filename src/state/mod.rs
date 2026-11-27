@@ -1885,6 +1885,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
                 .into(),
         );
     }
+    // Queue-only input must never fall through to a provider that would send normally.
+    if command == "send" && args.iter().any(|arg| arg == "--codex-queue") {
+        return input::dispatch(args);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
         return agy::dispatch(command, name, rest);

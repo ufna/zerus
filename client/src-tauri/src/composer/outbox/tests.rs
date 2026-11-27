@@ -141,6 +141,55 @@ fn interrupted_codex_queues_require_exact_positive_native_readiness() {
 }
 
 #[test]
+fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editors_original() {
+    let root = dir("busy-codex-native-outbox");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    present(&c, &fake, &session, "codex");
+    let original = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
+    let second = enqueue(&c, "first").waiting_in_zerus[1].request_id.clone();
+    c.open(None);
+    assert!(c.current().is_none());
+    let mut busy = details(&session, "codex", true, Some(false));
+    busy["codex_busy_outbox_supported"] = json!(true);
+    busy["pending_questions"] = json!([]);
+    busy["pending_questions_complete"] = json!(true);
+    for (field, value) in [
+        ("codex_busy_outbox_supported", Value::Null), ("pending_questions_complete", Value::Null),
+        ("pending_questions", json!([{"question_id":"question"}])), ("input_queue", json!({"id":"queued"})),
+        ("previous_message_pending", json!(true)), ("activity", json!("unknown")),
+        ("phase", json!("approval")), ("conversation_id", json!("other")), ("run_id", json!("other")),
+    ] {
+        let mut blocked = busy.clone();
+        blocked[field] = value;
+        settle_next(&c, &fake, &store, blocked);
+        assert!(lock(&fake.calls).is_empty(), "{field}");
+    }
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","transport":"codex_queue","codex_outbox":true,"request_id":id,"name":name,
+            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":"11111111-1111-4111-8111-111111111111"}),
+        cleanup: None,
+    });
+    // The catalog and inspect may observe different substates of the same turn.
+    // One tick and no artificial clock advance must suffice for both native offers.
+    lock(&fake.row).phase = Some("compacting".into());
+    busy["phase"] = json!("working");
+    settle_next(&c, &fake, &store, busy.clone());
+    crate::composer::send::tests::eventually(|| lock(&fake.calls).len() == 2);
+    assert!(c.current().is_none());
+    let calls = lock(&fake.calls);
+    assert!(calls.iter().all(|call| matches!(&call.1, Action::SendToCodexQueue { .. })));
+    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original, second]);
+    drop(calls);
+    c.open(Some(session));
+    c.observe(&state(busy));
+    let view = until(&c, |v| v.status == "Queued in Codex");
+    assert!(view.local.is_empty());
+}
+
+#[test]
 fn deepseek_waits_for_native_idle_and_offers_only_the_exact_original_head() {
     let root = dir("deepseek-ordinary-queue-drain");
     let store = drafts(&root);
