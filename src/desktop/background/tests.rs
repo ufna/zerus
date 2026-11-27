@@ -59,6 +59,7 @@ impl Fixture {
             input_acknowledgment: crate::desktop::input_acknowledgment::Worker::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             teams: crate::desktop::teams::Worker::new(&config, &epoch, owner.clone()),
+            technical_review: crate::tasks::technical_review::Worker::new(&config),
             fleet: fleet::Runtime::empty_for_test(&epoch),
             producer: broker.claim_internal().unwrap(),
             presence: None,
