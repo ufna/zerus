@@ -1078,6 +1078,30 @@ fn codex_shortcuts_footer(plain: &str) -> bool {
 }
 
 
+/// Codex 0.172 can shorten the navigation hints to make room for this
+/// passive goal state. It describes an earlier provider refusal and is not
+/// the native rate-limit or goal-resume choice dialog.
+fn codex_usage_limited_goal_footer(plain: &str) -> bool {
+    let Some(tail) = plain.strip_prefix("  ← for agents") else {
+        return false;
+    };
+    let tail = tail.strip_prefix(" · ? for shortcuts").unwrap_or(tail);
+    let Some(tail) = tail.strip_prefix(' ') else {
+        return false;
+    };
+    let Some(warning) = tail
+        .trim_start_matches(' ')
+        .strip_prefix("Goal hit usage limits (/goal resume)")
+    else {
+        return false;
+    };
+    warning.is_empty()
+        || warning
+            .strip_prefix(" · ")
+            .is_some_and(codex_warning_footer)
+}
+
+
 /// A read-only hint for the additional native width read. It grants no input:
 /// the caller must match the footer again against that backend's actual width.
 pub(super) fn codex_wrapped_columns(record: &Value, screen: &str, x: usize, y: usize) -> Option<usize> {
@@ -1283,7 +1307,8 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
     if !prompt_empty(agent, row, previous, screen, cursor_x) {
         return false;
     }
-    let placeholder = styled_row(row)
+    let prompt_cells = styled_row(row);
+    let placeholder = prompt_cells
         .iter()
         .skip(cursor_x)
         .any(|(ch, dim)| !ch.is_whitespace() && *dim);
@@ -1362,8 +1387,25 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
                     && codex_status_row(&plain, model);
                 return input_background || single_line_footer
                     || lines.last().is_some_and(|line| {
-                        let plain: String = styled_row(line).iter().map(|(ch, _)| ch).collect();
-                        codex_shortcuts_footer(&plain)
+                        let footer: String = styled_row(line).iter().map(|(ch, _)| ch).collect();
+                        codex_shortcuts_footer(&footer)
+                            || (index == cursor_y + 2
+                                && index + 2 == lines.len()
+                                && exact_model
+                                && codex_status_row(&plain, model)
+                                && codex_usage_limited_goal_footer(&footer)
+                                && prompt_cells
+                                    .iter()
+                                    .skip(cursor_x)
+                                    .map(|(ch, _)| *ch)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    == "Ask Codex to do anything"
+                                && styled_cells(line, &mut style)
+                                    .iter()
+                                    .all(|(ch, cell)| {
+                                        ch.is_whitespace() || (!cell.background && !cell.inverse)
+                                    }))
                     });
             }
         }
@@ -3689,6 +3731,32 @@ mod tests {
         }
         assert!(!composer_empty("codex", &screen.replace("f2 to view", "enter to approve"), 2, 2));
         assert!(!composer_empty("codex", &screen, 3, 2));
+    }
+
+    #[test]
+    fn codex_usage_limited_goal_footer_keeps_the_native_composer_boundary() {
+        // Codex 0.172.0, 94x52, with an unshaded prompt and the passive goal
+        // indicator occupying the shortcuts slot. Folder and title are synthetic.
+        let placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+        let footer = "  \x1b[1m←\x1b[0m for agents               \x1b[38;5;5mGoal hit usage limits (/goal resume)\x1b[39m · ⚠ \x1b[38;2;196;167;103m5 warnings\x1b[39m · \x1b[1mf2\x1b[0m to view";
+        let status = "  \x1b[38;2;246;226;183mGPT-6.2-Astra high\x1b[39m · /fixture/project-folder · Synthetic title in one row · Main [default]";
+        let screen = format!("{}\x1b[1m›\x1b[0m {placeholder}\n\n{status}\n{footer}", "\n".repeat(48));
+        let empty = |screen: &str| composer_empty_for_model("codex", screen, 2, 48, Some("gpt-6.2-astra"));
+        assert!(empty(&screen), "the usage-limit summary leaves the native composer empty");
+        for nonempty in [
+            screen.replace(placeholder, "genuine draft"),
+            screen.replace(placeholder, "\n  multiline draft"),
+            screen.replace(placeholder, "\x1b[2mResume paused goal?\x1b[0m\n  1. Resume goal\n  2. Leave paused"),
+            screen.replace("to view", "to approve"),
+            screen.replace("usage limits", "permissions"),
+            screen.replace("\x1b[38;5;5mGoal", "\x1b[7mGoal"),
+            screen.replace("Ask Codex to do anything", "imitated dim input"),
+            screen.replace("/fixture/project-folder", "not a directory"),
+        ] {
+            assert!(!empty(&nonempty));
+        }
+        assert!(!composer_empty_for_model("codex", &screen, 3, 48, Some("gpt-6.2-astra")));
+        assert!(!composer_empty_for_model("codex", &screen, 2, 48, Some("gpt-6.2-sol")));
     }
 
     #[test]
