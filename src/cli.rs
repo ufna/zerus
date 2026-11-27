@@ -1362,7 +1362,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             send.extend_from_slice(selector);
             send.extend(["--when-idle".into(), queue.clone(), "--json".into()]);
             // Keep the ordinary native writer, caller guard and session-ID selector.
-            dispatch(send)
+            dispatch_normal(send)
         }
         "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
         | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" | "delivery" => {

@@ -29,6 +29,24 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
         return self.wait(binding['name'], lambda row: any(
             e.get('request_id') == request['request_id'] for e in row['events']))
 
+    def test_closed_offer_emits_exactly_one_ambiguous_selector_refusal(self):
+        name = 'opencode/fixture/twins'
+        run, conversation = '22222222-2222-4222-8222-222222222222', 'ses_fixture123'
+        records = self.state / 'opencode/sessions'
+        records.mkdir(parents=True, exist_ok=True)
+        for session_id in ('33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444'):
+            record = dict(name=name, session_id=session_id, layout='id', journal_name=session_id,
+                          agent='opencode', backend='opencode', run_id=run, conversation_id=conversation,
+                          cwd=str(self.workspace), state='running', phase='working')
+            (records / (session_id + '.json')).write_text(json.dumps(record))
+        request = self.attempt(dict(run_id=run, conversation_id=conversation), 'Do not offer an ambiguous input')
+        refused = self.hgs(['delivery', 'outbox-offer', name, '--opencode-queue', '--json'],
+                           request, success=False)
+        self.assertEqual(refused.returncode, 5, refused.stderr)
+        [response] = refused.stdout.splitlines()
+        self.assertIsInstance(json.loads(response), dict)
+        self.assertFalse(self.receipt_path(request).exists())
+
     def test_busy_desktop_offer_appends_exact_files_and_recovers_lost_ack(self):
         target, other = self.start(), self.create()
         conversation = target['conversation_id']
