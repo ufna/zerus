@@ -1,6 +1,6 @@
 //! Composer-owned queue. Enqueue writes the editable draft and its new position
 //! in the queue together. Only a durably reserved head can reach native Send.
-use super::send::{Context, SendReply, exact_input_details};
+use super::send::{Context, SendReply, exact_input_details, first_input_details};
 use super::{Composer, Composers, Hub, MAX_TEXT_BYTES};
 use serde::Serialize;
 use serde_json::Value;
@@ -237,7 +237,10 @@ impl Composers {
         if hub.followed.awaiting_outbox_details
             && self
                 .context(hub)
-                .is_some_and(|ctx| !ctx.outbox_candidate() || ctx.exact_outbox_details(details))
+                .is_some_and(|ctx| {
+                    !ctx.outbox_candidate() || ctx.exact_outbox_details(details)
+                        || (ctx.row.name == ctx.session.name && first_input_details(&ctx.row, details))
+                })
         {
             hub.followed.awaiting_outbox_details = false;
         }
@@ -267,7 +270,12 @@ impl Composers {
             || details["input_queue"].is_object()
             || dsh_agent(&ctx.row.agent) && details["dsh_outbox_ready"] == false;
         let supported = ctx.outbox_candidate() && ctx.online && ctx.row.process_state == "running";
-        if supported && ctx.awaiting_outbox_details {
+        // A later Activity frame or catalog update can replace the initial run.
+        // Recheck the binding at Send as well as when accepting a fresh read.
+        let stale_first = details["first_message_can_send"] == true
+            && ctx.row.agent == "codex" && details["conversation_id"].as_str().unwrap_or_default().is_empty()
+            && (ctx.session.name != ctx.row.name || !first_input_details(&ctx.row, details));
+        if supported && (ctx.awaiting_outbox_details || stale_first) {
             return ManualSend::Blocked(
                 ctx.reason()
                     .unwrap_or_else(|| "Checking the session…".into()),
