@@ -3301,7 +3301,7 @@ fn pause_resume(
         0,
         &format!("usage: hgs {command} <session>|--all [-d] [--archive <id> | --fresh]"),
     )?;
-    let mut detached = session == "--all";
+    let mut detached = session == "--all" || session.starts_with("agy/");
     if session.starts_with('-') && session != "--all" {
         return Err(Error::new(
             1,

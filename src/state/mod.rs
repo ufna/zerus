@@ -950,6 +950,10 @@ pub fn fork_session(
 
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if archive.is_empty() && agy::named(name) && agent.is_empty() {
+        return agy::inspect(name);
+    }
     if archive.is_empty() && opencode::exists(name) {
         return opencode::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
@@ -979,8 +983,7 @@ pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference)
     local_sessions()?;
     let _guard = lock(None)?;
     let mut candidates = if reference.archive.is_empty() { records()? }
-        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
-        else if reference.name.starts_with("opencode/") { opencode::archives::STORE.by_id(&reference.archive)?.into_iter().collect() }
+        else if let Some(store) = native_archive_store::named(&reference.name) { store.by_id(&reference.archive)?.into_iter().collect() }
         else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));

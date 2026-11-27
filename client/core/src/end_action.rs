@@ -213,8 +213,8 @@ impl Captured {
         if !self.valid() {
             return actions::failed(STATE_CHANGED);
         }
-        if self.open_code_archive() {
-            return actions::classify_open_code_lifecycle(&self.target, inv, exit, None);
+        if self.open_code_archive() || (matches!(self.action, Action::Archive) && self.target.name.starts_with("agy/")) {
+            return actions::classify_archive_lifecycle(&self.target, inv, exit, None);
         }
         if matches!(&exit, Exit::Code { stdout, .. } if stdout.len() > RECEIPT_LIMIT) {
             let detail = "Invalid acknowledgement. Check the session before retrying.";

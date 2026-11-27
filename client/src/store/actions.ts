@@ -95,6 +95,10 @@ export function createActions(
       notify("info", `${verb} cancelled: the session changed.`); return;
     }
     if (out.outcome === "failed") { notify("error", out.detail, true); return; }
+    if (out.outcome === "uncertain" && (action.kind === "archive" || action.kind === "restore")) {
+      notify("warn", tr(out.detail), true);
+      return;
+    }
     if (action.kind === "forget_binding") { notify("info", tr("Zerus forgot %1. The conversation stays in OpenCode.", row.name)); return; }
     if (!cleanupHandled && out.outcome === "done" && out.cleanup && ["kept", "unconfirmed"].includes(out.cleanup.status)) {
       reportCleanup(out, row); return;

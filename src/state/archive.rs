@@ -8,19 +8,10 @@ pub(super) fn path(id: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn read_archive(name: &str, id: &str) -> Result<Value> {
-    if name.starts_with("dsh/") {
-        return dsh::native_archives::by_id(id)
+    if let Some(store) = native_archive_store::named(name) {
+        return store.by_id(id)
             .and_then(|row| {
-                let row = row.filter(|row| row["name"] == name).ok_or("no such DeepSeek archive")?;
-                session_id::verify(&row)?;
-                Ok(row)
-            })
-            .map_err(|error| format!("{name}: cannot read archive {id}: {error}"));
-    }
-    if name.starts_with("opencode/") {
-        return opencode::archives::STORE.by_id(id)
-            .and_then(|row| {
-                let row = row.filter(|row| row["name"] == name).ok_or("no such OpenCode archive")?;
+                let row = row.filter(|row| row["name"] == name).ok_or("no such native archive")?;
                 session_id::verify(&row)?;
                 Ok(row)
             })

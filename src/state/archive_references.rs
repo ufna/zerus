@@ -578,11 +578,14 @@ fn visit_native(
     bytes: usize,
     mut visit: impl FnMut(Value) -> Result<()>,
 ) -> Result<()> {
-    let (used_rows, used_bytes) =
-        dsh::native_archives::STORE.visit_references(until, rows, bytes, &mut visit)?;
-    opencode::archives::STORE
-        .visit_references(until, rows - used_rows, bytes - used_bytes, visit)
-        .map(|_| ())
+    let (mut remaining_rows, mut remaining_bytes) = (rows, bytes);
+    for store in [dsh::native_archives::STORE, opencode::archives::STORE, native_archive_store::AGY] {
+        let (used_rows, used_bytes) =
+            store.visit_references(until, remaining_rows, remaining_bytes, &mut visit)?;
+        remaining_rows -= used_rows;
+        remaining_bytes -= used_bytes;
+    }
+    Ok(())
 }
 
 /// Compact terminal references and bounded native binding metadata, with
@@ -645,6 +648,9 @@ pub(super) fn visit_related(
             {
                 if record["backend"] == "opencode" {
                     return Err("An archived OpenCode conversation still needs this folder".into());
+                }
+                if record["backend"] == "agy" {
+                    return Err("An archived Antigravity conversation still needs this folder".into());
                 }
                 native.push(record);
             }

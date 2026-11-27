@@ -10,6 +10,7 @@ use std::{
 };
 
 mod acp;
+pub(super) mod archives;
 mod worker;
 pub(super) use worker::run as run_worker;
 
@@ -168,6 +169,10 @@ fn start(mut record: Value) -> Result<Value> {
         return Err("Install the official Antigravity CLI before starting a session".into());
     }
     locations(&record)?;
+    record
+        .as_object_mut()
+        .unwrap()
+        .remove("agy_worker_not_started");
     record["agy_worker"] = Value::Null;
     record["agy_provider"] = Value::Null;
     record["agy_socket"] = Value::Null;
@@ -182,33 +187,54 @@ fn start(mut record: Value) -> Result<Value> {
     Ok(record)
 }
 
+// Only the launcher can attest that spawn failed, or reap its still-unadopted
+// child. Other callers must retain a starting reservation with no pins.
+fn unadopted(record: &Value, error: &str) -> Result<()> {
+    let _guard = state_guard()?;
+    let mut current = binding(string(record, "name"))?;
+    if current == *record
+        && current["state"] == "starting"
+        && current["agy_worker"].is_null()
+        && current["agy_provider"].is_null()
+    {
+        current["agy_worker_not_started"] = current["run_id"].clone();
+        current["state"] = json!("stopped");
+        current["error"] = json!(error);
+        write(&mut current)?;
+    }
+    Ok(())
+}
+
 // Process creation is outside the state writer lock. The worker accepts only
 // this exact still-starting binding and holds its own per-run control endpoint.
 fn spawn_worker(record: &Value) -> Result<Value> {
     let name = string(record, "name");
     let run = string(record, "run_id");
-    let binary = std::env::current_exe().map_err(|_| "Cannot locate this hgs executable")?;
-    let mut child = Command::new(binary)
-        .args(["__state", "agy-worker", name, run])
-        .env("HGS_STATE_DIR", root())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "Could not launch the Antigravity worker")?;
+    let spawned = std::env::current_exe().and_then(|binary| {
+        Command::new(binary)
+            .args(["__state", "agy-worker", name, run])
+            .env("HGS_STATE_DIR", root())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    });
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(_) => {
+            let error = "Could not launch the Antigravity worker";
+            unadopted(record, error)?;
+            return Err(error.into());
+        }
+    };
     let until = Instant::now() + ACTION_LIMIT;
     while Instant::now() < until {
         let current = binding(name)?;
         if current["run_id"] != run {
             return Err("The Antigravity launch binding changed".into());
         }
-        if current["state"] == "running" && worker_live(&current)
-            || current["auth_required"] == true
-        {
+        if current["state"] == "running" && worker_live(&current) {
             return Ok(current);
-        }
-        if let Some(error) = current["error"].as_str() {
-            return Err(error.into());
         }
         if child
             .try_wait()
@@ -219,10 +245,13 @@ fn spawn_worker(record: &Value) -> Result<Value> {
             if latest["run_id"] == run && latest["auth_required"] == true {
                 return Ok(latest);
             }
-            return Err(latest["error"]
+            let error = latest["error"]
                 .as_str()
-                .unwrap_or("Antigravity worker exited before startup")
-                .into());
+                .unwrap_or("Antigravity worker exited before startup");
+            if latest == *record {
+                unadopted(record, error)?;
+            }
+            return Err(error.into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -278,6 +307,7 @@ fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
         let _guard = state_guard()?;
         let mut record = binding(name)?;
         scope.check(&record)?;
+        archives::check_resume(&record)?;
         if !original_exited(&record) || record["state"] == "starting" {
             return Err(
                 "Antigravity's original worker is still running or startup is unconfirmed".into(),
@@ -289,6 +319,13 @@ fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
             );
         }
         scope.changing();
+        for key in [
+            "agy_restore_archive",
+            "agy_restore_source",
+            "agy_restore_confirmed",
+        ] {
+            record.as_object_mut().unwrap().remove(key);
+        }
         record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
         start(record)?
     };
@@ -452,8 +489,21 @@ fn print_receipt(answer: &Value) -> Result<i32> {
     })
 }
 
-pub(super) fn action(name: &str, action: &str, scope: &session_action::Scope) -> Result<()> {
+pub(super) fn action(
+    name: &str,
+    action: &str,
+    archive_id: Option<&str>,
+    scope: &session_action::Scope,
+) -> Result<()> {
+    if let Some(id) = archive_id {
+        return if action == "restore" {
+            archives::restore(name, id, false, Some(scope))
+        } else {
+            Err("That action is unavailable for an Antigravity archive".into())
+        };
+    }
     match action {
+        "archive" => archives::archive(name, false, Some(scope)),
         "resume" => resume(name, scope).map(|_| ()),
         "pause" => {
             let record = binding(name)?;
@@ -467,6 +517,18 @@ pub(super) fn action(name: &str, action: &str, scope: &session_action::Scope) ->
             }
             if answer["status"] != "stopped" {
                 return Err("Antigravity stop is unconfirmed; inspect the original session".into());
+            }
+            // An acknowledgement can precede the worker's actual exit. Wait
+            // for the original pins before reporting a completed Stop.
+            let until = Instant::now() + ACTION_LIMIT;
+            while !original_exited(&record) {
+                if Instant::now() >= until {
+                    return Err(
+                        "Antigravity worker exit is unconfirmed; inspect the original session"
+                            .into(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(15));
             }
             scope.result_record(&record);
             Ok(())
@@ -507,8 +569,23 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
     let exited = original_exited(record);
     let may_resume = (has_conversation || startup_refused(record)) && state != "starting" && exited;
     let locations_valid = (live || may_resume) && locations(record).is_ok();
-    let can_resume = may_resume && locations_valid;
+    let can_archive = has_conversation
+        && may_resume
+        && locations_valid
+        && archives::stopped(record)
+        && !archives::restore_pending(record);
+    let can_resume = may_resume && locations_valid && archives::check_resume(record).is_ok();
+    let mut actions = Vec::new();
+    if can_resume {
+        actions.push("resume");
+    }
+    if can_archive {
+        actions.push("archive");
+    }
     let idle = live && record["phase"] == "idle" && !auth;
+    if idle {
+        actions.push("pause");
+    }
     let ready = idle && locations_valid;
     let busy = live && record["phase"] == "working";
     let phase = if auth {
@@ -520,30 +597,21 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
     } else {
         "unknown"
     };
-    let parts: Vec<_> = string(record, "name").splitn(3, '/').collect();
-    let mut row = json!({
-        "name":record["name"],"cmd":"agy","agent":"agy","backend":"agy","account_id":ACCOUNT,
-        "session_id":record["session_id"],"run_id":record["run_id"],"launch_id":record["launch_id"],
-        "conversation_id":record["conversation_id"],"cwd":record["cwd"],"cwd_source":"native_session",
-        "project":parts.get(1),"tag":parts.get(2),"created":record["created"],"last_event_at":record["last_event_at"],
+    let mut row = base_row(record);
+    let controls = json!({
         "state":if live {"running"} else if state=="paused" {"paused"} else if exited {"stopped"} else {"unknown"},
         "process_state":if live {"running"} else if exited {"exited"} else {"unverified"},"runtime_state":if live {"live"} else if exited {"stopped"} else {"unknown"},
         "tracked":true,"resumable":can_resume || live && has_conversation,"activity_supported":true,
         "auth_required":auth,"activity":if auth {"attention"} else if busy {"busy"} else if ready {"idle"} else {"unknown"},
         "phase":phase,
-    });
-    let controls = json!({
         "activity_summary":if auth {"Sign in required"} else if busy {"Working"} else if ready {"Ready"}
             else if idle {"Account home or workspace changed"} else if exited {"Stopped"} else {"Process state unverified"},
         "activity_detail":record["error"],"turn_started":record["turn_started"],"interrupt_supported":busy,
         "reply_id":record["reply_id"],"reply_at":record["reply_at"],
         "startup_retry_available":can_resume && startup_refused(record),
-        "send_supported":live && !auth && locations_valid,"send_available":ready,"terminal_supported":false,
-        "terminal_attach_supported":false,"native_ui_available":false,"attachments_supported":false,
-        "bulk_lifecycle_supported":false,"settings_change_supported":false,"clear_context_supported":false,
-        "compact_context_supported":false,"fork_supported":false,
-        "allowed_actions":if can_resume {vec!["resume"]} else if idle {vec!["pause"]} else {Vec::new()},
-        "action_reasons":{"archive":"Antigravity archives are unavailable","terminate":"Use Stop session to preserve the native conversation"}
+        "send_supported":live && !auth && locations_valid,"send_available":ready,
+        "allowed_actions":actions,
+        "action_reasons":{"archive":archives::ARCHIVE_REASON,"terminate":"Use Stop session to preserve the native conversation"}
     });
     row.as_object_mut()
         .expect("Antigravity summary")
@@ -556,26 +624,72 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
     row
 }
 
-fn inspect_options(args: &[String]) -> Result<()> {
+fn base_row(record: &Value) -> Value {
+    let parts: Vec<_> = string(record, "name").splitn(3, '/').collect();
+    json!({
+        "name":record["name"],"cmd":"agy","agent":"agy","backend":"agy","account_id":ACCOUNT,
+        "session_id":record["session_id"],"run_id":record["run_id"],"launch_id":record["launch_id"],
+        "conversation_id":record["conversation_id"],"cwd":record["cwd"],"cwd_source":"native_session",
+        "project":parts.get(1),"tag":parts.get(2),"created":record["created"],"last_event_at":record["last_event_at"],
+        "terminal_supported":false,"terminal_attach_supported":false,"native_ui_available":false,
+        "attachments_supported":false,"bulk_lifecycle_supported":false,"settings_change_supported":false,
+        "clear_context_supported":false,"compact_context_supported":false,"fork_supported":false
+    })
+}
+
+fn inspect_options(args: &[String]) -> Result<(Option<&str>, u64)> {
+    let mut after = 0;
+    let mut archive = None;
     let mut options = args.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
             "--skip-processes" | "--current-read" | "--read-observation" => {}
-            "--after"
-                if options
+            "--archive" if archive.is_none() => {
+                archive = Some(
+                    options
+                        .next()
+                        .ok_or("Missing Antigravity archive ID")?
+                        .as_str(),
+                );
+            }
+            "--after" => {
+                after = options
                     .next()
-                    .is_some_and(|value| value.parse::<u64>().is_ok()) => {}
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .ok_or("Invalid Antigravity inspection cursor")?;
+            }
             _ => return Err("Unsupported Antigravity inspection option".into()),
         }
     }
-    Ok(())
+    Ok((archive, after))
 }
 
 pub(super) fn dispatch(command: &str, name: &str, args: &[String]) -> Result<i32> {
     match command {
         "inspect" => {
-            inspect_options(args)?;
-            println!("{}", inspect(name)?);
+            let (archive, after) = inspect_options(args)?;
+            let row = match archive {
+                Some(id) => archives::row(&archive::read_archive(name, id)?, Some(after), None),
+                None => inspect(name)?,
+            };
+            println!("{row}");
+            Ok(0)
+        }
+        "archive" if args.is_empty() || args == ["--dry-run"] => {
+            archives::archive(name, !args.is_empty(), None)?;
+            Ok(0)
+        }
+        "resume" => {
+            let dry = args.last().is_some_and(|arg| arg == "--dry-run");
+            let [flag, id] = &args[..args.len() - usize::from(dry)] else {
+                return Err(
+                    "Use the guarded Resume action, or hgs resume <session> --archive ID".into(),
+                );
+            };
+            if flag != "--archive" {
+                return Err("Restore needs the exact Antigravity archive ID".into());
+            }
+            archives::restore(name, id, dry, None)?;
             Ok(0)
         }
         "send" => dispatch_send(name, args),

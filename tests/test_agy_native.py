@@ -104,16 +104,24 @@ class AntigravityNative(unittest.TestCase):
         self.assertEqual(row["launch_id"], launch_id)
         return row
 
-    def inspect(self, name):
-        return json.loads(self.cli("inspect", name).stdout)
+    def inspect(self, name, *options):
+        return json.loads(self.cli("inspect", name, *options).stdout)
 
     def identity_request(self, row, **fields):
         return {"request_id": str(uuid.uuid4()), "expected_run_id": row["run_id"],
                 "expected_conversation_id": row["conversation_id"], **fields}
 
-    def action(self, row, action, check=True):
+    def action(self, row, action, check=True, **fields):
         return self.cli("session-action", row["name"], "--json",
-                        payload=self.identity_request(row, action=action), check=check)
+                        payload=self.identity_request(row, action=action, **fields), check=check)
+
+    def wait_for_reply(self, name, request):
+        def settled():
+            row = self.inspect(name)
+            if row["send_available"] and row["reply_id"] == request["request_id"]:
+                return row
+
+        return self.wait_for(settled)
 
     def record(self, name):
         records = (self.root / "state").glob("*.json")
@@ -187,6 +195,8 @@ class AntigravityNative(unittest.TestCase):
         self.assertFalse(row["send_available"])
         self.assertFalse(row["conversation_id"])
         self.assertTrue(row["startup_retry_available"])
+        self.assertNotIn("archive", row["allowed_actions"])
+        self.assertNotEqual(self.cli("archive", row["name"], check=False).returncode, 0)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fresh keyring-isolated auth control")
     def test_guarded_retry_after_proven_sign_in_refusal(self):
@@ -241,6 +251,146 @@ class AntigravityNative(unittest.TestCase):
                 saved.rename(self.project)
             self.assertTrue(self.inspect(row["name"])["send_available"])
             self.assertEqual(model.offers, [])
+
+    def test_stopped_archive_restores_only_the_selected_native_conversation(self):
+        with self.model() as model:
+            first = self.launch("archive")
+            name = first["name"]
+            peer = self.launch("keep-live")
+            peer_turn = self.identity_request(peer, text="Unrelated conversation")
+            self.cli("send", peer["name"], "--json", payload=peer_turn)
+            peer = self.wait_for_reply(peer["name"], peer_turn)
+
+            self.assertNotIn("archive", first["allowed_actions"])
+            self.assertNotEqual(self.cli("archive", name, check=False).returncode, 0)
+            request = self.identity_request(first, text="HOLD-NATIVE-TEST original conversation")
+            turn = self.offer(first, request)
+            try:
+                self.assertTrue(model.entered.get(timeout=5))
+                working = self.inspect(name)
+                self.assertEqual(working["phase"], "working")
+                self.assertNotIn("archive", working["allowed_actions"])
+                self.assertEqual(json.loads(self.action(working, "archive").stdout)["status"], "failed")
+            finally:
+                model.release.set()
+            self.assertEqual(self.read_offer(turn)["status"], "submitted")
+            ready = self.wait_for_reply(name, request)
+            self.assertEqual(json.loads(self.action(ready, "pause").stdout)["status"], "completed")
+            stopped = self.inspect(name)
+            self.assertIn("archive", stopped["allowed_actions"], stopped["action_reasons"])
+            archived = json.loads(self.action(stopped, "archive").stdout)
+            self.assertEqual(archived["status"], "completed", archived)
+            archive_id = archived["result_target"]["archive_id"]
+
+            saved = self.inspect(name, "--archive", archive_id)
+            self.assertEqual(saved["state"], "archived")
+            self.assertIn("restore", saved["allowed_actions"], saved["action_reasons"])
+            self.assertTrue(saved["resumable"])
+            self.assertFalse(saved["send_available"])
+            self.assertFalse(saved["interrupt_supported"])
+            for key in ("name", "session_id", "conversation_id", "run_id"):
+                self.assertEqual(saved[key], first[key], key)
+            self.assertEqual(saved["events"], ready["events"])
+            self.assertTrue(any(event["detail"] == request["text"] for event in saved["events"]))
+            self.assertTrue(any(event["type"] == "AgentMessage" for event in saved["events"]))
+            before = saved["events"][0]["seq"]
+            tail = self.inspect(name, "--archive", archive_id, "--after", str(before), "--skip-processes")
+            self.assertEqual(tail["events"], [event for event in saved["events"] if event["seq"] > before])
+            self.assertFalse(tail["replace_events"])
+
+            stale = self.action(saved, "restore", archive_id=archive_id,
+                                expected_conversation_id=peer["conversation_id"])
+            self.assertEqual(json.loads(stale.stdout)["status"], "failed")
+            restore = self.identity_request(saved, action="restore", archive_id=archive_id)
+            receipt = json.loads(self.cli("session-action", name, "--json", payload=restore).stdout)
+            self.assertEqual(receipt["status"], "completed", receipt)
+            self.assertEqual(json.loads(self.cli("session-action", name, "--json", payload=restore).stdout), receipt)
+            restored = self.inspect(name)
+            for key in ("name", "session_id", "conversation_id"):
+                self.assertEqual(restored[key], first[key], key)
+            self.assertNotEqual(restored["run_id"], first["run_id"])
+            self.assertEqual(receipt["result_target"], {key: restored[key] for key in ("name", "run_id", "conversation_id")})
+            self.assertEqual(restored["events"], saved["events"])
+            self.assertNotEqual(self.cli("inspect", name, "--archive", archive_id, check=False).returncode, 0)
+
+            followup = self.identity_request(restored, text="Continue the restored conversation")
+            self.cli("send", name, "--json", payload=followup)
+            self.wait_for_reply(name, followup)
+            resumed_offers = [body for body in model.offers if followup["text"].encode() in body]
+            self.assertTrue(any(request["text"].encode() in body for body in resumed_offers))
+            self.assertFalse(any(peer_turn["text"].encode() in body for body in resumed_offers))
+            other = self.inspect(peer["name"])
+            for key in ("run_id", "conversation_id", "events", "send_available"):
+                self.assertEqual(other[key], peer[key], key)
+
+    def test_cli_restore_selects_the_saved_archive_after_name_reuse(self):
+        with self.model():
+            original = self.launch("reused")
+            name = original["name"]
+            request = self.identity_request(original, text="Earlier conversation with this name")
+            self.cli("send", name, "--json", payload=request)
+            self.wait_for_reply(name, request)
+            self.action(original, "pause")
+            self.cli("archive", name)
+            self.cli("__state", "archive-catalog-worker")
+
+            def archive_page_row():
+                page = self.cli("archives", "--json", "--bounded", payload={"limit": 2})
+                row, = json.loads(page.stdout)["sessions"]
+                return row
+
+            archive = archive_page_row()
+            self.assertEqual(archive["conversation_id"], original["conversation_id"])
+            self.assertIn("restore", archive["allowed_actions"])
+            self.assertTrue(archive["resumable"])
+            archive_id = archive["archive_id"]
+
+            replacement = self.launch("reused")
+            self.assertNotEqual(replacement["conversation_id"], original["conversation_id"])
+            for occupied in (self.inspect(name, "--archive", archive_id), archive_page_row()):
+                self.assertEqual(occupied["archive_id"], archive_id)
+                self.assertNotIn("restore", occupied["allowed_actions"])
+                self.assertFalse(occupied["resumable"])
+            self.assertNotEqual(self.cli("resume", name, "--archive", archive_id, check=False).returncode, 0)
+            self.assertEqual(self.inspect(name)["run_id"], replacement["run_id"])
+
+            self.action(replacement, "pause")
+            later = json.loads(self.action(replacement, "archive").stdout)
+            later_id = later["result_target"]["archive_id"]
+            self.assertNotEqual(later_id, archive_id)
+            self.cli("resume", name, "--archive", archive_id)
+            current = self.inspect(name)
+            self.assertEqual(current["session_id"], original["session_id"])
+            self.assertEqual(current["conversation_id"], original["conversation_id"])
+            self.assertNotEqual(current["run_id"], original["run_id"])
+            other = self.inspect(name, "--archive", later_id)
+            self.assertEqual(other["conversation_id"], replacement["conversation_id"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fresh keyring-isolated auth control")
+    def test_archive_survives_native_sign_in_refusal_during_restore(self):
+        with self.model():
+            first = self.launch("restore-sign-in")
+            name = first["name"]
+            request = self.identity_request(first, text="Keep history through a restore refusal")
+            self.cli("send", name, "--json", payload=request)
+            ready = self.wait_for_reply(name, request)
+            self.action(ready, "pause")
+            archived = json.loads(self.action(ready, "archive").stdout)
+            archive_id = archived["result_target"]["archive_id"]
+            key = self.env.pop("GEMINI_API_KEY")
+            try:
+                refused = json.loads(self.action(first, "restore", archive_id=archive_id).stdout)
+                self.assertEqual(refused["status"], "failed", refused)
+                self.assertIn("sign-in", refused["error"].lower())
+            finally:
+                self.env["GEMINI_API_KEY"] = key
+            source = self.inspect(name, "--archive", archive_id)
+            self.assertEqual(source["events"], ready["events"])
+            self.assertIn("restore", source["allowed_actions"], source["action_reasons"])
+            self.cli("resume", name, "--archive", archive_id)
+            current = self.inspect(name)
+            self.assertEqual(current["conversation_id"], first["conversation_id"])
+            self.assertEqual(current["events"], ready["events"])
 
     def test_interrupt_reservation_has_bounded_writer_admission(self):
         import fcntl

@@ -114,6 +114,21 @@ describe("perform", () => {
     });
   });
 
+  it("shows the unconfirmed result of Archive and Restore", async () => {
+    await createRoot(async (dispose) => {
+      const a = setup();
+      const detail = "Archive receipt unavailable";
+      mocked.runAction.mockResolvedValue({ outcome: "uncertain", detail });
+      const operations: Action[] = [{ kind: "archive" }, { kind: "restore", archive_id: "original" }];
+      for (const action of operations) {
+        await a.perform(session(), action);
+        expect(a.notices()).toMatchObject([{ tone: "warn", sticky: true, text: detail }]);
+        a.dismiss(a.notices()[0].id);
+      }
+      dispose();
+    });
+  });
+
   it("words the success of each action", async () => {
     await createRoot(async (dispose) => {
       const a = setup();

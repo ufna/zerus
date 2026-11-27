@@ -62,6 +62,15 @@ describe("menuState change", () => {
     const replaced = menuState(drifted({ pause: true, stop: true, terminate: true }, "r2"), true, false, inspected);
     expect(replaced.change.enabled || replaced.stop.enabled || replaced.end.enabled).toBe(false);
   });
+  it("archives and restores the selected Antigravity session from its reported actions", () => {
+    const native = { agent: "agy", name: "agy/project/example", terminal_supported: false };
+    const paused = row({ ...native, state: "paused", allowed_actions: ["resume", "archive"] });
+    expect(menuState(paused, true, false).archive).toMatchObject({ visible: true, enabled: true });
+    expect(menuState(paused, true, false, details({ allowed_actions: ["resume"] })).archive.visible).toBe(false);
+    const archived = row({ ...native, state: "archived", archive_id: "a1", allowed_actions: ["restore"] });
+    expect(menuState(archived, true, false).change).toMatchObject({ label: "Restore session", enabled: true });
+    expect(menuState(archived, true, false, undefined, { occupied: true }).change.enabled).toBe(false);
+  });
   it("resumes a paused resumable session", () => {
     expect(menuState(row({ state: "paused" }), true, false).change).toMatchObject({ label: "Resume session", enabled: true });
     expect(menuState(row({ state: "paused", resumable: false }), true, false).change.enabled).toBe(false);
