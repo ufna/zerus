@@ -252,12 +252,25 @@ def read():
     for line in provider.stdout:
         frame = json.loads(line)
         if "method" not in frame and frame.get("id") in pending:
-            Thread(target=later, args=(line,), daemon=True).start()
+            if (root / "malformed").exists():
+                emit((json.dumps({"jsonrpc": "2.0", "id": frame["id"]}) + "\n").encode())
+            else:
+                Thread(target=later, args=(line,), daemon=True).start()
         else:
             emit(line)
 
+def notices():
+    while provider.poll() is None:
+        notice = root / "native-notice"
+        if notice.exists():
+            emit(notice.read_bytes() + b"\n")
+            notice.unlink()
+            (root / "native-notice-sent").touch()
+        time.sleep(.02)
+
 reader = Thread(target=read, daemon=True)
 reader.start()
+Thread(target=notices, daemon=True).start()
 for line in sys.stdin.buffer:
     frame = json.loads(line)
     if frame.get("method") == "session/set_config_option":
@@ -275,6 +288,62 @@ sys.exit(result)
         wrapper.chmod(0o700)
         (self.bin / "provider").symlink_to(Path(AGY).resolve())
         self.addCleanup((self.bin / "release").touch)
+
+    def test_config_update_while_root_is_held_refuses_before_provider_offer(self):
+        import fcntl
+
+        self.hold_settings_response()
+        with self.model() as endpoint:
+            first = self.launch("options-race")
+            models = first["model_options"]
+            next_model = next(model["id"] for model in models if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            frame = {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": first["conversation_id"], "update": {
+                    "sessionUpdate": "config_option_update", "configOptions": [{
+                        "id": "model", "type": "select", "category": "model", "currentValue": next_model,
+                        "options": [{"value": model["id"], "name": model["label"]} for model in models],
+                    }],
+                },
+            }}
+            with ThreadPoolExecutor(max_workers=1) as sender:
+                with (self.root / "state" / ".lock").open("rb") as writer:
+                    fcntl.flock(writer, fcntl.LOCK_EX)
+                    pending = sender.submit(self.settings, first, request, False)
+                    # The worker takes the control frame, then waits for Root.
+                    time.sleep(.25)
+                    self.assertFalse(pending.done())
+                    staged = self.bin / "native-notice-staged"
+                    staged.write_text(json.dumps(frame))
+                    staged.rename(self.bin / "native-notice")
+                    limit = time.monotonic() + .5
+                    while not (self.bin / "native-notice-sent").exists() and time.monotonic() < limit:
+                        time.sleep(.02)
+                    self.assertTrue((self.bin / "native-notice-sent").exists())
+                    time.sleep(.1)
+                self.assertEqual(pending.result(timeout=6)["status"], "refused")
+            self.wait_for(lambda: self.inspect(first["name"]).get("model") == next_model)
+            self.assertFalse((self.bin / "settings-offers").exists())
+            self.assertEqual(endpoint.offers, [])
+
+    def test_malformed_settings_result_keeps_original_worker_available(self):
+        self.hold_settings_response()
+        (self.bin / "malformed").touch()
+        with self.model() as endpoint:
+            first = self.launch("malformed-options")
+            next_model = next(model["id"] for model in first["model_options"] if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            outcome = self.settings(first, request, check=False)
+            self.assertEqual(outcome["status"], "uncertain")
+            self.assertEqual(self.settings(first, request, check=False), outcome)
+            self.assertEqual(endpoint.offers, [])
+            row = self.inspect(first["name"])
+            self.assertTrue(row["send_available"])
+            self.assertEqual(row["run_id"], first["run_id"])
+            prompt = self.identity_request(row, text="Disposable prompt after malformed settings reply")
+            self.cli("send", row["name"], "--json", payload=prompt)
+            self.wait_for_reply(row["name"], prompt)
+            self.assertEqual((self.bin / "settings-offers").read_text().splitlines(), ["one offer"])
 
     def test_unknown_settings_never_reoffer_and_late_result_confirms_original(self):
         self.hold_settings_response()

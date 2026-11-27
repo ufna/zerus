@@ -271,7 +271,10 @@ impl Owner {
         }
         if let Some(setting) = &self.setting {
             if frame["id"] == setting.id && frame.get("method").is_none() {
-                let reply = Client::reply(frame, setting.id)?.expect("matching settings response");
+                let reply = Client::reply(frame, setting.id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(Reply::Refusal);
                 self.finish_setting(reply);
                 return Ok(());
             }
@@ -409,6 +412,17 @@ impl Owner {
                 return Ok(());
             }
         }
+        // A different Root writer may have delayed this admission while the
+        // native reader was already receiving a newer version of the options.
+        if let Some(frame) = self.native.receive(Duration::ZERO)? {
+            drop(_guard);
+            self.provider_frame(frame)?;
+            let _ = respond(
+                &mut client,
+                &refused(&self.record, "Antigravity state changed; refresh Activity"),
+            );
+            return Ok(());
+        }
         let (config, value) = match selected() {
             Ok(Some(change)) => change,
             Ok(None) => {
@@ -452,6 +466,23 @@ impl Owner {
             self.record["agy_settings_pending"] = Value::Null;
             self.projection_dirty = true;
             let _ = respond(&mut client, &receipt);
+            return Ok(());
+        }
+        // Receipt and state publication can also take time. No provider
+        // bytes have been offered yet, so this exact refusal can settle
+        // the reservation if another native frame arrived in that window.
+        if let Some(frame) = self.native.receive(Duration::ZERO)? {
+            self.record["agy_settings_pending"] = Value::Null;
+            self.projection_dirty = true;
+            let answer = refused(&self.record, "Antigravity state changed; refresh Activity");
+            let answer = if request.save(&answer).is_ok() {
+                answer
+            } else {
+                receipt
+            };
+            drop(_guard);
+            self.provider_frame(frame)?;
+            let _ = respond(&mut client, &answer);
             return Ok(());
         }
         let offered = self.native.request(

@@ -445,7 +445,10 @@ impl Request {
             || answer["run_id"] != self.expected_run_id
             || answer["conversation_id"] != self.expected_conversation_id
             || answer["request_id"] != self.request_id
-            || !matches!(answer["status"].as_str(), Some("applied" | "uncertain"))
+            || !matches!(
+                answer["status"].as_str(),
+                Some("applied" | "refused" | "uncertain")
+            )
         {
             return Err(
                 "That request ID already belongs to another Antigravity settings attempt".into(),
