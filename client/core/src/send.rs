@@ -20,6 +20,15 @@ pub const NO_COLOR: &str = crate::source!(
 /// The agents the composer sends to; any other is typed into in Terminal.
 pub const MESSAGE_AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
 
+/// Whether ordinary terminal message input starts with a slash or shell command.
+/// A second slash in the first token makes it ordinary text, such as `/help/file.png`.
+pub fn is_terminal_command(text: &str) -> bool {
+    let text = text.trim_start();
+    let first = text.split_whitespace().next().unwrap_or("");
+    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
+    slash_command || text.starts_with('!')
+}
+
 /// What the client knows about a session besides its inspected details.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockFacts {

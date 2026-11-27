@@ -77,12 +77,7 @@ fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
     {
         return Err("message contains terminal control characters".into());
     }
-    // A slash command's first token is /name. Absolute paths have another
-    // slash in that token and are ordinary message text, even /help/file.png.
-    let text = request.text.trim_start();
-    let first = text.split_whitespace().next().unwrap_or("");
-    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
-    if slash_command || text.starts_with('!') {
+    if zerus_client_core::send::is_terminal_command(&request.text) {
         return Err("use Terminal for slash commands and shell commands".into());
     }
     if request.attachments.len() > 8 {
