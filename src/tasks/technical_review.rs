@@ -300,7 +300,9 @@ pub(super) fn verify(
         .iter()
         .find(|r| *r == caller)
         .ok_or_else(|| fail("This session is not an enrolled technical reviewer."))?;
-    if live(caller).is_none() {
+    if super::actor(&p.machine, &[], false)? != Actor::Agent(caller.clone())
+        || live(caller).is_none()
+    {
         return Err(fail(
             "The enrolled reviewer no longer has the exact live binding.",
         ));
@@ -417,7 +419,12 @@ fn write_ready(config: &Config, p: &Policy, task: &str) -> Result<bool> {
     .map_err(fail)
 }
 
-fn reconcile_legacy(config: &Config, p: &Policy, grant: &Legacy) -> Result<bool> {
+fn reconcile_legacy(
+    config: &Config,
+    p: &Policy,
+    grant: &Legacy,
+    cancel: &AtomicBool,
+) -> Result<bool> {
     let Some(reviewer) = p
         .reviewers
         .iter()
@@ -439,7 +446,7 @@ fn reconcile_legacy(config: &Config, p: &Policy, grant: &Legacy) -> Result<bool>
     let Some(store) = open(config, p)? else {
         return Ok(false);
     };
-    if !matches_policy(config, p)? {
+    if cancel.load(Ordering::Acquire) || !matches_policy(config, p)? {
         return Ok(false);
     }
     let Some(mut admitted) = store.admit_until(Instant::now() + Duration::from_millis(100)) else {
@@ -458,7 +465,7 @@ fn pass(config: &Config, cancel: &AtomicBool, cursor: &mut Cursor) -> Result<()>
     let Some(p) = policy(config)?.filter(|p| p.enabled) else {
         return Ok(());
     };
-    if crate::swarm::try_local_node_id(config).map_err(fail)? != p.machine {
+    if crate::swarm::existing_local_node_id(config).as_deref() != Some(&p.machine) {
         return Err(fail(
             "Technical review policy belongs to a different computer.",
         ));
@@ -480,7 +487,7 @@ fn pass(config: &Config, cancel: &AtomicBool, cursor: &mut Cursor) -> Result<()>
         if cursor.settled.contains(&grant.task_uuid) {
             continue;
         }
-        match reconcile_legacy(config, &p, grant) {
+        match reconcile_legacy(config, &p, grant, cancel) {
             Ok(true) => {
                 cursor.settled.insert(grant.task_uuid.clone());
             }
