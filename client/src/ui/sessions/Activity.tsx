@@ -834,8 +834,11 @@ export function ActivityView(props: { source?: ActivitySource }) {
     return project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
       subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
         : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox(),
-      [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []),
-        ...(composerView?.terminal_only_outbox ?? []), ...(removed?.requests ?? [])], removed?.native);
+      {
+        removed: [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []), ...(removed?.requests ?? [])],
+        removedNative: removed?.native,
+        terminalOnly: composerView?.terminal_only_outbox,
+      });
   });
   createEffect(() => {
     const items = built(), loaded = source().loaded();

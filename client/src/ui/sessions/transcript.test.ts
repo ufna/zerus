@@ -884,7 +884,7 @@ it("puts older late-loaded native history ahead of the existing original and ret
   expect(projection.build([older, newer], scope, [], [], [original, later]).map(row => row.id))
     .toEqual(["s1", "local-original", "local-later", "s4"]);
   const transportOnly = { ...older, seq: 2, at: 205 };
-  expect(projection.build([older, transportOnly, newer], scope, [], [], [later], [original.request_id]).map(row => row.id))
+  expect(projection.build([older, transportOnly, newer], scope, [], [], [later], { removed: [original.request_id] }).map(row => row.id))
     .toEqual(["s1", "s2", "local-later", "s4"]);
 });
 
@@ -896,5 +896,35 @@ it("retires only the native message whose removal returned a confirmed receipt",
     request_id: outbox.request_id, message_id: "msg_Removable", delivery_state: "not_delivered" };
   projection.build([], scope, [], [], [outbox]);
   expect(projection.build([event], scope, [], [], [])).toMatchObject([{ id: "local-remove", receipt: "Not delivered" }]);
-  expect(projection.build([event], scope, [], [], [], ["remove"], ["msg_Removable"])).toEqual([]);
+  expect(projection.build([event], scope, [], [], [], { removed: ["remove"], removedNative: ["msg_Removable"] })).toEqual([]);
+});
+
+it.each(["newer reply", "recorded context"] as const)("inserts the restored queue before later traffic starting with %s", start => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation", ...(start === "recorded context" ? { prompt: "Recorded" } : {}) };
+  const original = { ...scope, request_id: "original", handle: 1, preview: "same", state: "waiting", queued_at: 200 } as const;
+  const later = { ...original, request_id: "later", queued_at: 230 };
+  const older = { type: "UserPromptSubmit", seq: 1, detail: "Older input", at: 150 };
+  const newer = { type: "AgentMessage", seq: 2, detail: "Newer reply", at: 225 };
+  projection.build(start === "newer reply" ? [newer] : [], scope, [], [], [original, later]);
+  expect(projection.build([older, newer], scope, [], [], [original, later]).map(row => row.id))
+    .toEqual(["s1", "local-original", "s2", "local-later"]);
+});
+
+it("preserves an original with transport-only acknowledgement and leaves unrelated native input visible", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "first", handle: 1, preview: "same", state: "reserved", queued_at: 200 } as const;
+  const before = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "same", at: 150 };
+  const unbound = { ...scope, type: "UserPromptSubmit", seq: 2, detail: "same", at: 210 };
+  expect(projection.build([before], scope, [], [], [outbox]).map(item => item.id)).toEqual(["s1", "local-first"]);
+  const accepted = { terminalOnly: [outbox.request_id] };
+  expect(projection.build([before], scope, [], [], [], accepted)[1]).toMatchObject({ id: "local-first", receipt: "Submitted to terminal" });
+  expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
+  ]);
+  const proved = { ...unbound, source: "hgs_delivery", message_id: outbox.request_id };
+  expect(projection.build([before, proved], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Sent" },
+  ]);
 });

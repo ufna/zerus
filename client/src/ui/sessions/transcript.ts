@@ -908,6 +908,11 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
 }
 
 type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id">;
+interface OriginalChanges {
+  removed?: readonly string[];
+  removedNative?: readonly string[];
+  terminalOnly?: readonly string[];
+}
 
 /** Only a bound receipt can take over a queued row's display identity. */
 function outboxReceiptId(event: ActivityEvent): string | undefined {
@@ -979,7 +984,7 @@ const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local ? 1 :
  * Use preceding journal rows as its insertion point, not a later echo's time. */
 function placeOriginals(positions: Map<string, OriginalRow>, items: readonly TranscriptItem[],
   active: ReadonlyMap<string, number>, removed: ReadonlySet<string>, conflicts: ReadonlySet<string>,
-  times: ReadonlyMap<string, number>): TranscriptItem[] {
+  terminalOnly: ReadonlySet<string>, times: ReadonlyMap<string, number>): TranscriptItem[] {
   for (const request of removed) positions.delete(`local-${request}`);
   // Keep the still-visible composer rows even as old settled positions age out.
   let excess = positions.size - 50;
@@ -993,6 +998,7 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
   const projected = new Map<string, ActivityItem>();
   const ordinary: TranscriptItem[] = [];
   const insertion = new Map<string, number>();
+  const queues = new Set<string>();
   for (const item of items) {
     if (!outgoing(item) || (!active.has(item.id) && !positions.has(item.id))) {
       ordinary.push(item);
@@ -1000,14 +1006,27 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       const previous = projected.get(item.id);
       if (!previous || evidenceOrder(item) > evidenceOrder(previous)) projected.set(item.id, item);
       if (!insertion.has(item.id) || item.outbox) insertion.set(item.id, ordinary.length);
+      if (item.outbox) queues.add(item.id);
     }
   }
   for (const [id, at] of active) {
     const item = projected.get(id);
     if (item && !positions.has(id)) {
-      const index = insertion.get(id) ?? ordinary.length;
+      let index = insertion.get(id) ?? ordinary.length;
+      let awaitingHistory = !ordinary.length;
+      // A restored queue can arrive after a newer reply or a context placeholder.
+      // Use provider timestamps for placement; they never bind a receipt.
+      if (queues.has(id) && at > 0) {
+        const prior = ordinary.findLastIndex(row => {
+          const time = times.get(row.id) ?? 0;
+          return time > 0 && time <= at;
+        });
+        awaitingHistory = prior < 0;
+        index = prior + 1;
+        if (awaitingHistory && ordinary[0]?.kind === "context") index = 1;
+      }
       const anchors = ordinary.slice(Math.max(0, index - 8), index).reverse().map(item => item.id);
-      positions.set(id, { item, anchors, index, at, awaitingHistory: !ordinary.length });
+      positions.set(id, { item, anchors, index, at, awaitingHistory });
     }
   }
   const indexOf = new Map(ordinary.map((item, index) => [item.id, index]));
@@ -1018,6 +1037,10 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       // Delete and Retry retire a failed local row explicitly.
       positions.delete(id);
       continue;
+    }
+    if (terminalOnly.has(id) && (!item || evidenceOrder(item) < 2)) {
+      const { kind, at, body, attachments } = original.item;
+      item = { id, kind, at, body, attachments, receipt: tr("Submitted to terminal") };
     }
     if (!item && conflicts.has(id)) {
       const { id, kind, at, body, attachments } = original.item;
@@ -1043,7 +1066,7 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
     if (original.awaitingHistory && original.at > 0) {
       for (const [position, row] of ordinary.entries()) {
         const at = times.get(row.id) ?? 0;
-        if (at > 0 && at < original.at) index = position + 1;
+        if (at > 0 && at <= original.at) index = position + 1;
       }
     }
     const slot = slots.get(index);
@@ -1068,10 +1091,9 @@ export function createTranscriptProjection() {
   return {
     reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); positions.clear(); },
     build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [],
-      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = [], removed: readonly string[] = [],
-      removedNative: readonly string[] = []): TranscriptItem[] {
-      const discarded = new Set(removed);
-      const nativeDiscarded = new Set(removedNative);
+      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = [], changes: OriginalChanges = {}): TranscriptItem[] {
+      const discarded = new Set(changes.removed);
+      const nativeDiscarded = new Set(changes.removedNative);
       local = local.filter(row => !discarded.has(row.id));
       given = given.filter(event => !nativeDiscarded.has(opencodePromptId(event) ?? ""));
       for (const id of discarded) recent.delete(id);
@@ -1129,7 +1151,8 @@ export function createTranscriptProjection() {
       ]);
       if (!active.size && !positions.size) return items;
       const times = new Map(verified.map(event => [event.activity_display_key as string || eventKey(event), eventAt(event)]));
-      return placeOriginals(positions, items, active, discarded, conflicts, times);
+      const terminalOnly = new Set(changes.terminalOnly?.map(request => `local-${request}`));
+      return placeOriginals(positions, items, active, discarded, conflicts, terminalOnly, times);
     },
   };
 }
