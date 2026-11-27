@@ -95,6 +95,9 @@ pub enum Action {
     },
     Pause,
     Resume,
+    /// Resume an exact native conversation before sending a waiting draft.
+    #[serde(skip_deserializing)]
+    ResumeNativeForSend,
     /// `hgs resume NAME --fresh [--expected-run-id RUN] -d`
     /// (`startFreshSession`): a new conversation in the same folder, with the
     /// same account and model.
@@ -565,6 +568,12 @@ pub fn invocation(
             return scoped_lifecycle_invocation(target, "pause", request_id, 45, 60);
         }
         Action::Resume if name.starts_with("agy/") => {
+            return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
+        }
+        Action::ResumeNativeForSend => {
+            if !matches!(name.split('/').next(), Some("agy" | "dsh")) || target.conversation_id.is_empty() {
+                return Err("Native resume requires an exact saved conversation.".into());
+            }
             return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
         }
         Action::Pause => (vec!["pause".to_owned(), name], None, 45, 45, None),
@@ -1414,6 +1423,7 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Recovery { job_id, action } => {
             classify_recovery(target, invocation, job_id, *action, exit)
         }
+        Action::ResumeNativeForSend => classify_native_resume_for_send(target, invocation, exit),
         Action::Pause | Action::Resume if target.name.starts_with("agy/") => {
             classify_scoped_lifecycle(target, invocation, exit, "The session change did not complete.")
         }
@@ -1870,6 +1880,51 @@ fn classify_recovery(
                 uncertain("Invalid recovery response. Reload its state before trying again.")
             }
         }
+    }
+}
+
+pub(crate) fn native_resume_result_run<'a>(
+    receipt: &'a Value, name: &str, original_run: &str, conversation: &str,
+) -> Option<&'a str> {
+    let result = &receipt["result_target"];
+    let run = field(result, "run_id");
+    (field(result, "name") == name
+        && field(result, "conversation_id") == conversation
+        && result["archive_id"].is_null()
+        && !run.is_empty()
+        && run != original_run)
+        .then_some(run)
+}
+
+fn classify_native_resume_for_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
+    let unknown = || uncertain("Resume was not confirmed. Check the session before trying again.");
+    match exit {
+        Exit::StartFailed(error) => failed(error),
+        Exit::Code { code: 0, stdout, .. } => {
+            let result: Value = serde_json::from_slice(&stdout).unwrap_or(Value::Null);
+            if invocation.request_id.is_none()
+                || result["request_id"].as_str() != invocation.request_id.as_deref()
+                || field(&result, "name") != target.name
+                || field(&result, "run_id") != target.run_id
+                || field(&result, "conversation_id") != target.conversation_id
+                || !result["archive_id"].is_null()
+            {
+                return unknown();
+            }
+            match field(&result, "status") {
+                "completed" if native_resume_result_run(
+                    &result, &target.name, &target.run_id, &target.conversation_id,
+                ).is_some() => done(result, None),
+                "failed" if result["result_target"].is_null() => {
+                    let reason = result["error"].as_str().map(str::trim).filter(|text| !text.is_empty());
+                    failed(reason
+                        .map(|text| text.chars().take(STDERR_CHARS).collect::<String>())
+                        .unwrap_or_else(|| "The session change did not complete.".into()))
+                }
+                _ => unknown(),
+            }
+        }
+        _ => unknown(),
     }
 }
 
