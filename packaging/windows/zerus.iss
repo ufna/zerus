@@ -55,7 +55,7 @@ DisableDirPage=yes
 DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Windows 10 1903, as the portable zip and the winget manifest require.
+; Match the portable ZIP's minimum OS: Windows 10 version 1903.
 MinVersion=10.0.18362
 UninstallFilesDir={app}\uninstall
 UninstallDisplayName=Zerus
