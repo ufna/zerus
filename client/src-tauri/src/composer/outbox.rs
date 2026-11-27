@@ -147,7 +147,7 @@ fn guarded_action(entry: &Entry) -> Action {
     Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
 }
 
-fn can_probe(entry: &Entry) -> bool {
+pub(super) fn can_probe(entry: &Entry) -> bool {
     matches!(entry.state, State::Waiting | State::Unknown)
 }
 
@@ -189,6 +189,13 @@ impl Context {
 }
 
 impl Composers {
+    // The ticker may have parked while a durable reservation was being
+    // written. Its successor must run even when no editor is selected.
+    fn outbox_changed(&self) {
+        self.0.opened.notify_all();
+        self.changed();
+    }
+
     pub(crate) fn set_outbox_dispatch(&self, dispatch: super::OutboxDispatch) {
         assert!(self.0.outbox_dispatch.set(dispatch).is_ok());
     }
@@ -402,7 +409,7 @@ impl Composers {
                 };
                 let dispatch = matches!(view, SendReply::Accepted { .. }) && !hub.closed;
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let _ = done.send(view);
                 if let Some(details) = ready.filter(|_| dispatch) {
                     let work = me.clone();
@@ -415,8 +422,33 @@ impl Composers {
         Ok(Some(accepted))
     }
 
+    pub(crate) fn restore_saved_outboxes(&self) {
+        self.lock().outbox_scanning = true;
+        self.read_outbox_page(outbox::Scan::default());
+    }
+
+    fn read_outbox_page(&self, scan: outbox::Scan) {
+        let me = self.clone();
+        self.0.store.scan_outboxes(scan, move |next, key| {
+            let mut hub = me.lock();
+            hub.outbox_scanning = next.is_some();
+            if hub.closed { return; }
+            if let Some(key) = key.filter(|key| !hub.composers.contains_key(key)) {
+                hub.order.push_back(key.clone());
+                me.ensure(&mut hub, &key);
+                // Give this queue a turn before paging more candidates into
+                // the bounded composer cache. Selection stays with the person.
+                hub.outbox_scan = next;
+                me.0.opened.notify_all();
+            } else if let Some(next) = next {
+                drop(hub);
+                me.read_outbox_page(next);
+            }
+        });
+    }
+
     pub(super) fn outbox_waiting(hub: &Hub) -> bool {
-        hub.composers.iter().any(|(key, c)| {
+        hub.outbox_scan.is_some() || hub.outbox_rescan_at.is_some() || hub.composers.iter().any(|(key, c)| {
             c.outbox
                 .first()
                 .is_some_and(|head| can_probe(head) && &head.draft_key == key)
@@ -425,6 +457,15 @@ impl Composers {
 
     pub(super) fn tick_outbox(&self, now: f64) {
         let mut hub = self.lock();
+        if !hub.closed {
+            if let Some(scan) = hub.outbox_scan.take() {
+                self.read_outbox_page(scan);
+            } else if !hub.outbox_scanning && hub.outbox_rescan_at.is_some_and(|at| at <= now) {
+                hub.outbox_rescan_at = None;
+                hub.outbox_scanning = true;
+                self.read_outbox_page(outbox::Scan::default());
+            }
+        }
         if hub.closed || hub.outbox_probe {
             return;
         }
@@ -483,6 +524,7 @@ impl Composers {
         let (row, online) = (self.0.deps.rows)(&t.computer, &entry.catalog_key, &t.name)?;
         (online
             && row.name == t.name
+            && entry.draft_key.split_once("\nid:").is_none_or(|(_, id)| row.session_id.as_deref() == Some(id))
             && row.run_id.as_deref() == Some(&t.run_id)
             && row.conversation_id.as_deref() == Some(&t.conversation_id)
             && row.process_state == "running"
@@ -496,7 +538,9 @@ impl Composers {
         let row = self.outbox_row(entry)?;
         // Wait for an eligible idle turn. A present native queue, question,
         // or unconfirmed earlier input gives no permission to type.
-        if entry.state == State::Waiting && row.phase.as_deref() != Some("idle") {
+        if entry.state == State::Waiting && row.phase.as_deref() != Some("idle")
+            && !(row.agent == "codex" && row.phase.as_deref() == Some("interrupted"))
+        {
             return None;
         }
         (self.0.deps.inspect)(&entry.target, None, None).ok()
@@ -516,16 +560,22 @@ impl Composers {
     }
 
     fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
+        let phase = row.phase.as_deref();
+        let idle = phase == Some("idle") && details["phase"] == "idle" && details["activity"] == "idle";
+        let interrupted = row.agent == "codex" && phase == Some("interrupted")
+            && details["phase"] == "interrupted" && details["activity"] == "unknown"
+            && details["codex_interrupted_outbox_supported"] == true
+            && details["interrupted_message_can_send"] == true
+            && details["pending_questions_complete"] == true
+            && details["pending_questions"].as_array().is_some_and(Vec::is_empty);
         guarded_supported(&row.agent, details)
             && super::send::exact_input_details(row, (&target.run_id, &target.conversation_id), details)
-            && row.phase.as_deref() == Some("idle")
+            && (idle || interrupted)
             && (dsh_agent(&row.agent) || super::send::previous_message_pending(
                 row,
                 (&target.run_id, &target.conversation_id),
                 details,
             ) == Some(false))
-            && details["activity"] == "idle"
-            && details["phase"] == "idle"
             && details["input_queue"].is_null()
             && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
             && details["pending_questions_complete"] != false
@@ -576,14 +626,14 @@ impl Composers {
                     c.outbox[0].state = State::Waiting;
                     c.storage_error = Some(error);
                     drop(hub);
-                    me.changed();
+                    me.outbox_changed();
                     return;
                 }
                 if hub.closed {
                     return;
                 }
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let work = me.clone();
                 (me.0.deps.spawn)(Box::new(move || {
                     work.dispatch_head(key, entry, &details, route_revision);
@@ -747,7 +797,7 @@ impl Composers {
                     }
                 }
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
             }
         });
     }
@@ -806,7 +856,7 @@ impl Composers {
                     Err(error) => Err(error),
                 };
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let _ = done.send(reply);
             }
         });

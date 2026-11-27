@@ -406,6 +406,15 @@ pub(super) fn current_until(record: &Value, deadline: Instant) -> Result<Option<
     }
     Ok(index(record, &cache_path(record)?, Some(deadline))?.map(|cache| pending(record, &cache)))
 }
+/// Only an indexed, identified ordinary native transcript can admit a queued
+/// send after interruption. An unavailable source or a child returns an empty
+/// view to display callers but has no native question-absence authority.
+pub(super) fn outbox_questions_clear(record: &Value, deadline: Instant) -> Result<bool> {
+    Ok(index(record, &cache_path(record)?, Some(deadline))?.is_some_and(|cache| {
+        cache["initialized"] == true && pending(record, &cache).is_empty()
+    }))
+}
+
 fn pending(record: &Value, cache: &Value) -> Vec<Value> {
     cache["items"]
         .as_object()

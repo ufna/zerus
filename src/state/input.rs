@@ -181,7 +181,7 @@ pub(super) fn first_message_summary(record: &Value, live_pane: bool) -> Value {
 /// The record's checks before a task input, with their typed refusal
 /// (zerus-63rru.79).
 fn checked_record_gate(
-    name: &str, request: &Request, process: &mut ProcessCheck,
+    name: &str, request: &Request, process: &mut ProcessCheck, mode: SendMode,
 ) -> std::result::Result<Value, Gate> {
     let record = checked_input_gate(
         name,
@@ -192,7 +192,7 @@ fn checked_record_gate(
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
     if request.only_when_idle {
-        if !idle_reminder_ready(&record)
+        if !mode.idle_input_ready(&record)
             || (record["agent"] == "claude" && input_queue::claude_waiting(&record).unwrap_or(true))
         {
             return Err(Gate::NotIdle);
@@ -206,6 +206,29 @@ fn checked_record_gate(
 
 fn idle_reminder_ready(record: &Value) -> bool {
     record["activity"] == "idle" && record["phase"] == "idle"
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendMode {
+    Ordinary,
+    TerminalOutcome,
+    DesktopOutbox,
+}
+
+impl SendMode {
+    fn idle_input_ready(self, record: &Value) -> bool {
+        if idle_reminder_ready(record) {
+            return true;
+        }
+        self == Self::DesktopOutbox
+            && record["agent"] == "codex"
+            && record["phase"] == "interrupted"
+            && record["activity"] == "unknown"
+            && !telemetry::work_remains(record)
+            && !codex_tasks::multiple(record)
+            && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
+            && input_queue::codex_waiting(record) == Ok(false)
+    }
 }
 
 pub(super) fn checked_ready(name: &str, run_id: &str, conversation_id: &str) -> Result<Value> {
@@ -960,7 +983,7 @@ fn codex_warning_footer(row: &str) -> bool {
 
 /// Native 0.167 adds an agent-picker hint; 0.169 uses a return-to-latest
 /// hint while its transcript is scrolled above the live composer. Accept only
-/// these fixed rows and the existing warning indicator, never arbitrary text.
+/// these fixed rows and the native paused-goal and warning indicators.
 fn codex_shortcuts_footer(plain: &str) -> bool {
     let plain = plain.trim();
     if plain.starts_with("? for shortcuts") {
@@ -974,7 +997,15 @@ fn codex_shortcuts_footer(plain: &str) -> bool {
     .find_map(|prefix| plain.strip_prefix(prefix)) else {
         return false;
     };
-    tail.is_empty() || (tail.starts_with(' ') && codex_warning_footer(tail))
+    if tail.is_empty() {
+        return true;
+    }
+    if !tail.starts_with(' ') {
+        return false;
+    }
+    let status = tail.trim_start();
+    status == "Goal paused (/goal resume)"
+        || codex_warning_footer(status.strip_prefix("Goal paused (/goal resume) · ").unwrap_or(status))
 }
 
 
@@ -1653,7 +1684,7 @@ pub(super) fn send_desktop_verified(permit: &crate::desktop::verified_send::Perm
             session_id::select_guarded_route(&plan.session, &intent.session_id, &plan.run_id,
                 &plan.conversation_id, storage::in_id_layout(&record));
             match submit_core(&plan.session, intent.send.original.as_bytes(), Origin::Person,
-                true, false, Some(&|| permit.intent().map(|_| ())), ProcessCheck::Verify)
+                true, SendMode::Ordinary, Some(&|| permit.intent().map(|_| ())), ProcessCheck::Verify)
             {
                 Ok(_) => Outcome::Submitted,
                 Err(Failure::NotOffered(witness)) => Outcome::Refused {
@@ -1683,7 +1714,7 @@ fn dispatch_send(
         if !request.only_when_idle || request.expected_conversation_id.is_empty() {
             return Err("Automatic Send requires an exact conversation and the idle guard".into());
         }
-        let receipt = match submit_core(name, &input, Origin::Person, true, false, None, process) {
+        let receipt = match submit_core(name, &input, Origin::Person, true, SendMode::DesktopOutbox, None, process) {
             Ok(receipt) => receipt,
             Err(Failure::NotOffered(witness)) => {
                 let status = if witness.waits_for_idle_send() {
@@ -1710,7 +1741,8 @@ fn dispatch_send(
             return Ok(0);
         }
     }
-    match submit_core(name, &input, Origin::Person, true, terminal_outcome, None, process) {
+    let mode = if terminal_outcome { SendMode::TerminalOutcome } else { SendMode::Ordinary };
+    match submit_core(name, &input, Origin::Person, true, mode, None, process) {
         Ok(receipt) => { println!("{receipt}"); Ok(0) }
         Err(Failure::TerminalRefusal(value)) => {
             println!("{value}");
@@ -2035,7 +2067,7 @@ enum Origin<'a> {
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
 /// tells a refusal before any input from a possibly delivered ping.
 pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission {
-    match submit_core(name, input, Origin::KeepWarm(id), false, false, None, ProcessCheck::Legacy) {
+    match submit_core(name, input, Origin::KeepWarm(id), false, SendMode::Ordinary, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2062,7 +2094,7 @@ fn submit_admitted(
     retain_refusal: bool,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
 ) -> Result<Value> {
-    submit_core(name, input, origin, retain_refusal, false, admit, ProcessCheck::Legacy).map_err(
+    submit_core(name, input, origin, retain_refusal, SendMode::Ordinary, admit, ProcessCheck::Legacy).map_err(
         |failure| match failure {
             Failure::NotOffered(witness) => witness.reason.clone(),
             Failure::Unknown(error) => error,
@@ -2138,7 +2170,7 @@ pub(crate) enum Submission {
 /// `submit` for a task reply that must tell a refusal before any input from
 /// one that may have delivered it.
 pub(super) fn submit_witnessed(name: &str, input: &[u8]) -> Submission {
-    match submit_core(name, input, Origin::Person, false, false, None, ProcessCheck::Legacy) {
+    match submit_core(name, input, Origin::Person, false, SendMode::Ordinary, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2307,10 +2339,11 @@ fn submit_core(
     input: &[u8],
     origin: Origin,
     retain_refusal: bool,
-    terminal_outcome: bool,
+    mode: SendMode,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
     mut process: ProcessCheck,
 ) -> std::result::Result<Value, Failure> {
+    let terminal_outcome = mode == SendMode::TerminalOutcome;
     let unknown = Failure::Unknown;
     let request: Request =
         serde_json::from_slice(input).map_err(|e| unknown(format!("invalid send payload: {e}")))?;
@@ -2366,7 +2399,7 @@ fn submit_core(
     {
         return Err(refused(typed, "Verified send accepts only an ordinary message".into()));
     }
-    let record = checked_record_gate(name, &request, &mut process).map_err(|gate| gated(typed, gate))?;
+    let record = checked_record_gate(name, &request, &mut process, mode).map_err(|gate| gated(typed, gate))?;
     // A writer acting at the person's request checks it here, under Root and
     // before anything is typed (zerus-46l1q, review D2): every revocation
     // comes before this send's admission (nothing is sent) or after it.
@@ -2464,7 +2497,7 @@ fn submit_core(
             return Err(refused(typed,"Session identity changed during pre-send compaction".into()));
         }
         kimi_expiry::release(&mut current, &request_id, &pre_send_compaction).map_err(unknown)?;
-        record = checked_record_gate(name,&request,&mut process).map_err(|gate| gated(typed,gate))?;
+        record = checked_record_gate(name,&request,&mut process,mode).map_err(|gate| gated(typed,gate))?;
         checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
     }
     // Claude and Kimi treat a trailing backslash plus the next Enter as line
@@ -2515,7 +2548,7 @@ fn submit_core(
     };
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(gate) = checked_record_gate(name, &request, &mut process).and_then(|r| checked_send_gate(&r)) {
+    if let Err(gate) = checked_record_gate(name, &request, &mut process, mode).and_then(|r| checked_send_gate(&r)) {
         cleanup();
         return Err(gated(typed, gate));
     }
@@ -2636,7 +2669,7 @@ fn submit_core(
                 return Err(error.into());
             }
         }
-        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+        if request.only_when_idle && !mode.idle_input_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be pasted.".into());
         }
         if process.pinned() {
@@ -2697,7 +2730,7 @@ fn submit_core(
         if process.pinned() && !process.recheck(&record) {
             return Err("agent changed after paste".into());
         }
-        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+        if request.only_when_idle && !mode.idle_input_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be submitted.".into());
         }
         terminal.send(pane, &[backend::Key::Named("Enter")])?;

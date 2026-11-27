@@ -106,6 +106,41 @@ fn ordinary_send_accepts_a_busy_draft_without_native_input() {
 }
 
 #[test]
+fn interrupted_codex_queues_require_exact_positive_native_readiness() {
+    let root = dir("interrupted-codex-queued-input");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let target = target_session("codex");
+    present(&c, &fake, &target, "codex");
+    let original = enqueue(&c, "queued").waiting_in_zerus[0].request_id.clone();
+    lock(&fake.row).phase = Some("interrupted".into());
+    let mut ready = details(&target, "codex", false, Some(false));
+    ready["phase"] = json!("interrupted");
+    ready["activity"] = json!("unknown");
+    ready["interrupted_message_can_send"] = json!(true);
+    ready["codex_interrupted_outbox_supported"] = json!(true);
+    ready["pending_questions_complete"] = json!(true);
+    ready["pending_questions"] = json!([]);
+    for (field, value) in [
+        ("interrupted_message_can_send", json!(false)),
+        ("codex_interrupted_outbox_supported", Value::Null),
+        ("previous_message_pending", json!(true)),
+        ("pending_questions_complete", Value::Null),
+        ("pending_questions", json!([{"question_id":"q"}])),
+        ("input_queue", json!({"id":"native-queue"})),
+        ("run_id", json!("other-run")),
+    ] {
+        let mut blocked = ready.clone();
+        blocked[field] = value;
+        settle_next(&c, &fake, &store, blocked);
+        assert!(lock(&fake.calls).is_empty(), "{field}");
+    }
+    settle_next(&c, &fake, &store, ready);
+    until(&c, |_| !lock(&fake.calls).is_empty());
+    assert_eq!(lock(&fake.calls)[0].2, original);
+}
+
+#[test]
 fn deepseek_waits_for_native_idle_and_offers_only_the_exact_original_head() {
     let root = dir("deepseek-ordinary-queue-drain");
     let store = drafts(&root);
@@ -1254,4 +1289,79 @@ fn codex_refused_before_input_recovers_the_original_file_and_fifo_after_restart(
     assert!(matches!(action, Action::SendWhenIdle { .. }));
     assert_eq!(invocation(target, action, id).unwrap().stdin.unwrap(), input);
     assert_eq!(calls[1].2, second.request_id);
+}
+
+#[test]
+fn cold_start_drains_saved_fifo_without_opening_a_composer() {
+    use zerus_client_core::drafts::read_draft;
+    let root = dir("outbox-background-restart");
+    let store = drafts(&root);
+    let (first, fake) = send_hub_on(&store);
+    let session = target_session("codex");
+    let view = present(&first, &fake, &session, "codex");
+    let path = root.join("original.txt");
+    std::fs::write(&path, b"queued attachment").unwrap();
+    first.attach_paths(view.handle, vec![path.clone()], Default::default());
+    let attached = until(&first, |v| v.attachments.len() == 1);
+    let one = enqueue(&first, &attached.text).waiting_in_zerus[0].request_id.clone();
+    let view2 = enqueue(&first, "two");
+    let two = view2.waiting_in_zerus[1].request_id.clone();
+    first.edit(view2.handle, view2.rev + 1, view2.text_epoch, "independent".into(), 0, 0);
+    first.flush();
+    store.flush();
+    drop(first);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+    let store = drafts(&root);
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    {
+        let mut row = lock(&fake.row);
+        row.name.clone_from(&session.name);
+        row.agent = "codex".into();
+        row.process_state = "running".into();
+        row.phase = Some("idle".into());
+    }
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","transport":"terminal","request_id":id,"name":name,
+            "run_id":"run-1","conversation_id":"conv-1"}),
+        cleanup: None,
+    });
+    let busy = details(&session, "codex", true, Some(true));
+    let idle = details(&session, "codex", false, Some(false));
+    // Follow app startup on a second store without ever opening the editor.
+    // A tick driven by the test would conceal a missed wake-up on restart.
+    struct Ticker<'a>(&'a Composers);
+    impl Drop for Ticker<'_> {
+        fn drop(&mut self) {
+            self.0.flush();
+        }
+    }
+    let _ticker = Ticker(&c);
+    *lock(&fake.inspected) = Some(busy);
+    c.start_ticker(true);
+    crate::composer::send::tests::eventually(|| {
+        fake.inspects.load(std::sync::atomic::Ordering::SeqCst) > 0
+    });
+    assert!(c.current().is_none());
+    assert!(lock(&fake.calls).is_empty());
+    *lock(&fake.inspected) = Some(idle);
+    for remaining in [1, 0] {
+        *lock(&fake.now) += 4.0;
+        crate::composer::send::tests::eventually(|| {
+            let hub = c.lock();
+            hub.composers.get(&view.key).is_some_and(|composer| {
+                !composer.queue_writing && composer.outbox.len() == remaining
+            })
+        });
+    }
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.iter().map(|call| &call.2).collect::<Vec<_>>(), [&one, &two]);
+    assert!(matches!(&calls[0].1, Action::SendWhenIdle { attachments, .. }
+        if attachments.len() == 1 && attachments[0].bytes.as_ref() == b"queued attachment"));
+    assert!(c.current().is_none());
+    let saved = read_draft(store.root(), &view.key);
+    assert_eq!(saved.draft.draft.text, "independent");
+    assert!(saved.draft.outbox.is_empty());
 }

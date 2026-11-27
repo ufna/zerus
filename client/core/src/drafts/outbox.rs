@@ -87,6 +87,9 @@ fn queue_dir(root: &Path, key: &str) -> PathBuf {
     folder(&root.join("outbox"), key)
 }
 
+mod discovery;
+pub use discovery::Scan;
+
 fn read_manifest(path: &Path, key: &str) -> Result<Option<Value>, ()> {
     let bytes = match read_bounded(&path.join("queue.json"), MAX_MANIFEST) {
         Ok(bytes) => bytes,
@@ -249,15 +252,19 @@ mod tests {
     const KEY: &str = "\ncodex/example";
     const ID: &str = "a0000000-0000-4000-8000-000000000001";
 
+    pub(super) struct Scratch(pub(super) PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    pub(super) fn scratch() -> Scratch {
+        Scratch(std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()))
+    }
+
     #[test]
     fn only_a_committed_queue_claim_consumes_the_exact_editor_snapshot() {
-        struct Scratch(PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let root = Scratch(std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()));
+        let root = scratch();
         let draft = StoredDraft {
             draft: crate::attachments::Draft {
                 text: "same".into(),

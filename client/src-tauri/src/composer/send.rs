@@ -791,8 +791,11 @@ impl Composers {
         self.tick_handed_answers(now);
     }
 
-    /// Ticks once a second while a composer is open, until the app quits.
-    pub fn start_ticker(&self) {
+    /// Resume this writable app's queues, then tick while a session or queue needs attention.
+    pub fn start_ticker(&self, actions_allowed: bool) {
+        if actions_allowed {
+            self.restore_saved_outboxes();
+        }
         self.start_ticker_every(TICK);
     }
 
