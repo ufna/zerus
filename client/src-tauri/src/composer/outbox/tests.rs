@@ -498,6 +498,59 @@ fn watch_reconnecting() -> zerus_client_core::Batch {
 }
 
 #[test]
+fn first_native_send_after_reconnect_needs_the_current_unbound_run() {
+    let root = dir("first-native-after-reconnect");
+    let (c, fake) = send_hub_on(&drafts(&root));
+    let target = target_session("codex");
+    let view = present(&c, &fake, &target, "codex");
+    {
+        let mut row = lock(&fake.row);
+        row.conversation_id = None;
+        row.session_id = Some("test-session".into());
+        row.account_binding_reported = true;
+        row.account_id = "fixture-account".into();
+        row.phase = Some("unknown".into());
+    }
+    c.observe(&watch_reconnecting());
+    let mut first = details(&target, "codex", false, None);
+    first["conversation_id"] = Value::Null;
+    first["session_id"] = json!("test-session");
+    first["account_id"] = json!("fixture-account");
+    first["phase"] = json!("unknown");
+    first["activity"] = json!("unknown");
+    first["first_message_can_send"] = json!(true);
+    for (field, value) in [("run_id", json!("older-run")), ("name", json!("codex/another")),
+        ("session_id", json!("another-session")), ("account_id", json!("other-account")),
+        ("agent", json!("kimi")), ("first_message_can_send", json!(false)),
+        ("conversation_id", json!("previous-conversation"))] {
+        let mut wrong = first.clone();
+        wrong[field] = value;
+        c.observe(&state(wrong));
+        assert!(c.current().unwrap().ordinary_send_block.is_some(), "{field}");
+        assert!(lock(&fake.calls).is_empty());
+    }
+    c.observe(&state(first.clone()));
+    assert!(c.current().unwrap().ordinary_send_block.is_none());
+
+    // A row replacement after a valid read cannot reuse the old first prompt.
+    lock(&fake.row).run_id = Some("replacement-run".into());
+    assert!(c.current().unwrap().ordinary_send_block.is_some());
+    lock(&fake.row).run_id = Some("run-1".into());
+    c.observe(&watch_reconnecting());
+    assert!(c.current().unwrap().ordinary_send_block.is_some());
+    c.observe(&state(first));
+    let current = c.current().unwrap();
+    assert_eq!(current.ordinary_send_block, None);
+    assert_eq!(c.send_message(view.handle, current.rev + 1, current.text_epoch,
+        "first message".into(), 0, 0), SendReply::Sending);
+    until(&c, |v| !v.sending);
+    let calls = lock(&fake.calls);
+    assert!(matches!(calls.as_slice(), [(target, Action::Send { text, .. }, _)]
+        if target.run_id == "run-1" && target.conversation_id.is_empty() && text == "first message"));
+    assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+}
+
+#[test]
 fn same_key_watch_recovery_needs_a_new_exact_owning_host_read() {
     for use_stream in [true, false] {
         let root = dir("single-send-watch-replaced");

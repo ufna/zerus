@@ -310,9 +310,24 @@ pub(super) fn exact_input_details(row: &ViewRow, target: (&str, &str), details: 
 }
 
 fn exact_input_identity(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
+    !target.1.is_empty() && matches_input_target(row, target, details)
+}
+
+/// The native first message creates its own conversation on this exact run.
+pub(super) fn first_input_details(row: &ViewRow, details: &Value) -> bool {
+    row.agent == "codex"
+        && row.conversation_id.as_deref().unwrap_or_default().is_empty()
+        && row.session_id.as_deref().filter(|id| !id.is_empty())
+            .is_none_or(|id| text(details, "session_id") == id)
+        && text(details, "expected_id").is_empty()
+        && details["first_message_can_send"] == true
+        && details["process_state"] == "running"
+        && matches_input_target(row, (row.run_id.as_deref().unwrap_or_default(), ""), details)
+}
+
+fn matches_input_target(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
     let (run, conversation) = target;
     !run.is_empty()
-        && !conversation.is_empty()
         && text(details, "run_id") == run
         && text(details, "conversation_id") == conversation
         && text(details, "name") == row.name
