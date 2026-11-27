@@ -48,17 +48,23 @@ fn binding(name: &str) -> Result<Value> {
         return Err("Invalid Antigravity session name".into());
     }
     let record = storage::read_metadata(name)?;
-    if record["agent"] != "agy"
-        || record["backend"] != "agy"
-        || record["account_id"] != ACCOUNT
-        || record["rename_shadow"] == true
-        || !string(&record, "archive_id").is_empty()
-        || !session_id::canonical(string(&record, "session_id"))
-        || !session_id::canonical(string(&record, "run_id"))
-    {
+    if !valid_binding(&record) {
         return Err("The saved Antigravity binding is unavailable".into());
     }
     Ok(record)
+}
+
+/// Validate the identity in already-opened metadata, independent of selection.
+pub(super) fn valid_binding(record: &Value) -> bool {
+    record["version"] == 1
+        && named(string(record, "name"))
+        && record["agent"] == "agy"
+        && record["backend"] == "agy"
+        && record["account_id"] == ACCOUNT
+        && record["rename_shadow"] != true
+        && string(record, "archive_id").is_empty()
+        && session_id::canonical(string(record, "session_id"))
+        && session_id::canonical(string(record, "run_id"))
 }
 
 fn verify(current: &Value, expected: &Value) -> Result<()> {
