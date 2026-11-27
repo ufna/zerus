@@ -225,7 +225,11 @@ pub(in crate::state) fn bind(record: &mut Value, receipt: &Value) {
         .as_f64()
         .unwrap_or(f64::NEG_INFINITY);
     let first = record.get("input_pending_at").is_none();
-    let mut context = snapshot(record, before, first);
+    let mut context = if receipt["kimi_outbox"] == true {
+        receipt["kimi_turn_floor"].as_u64().map(Some)
+    } else {
+        snapshot(record, before, first)
+    };
     // Unknown settlement does not cancel A. Its fingerprint ledger fences A;
     // only previously complete ordering can pass forward, never an unknown one.
     if context.is_none() && terminal::acknowledgment::matches(record) {

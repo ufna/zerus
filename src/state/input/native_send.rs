@@ -675,7 +675,22 @@ mod tests {
             "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
             "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
             "        witness.idle_refusal |= native_wait;\n",
-            "    if agent == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n        receipt[\"kimi_outbox\"] = json!(true);\n    }\n",
+            r#"    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        match acceptance::kimi_outbox_floor(&record) {
+            Some(floor) => Some(floor),
+            None => {
+                cleanup();
+                return Err(gated(typed, Gate::Waiting {
+                    reason: "Kimi's earlier native turn could not be confirmed".into(),
+                    dialog: None,
+                }));
+            }
+        }
+    } else {
+        None
+    };
+"#,
+            "    if let Some(floor) = kimi_turn_floor {\n        receipt[\"kimi_outbox\"] = json!(true);\n        receipt[\"kimi_turn_floor\"] = json!(floor);\n    }\n",
             "    if receipt[\"kimi_outbox\"] == true {\n        record[\"input_pending_kimi_outbox\"] = json!(request_id);\n    }\n",
             "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            mode.check_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
         ] {

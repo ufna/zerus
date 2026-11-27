@@ -225,7 +225,14 @@ enum SendMode {
 }
 
 pub(super) fn supports_native_accept(record: &Value) -> bool {
-    matches!(string(record, "agent"), "claude" | "kimi")
+    match string(record, "agent") {
+        "claude" => true,
+        // Kimi Code uses ordered session wires. Older Python kimi-cli
+        // bindings keep the existing idle-only command.
+        "kimi" => string(record, "conversation_id").strip_prefix("session_")
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+        _ => false,
+    }
 }
 
 impl SendMode {
@@ -1609,7 +1616,7 @@ fn terminal_gate_with_capture(
             });
         }
         if require_empty_queue {
-            if cursor_x != 5 && !idle_reminder_ready(record) {
+            if cursor_x != 5 {
                 return Err(Gate::Waiting {
                     reason: "This Kimi terminal does not expose its busy input queue".into(),
                     dialog: None,
@@ -2630,6 +2637,20 @@ fn submit_core(
         cleanup();
         return Err(refused(typed, error));
     }
+    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        match acceptance::kimi_outbox_floor(&record) {
+            Some(floor) => Some(floor),
+            None => {
+                cleanup();
+                return Err(gated(typed, Gate::Waiting {
+                    reason: "Kimi's earlier native turn could not be confirmed".into(),
+                    dialog: None,
+                }));
+            }
+        }
+    } else {
+        None
+    };
     let submitted_at = now();
     if matches!(origin, Origin::Person | Origin::Answer) {
         recovery::cancel_for_input(&record).map_err(unknown)?;
@@ -2644,8 +2665,9 @@ fn submit_core(
     if agent == "claude" && request.only_when_idle {
         receipt["claude_outbox"] = json!(true);
     }
-    if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+    if let Some(floor) = kimi_turn_floor {
         receipt["kimi_outbox"] = json!(true);
+        receipt["kimi_turn_floor"] = json!(floor);
     }
     if pre_send_compaction.is_object() {
         receipt["pre_send_compaction"] = pre_send_compaction;

@@ -154,6 +154,19 @@ fn kimi(record: &Value) -> Option<Source> {
     source(&path, None)
 }
 
+// The native wire also contains prompts entered directly in the terminal.
+pub(super) fn kimi_outbox_floor(record: &Value) -> Option<u64> {
+    let wire = kimi(record)?;
+    let latest = wire.rows.iter().rev().find(|row|
+        row["type"] == "turn.prompt" && row["agentId"] == "main"
+            && row["origin"]["kind"] == "user")?;
+    let at = latest["time"].as_f64()? / 1000.0;
+    if !(at > 0.0 && at <= now()) || !wire.current() {
+        return None;
+    }
+    native_turn("kimi", latest)?.as_u64()
+}
+
 fn text<'a>(parts: &'a Value, kind: &str) -> Option<&'a str> {
     let parts = parts.as_array()?;
     let [part] = parts.as_slice() else {
