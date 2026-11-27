@@ -30,7 +30,7 @@ function observedSettings(row: Session, followed: Record<string, unknown> | unde
   const choice = Array.isArray(d?.model_options) ? d.model_options.slice(0, 256).find((entry) => record(entry).id === model) : undefined;
   const effortLabels = record(record(choice).effort_labels);
   const efforts = confirmed && modelOption ? modelOption.effort_options.map((value) => ({
-    value, label: providerLabel(effortLabels[value]) || value,
+    value, label: providerLabel(effortLabels[value]) || providerLabel(value),
   })) : [];
   const currentRevision = confirmed ? revision(native.revision) : "";
   const target: Target = { computer: row.computer, name: row.name, run_id: row.runId ?? "", conversation_id: row.conversationId ?? "" };
@@ -39,7 +39,7 @@ function observedSettings(row: Session, followed: Record<string, unknown> | unde
     && d.activity === "idle" && d.phase === "idle" && d.auth_required !== true;
   const context = record(record(d?.session_usage).context);
   return { target, sessionId: row.sessionId ?? "", scope, live, d, native, model, effort, currentRevision,
-    models: options.map(({ id, label }) => ({ value: id, label: providerLabel(label) || id })), efforts,
+    models: options.map(({ id, label }) => ({ value: id, label: providerLabel(label) || providerLabel(id) })), efforts,
     modelLabel: providerLabel(modelOption?.label) || providerLabel(model),
     effortLabel: efforts.find(({ value }) => value === effort)?.label || providerLabel(effort),
     mode: confirmed ? providerLabel(record(native.mode).label) || providerLabel(record(native.mode).id) : "",
@@ -89,7 +89,7 @@ export function AntigravitySettings(props: {
   };
   const choose = (kind: Choice["kind"], value: string) => {
     const s = state();
-    setSelection({ scope: s.scope, revision: s.currentRevision, kind, value });
+    setSelection(value === s[kind] ? undefined : { scope: s.scope, revision: s.currentRevision, kind, value });
   };
   async function apply() {
     if (!canApply()) return;
