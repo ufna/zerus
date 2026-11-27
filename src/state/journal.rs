@@ -1236,6 +1236,9 @@ pub(super) fn inspection_with(
         if record["agent"] == "codex" {
             output["codex_interrupted_outbox_supported"] = json!(true);
             output["codex_busy_outbox_supported"] = json!(true);
+            // A multi-task pane cannot prove which thread would receive Enter.
+            // Its existing exact-thread queued route remains available.
+            output["codex_manual_turn_send"] = json!(!codex_tasks::multiple(&record));
             output["codex_idle_outbox_supported"] = json!(true);
         }
         if record["agent"] == "claude" {
