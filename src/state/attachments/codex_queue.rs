@@ -1,5 +1,6 @@
 //! Public history of exact, positively accepted Codex queue offers.
 use super::*;
+use std::collections::HashSet;
 
 fn uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
@@ -107,32 +108,56 @@ fn mark_native_queued(record: &Value, rows: &mut [Value]) {
     if account.verify().is_err() {
         return;
     }
+    apply_native_queue_snapshot(rows, &clients);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn apply_native_queue_snapshot(
+    rows: &mut [Value],
+    clients: &std::collections::BTreeMap<String, String>,
+) {
+    let duplicates = duplicate_identities(rows, "native_queued_message_id");
     for row in rows {
-        let Some(client) = clients.get(string(row, "native_queued_message_id")) else {
+        let queue_id = string(row, "native_queued_message_id");
+        let Some(client) = clients.get(queue_id) else {
             continue;
         };
+        if duplicates.contains(queue_id) {
+            continue;
+        }
         if row
             .get("codex_client_id")
-            .is_none_or(|saved| saved == client.as_str())
+            .is_some_and(|saved| saved != client.as_str())
         {
-            row["codex_client_id"] = json!(client);
-            row["native_queue_state"] = json!("queued");
+            // The two proofs disagree. Keep the original acceptance visible
+            // without using either client to associate it with a native turn.
+            row.as_object_mut().unwrap().remove("codex_client_id");
+            continue;
         }
+        row["codex_client_id"] = json!(client);
+        row["native_queue_state"] = json!("queued");
     }
 }
 
+fn duplicate_identities(rows: &[Value], field: &str) -> HashSet<String> {
+    let mut seen = HashSet::new();
+    rows.iter()
+        .map(|row| string(row, field))
+        .filter(|id| uuid(id) && !seen.insert(*id))
+        .map(str::to_owned)
+        .collect()
+}
+
 pub(super) fn mark_native_consumed(rows: &mut [Value], bodies: &Value) {
-    let mut owners = std::collections::HashMap::new();
-    for row in rows.iter() {
-        if let Some(client) = row["codex_client_id"].as_str() {
-            *owners.entry(client.to_owned()).or_insert(0usize) += 1;
-        }
-    }
+    let duplicate_clients = duplicate_identities(rows, "codex_client_id");
+    let duplicate_offers = duplicate_identities(rows, "native_queued_message_id");
     for receipt in rows {
-        let Some(client) = receipt["codex_client_id"].as_str() else {
-            continue;
-        };
-        if owners.get(client) != Some(&1) {
+        let client = string(receipt, "codex_client_id");
+        if !uuid(client)
+            || duplicate_clients.contains(client)
+            || duplicate_offers.contains(string(receipt, "native_queued_message_id"))
+            || receipt.get("native_queue_state").is_some()
+        {
             continue;
         }
         let matched = bodies
@@ -145,11 +170,12 @@ pub(super) fn mark_native_consumed(rows: &mut [Value], bodies: &Value) {
                     && body["codex_client_id"] == client
                     && body["conversation_id"] == receipt["conversation_id"]
                     && string(body, "agent_id").is_empty()
+                    && body.get("origin").is_none()
                     && body.get("inherited_from").is_none()
             })
             .take(2)
             .count();
-        if matched == 1 && receipt.get("native_queue_state").is_none() {
+        if matched == 1 {
             receipt["native_queue_state"] = json!("consumed");
         }
     }
@@ -174,10 +200,10 @@ mod tests {
         assert!(row.get("codex_client_id").is_none());
         for (key, value) in [
             ("run_id", json!("other")),
-            ("conversation_id", json!(uuid::Uuid::new_v4())),
+            ("conversation_id", json!(uuid::Uuid::new_v4().to_string())),
             ("status", json!("in_progress")),
             ("native_queued_message_id", json!("")),
-            ("request_id", json!(uuid::Uuid::nil())),
+            ("request_id", json!(uuid::Uuid::nil().to_string())),
             ("codex_outbox", json!(false)),
         ] {
             let mut invalid = original.clone();
@@ -193,15 +219,33 @@ mod tests {
         let mut rows = vec![row];
         mark_native_consumed(&mut rows, &json!([body]));
         assert!(rows[0].get("native_queue_state").is_none());
+        let by_queue = [(queue.clone(), client.clone())].into_iter().collect();
+        let mut pending = rows.clone();
+        apply_native_queue_snapshot(&mut pending, &by_queue);
+        assert_eq!(pending[0]["codex_client_id"], client);
+        assert_eq!(pending[0]["native_queue_state"], "queued");
+        mark_native_consumed(&mut pending, &json!([body]));
+        assert_eq!(pending[0]["native_queue_state"], "queued");
         rows[0]["codex_client_id"] = json!(client);
         mark_native_consumed(&mut rows, &json!([body, body]));
         assert!(rows[0].get("native_queue_state").is_none());
-        rows.push(rows[0].clone());
+        let mut other = original;
+        other["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+        rows.push(codex_queue_receipt(&record, "", &other).unwrap());
+        apply_native_queue_snapshot(&mut rows, &by_queue);
         mark_native_consumed(&mut rows, &json!([body]));
         assert!(rows
             .iter()
             .all(|row| row.get("native_queue_state").is_none()));
         rows.pop();
+        let differing_native_client = [(queue, uuid::Uuid::new_v4().to_string())]
+            .into_iter()
+            .collect();
+        let mut disagreement = rows.clone();
+        apply_native_queue_snapshot(&mut disagreement, &differing_native_client);
+        mark_native_consumed(&mut disagreement, &json!([body]));
+        assert!(disagreement[0].get("native_queue_state").is_none());
+        assert!(disagreement[0].get("codex_client_id").is_none());
         mark_native_consumed(&mut rows, &json!([body]));
         assert_eq!(rows[0]["native_queue_state"], "consumed");
     }

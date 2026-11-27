@@ -29,7 +29,7 @@ describe("Codex queue acceptance in Activity", () => {
     expect(p.build([], summary([receipt]), [])).toMatchObject(accepted);
     p.reset();
     expect(p.build([], summary([receipt]), [])).toMatchObject(accepted);
-    expect(p.build([], summary([{ ...receipt, native_queue_state: "queued" }]), [])).toMatchObject([{ id, label: "Queued in Codex" }]);
+    expect(p.build([], summary([{ ...receipt, codex_client_id: client, native_queue_state: "queued" }]), [])).toMatchObject([{ id, label: "Queued in Codex" }]);
     expect(p.build([], summary([{ ...receipt, native_queue_state: "consumed" }]), [])).toMatchObject([{ id, label: "Received by Codex" }]);
   });
 
@@ -38,6 +38,65 @@ describe("Codex queue acceptance in Activity", () => {
     const nativeEcho = { type: "UserPromptSubmit", seq: 3, at: 6, detail: text };
     const rows = buildTranscript([nativeEcho], summary([receipt, repeated]));
     expect(rows).toMatchObject([{ id, kind: "receipt", body: text }, { id: `local-${second}`, kind: "receipt", body: text }, { kind: "user", body: text }]);
+  });
+
+  it("keeps the exact still-pending row at the live end, then preserves its native position after consumption and restart", () => {
+    const equalClient = "00000005-2222-4444-8888-000000000005";
+    const equalFile = { ...file, request_id: second, name: "equal.md" };
+    const pending = { ...receipt, codex_client_id: client, native_queue_state: "queued" };
+    const consumed = { ...receipt, request_id: second, message_id: second, native_queued_message_id: second,
+      codex_client_id: equalClient, at: 6, native_queue_state: "consumed", attachments: [equalFile] };
+    const body = (message_id: string, codex_client_id: string) => ({ ...scope, type: "UserMessageBody",
+      source: "codex_transcript", message_id, codex_client_id, detail: text });
+    const echo = (message_id: string, seq: number) => ({ ...scope, type: "UserPromptSubmit", source: "codex_transcript",
+      message_id, seq, at: seq, detail: text });
+    const unrelated = Array.from({ length: 16 }, (_, i) => ({ ...echo(`unrelated-${i}`, 10 + 2 * i), detail: `Unrelated ${i + 1}` }));
+    const otherEcho = echo("other-original", 9);
+    const pendingSummary = { ...summary([pending, consumed]), user_message_bodies: [body("other-original", equalClient)] };
+    const displayFile = ({ name, request_id, index, reference }: typeof file) => ({ name, request_id, index, caption: `${reference} ${name}` });
+    const p = createTranscriptProjection();
+    const checkPending = (events: ActivityEvent[], snapshot: Record<string, unknown>) => {
+      const held = p.build(events, snapshot);
+      expect(held).toHaveLength(18);
+      expect(held[0]).toMatchObject({ id: `local-${second}`, body: text, attachments: [displayFile(equalFile)] });
+      expect(held.at(-1)).toMatchObject({ id, kind: "receipt", label: "Queued in Codex", body: text, attachments: [displayFile(file)] });
+      expect(held.at(-2)).toMatchObject({ body: "Unrelated 16" });
+    };
+    checkPending([otherEcho, ...unrelated], pendingSummary);
+
+    const history = [otherEcho, ...unrelated.slice(0, 8), echo("pending-original", 25), ...unrelated.slice(8)];
+    const bodies = [...pendingSummary.user_message_bodies, body("pending-original", client)];
+    checkPending(history, { ...summary([pending, pending, consumed]), user_message_bodies: bodies });
+    const consumedSummary = { ...summary([{ ...pending, native_queue_state: "consumed" }, consumed]),
+      user_message_bodies: bodies };
+    const checkHistory = () => {
+      const settled = p.build(history, consumedSummary);
+      expect(settled).toHaveLength(18);
+      expect(settled.slice(8, 11)).toMatchObject([{ body: "Unrelated 8" },
+        { id, kind: "user", body: text, receipt: "Sent", attachments: [displayFile(file)] }, { body: "Unrelated 9" }]);
+      expect(settled.filter(row => row.id === id)).toHaveLength(1);
+      expect(settled.at(-1)).toMatchObject({ body: "Unrelated 16" });
+    };
+    checkHistory();
+    p.reset();
+    checkHistory();
+  });
+
+  it("keeps local-only, unproved and ambiguously owned receipts in their historical order", () => {
+    const later = { type: "UserPromptSubmit", seq: 3, at: 8, detail: "Later" };
+    const queuedMark = { ...receipt, native_queue_state: "queued" };
+    const secondOwner = { ...queuedMark, request_id: second, message_id: second, codex_client_id: second, attachments: [] };
+    for (const rows of [
+      buildTranscript([later], scope, [local]),
+      buildTranscript([later], summary([queuedMark])),
+      buildTranscript([later], summary([{ ...queuedMark, codex_client_id: client }, secondOwner])),
+      buildTranscript([later], summary([{ ...queuedMark, codex_client_id: client },
+        { ...secondOwner, native_queued_message_id: second, codex_client_id: client }])),
+    ]) {
+      expect(rows[0]).toMatchObject({ id, kind: "receipt", label: "Accepted into the Codex queue" });
+      expect(rows.at(-1)).toMatchObject({ body: "Later" });
+      expect(rows.some(row => row.kind === "receipt" && row.label === "Queued in Codex")).toBe(false);
+    }
   });
 
   it("transfers a receipt and files to one exactly bound turn with the same display key", () => {
