@@ -3106,16 +3106,6 @@ impl Composers {
     /// `read` is the reading the answer came from (`inspected`): the
     /// compaction after a start and the send at the end name its identity.
     fn step(&self, key: &str, start: bool, revision: u64, step: Step, read: Option<&Arc<Value>>) {
-        if start {
-            let ready = match &step {
-                Step::Send { run_id, .. } => Some(run_id.as_str()),
-                Step::Compact(..) => read.map(|read| text(read, "run_id")),
-                _ => None,
-            };
-            if ready.is_some_and(|run| self.listing_behind(key, revision, run)) {
-                return;
-            }
-        }
         match step {
             Step::Idle => {}
             Step::Cancelled(text) => self.cancel(key, start, revision, &text),
@@ -3139,24 +3129,36 @@ impl Composers {
         }
     }
 
-    /// zerus-77ljy: a started run can read ready (an inspect, or the
-    /// followed details) before the listing replaces the stopped row. Judged
-    /// against that stale row, which still asks to resume, the waiting
-    /// message would end with CHANGED. Until the listed row shows the ready
-    /// run the start keeps waiting: its next reading or the poll decides
-    /// again, within its limit. A missing row is not waited for, and the
-    /// send's own checks (`still_valid`) stay as they are.
-    fn listing_behind(&self, key: &str, revision: u64, run: &str) -> bool {
-        let hub = self.lock();
-        let session = match (&hub.open, hub.open_key.as_deref()) {
-            (Some(open), Some(open_key)) if open_key == key => open.clone(),
-            _ => match pending_of(&hub, key, revision) {
-                Some(pending) => pending.session.clone(),
-                None => return false,
-            },
+    /// The readiness read must still agree with the listing and, for an
+    /// open composer, still be its current Activity state. A poll can start
+    /// while the composer is closed and finish after it reopens on the old
+    /// state. Keep the continuation until a current read can advance it.
+    fn start_read_is_current(
+        &self,
+        hub: &Hub,
+        key: &str,
+        revision: u64,
+        run: &str,
+        read: Option<&Arc<Value>>,
+    ) -> bool {
+        let Some(pending) = pending_of(hub, key, revision) else {
+            return false;
         };
-        (self.0.deps.rows)(&session.computer, &session.key, &session.name)
-            .is_some_and(|(row, _)| row.run_id.as_deref().unwrap_or("") != run)
+        let open = hub.open.as_ref().filter(|_| hub.open_key.as_deref() == Some(key));
+        let session = open.unwrap_or(&pending.session);
+        if (self.0.deps.rows)(&session.computer, &session.key, &session.name)
+            .is_some_and(|(row, online)| {
+                !online
+                    || row.run_id.as_deref() != Some(run)
+                    || row.state != "running"
+                    || !zerus_client_core::view::process_may_be_live(&row.process_state)
+            })
+        {
+            return false;
+        }
+        open.is_none() || read.is_some_and(|read| {
+            Self::open_details(hub, key).is_some_and(|current| Arc::ptr_eq(&current, read))
+        })
     }
 
     /// The start or compaction call (Qt's `resumeSession`,
@@ -3289,6 +3291,9 @@ impl Composers {
         read: &Arc<Value>,
     ) {
         let mut hub = self.lock();
+        if !self.start_read_is_current(&hub, key, revision, text(read, "run_id"), Some(read)) {
+            return;
+        }
         let Some(mut pending) = take_pending(&mut hub, key, true, revision) else {
             return;
         };
@@ -3325,6 +3330,9 @@ impl Composers {
         read: Option<&Arc<Value>>,
     ) {
         let mut hub = self.lock();
+        if start && !self.start_read_is_current(&hub, key, revision, &run, read) {
+            return;
+        }
         let Some(pending) = take_pending(&mut hub, key, start, revision) else {
             return;
         };
@@ -9274,6 +9282,65 @@ mod continuations {
         assert_eq!(sends[0].0.run_id, "run-2");
         let view = c.current().unwrap();
         assert!(view.text.is_empty() && view.status != CHANGED);
+    }
+
+    #[test]
+    fn reopened_composer_waits_for_current_activity_before_consuming_resume() {
+        let root = dir("resume-activity-behind");
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        let mut old = ready();
+        old["runtime_state"] = json!("stopped");
+        old["process_state"] = json!("exited");
+        let view = opened(&c, old);
+        let draft = "keep until current Activity";
+        let SendReply::Start { token, .. } =
+            c.send_message(view.handle, 1, view.text_epoch, draft.into(), 0, 0)
+        else {
+            panic!("expected recovery chooser");
+        };
+        c.answer(token, Answer::Start { choice: StartChoice::Resume });
+        until(&c, |_| {
+            c.lock().start.as_ref().is_some_and(|(pending, _)| pending.call == Call::Settled)
+        });
+
+        let mut after = ready();
+        after["run_id"] = json!("run-2");
+        let outside_read = Arc::new(after.clone());
+        {
+            let mut row = lock(&fake.row);
+            row.run_id = Some("run-2".into());
+            row.process_state = "running".into();
+            row.state = "running".into();
+        }
+        // The answer of a continuation's background read overlaps reopening
+        // the composer. The Activity read still represents the stopped run.
+        c.continue_with(KEY, &outside_read);
+        let waiting = c.current().unwrap();
+        assert_eq!(waiting.waiting.as_deref(), Some(WAITING_START));
+        assert_eq!(waiting.text, draft);
+        assert!(sends(&fake).is_empty());
+
+        // A ready Activity frame may also arrive while the catalog shows the
+        // correct run ID but has not acknowledged its running state yet.
+        lock(&fake.row).state = "stopped".into();
+        c.observe(&state(after.clone()));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
+        lock(&fake.row).state = "running".into();
+
+        // Even the right run's current native question must hold the send.
+        let mut input = after.clone();
+        input["pending_questions"] = json!([{"source":"codex_goal_resume","optional":false}]);
+        c.observe(&state(input));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
+        c.observe(&state(after.clone()));
+        c.observe(&state(after));
+        until(&c, |view| view.waiting.is_none() && !view.sending);
+        assert_eq!(sends(&fake).len(), 1);
+        assert_eq!(sends(&fake)[0].0.run_id, "run-2");
+        assert!(c.current().unwrap().text.is_empty());
     }
 
     /// zerus-dhnd: Start fresh opens Codex without a conversation, and Codex
