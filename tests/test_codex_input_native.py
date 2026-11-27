@@ -247,7 +247,10 @@ class NativeCodexInput(unittest.TestCase):
     def test_compacting_native_queue_admits_equal_requests_and_file_without_steering(self):
         self.busy_native_queue("compacting")
 
-    def busy_native_queue(self, phase):
+    def test_busy_native_queue_stays_on_the_original_main_in_a_multi_task_session(self):
+        self.busy_native_queue("working", separate_task=True)
+
+    def busy_native_queue(self, phase, separate_task=False):
         import base64
         import hashlib
         # Hold this real native turn while Zerus offers the later inputs.
@@ -266,6 +269,14 @@ class NativeCodexInput(unittest.TestCase):
         if phase == "compacting":
             self.wait_for(lambda: "Compacting context" in self.screen())
         self.record.update(phase=phase, activity='busy')
+        sibling = '11111111-1111-4111-8111-111111111111'
+        if separate_task:
+            parent = subprocess.check_output(['ps', '-p', str(self.record['pid']), '-o', 'ppid='], text=True).strip()
+            start = subprocess.check_output(['ps', '-p', parent, '-o', 'lstart='],
+                                            env=dict(self.env, LC_ALL='C', TZ='UTC'), text=True).strip()
+            self.record.update(run_identity_version=1, startup_kind='resume', supervisor=dict(pid=int(parent), start=start))
+            self.record['codex_native_tasks'] = dict(parent=self.conversation_id, run=self.run_id,
+                                                      threads={sibling: True}, pending={})
         self.write_record()
         def invoke(args, request):
             return subprocess.run([str(test_input.HGS), *args], env=self.env, text=True,
@@ -286,6 +297,21 @@ class NativeCodexInput(unittest.TestCase):
                 if result["status"] != "waiting_for_idle" or time.monotonic() > until:
                     return result
                 time.sleep(.1)  # New private receipt indexes are initially unknown.
+        if separate_task:
+            snapshot = invoke(['inspect', self.name], {})
+            self.assertEqual(snapshot.returncode, 0, snapshot.stderr)
+            details = json.loads(snapshot.stdout)
+            self.assertIs(details['codex_busy_outbox_supported'], True)
+            self.assertEqual((details['phase'], details['run_id'], details['conversation_id']),
+                             (phase, self.run_id, self.conversation_id))
+            other = self.payload(text='Do not send to the sibling', expected_conversation_id=sibling, only_when_idle=True)
+            result = invoke(['send', self.name, '--codex-queue', '--json'], other)
+            self.assertTrue(result.returncode or json.loads(result.stdout)['status'] == 'not_offered')
+            self.record['codex_native_tasks']['pending'] = {'creating-a-thread': True}
+            self.write_record()
+            self.assertEqual(send(a)['status'], 'waiting_for_idle')
+            self.record['codex_native_tasks']['pending'] = {}
+            self.write_record()
         receipts = [admitted(r) for r in (a, b, file)]
         for receipt in receipts:
             self.assertEqual((receipt['status'], receipt['transport']), ('submitted', 'codex_queue'), receipt)
