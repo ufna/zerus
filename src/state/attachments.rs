@@ -534,7 +534,13 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         println!("{output}");
         return Ok(0);
     }
-    let receipt = receipt(&directory(&record).join(format!("{id}.json")))?;
+    let path = directory(&record).join(format!("{id}.json"));
+    let receipt = if record["agent"] == "codex" {
+        receipt_index::read_codex_display_original(&path)
+            .map_err(|reason| format!("Attachment receipt is unavailable ({reason})"))?
+    } else {
+        receipt(&path)?
+    };
     if !belongs(&receipt, &record, flag("--agent")) {
         return Err("This attachment belongs to another conversation".into());
     }

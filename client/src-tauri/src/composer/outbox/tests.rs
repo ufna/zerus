@@ -32,6 +32,19 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     value
 }
 
+fn native_queue_details(target: &SessionRef, agent: &str) -> Value {
+    let mut value = details(target, agent, true, Some(true));
+    if agent == "opencode" {
+        value["opencode_busy_outbox_supported"] = json!(true);
+    } else {
+        value["dsh_busy_outbox_supported"] = json!(true);
+        value["dsh_busy_outbox_ready"] = json!(true);
+    }
+    value["input_queue"] = json!({"id":"earlier-native"});
+    value["pending_questions"] = json!([]);
+    value
+}
+
 fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> ComposerView {
     let mut row = lock(&fake.row);
     row.name.clone_from(&target.name);
@@ -123,7 +136,7 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
         *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
             detail: "The original acknowledgement was lost".into(),
         });
-        let before = c.current().unwrap();
+        let before = until(&c, |view| view.offers_native_queue && view.can_send);
         assert!(matches!(c.send_message(before.handle, before.rev + 1, before.text_epoch,
             "Offer now".into(), 0, 0), SendReply::Accepted { waiting: false, .. }));
         let held = until(&c, |view| view.waiting_in_zerus[0].state == State::Unknown);
@@ -136,6 +149,97 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].2, request);
         assert!(matches!(&calls[0].1, Action::SendWhenNativeAccepts { text, .. } if text == "Offer now"));
+    }
+}
+
+#[test]
+fn ordinary_send_starts_the_exact_guarded_offer_before_the_busy_native_turn_ends() {
+    for agent in ["opencode", "dsh"] {
+        let root = dir("native-queue-ordinary-send");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let target = target_session(agent);
+        present(&c, &fake, &target, agent);
+        c.observe(&state(native_queue_details(&target, agent)));
+        let view = until(&c, |view| view.offers_native_queue);
+        assert!(view.offers_outbox);
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1",
+                "conversation_id":"conv-1","queued":true}),
+            cleanup: None,
+        });
+        let SendReply::Accepted { view, waiting: false } = c.send_message(
+            view.handle, view.rev + 1, view.text_epoch, "Native next turn".into(), 0, 0,
+        ) else {
+            panic!("ordinary Send waited for idle despite exact native queue admission");
+        };
+        let original = &view.waiting_in_zerus[0];
+        assert_eq!(original.state, State::Reserved);
+        until(&c, |view| view.waiting_in_zerus.is_empty());
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, original.request_id);
+        assert_eq!(calls[0].0.name, target.name);
+        assert!(matches!(&calls[0].1, Action::SendToNativeQueue { text, .. } if text == "Native next turn"));
+    }
+}
+
+#[test]
+fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
+    for agent in ["opencode", "dsh"] {
+        let root = dir("native-queue-saved-fifo");
+        let store = drafts(&root);
+        let (first, fake) = send_hub_on(&store);
+        let target = target_session(agent);
+        let view = present(&first, &fake, &target, agent);
+        let mut legacy = details(&target, agent, true, Some(true));
+        legacy["attachments_supported"] = json!(true);
+        first.observe(&state(legacy));
+        until(&first, |view| view.attachments_available);
+        let path = root.join("input.txt");
+        std::fs::write(&path, b"original file before restart").unwrap();
+        first.attach_paths(view.handle, vec![path.clone()], Default::default());
+        let attached = until(&first, |view| view.attachments.len() == 1);
+        let one = enqueue(&first, &attached.text).waiting_in_zerus[0].request_id.clone();
+        let view = enqueue(&first, "two");
+        let two = view.waiting_in_zerus[1].request_id.clone();
+        first.edit(view.handle, view.rev + 1, view.text_epoch, "separate draft".into(), 0, 0);
+        first.flush();
+        store.flush();
+        drop(first);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        present(&c, &fake, &target, agent);
+        until(&c, |view| view.waiting_in_zerus.len() == 2);
+        let ready = native_queue_details(&target, agent);
+        for (key, value) in [
+            ("pending_questions", json!([{"question_id":"real-question"}])),
+            ("pending_questions_complete", json!(false)),
+            ("conversation_id", json!("foreign-conversation")),
+            ("run_id", json!("foreign-run")),
+        ] {
+            let mut blocked = ready.clone();
+            blocked[key] = value;
+            settle_next(&c, &fake, &store, blocked);
+            assert!(lock(&fake.calls).is_empty(), "{agent} {key}");
+        }
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1",
+                "conversation_id":"conv-1","queued":true}),
+            cleanup: None,
+        });
+        settle_next(&c, &fake, &store, ready);
+        assert_eq!(until(&c, |view| view.waiting_in_zerus.is_empty()).text, "separate draft");
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.iter().map(|call| &call.2).collect::<Vec<_>>(), [&one, &two]);
+        assert!(matches!(&calls[0].1, Action::SendToNativeQueue { attachments, .. }
+            if attachments.len() == 1 && attachments[0].bytes.as_ref() == b"original file before restart"));
+        assert!(matches!(&calls[1].1, Action::SendToNativeQueue { text, .. } if text == "two"));
     }
 }
 
@@ -529,6 +633,59 @@ fn watch_reconnecting() -> zerus_client_core::Batch {
         "ready": false, "pending": true, "code": "watch_reconnecting"
     });
     batch
+}
+
+#[test]
+fn first_native_send_after_reconnect_needs_the_current_unbound_run() {
+    let root = dir("first-native-after-reconnect");
+    let (c, fake) = send_hub_on(&drafts(&root));
+    let target = target_session("codex");
+    let view = present(&c, &fake, &target, "codex");
+    {
+        let mut row = lock(&fake.row);
+        row.conversation_id = None;
+        row.session_id = Some("test-session".into());
+        row.account_binding_reported = true;
+        row.account_id = "fixture-account".into();
+        row.phase = Some("unknown".into());
+    }
+    c.observe(&watch_reconnecting());
+    let mut first = details(&target, "codex", false, None);
+    first["conversation_id"] = Value::Null;
+    first["session_id"] = json!("test-session");
+    first["account_id"] = json!("fixture-account");
+    first["phase"] = json!("unknown");
+    first["activity"] = json!("unknown");
+    first["first_message_can_send"] = json!(true);
+    for (field, value) in [("run_id", json!("older-run")), ("name", json!("codex/another")),
+        ("session_id", json!("another-session")), ("account_id", json!("other-account")),
+        ("agent", json!("kimi")), ("first_message_can_send", json!(false)),
+        ("conversation_id", json!("previous-conversation"))] {
+        let mut wrong = first.clone();
+        wrong[field] = value;
+        c.observe(&state(wrong));
+        assert!(c.current().unwrap().ordinary_send_block.is_some(), "{field}");
+        assert!(lock(&fake.calls).is_empty());
+    }
+    c.observe(&state(first.clone()));
+    assert!(c.current().unwrap().ordinary_send_block.is_none());
+
+    // A row replacement after a valid read cannot reuse the old first prompt.
+    lock(&fake.row).run_id = Some("replacement-run".into());
+    assert!(c.current().unwrap().ordinary_send_block.is_some());
+    lock(&fake.row).run_id = Some("run-1".into());
+    c.observe(&watch_reconnecting());
+    assert!(c.current().unwrap().ordinary_send_block.is_some());
+    c.observe(&state(first));
+    let current = c.current().unwrap();
+    assert_eq!(current.ordinary_send_block, None);
+    assert_eq!(c.send_message(view.handle, current.rev + 1, current.text_epoch,
+        "first message".into(), 0, 0), SendReply::Sending);
+    until(&c, |v| !v.sending);
+    let calls = lock(&fake.calls);
+    assert!(matches!(calls.as_slice(), [(target, Action::Send { text, .. }, _)]
+        if target.run_id == "run-1" && target.conversation_id.is_empty() && text == "first message"));
+    assert!(c.current().unwrap().waiting_in_zerus.is_empty());
 }
 
 #[test]

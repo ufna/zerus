@@ -1886,8 +1886,16 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         );
     }
     // Queue-only input must never fall through to a provider that would send normally.
-    if command == "send" && args.iter().any(|arg| matches!(arg.as_str(), "--codex-queue" | "--when-native-accepts")) {
-        return input::dispatch(args);
+    if command == "send" {
+        let queue = args.iter().find(|arg| matches!(arg.as_str(), "--codex-queue" | "--when-native-accepts" | "--opencode-queue" | "--deepseek-queue"));
+        if let Some(queue) = queue {
+            return match (args.first(), queue.as_str()) {
+                (_, "--codex-queue" | "--when-native-accepts") => input::dispatch(args),
+                (Some(name), "--opencode-queue") if name.starts_with("opencode/") => opencode::send_when_idle(args),
+                (Some(name), "--deepseek-queue") if name.starts_with("dsh/") => dsh::send_when_idle(args),
+                _ => Err("Native queue admission requires the exact provider session name".into()),
+            };
+        }
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {

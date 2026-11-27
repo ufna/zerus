@@ -158,7 +158,7 @@ export function statusLine(v: ComposerView | undefined, own: string | undefined,
   if (definiteDraftStatus) return { text: definiteDraftStatus, error: v.previous_message_pending !== false, multiline: true };
   if (!below) return { text: coreText(v.status), error: v.status_error };
   if (tooLong) return { text: tr(TOO_LONG), error: true };
-  if (hasDraft && v.previous_message_pending === true && !v.uncertain && !v.delivery_pending && v.available && !v.session_status) {
+  if (hasDraft && v.previous_message_pending === true && !v.offers_native_queue && !v.uncertain && !v.delivery_pending && v.available && !v.session_status) {
     return { text: tr(EARLIER_INPUT_PENDING), error: false, multiline: true };
   }
   // Rust's length check may still see older text: the next item then.

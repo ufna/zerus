@@ -29,6 +29,72 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
         return self.wait(binding['name'], lambda row: any(
             e.get('request_id') == request['request_id'] for e in row['events']))
 
+    def test_closed_offer_emits_exactly_one_ambiguous_selector_refusal(self):
+        name = 'opencode/fixture/twins'
+        run, conversation = '22222222-2222-4222-8222-222222222222', 'ses_fixture123'
+        records = self.state / 'opencode/sessions'
+        records.mkdir(parents=True, exist_ok=True)
+        for session_id in ('33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444'):
+            record = dict(name=name, session_id=session_id, layout='id', journal_name=session_id,
+                          agent='opencode', backend='opencode', run_id=run, conversation_id=conversation,
+                          cwd=str(self.workspace), state='running', phase='working')
+            (records / (session_id + '.json')).write_text(json.dumps(record))
+        request = self.attempt(dict(run_id=run, conversation_id=conversation), 'Do not offer an ambiguous input')
+        refused = self.hgs(['delivery', 'outbox-offer', name, '--opencode-queue', '--json'],
+                           request, success=False)
+        self.assertEqual(refused.returncode, 5, refused.stderr)
+        [response] = refused.stdout.splitlines()
+        self.assertIsInstance(json.loads(response), dict)
+        self.assertFalse(self.receipt_path(request).exists())
+
+    def test_busy_desktop_offer_appends_exact_files_and_recovers_lost_ack(self):
+        target, other = self.start(), self.create()
+        conversation = target['conversation_id']
+
+        def queued(request, success=True):
+            return self.hgs(['delivery', 'outbox-offer', target['name'], '--session-id', target['session_id'],
+                             '--opencode-queue', '--json'], request, success=success)
+
+        running = self.hgs(['send', target['name'], '--json'], self.payload(target, text='HOLD_NATIVE'))
+        self.assertTrue(self.model.holding.wait(15))
+        busy = self.wait(target['name'], lambda row: row['phase'] == 'working')
+        self.assertTrue(busy['opencode_busy_outbox_supported'])
+        earlier = self.hgs(['send', target['name'], '--json'], self.payload(target, text='Earlier native entry'))
+        data = 'Zml4dHVyZSBmaWxlIGJvZHk='
+        first = self.attempt(target, 'Read [File #1]', attachments=[{
+            'name': 'fixture.txt', 'mime': 'text/plain', 'reference': '[File #1]', 'data_base64': data,
+        }])
+        second = self.attempt(target, 'Second quietly queued desktop input')
+        queued(dict(second, expected_conversation_id=other['conversation_id']), success=False)
+        self.hgs(['delivery', 'outbox-offer', target['name'], '--session-id', other['session_id'],
+                  '--opencode-queue', '--json'], second, success=False)
+        self.hgs(['__state', 'delivery', 'outbox-offer', target['name'], '--opencode-queue', '--json'],
+                 second, success=False)
+        with self.prompt_proxy(target, 'unbound') as offers:
+            queued(first, success=False)
+            self.status(target, first, success=False)
+            self.assertEqual(len(offers), 1)
+            native_first = offers[0][0]['id']
+        recovered = self.status(target, first)
+        self.assertEqual((recovered['status'], recovered['native_message_id']), ('submitted', native_first))
+        self.assertEqual(queued(first)['native_message_id'], native_first)
+        later = queued(second)
+        self.assertEqual((later['status'], later['queued']), ('submitted', True))
+        ids = [earlier['native_message_id'], native_first, later['native_message_id']]
+        self.assertEqual([item['id'] for item in self.inbox(conversation)], ids)
+        self.assertEqual(self.user_messages(conversation), [(running['native_message_id'], 'HOLD_NATIVE')])
+        self.assertEqual(self.user_messages(other['conversation_id']), [])
+        self.assertFalse(self.model.release.is_set())
+        self.model.release.set()
+        self.wait(target['name'], lambda row: row['phase'] == 'idle'
+                  and any(event.get('message_id') == ids[-1] for event in row['events']))
+        self.assertEqual([item[0] for item in reversed(self.user_messages(conversation))],
+                         [running['native_message_id'], *ids])
+        status, message = self.api('GET', f'/api/session/{conversation}/message/{native_first}')
+        self.assertEqual(status, 200)
+        self.assertEqual(message['data']['files'], [{'data': data, 'mime': 'text/plain',
+                         'source': {'type': 'inline'}, 'name': 'fixture.txt'}])
+
     def test_busy_admission_preserves_native_queue_and_exact_attachment_history(self):
         target, peer = self.start(), self.create()
         conversation = target['conversation_id']
@@ -182,8 +248,10 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
         with self.prompt_proxy(target, 'steer_only') as offered:
             details = self.hgs(['inspect', target['name']])
             self.assertFalse(details.get('guarded_idle_send'))
+            self.assertFalse(details.get('opencode_busy_outbox_supported'))
             self.assertFalse(details['attachments_supported'])
             self.guarded(target, request, success=False)
+            self.hgs(['delivery', 'outbox-offer', target['name'], '--opencode-queue', '--json'], request, success=False)
             self.assertEqual(offered, [])
         self.assertFalse(self.receipt_path(request).exists())
         self.assertEqual(self.user_messages(target['conversation_id']), [])

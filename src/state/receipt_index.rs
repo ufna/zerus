@@ -358,6 +358,24 @@ impl PageFailure {
 pub(super) struct Page {
     pub(super) locators: Vec<Locator>,
     pub(super) metadata: Value,
+    position: Cursor,
+    cursor_secret: String,
+}
+
+impl Page {
+    /// End a projected page early without changing its authenticator, scope or original high-water.
+    pub(super) fn resume_after(&mut self, index: usize) -> Result<()> {
+        let last = self
+            .locators
+            .get(index)
+            .ok_or("Invalid receipt page boundary")?;
+        self.position.at = last.at;
+        self.position.id.clone_from(&last.id);
+        let token = encode_cursor(&self.cursor_secret, &self.position).map_err(|e| e.message())?;
+        self.metadata["has_more"] = json!(true);
+        self.metadata["next_cursor"] = json!(token);
+        Ok(())
+    }
 }
 
 pub(super) struct Catalog {
@@ -1000,6 +1018,8 @@ impl Catalog {
         Ok(Page {
             locators,
             metadata: json!({"schema":1,"state":if ready && errors==0 {"indexed"}else if errors>0 {"partial"}else{"building"},"coverage":"indexed_snapshot","absence_confirmed":false,"migration_complete":ready,"index_protocol_verified":protocol,"catalog_complete_at_snapshot":position.complete,"restart_required":restart,"indexed":indexed,"unattributed_errors":errors,"examined":scanned,"snapshot":position.snapshot,"has_more":more,"next_cursor":next}),
+            position,
+            cursor_secret: secret,
         })
     }
     pub(super) fn original(&self, locator: &Locator) -> std::result::Result<Value, &'static str> {
@@ -1021,7 +1041,12 @@ impl Catalog {
             return Err("corrupt_index");
         }
         let filename = format!("{}.json", locator.id);
-        let value = read_original(&self.state.join(locator.source.directory()).join(&filename))?;
+        let path = self.state.join(locator.source.directory()).join(&filename);
+        let value = if queue_display {
+            read_indexable_original(&path, locator.source)
+        } else {
+            read_original(&path)
+        }?;
         let binding = Binding::parse(locator.source, &value, &filename).map_err(|_| "corrupt")?;
         if binding.fingerprint != locator.fingerprint {
             let target = &value["graph_target"];
@@ -1638,6 +1663,18 @@ pub(super) fn changed(
 }
 
 fn read_original(path: &Path) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, false)
+}
+
+pub(super) fn read_codex_display_original(path: &Path) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, true)
+}
+
+fn read_indexable_original(path: &Path, source: Source) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, source == Source::Terminal)
+}
+
+fn read_scoped_original(path: &Path, queue_display: bool) -> std::result::Result<Value, &'static str> {
     let mut options = OpenOptions::new();
     options.read(true);
     crate::platform::refuse_link(&mut options);
@@ -1657,13 +1694,34 @@ fn read_original(path: &Path) -> std::result::Result<Value, &'static str> {
         return Err("unreadable");
     }
     let mut bytes = Vec::new();
-    file.take(ORIGINAL_BYTES + 1)
+    // Queue originals contain both the person's 64 KiB text and the native
+    // submission with file references. JSON escaping can double both copies.
+    let limit = if queue_display {
+        384 * 1024
+    } else {
+        ORIGINAL_BYTES
+    };
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "unreadable")?;
-    if bytes.len() as u64 > ORIGINAL_BYTES {
+    if bytes.len() as u64 > limit {
         return Err("oversized");
     }
-    serde_json::from_slice(&bytes).map_err(|_| "corrupt")
+    if bytes.len() as u64 <= ORIGINAL_BYTES {
+        return serde_json::from_slice(&bytes).map_err(|_| "corrupt");
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "oversized")?;
+    if value["status"] == "submitted"
+        && value["transport"] == "codex_queue"
+        && value["codex_outbox"] == true
+        && value["text"].as_str().is_some_and(|text| text.len() <= 64 * 1024)
+        && value["submitted_text"].as_str().is_some_and(|text| text.len() <= 96 * 1024)
+        && value["attachments"].as_array().is_some_and(|files| files.len() <= 8)
+    {
+        Ok(value)
+    } else {
+        Err("oversized")
+    }
 }
 
 /// A receipt original's content stamp. A missing file still yields a locator

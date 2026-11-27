@@ -141,12 +141,13 @@ fn submitted(query: &Query, name: &str, receipt: &Value) -> Result<Value> {
         json!({"schema":1,"status":"submitted","proof":RECEIPT_PROOF,"transport":"native_dsh",
         "request_id":query.request_id,"name":name,"run_id":query.expected_run_id,
         "conversation_id":query.expected_conversation_id,"input_sha256":query.input_sha256,
-        "native_message_id":message,"submitted_at":receipt["submitted_at"]}),
+        "native_message_id":message,"submitted_at":receipt["submitted_at"],
+        "queued":receipt["dsh_outbox"]["queued"] == true}),
     )
 }
 
 /// Never calls a send route. A pending marker only settles on the original
-/// generation's durable message, from the same native inbox splice and request.
+/// generation's durable message or queue entry, from the original native splice.
 fn settle(
     state: &Path,
     name: &str,
@@ -155,6 +156,7 @@ fn settle(
     mut receipt: Value,
 ) -> Result<Value> {
     let marker = &receipt["dsh_outbox"];
+    let native_queue = marker["native_queue"] == true;
     if receipt["status"] != "pending"
         || string(marker, "generation").is_empty()
         || !sha(string(marker, "content_digest"))
@@ -166,7 +168,7 @@ fn settle(
         "outbox-proof",
         json!({
             "sessionId":query.expected_conversation_id,"requestId":query.request_id,
-            "generation":marker["generation"],"waitMs":250,
+            "generation":marker["generation"],"waitMs":250,"queue":native_queue,
         }),
         PROOF_READ,
     )
@@ -180,29 +182,33 @@ fn settle(
     {
         return Err(UNCONFIRMED.into());
     }
-    let witness::Settled::Received(seq) =
-        witness::classify(&facts, &query.request_id, string(marker, "content_digest"))
-    else {
-        return Err(UNCONFIRMED.into());
+    let matching_event = |event: &Value| {
+        event["id"] == message && event["rpcId"] == query.request_id
+            && marker["attachment_ids"].is_array() && event["attachmentIds"] == marker["attachment_ids"]
     };
-    let mut delivered = facts["events"]
-        .as_array()
-        .ok_or(UNCONFIRMED)?
-        .iter()
-        .filter(|event| {
-            event["type"] == "user/message"
-                && event["seq"] == seq
-                && event["id"] == message
-                && event["rpcId"] == query.request_id
-        });
-    if !delivered.next().is_some_and(|event| {
-        marker["attachment_ids"].is_array() && event["attachmentIds"] == marker["attachment_ids"]
-    }) || delivered.next().is_some()
+    let pending = &facts["queued"];
+    let (seq, queued) = if native_queue && facts["durable"] == true
+        && matching_event(pending) && pending["digest"] == marker["content_digest"]
+        && pending["seq"].is_u64() && pending["seq"] == facts["spliceSeq"]
     {
-        return Err(UNCONFIRMED.into());
-    }
+        (pending["seq"].as_u64().ok_or(UNCONFIRMED)?, true)
+    } else {
+        let witness::Settled::Received(seq) =
+            witness::classify(&facts, &query.request_id, string(marker, "content_digest"))
+        else {
+            return Err(UNCONFIRMED.into());
+        };
+        let mut delivered = facts["events"].as_array().ok_or(UNCONFIRMED)?.iter().filter(|event| {
+            event["type"] == "user/message" && event["seq"] == seq && matching_event(event)
+        });
+        if delivered.next().is_none() || delivered.next().is_some() {
+            return Err(UNCONFIRMED.into());
+        }
+        (seq, false)
+    };
     receipt["dsh_outbox"]["message_id"] = json!(message);
     receipt["dsh_outbox"]["seq"] = json!(seq);
+    receipt["dsh_outbox"]["queued"] = json!(queued);
     receipt["status"] = json!("submitted");
     receipt_index::persist(&receipt_path(state, &query.request_id), &receipt)
         .map_err(|_| UNCONFIRMED.to_owned())?;
@@ -210,12 +216,12 @@ fn settle(
 }
 
 pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
-    let [name, idle, format] = args else {
-        return Err("Use hgs send SESSION --when-idle --json".into());
+    let (name, native_queue) = match args {
+        [name, guard, format] if guard == "--when-idle" && format == "--json" => (name, false),
+        [name, guard, queue, format]
+            if guard == "--when-idle" && queue == "--deepseek-queue" && format == "--json" => (name, true),
+        _ => return Err("Use hgs send SESSION --when-idle [--deepseek-queue] --json".into()),
     };
-    if idle != "--when-idle" || format != "--json" {
-        return Err("Use hgs send SESSION --when-idle --json".into());
-    }
     let bytes = input(REQUEST_BYTES)?;
     let request: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     if request["only_when_idle"] != true
@@ -271,7 +277,7 @@ pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
     if readiness["sessionId"] != query.expected_conversation_id || generation.is_empty() {
         return Err("DeepSeek outbox capability is unavailable".into());
     }
-    if readiness["ready"] != true {
+    if readiness[if native_queue { "queueReady" } else { "ready" }] != true {
         return waiting();
     }
     let prepared = (|| {
@@ -298,7 +304,7 @@ pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
         "conversation_id":query.expected_conversation_id,"transport":"native_dsh","status":"pending",
         "digest":format!("{:x}", Sha256::digest(json!([name,request]).to_string().as_bytes())),
         "at":now(),"submitted_at":now(),"text":request["text"],"submitted_text":request["text"],
-        "dsh_outbox":{"input_sha256":query.input_sha256,"generation":generation,
+        "dsh_outbox":{"input_sha256":query.input_sha256,"generation":generation,"native_queue":native_queue,
             "content_digest":witness::content_digest(&content),"attachment_ids":attachment_ids}});
     if let Some(target) = session_graph::target_receipt(&record) {
         delivery::bind(&mut receipt, &record, &target);
@@ -312,7 +318,7 @@ pub(in crate::state) fn send_when_idle(args: &[String]) -> Result<i32> {
     }
     let response = rpc_within(
         &record,
-        "outbox-send",
+        if native_queue { "outbox-queue-send" } else { "outbox-send" },
         json!({
             "sessionId":query.expected_conversation_id,"generation":generation,
             "requestId":query.request_id,"mode":"queue","content":content,

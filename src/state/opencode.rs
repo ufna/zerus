@@ -999,6 +999,7 @@ fn parent_view(
     let mut result = normalize(record, Some(&observed));
     if service.desktop_outbox() {
         result["guarded_idle_send"] = json!(true);
+        result["opencode_busy_outbox_supported"] = json!(true);
         result["attachments_supported"] = json!(true);
         result["previous_message_pending"] = json!(observed.active);
     }
@@ -1799,7 +1800,7 @@ fn session_active(native: &dyn Native, record: &Value) -> bool {
         .filter(|r| r.status == 200)
         .is_some_and(|r| r.body["data"].get(string(record, "conversation_id")).is_some())
 }
-fn send(record: &Value, request: &Value, idle_guard: Option<&str>) -> Result<Value> {
+fn send(record: &Value, request: &Value, guard: Option<outbox::Guard<'_>>) -> Result<Value> {
     if !string(request, "agent_id").is_empty() {
         return Err("OpenCode child delivery is not supported".into());
     }
@@ -1826,7 +1827,7 @@ fn send(record: &Value, request: &Value, idle_guard: Option<&str>) -> Result<Val
         request,
         digest,
         session_graph::target_receipt(record),
-        idle_guard,
+        guard,
     )
 }
 /// The ordinary legacy fixture calls the same native producer.
@@ -1849,7 +1850,7 @@ fn deliver_offer(
     request: &Value,
     digest: String,
     graph_target: Option<Value>,
-    idle_guard: Option<&str>,
+    guard: Option<outbox::Guard<'_>>,
 ) -> Result<Value> {
     let text = string(request, "text");
     let path = &ledger.receipt(string(request, "request_id"));
@@ -1875,11 +1876,11 @@ fn deliver_offer(
     verify_native(native, record)?;
     let has_files = !request["attachments"].is_null()
         && request["attachments"].as_array().is_none_or(|files| !files.is_empty());
-    if (idle_guard.is_some() || has_files) && !native.desktop_outbox() {
+    if (guard.is_some() || has_files) && !native.desktop_outbox() {
         return Err("This OpenCode service does not support guarded Send and attachments".into());
     }
-    if let Some(hash) = idle_guard {
-        if let Some(wait) = outbox::wait_receipt(native, record, request, hash)? {
+    if let Some(guard) = guard {
+        if let Some(wait) = outbox::wait_receipt(native, record, request, guard)? {
             return Ok(wait);
         }
     } else if waiting_for_user(native, record)? {
@@ -1894,9 +1895,9 @@ fn deliver_offer(
         delivery::bind(&mut receipt, record, &target);
         receipt["graph_target"] = target;
     }
-    if let Some(hash) = idle_guard {
+    if let Some(guard) = guard {
         receipt["outbox_guarded"] = json!(true);
-        receipt["outbox_input_sha256"] = json!(hash);
+        receipt["outbox_input_sha256"] = json!(guard.input_sha256);
         receipt["outbox_session_id"] = record["session_id"].clone();
         receipt["outbox_id_layout"] = json!(storage::in_id_layout(record));
     }
@@ -1910,12 +1911,15 @@ fn deliver_offer(
     } else {
         None
     };
-    if let (Some(hash), Some(_)) = (idle_guard, &staged) {
-        if let Some(wait) = outbox::wait_receipt(native, record, request, hash)? {
+    if let (Some(guard), Some(_)) = (guard, &staged) {
+        if let Some(wait) = outbox::wait_receipt(native, record, request, guard)? {
             return Ok(wait);
         }
     }
-    let queued = idle_guard.is_none() && session_active(native, record);
+    let queued = guard.is_none_or(|guard| guard.native_queue) && session_active(native, record);
+    if queued {
+        receipt["queued"] = json!(true);
+    }
     // The index first: a receipt is never written without it, so a removal
     // can find the receipt of the message it removes.
     atomic(
@@ -1934,12 +1938,12 @@ fn deliver_offer(
             if data["id"] != message_id
                 || data["sessionID"] != record["conversation_id"]
                 || !outbox::matches_payload(&data["payload"], &receipt, false)
-                || idle_guard.is_some() && (data["delivery"] != "queue" || data["type"] != "user")
+                || guard.is_some() && (data["delivery"] != "queue" || data["type"] != "user")
             {
                 return Err(MISMATCH.into());
             }
         }
-        Ok(answer) if idle_guard.is_none() && !has_files && (400..500).contains(&answer.status) => {
+        Ok(answer) if guard.is_none() && !has_files && (400..500).contains(&answer.status) => {
             let reason = refusal_reason(&answer);
             receipt["status"] = json!("refused");
             // Keep the detailed first refusal local; a durable delivery
@@ -1956,9 +1960,6 @@ fn deliver_offer(
         },
     }
     receipt["status"] = json!("submitted");
-    if queued {
-        receipt["queued"] = json!(true);
-    }
     receipt_index::persist(path, &receipt)?;
     Ok(receipt)
 }
