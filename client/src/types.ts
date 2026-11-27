@@ -974,6 +974,7 @@ export interface ComposerView {
   offers_native_queue?: boolean;
   ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
+  terminal_only_outbox?: string[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;

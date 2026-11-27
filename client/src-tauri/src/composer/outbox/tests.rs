@@ -1107,6 +1107,7 @@ fn a_submitted_text_only_outbox_row_waits_for_exact_history_identity() {
     exact["run_id"] = json!("unrelated-run");
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, std::slice::from_ref(&exact)).removed, 0);
     exact["run_id"] = json!("run-1");
+    exact["conversation_id"] = json!("conv-1");
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, &[exact]).removed, 1);
 }
 
@@ -1127,7 +1128,7 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
     let session = target_session(agent);
     present(&c, &fake, &session, agent);
-    enqueue(&c, "Synthetic native prompt");
+    let original = enqueue(&c, "Synthetic native prompt").waiting_in_zerus[0].request_id.clone();
     let name = session.name.clone();
     *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
         receipt: json!({"status":"submitted", "transport":transport, "request_id":request,
@@ -1138,6 +1139,7 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     settle_next(&c, &fake, &store, details(&session, agent, false, Some(false)));
     let view = until(&c, |view| view.waiting_in_zerus.is_empty());
     assert_eq!(view.local.len(), usize::from(!terminal_status));
+    assert_eq!(view.terminal_only_outbox, if terminal_status { vec![original] } else { vec![] });
     assert_eq!(view.status == "Submitted to terminal", terminal_status);
     assert!(!view.status_error);
     assert_eq!(lock(&fake.calls).len(), 1);

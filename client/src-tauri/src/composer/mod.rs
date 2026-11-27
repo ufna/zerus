@@ -363,6 +363,9 @@ pub struct ComposerView {
     pub earlier_input_held: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_in_zerus: Vec<outbox::EntryView>,
+    /// Exact transport acknowledgements without an identifiable native message.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terminal_only_outbox: Vec<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
     pub offers_native_queue: bool,
@@ -489,6 +492,7 @@ pub(crate) struct Composer {
     pub(crate) hold_after_inspect: u64,
     outbox: Vec<zerus_client_core::drafts::outbox::Entry>,
     last_submission: Option<(Target, &'static str)>,
+    terminal_only_outbox: VecDeque<(Target, String)>,
     outbox_damaged: bool,
     queue_editing: bool,
     queue_writing: bool,
@@ -540,6 +544,7 @@ impl Composer {
             hold_after_inspect: 0,
             outbox: Vec::new(),
             last_submission: None,
+            terminal_only_outbox: VecDeque::new(),
             outbox_damaged: false,
             queue_editing: false,
             queue_writing: false,
@@ -2024,6 +2029,13 @@ impl Composers {
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
             waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
+            terminal_only_outbox: context.as_ref().map_or_else(Vec::new, |ctx| {
+                composer.terminal_only_outbox.iter().filter(|(target, _)| {
+                    target.computer == ctx.session.computer && target.name == ctx.session.name
+                        && ctx.row.run_id.as_ref() == Some(&target.run_id)
+                        && ctx.row.conversation_id.as_ref() == Some(&target.conversation_id)
+                }).map(|(_, request)| request.clone()).collect()
+            }),
             offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait | outbox::ManualSend::TryNativeQueue)),
             offers_native_queue: matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)),
             ordinary_send_block: match manual_send {

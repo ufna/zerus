@@ -2768,6 +2768,7 @@ fn submit_core(
     }
     if let Some(floor) = kimi_turn_floor {
         receipt["kimi_outbox"] = json!(true);
+        receipt["kimi_activity_binding"] = json!(true);
         receipt["kimi_turn_floor"] = json!(floor);
     }
     if pre_send_compaction.is_object() {

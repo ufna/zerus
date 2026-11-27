@@ -987,9 +987,9 @@ mod tests {
             messages.retryable(KEY, "2", "run-1", "conv-1").is_none(),
             "never retried"
         );
-        // The same text and files replace a failure too.
+        // A distinct ordinary Send leaves the equal-text original uncertain.
         messages.sending(KEY, "3", None, "hello", &[], "run-1", "conv-1", 102.0, None);
-        assert_eq!(messages.rows(KEY).len(), 1);
+        assert_eq!(messages.rows(KEY).iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["2", "3"]);
         assert!(!messages.delete(KEY, "3"), "a sending row is not deleted");
         // A complete uncertain line of its own is shown as is: still
         // uncertain and never retried, without the direct path's prefix.
@@ -1003,7 +1003,7 @@ mod tests {
             },
         );
         assert_eq!(detail, line);
-        let row = &messages.rows(KEY)[0];
+        let row = &messages.rows(KEY)[1];
         assert_eq!(
             (row.status, row.uncertain, row.error.as_str()),
             (Status::Error, true, line)

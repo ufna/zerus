@@ -112,7 +112,7 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
     projection.reset();
     projection.build([], summary, [pending]);
     expect(projection.build([event], summary, [])).toMatchObject([
-      { id: "local-request-1" }, { id: "p:opencode:msg_1" },
+      { id: "p:opencode:msg_1" }, { id: "local-request-1" },
     ]);
   });
 
@@ -851,6 +851,7 @@ it("holds the original unknown when multiple native messages claim the same requ
     request_id: outbox.request_id, message_id: "msg_First" };
   const second = { ...first, message_id: "msg_Second" };
   projection.build([], scope, [], [], [outbox]);
+  expect(projection.build([first], scope, [], [], [outbox])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
   const rows = projection.build([first, second], scope, [], [], [outbox]) as ActivityItem[];
   expect(rows.map(item => item.id)).toEqual(["local-original", "p:opencode:msg_First", "p:opencode:msg_Second"]);
   expect(rows[0]).toMatchObject({ outbox: { state: "unknown" } });
@@ -870,4 +871,30 @@ it("binds an ordered Kimi turn by host-stamped request and conversation only", (
   expect(projection.build([previous, submitted], scope, [], [], [outbox])).toMatchObject([
     { id: "s1", receipt: "Sent" }, { id: "local-original", receipt: "Sent" },
   ]);
+});
+
+it("puts older late-loaded native history ahead of the existing original and retires only exact transport-only rows", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const original = { ...scope, request_id: "original", handle: 1, preview: "same", state: "waiting", queued_at: 200 } as const;
+  const later = { ...original, request_id: "later", queued_at: 210 };
+  const older = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "same", at: 150 };
+  const newer = { ...scope, type: "AgentMessage", seq: 4, detail: "Unrelated reply", at: 225 };
+  expect(projection.build([], scope, [], [], [original, later]).map(row => row.id)).toEqual(["local-original", "local-later"]);
+  expect(projection.build([older, newer], scope, [], [], [original, later]).map(row => row.id))
+    .toEqual(["s1", "local-original", "local-later", "s4"]);
+  const transportOnly = { ...older, seq: 2, at: 205 };
+  expect(projection.build([older, transportOnly, newer], scope, [], [], [later], [original.request_id]).map(row => row.id))
+    .toEqual(["s1", "s2", "local-later", "s4"]);
+});
+
+it("retires only the native message whose removal returned a confirmed receipt", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "remove", handle: 1, preview: "same", state: "waiting", queued_at: 100 } as const;
+  const event = { ...scope, source: "opencode_native", type: "UserPromptSubmit", detail: "same", at: 100,
+    request_id: outbox.request_id, message_id: "msg_Removable", delivery_state: "not_delivered" };
+  projection.build([], scope, [], [], [outbox]);
+  expect(projection.build([event], scope, [], [], [])).toMatchObject([{ id: "local-remove", receipt: "Not delivered" }]);
+  expect(projection.build([event], scope, [], [], [], ["remove"], ["msg_Removable"])).toEqual([]);
 });

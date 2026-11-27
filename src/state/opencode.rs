@@ -730,6 +730,8 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         for row in events.iter_mut().filter(|e| e["type"] == "UserPromptSubmit") {
             if let Some(request) = observed.requests.get(string(row, "message_id")) {
                 row["request_id"] = json!(request.id);
+                row["run_id"] = record["run_id"].clone();
+                row["conversation_id"] = record["conversation_id"].clone();
                 if !request.files.is_empty() {
                     row["attachments"] = json!(request.files);
                 }

@@ -852,7 +852,7 @@ impl Composers {
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
             && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
                 || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
-                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true)
+                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true && receipt["kimi_activity_binding"] != true)
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
@@ -917,7 +917,12 @@ impl Composers {
                     // Confirmed queue admission frees the next FIFO head immediately.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
-                    if exact {
+                    if terminal_only {
+                        c.terminal_only_outbox.push_back((entry.target.clone(), entry.request_id.clone()));
+                        if c.terminal_only_outbox.len() > 64 {
+                            c.terminal_only_outbox.pop_front();
+                        }
+                    } else if exact {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }

@@ -827,10 +827,16 @@ export function ActivityView(props: { source?: ActivitySource }) {
     createEffect(() => { source().events(); refreshRouteActivity(routeSession(), !!s()?.parent); });
     onCleanup(() => refreshRouteActivity(undefined));
   }
-  const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
-    subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
-      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox(),
-    composer.removedWaiting()?.key === composer.view()?.key ? composer.removedWaiting()?.ids : undefined));
+  const [removedInbox, setRemovedInbox] = createSignal<{ target?: string; native: string[]; requests: string[] }>();
+  const built = createMemo(() => {
+    const composerView = composer.view(), queueRemoval = composer.removedWaiting(), inboxRemoval = removedInbox();
+    const removed = inboxRemoval?.target === displayTarget() ? inboxRemoval : undefined;
+    return project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
+      subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
+        : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox(),
+      [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []),
+        ...(composerView?.terminal_only_outbox ?? []), ...(removed?.requests ?? [])], removed?.native);
+  });
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;
@@ -1280,7 +1286,23 @@ export function ActivityView(props: { source?: ActivitySource }) {
     return orderedRows().find((row) => row.key === id);
   };
   // This Activity's Remove review: retired with it (zerus-5i2e5).
-  const inboxScope = createInboxRemoveScope(inboxPorts);
+  const inboxScope = createInboxRemoveScope({
+    ...inboxPorts,
+    async remove(handle, run, conversation, message) {
+      const target = displayTarget();
+      const row = view.items.find(item => item.kind === "user" && item.inbox?.messageId === message
+        && item.inbox?.run === run && item.inbox?.conversation === conversation);
+      const reply = await inboxPorts.remove(handle, run, conversation, message);
+      if (reply.outcome === "removed" && target === displayTarget()) {
+        const previous = removedInbox();
+        const prior = previous?.target === target ? previous : undefined;
+        const requests = row?.id.startsWith("local-") ? [row.id.slice("local-".length)] : [];
+        setRemovedInbox({ target, native: [...(prior?.native ?? []), message].slice(-64),
+          requests: [...(prior?.requests ?? []), ...requests].slice(-64) });
+      }
+      return reply;
+    },
+  });
   return (
     <InboxScope.Provider value={inboxScope}>
     <OutboxScope.Provider value={{ rows: outbox, done: () => { focusTranscript(); } }}>

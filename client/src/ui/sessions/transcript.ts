@@ -965,7 +965,12 @@ interface OriginalRow {
   item: ActivityItem;
   anchors: string[];
   index: number;
+  at: number;
+  awaitingHistory: boolean;
 }
+
+const outgoing = (item: TranscriptItem): item is ActivityItem =>
+  item.kind === "user" || (item.kind === "receipt" && !item.route);
 
 const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local ? 1 : 2;
 
@@ -973,7 +978,8 @@ const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local ? 1 :
  * and journal are separate readers: neither one's absence releases a row.
  * Use preceding journal rows as its insertion point, not a later echo's time. */
 function placeOriginals(positions: Map<string, OriginalRow>, items: readonly TranscriptItem[],
-  active: ReadonlySet<string>, removed: readonly string[]): TranscriptItem[] {
+  active: ReadonlyMap<string, number>, removed: ReadonlySet<string>, conflicts: ReadonlySet<string>,
+  times: ReadonlyMap<string, number>): TranscriptItem[] {
   for (const request of removed) positions.delete(`local-${request}`);
   // Keep the still-visible composer rows even as old settled positions age out.
   let excess = positions.size - 50;
@@ -988,7 +994,7 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
   const ordinary: TranscriptItem[] = [];
   const insertion = new Map<string, number>();
   for (const item of items) {
-    if (item.kind !== "user" || (!active.has(item.id) && !positions.has(item.id))) {
+    if (!outgoing(item) || (!active.has(item.id) && !positions.has(item.id))) {
       ordinary.push(item);
     } else {
       const previous = projected.get(item.id);
@@ -996,12 +1002,12 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       if (!insertion.has(item.id) || item.outbox) insertion.set(item.id, ordinary.length);
     }
   }
-  for (const id of active) {
+  for (const [id, at] of active) {
     const item = projected.get(id);
     if (item && !positions.has(id)) {
       const index = insertion.get(id) ?? ordinary.length;
       const anchors = ordinary.slice(Math.max(0, index - 8), index).reverse().map(item => item.id);
-      positions.set(id, { item, anchors, index });
+      positions.set(id, { item, anchors, index, at, awaitingHistory: !ordinary.length });
     }
   }
   const indexOf = new Map(ordinary.map((item, index) => [item.id, index]));
@@ -1013,7 +1019,11 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       positions.delete(id);
       continue;
     }
-    if (item && evidenceOrder(item) >= evidenceOrder(original.item)) {
+    if (!item && conflicts.has(id)) {
+      const { id, kind, at, body, attachments } = original.item;
+      item = { id, kind, at, body, attachments, receipt: tr("Delivery not confirmed"), receiptUnconfirmed: true };
+    }
+    if (item && (conflicts.has(id) || evidenceOrder(item) >= evidenceOrder(original.item))) {
       const old = original.item;
       const files = item.attachments?.map((file, index) => {
         const previous = old.attachments?.[index];
@@ -1027,7 +1037,15 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       if (item.outbox?.state === "waiting") item = { ...item, outbox: { ...item.outbox, state: "reserved" } };
     }
     const anchor = original.anchors.find(key => indexOf.has(key));
-    const index = anchor === undefined ? Math.min(original.index, ordinary.length) : indexOf.get(anchor)! + 1;
+    let index = anchor === undefined ? Math.min(original.index, ordinary.length) : indexOf.get(anchor)! + 1;
+    // The first Activity frame after a restart can contain only the composer.
+    // When older native history arrives, place the original after those rows.
+    if (original.awaitingHistory && original.at > 0) {
+      for (const [position, row] of ordinary.entries()) {
+        const at = times.get(row.id) ?? 0;
+        if (at > 0 && at < original.at) index = position + 1;
+      }
+    }
     const slot = slots.get(index);
     if (slot) slot.push(item); else slots.set(index, [item]);
   }
@@ -1050,8 +1068,13 @@ export function createTranscriptProjection() {
   return {
     reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); positions.clear(); },
     build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [],
-      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = [], removed: readonly string[] = []): TranscriptItem[] {
+      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = [], removed: readonly string[] = [],
+      removedNative: readonly string[] = []): TranscriptItem[] {
       const discarded = new Set(removed);
+      const nativeDiscarded = new Set(removedNative);
+      local = local.filter(row => !discarded.has(row.id));
+      given = given.filter(event => !nativeDiscarded.has(opencodePromptId(event) ?? ""));
+      for (const id of discarded) recent.delete(id);
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
       const queued = outbox.filter(row => !sent.has(row.request_id) && !discarded.has(row.request_id));
       for (const item of outbox) if (!item.target_changed && !discarded.has(item.request_id)) {
@@ -1094,17 +1117,19 @@ export function createTranscriptProjection() {
       trim(bindings, 1000);
       if (conflicts.size) events.push(...local.filter(row => conflicts.has(`local-${row.id}`)).map(localEvent));
       const timeline = mergeRoutes(mergeAttachmentMessages(events, summary, undefined, exact), routes);
-      const items = transcriptItems(mergeCodexQueueReceipts(timeline, summary, [...local, ...missing], receiptFiles), summary, !provider.length);
+      const verified = mergeCodexQueueReceipts(timeline, summary, [...local, ...missing], receiptFiles);
+      const items = transcriptItems(verified, summary, !provider.length);
       // Waiting entries appear at the live end in FIFO order. Legacy
       // entries without a timestamp keep their place as well.
       for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: timeText(row.queued_at),
         body: row.preview, attachments: attachments({ attachments: row.attachments }), outbox: row });
-      const active = new Set([
-        ...queued.map(row => `local-${row.request_id}`),
-        ...local.filter(row => row.source !== "hgs_voice").map(row => `local-${row.id}`),
+      const active = new Map([
+        ...queued.map(row => [`local-${row.request_id}`, row.queued_at ?? 0] as const),
+        ...local.filter(row => row.source !== "hgs_voice").map(row => [`local-${row.id}`, row.submitted_at] as const),
       ]);
       if (!active.size && !positions.size) return items;
-      return placeOriginals(positions, items, active, removed);
+      const times = new Map(verified.map(event => [event.activity_display_key as string || eventKey(event), eventAt(event)]));
+      return placeOriginals(positions, items, active, discarded, conflicts, times);
     },
   };
 }
