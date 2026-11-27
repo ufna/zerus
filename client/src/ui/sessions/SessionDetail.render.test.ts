@@ -39,6 +39,7 @@ vi.mock("../../bridge", async (original) => {
     ...bridge,
     composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
     composerRemoveWaiting: withDesktop(bridge.composerRemoveWaiting),
+    composerDismissCompactionNotice: withDesktop(bridge.composerDismissCompactionNotice),
     runAction: withDesktop(bridge.runAction),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
     localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
@@ -1153,6 +1154,73 @@ function antigravityComposer(row: ViewRow): ComposerView {
     clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "", cache_enabled: false, running: false, reason: "", cache_reason: "" },
   };
 }
+
+it.each(["en", "ru"] as const)("dismisses a past Kimi compaction notice without using a delivery action in %s", async (lang) => {
+  transport.language = lang;
+  const labels = lang === "ru" ? {
+    notice: "Сжатие контекста не подтверждено. Проверьте терминал; черновик сохранён без отправки.",
+    dismiss: "Закрыть уведомление о сжатии контекста",
+    unknown: "Результат сжатия контекста пока неизвестен. Проверьте терминал.",
+  } : {
+    notice: "Compaction was not confirmed. Check Terminal; your draft was kept without sending.",
+    dismiss: "Dismiss compaction notice",
+    unknown: "The compaction result is still unknown. Check Terminal.",
+  };
+  const source = "Compaction was not confirmed. Check Terminal; your draft was kept without sending.";
+  const unknown = "The compaction result is still unknown. Check Terminal.";
+  const row: ViewRow = { ...fixtureRow("Kimi fixture"), name: "kimi/example/compaction-notice", agent: "kimi" };
+  const original = uuid(901), later = uuid(902);
+  const attachments: ComposerView["attachments"] = [
+    { name: "fixture.txt", mime: "text/plain", reference: "@fixture.txt", bytes: 4, path: "zerus-file://fixture.txt", excerpt: "test" },
+  ];
+  let draft: ComposerView & { compaction_notice_id?: string } = {
+    ...antigravityComposer(row), text: "Keep my draft @fixture.txt", attachments, available: true,
+    attachments_available: true, unavailable_reason: "", status: source,
+    status_error: true, uncertain: true, can_send: false, compaction_notice_id: original,
+  };
+  vi.mocked(bridge.composerOpen).mockImplementation(async session => session?.name === row.name ? draft : null);
+  const calls: Array<[string, unknown]> = [];
+  const publish = () => receive({ ...emptyBatch(), composer: draft });
+  transport.composer = (command, args) => {
+    calls.push([command, args]);
+    if (command === "composer_dismiss_compaction_notice") {
+      draft = { ...draft, status: unknown, compaction_notice_id: undefined };
+      queueMicrotask(publish);
+    }
+  };
+  const key = await open(row);
+  const editor = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
+  const send = () => host.querySelector<HTMLButtonElement>(".cmp-actions button.primary")!;
+  const dismiss = () => host.querySelector<HTMLButtonElement>(`button[aria-label="${labels.dismiss}"]`);
+  await vi.waitFor(() => expect(dismiss()).not.toBeNull());
+  expect(host.querySelector(".cmp-draft-status")?.textContent).toContain(labels.notice);
+  expect(send().disabled).toBe(true);
+  dismiss()!.focus();
+  dismiss()!.click();
+  await vi.waitFor(() => expect(dismiss()).toBeNull());
+  expect(calls).toEqual([["composer_dismiss_compaction_notice", { handle: draft.handle, requestId: original }]]);
+  expect(host.textContent).toContain(labels.unknown);
+  expect(editor().value).toBe(draft.text);
+  expect(document.activeElement).toBe(editor());
+  expect(send().disabled).toBe(true);
+
+  setSelectedKey(undefined); await flush();
+  setSelectedKey(key); await flush();
+  await vi.waitFor(() => expect(editor().value).toBe(draft.text));
+  expect(dismiss()).toBeNull();
+  expect(send().disabled).toBe(true);
+  expect(host.textContent).toContain(labels.unknown);
+
+  draft = { ...draft, status: source, compaction_notice_id: later };
+  publish();
+  await vi.waitFor(() => expect(dismiss()).not.toBeNull());
+  expect(host.querySelector(".cmp-draft-status")?.textContent).toContain(labels.notice);
+  dismiss()!.click();
+  await vi.waitFor(() => expect(calls.at(-1)).toEqual(["composer_dismiss_compaction_notice", { handle: draft.handle, requestId: later }]));
+  expect(editor().value).toBe("Keep my draft @fixture.txt");
+  expect(draft.attachments).toEqual(attachments);
+  expect(send().disabled).toBe(true);
+});
 
 it.each(["en", "ru"] as const)("changes Antigravity model and thinking in the shared composer slot in %s", async (lang) => {
   transport.language = lang;

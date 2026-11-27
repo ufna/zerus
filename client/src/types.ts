@@ -967,7 +967,7 @@ export interface ComposerView {
   delivery_pending?: boolean;
   /** Advisory only: matching text in loaded history is never receipt evidence. */
   history_text_match?: boolean;
-  status: string; status_error: boolean; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
+  status: string; status_error: boolean; compaction_notice_id?: string; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
   /** Observed earlier-input guard for this exact conversation, when supported. */
   previous_message_pending?: boolean;
   /** A definite refusal is waiting for a fresh release of this exact target. */

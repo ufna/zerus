@@ -315,4 +315,4 @@ pub(crate) fn plan(
 #[cfg(all(test, unix))]
 mod fixture_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

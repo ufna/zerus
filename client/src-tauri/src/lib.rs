@@ -1985,6 +1985,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::composer_remove,
         composer::composer_undo_remove,
         composer::composer_allow_retry,
+        composer::composer_dismiss_compaction_notice,
         composer::composer_refresh,
         composer::composer_clear_control,
         composer::composer_tab,

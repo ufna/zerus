@@ -1193,6 +1193,26 @@ pub(crate) enum Call {
 /// the identity until the user allows a retry (zerus-5wmh.66.4.4).
 pub(crate) const ORPHANS: usize = 32;
 
+const COMPACTION_RESULT_UNKNOWN: &str = "The compaction result is still unknown. Check Terminal.";
+
+fn compaction_timeout(detail: &str, uncertain: bool) -> bool {
+    detail == rules::NOT_COMPACTED
+        || uncertain && detail == local_messages::uncertain_detail(rules::NOT_COMPACTED)
+}
+
+impl Composer {
+    pub(super) fn compaction_notice_id(&self) -> Option<&str> {
+        let request_id = self.timed_out_compaction.as_deref()?;
+        let shown = self.loaded
+            && self.error
+            && self.waiting.is_none()
+            && self.recording_owner.is_none()
+            && self.storage_error.is_none()
+            && compaction_timeout(&self.notice, self.uncertain);
+        shown.then_some(request_id)
+    }
+}
+
 /// A start or compaction call whose continuation ended while it was still
 /// in flight: its late answer decides the identity its draft holds.
 #[derive(Clone, Debug)]
@@ -1200,7 +1220,7 @@ pub(crate) struct Orphan {
     pub(crate) request: String,
     pub(crate) key: String,
     /// The notice its end showed, shown again if a definite answer resolves it.
-    pub(crate) notice: String,
+    pub(crate) notice: Option<String>,
 }
 
 /// Tracks `orphan`, the oldest going past [`ORPHANS`].
@@ -2084,6 +2104,15 @@ impl Composers {
             composer.sending = false;
             composer.waiting = None;
             composer.gave_up = None;
+            // A local continuation or its admitted service delivery still
+            // owns the same checkpoint here, before a definite end clears it.
+            composer.timed_out_compaction = composer
+                .checkpoint
+                .as_ref()
+                .filter(|saved| {
+                    saved.kind == Kind::CompactToSend && compaction_timeout(detail, uncertain)
+                })
+                .map(|saved| saved.request_id.clone());
             // A definite end sent nothing more; an uncertain one keeps the
             // original identity for its receipt.
             if !uncertain {
@@ -3418,8 +3447,13 @@ impl Composers {
         if let Some(composer) = hub.composers.get_mut(&key).filter(held) {
             composer.checkpoint = None;
             composer.uncertain = false;
-            composer.error = true;
-            composer.notice = notice;
+            if let Some(notice) = notice {
+                composer.error = true;
+                composer.notice = notice;
+            } else if composer.notice == COMPACTION_RESULT_UNKNOWN {
+                composer.error = false;
+                composer.notice.clear();
+            }
             self.save(composer);
         }
     }
@@ -3447,7 +3481,7 @@ impl Composers {
                     let orphan = Orphan {
                         request: pending.request_id.clone(),
                         key: key.to_owned(),
-                        notice: text.to_owned(),
+                        notice: Some(text.to_owned()),
                     };
                     track_orphan(&mut hub.orphans, orphan);
                 }
@@ -3492,6 +3526,42 @@ impl Composers {
                 }
             }
         }
+    }
+
+    /// Dismiss the displayed timeout for this exact composer. The original
+    /// checkpoint, uncertainty and all operation state hold their values.
+    pub(super) fn dismiss_compaction_notice(&self, handle: u64, request_id: &str) {
+        let mut hub = self.lock();
+        if hub.closed {
+            return;
+        }
+        let Some(key) = hub.open_key.clone() else {
+            return;
+        };
+        let Some(composer) = hub.composers.get_mut(&key) else {
+            return;
+        };
+        if composer.handle != handle || composer.compaction_notice_id() != Some(request_id) {
+            return;
+        }
+        composer.timed_out_compaction = None;
+        composer.gave_up = None;
+        if composer.uncertain {
+            composer.notice = COMPACTION_RESULT_UNKNOWN.into();
+        } else {
+            composer.notice.clear();
+            composer.error = false;
+        }
+        // A late answer may settle the call, without showing this timeout again.
+        if let Some(orphan) = hub
+            .orphans
+            .iter_mut()
+            .find(|o| o.key == key && o.request == request_id)
+        {
+            orphan.notice = None;
+        }
+        drop(hub);
+        self.changed();
     }
 
     /// A given-up waiting send's notice goes once the open session shows it
@@ -8547,7 +8617,7 @@ mod continuations {
             let orphan = Orphan {
                 request: format!("call-{n}"),
                 key: KEY.into(),
-                notice: String::new(),
+                notice: None,
             };
             track_orphan(&mut orphans, orphan);
         }
@@ -8959,7 +9029,7 @@ mod continuations {
                         Orphan {
                             request: uuid::Uuid::new_v4().to_string(),
                             key: format!("other-{n}"),
-                            notice: format!("notice-{n}"),
+                            notice: Some(format!("notice-{n}")),
                         },
                     );
                 }
@@ -9815,6 +9885,123 @@ mod continuations {
             "Compaction was not confirmed. Check Terminal; your draft was kept without sending."
         );
         assert_eq!(view.text, "slow");
+        assert!(sends(&fake).is_empty());
+    }
+
+    #[test]
+    fn dismiss_compaction_timeout_keeps_the_draft_and_exact_unknown_checkpoint() {
+        let root = dir("dismiss-compaction-timeout");
+        let file = root.join("fixture.txt");
+        std::fs::write(&file, "fixture bytes").unwrap();
+        let store = drafts(&root);
+        let (c, fake) = send_hub_on(&store);
+        lock(&fake.row).agent = "kimi".into();
+        let (entered, accept) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        *lock(&fake.outcome) = Box::new(move |action, id| {
+            if matches!(action, Action::CompactContext) {
+                entered.send(id.to_owned()).unwrap();
+                wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            receipt(action, id)
+        });
+        let opened = opened(&c, cold());
+        c.attach_paths(opened.handle, vec![file], Default::default());
+        let view = until(&c, |v| !v.attaching && v.attachments.len() == 1);
+        let text = format!("kept {}", view.text);
+        let files = view.attachments.clone();
+        let start_compaction = |view: crate::composer::ComposerView| {
+            let answer = c.send_message(
+                view.handle,
+                view.rev + 1,
+                view.text_epoch,
+                text.clone(),
+                4,
+                0,
+            );
+            let SendReply::Cold { token, .. } = answer else {
+                panic!("expected the normal compact-and-send choice, got {answer:?}")
+            };
+            assert_eq!(
+                c.answer(
+                    token,
+                    Answer::Cold {
+                        action: ColdAction::Compact
+                    }
+                ),
+                SendReply::Sending
+            );
+        };
+        start_compaction(view);
+        let first = accept.recv_timeout(Duration::from_secs(10)).unwrap();
+        let checkpoint = on_disk(&root).unwrap();
+        assert_eq!(checkpoint.request_id, first);
+
+        *lock(&fake.now) += rules::COMPACT_LIMIT + 1.0;
+        c.tick();
+        let timed_out = until(&c, |v| v.compaction_notice_id.is_some());
+        assert_eq!(
+            timed_out.compaction_notice_id.as_deref(),
+            Some(first.as_str())
+        );
+        assert!(timed_out.uncertain && !timed_out.can_send);
+        c.dismiss_compaction_notice(timed_out.handle, "another-attempt");
+        assert_eq!(
+            c.current().unwrap().compaction_notice_id,
+            Some(first.clone())
+        );
+
+        c.dismiss_compaction_notice(timed_out.handle, &first);
+        let dismissed = c.current().unwrap();
+        assert_eq!(dismissed.status, COMPACTION_RESULT_UNKNOWN);
+        assert_eq!(dismissed.text, text);
+        assert_eq!(dismissed.attachments, files);
+        assert_eq!(
+            (dismissed.rev, dismissed.text_epoch),
+            (timed_out.rev, timed_out.text_epoch)
+        );
+        assert!(
+            dismissed.uncertain && !dismissed.can_send && dismissed.compaction_notice_id.is_none()
+        );
+        store.flush();
+        assert_eq!(on_disk(&root), Some(checkpoint));
+        c.open(None);
+        c.open(Some(session()));
+        let reopened = until(&c, |v| v.loaded);
+        assert_eq!(reopened.status, COMPACTION_RESULT_UNKNOWN);
+        assert_eq!(reopened.text, text);
+        assert_eq!(reopened.attachments, files);
+        assert!(
+            reopened.uncertain && !reopened.can_send && reopened.compaction_notice_id.is_none()
+        );
+
+        release.send(()).unwrap();
+        let resolved = until(&c, |v| !v.uncertain);
+        assert_ne!(resolved.status, rules::NOT_COMPACTED);
+        assert!(resolved.compaction_notice_id.is_none());
+        assert_eq!(resolved.text, text);
+        assert_eq!(resolved.attachments, files);
+        assert!(sends(&fake).is_empty());
+
+        compacts_as(&fake, "later-native-compaction");
+        c.observe(&state(cold()));
+        start_compaction(c.current().unwrap());
+        settled(&c, false);
+        *lock(&fake.now) += rules::COMPACT_LIMIT + 1.0;
+        c.tick();
+        let later = until(&c, |v| v.compaction_notice_id.is_some());
+        assert_ne!(later.compaction_notice_id.as_deref(), Some(first.as_str()));
+        c.dismiss_compaction_notice(later.handle, &first);
+        assert_eq!(
+            c.current().unwrap().compaction_notice_id,
+            later.compaction_notice_id
+        );
+        c.dismiss_compaction_notice(later.handle, later.compaction_notice_id.as_deref().unwrap());
+        let final_view = c.current().unwrap();
+        assert_ne!(final_view.status, rules::NOT_COMPACTED);
+        assert!(final_view.compaction_notice_id.is_none());
+        assert_eq!(final_view.text, text);
+        assert_eq!(final_view.attachments, files);
         assert!(sends(&fake).is_empty());
     }
 
