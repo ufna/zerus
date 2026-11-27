@@ -782,6 +782,9 @@ class TechnicalReviewDelivery(DeliveryFixture):
                                           text="Verify the requested behavior"))["task"]
         self.hgs("review-owner", task["ref"], lane, text="The private native check sees the requested result.")
         self.as_reporter("start", task["ref"], "--json")
+        return self.report_started_task(task)
+
+    def report_started_task(self, task):
         report = json.loads(self.as_reporter("report", task["ref"], "--ready", "--json",
                            text="The exact request passed its native check."))
         self.assertTrue(report["moved_to_review"])
@@ -812,9 +815,23 @@ class TechnicalReviewDelivery(DeliveryFixture):
         self.assertEqual(settled_legacy["decision_id"], grant["decision_id"])
         self.assertEqual(self.detail(legacy)["stage"], "done")
 
-        task = self.submit_report("technical")
+        criterion = "The exact fixture completes after the background service restarts."
+        args = ("add-technical", "--project", "orchard", "--start", "--json",
+                "--title", "Check the original fixture", "--request-id", str(uuid.uuid4()))
+        body = "Verify the requested behavior."
+        task = json.loads(self.as_reporter(*args, "--criterion", criterion, text=body))["task"]
+        self.assertEqual(task["stage"], "active")
+        self.assertEqual(task["session"]["session_id"], "run_id:" + self.reporter_run)
+        self.assertEqual(task["review_assignment"], dict(owner="technical", criterion=criterion))
+        repeat = json.loads(self.as_reporter(*args, "--criterion", criterion, text=body))["task"]
+        self.assertEqual((repeat["uuid"], repeat["history_revision"]),
+                         (task["uuid"], task["history_revision"]))
+        self.assertIn("another input", self.as_reporter(
+            *args, "--criterion", "A different criterion.", text=body, ok=False))
+        task = self.report_started_task(task)
         personal = self.submit_report("person")
         self.assertEqual(task["stage"], "review")
+        self.assertEqual(task["review_lane"], "technical")
         notice = self.wait_action(task, "notified")
         self.assertEqual(notice["report_id"], task["review_report_id"])
         self.assertEqual(self.received().count("[Zerus technical review "), 1)
@@ -834,6 +851,23 @@ class TechnicalReviewDelivery(DeliveryFixture):
         self.assertEqual([a["action"] for a in self.audits(task)].count("verified"), 1)
         self.assertEqual([a["action"] for a in self.audits(legacy)].count("legacy_verified"), 1)
         self.assertEqual(self.received().count("[Zerus technical review "), 1)
+
+    def test_technical_intake_is_explicit_and_validates_before_creation(self):
+        args = ("add-technical", "--project", "orchard", "--start", "--json")
+        for bad in ((), ("--criterion", ""), ("--criterion", "first\nsecond"),
+                    ("--criterion", "x" * 513), ("--criterion", "Exact check", "--team", "team")):
+            self.as_reporter(*args, *bad, text="An ordinary request.", ok=False)
+        self.as_reporter("add-technical", "--project", "orchard", "--criterion",
+                         "Exact check", text="An ordinary request.", ok=False)
+        page = self.hgs("list", "--project", "orchard", "--stage", "active", "--limit", "5")
+        self.assertEqual(page["counts"]["active"], 0)
+
+        plain = json.loads(self.as_reporter("add", "--project", "orchard", "--start",
+                                          "--json", text="Unclassified work."))["task"]
+        self.assertIsNone(plain.get("review_assignment"))
+        task = json.loads(self.as_reporter(*args, "--criterion", "Exact check",
+                                         text="Technical work."))["task"]
+        self.assertEqual(task["review_assignment"], dict(owner="technical", criterion="Exact check"))
 
     def test_unavailable_reviewer_is_visible_and_plain_ready_does_not_complete(self):
         pending = self.submit_report("technical")

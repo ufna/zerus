@@ -328,7 +328,15 @@ export function Composer() {
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <DeliveryHistoryHint view={v()} text={composer.text()} shown={input()} />
       <Show when={input() && status().multiline}>
-        <div class="cmp-draft-status" classList={{ error: status().error }} role="status">{status().text}</div>
+        <div class="cmp-draft-status" classList={{ error: status().error, dismissible: !!status().compactionNoticeId }}>
+          <span role="status">{status().text}</span>
+          <Show when={status().compactionNoticeId} keyed>{(requestId) =>
+            <button type="button" class="btn ghost" aria-label={tr("Dismiss compaction notice")} onClick={(event) => {
+              if (document.activeElement === event.currentTarget) editor.focus();
+              void composer.dismissCompactionNotice(requestId);
+            }}>{tr("Dismiss")}</button>
+          }</Show>
+        </div>
       </Show>
       <div class="cmp-actions" hidden={!input()}>
         <span class="cmp-files">

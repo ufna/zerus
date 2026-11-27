@@ -353,6 +353,8 @@ pub struct ComposerView {
     pub delivery_pending: bool,
     pub status: String,
     pub status_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_notice_id: Option<String>,
     pub can_send: bool,
     /// Omitted in inspections that cannot observe the earlier-input guard.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -450,6 +452,8 @@ pub(crate) struct Composer {
     /// (zerus-le5s): its notice goes once the session moves on to work or
     /// readiness, or the kept draft is sent or cleared.
     pub(crate) gave_up: Option<GaveUp>,
+    /// The original timed-out compaction whose presentation can be dismissed.
+    timed_out_compaction: Option<String>,
     pub(crate) storage_error: Option<String>,
     pub(crate) removed: Option<(usize, Attachment)>,
     pub(crate) attaching: bool,
@@ -519,6 +523,7 @@ impl Composer {
             error: false,
             notice: String::new(),
             gave_up: None,
+            timed_out_compaction: None,
             storage_error: None,
             removed: None,
             attaching: false,
@@ -603,6 +608,7 @@ impl Composer {
     pub(crate) fn show_error(&mut self, text: impl Into<String>) {
         // A newer error is not the given-up send's to dismiss.
         self.gave_up = None;
+        self.timed_out_compaction = None;
         self.notice = text.into();
         self.error = true;
     }
@@ -2003,6 +2009,7 @@ impl Composers {
             delivery_pending: composer.handed.is_some(),
             status,
             status_error,
+            compaction_notice_id: composer.compaction_notice_id().map(str::to_owned),
             can_send: composer.loaded
                 && session.available
                 && composer.has_content()
@@ -2205,6 +2212,15 @@ pub fn composer_undo_remove(state: State<'_, Composers>, handle: u64) {
 #[tauri::command]
 pub fn composer_allow_retry(state: State<'_, Composers>, handle: u64) {
     state.allow_retry(handle);
+}
+
+#[tauri::command]
+pub fn composer_dismiss_compaction_notice(
+    state: State<'_, Composers>,
+    handle: u64,
+    request_id: String,
+) {
+    state.dismiss_compaction_notice(handle, &request_id);
 }
 
 /// Refresh in the composer's status line (Qt's `sessionRefreshRequested`).

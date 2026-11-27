@@ -392,6 +392,8 @@
   /* A disabled Send shows the status at the field for 5 s (Qt's QToolTip there). */
   .cmp-draft-status { margin: 4px 12px; color: var(--z-color-muted); overflow-wrap: anywhere; }
   .cmp-draft-status.error { color: var(--z-color-danger); }
+  .cmp-draft-status.dismissible { display: flex; align-items: center; gap: 8px; }
+  .cmp-draft-status.dismissible button { flex: none; }
   .cmp-hint { position: absolute; z-index: 2; left: 12px; bottom: 46px; max-width: calc(100% - 24px); padding: 4px 8px; border-radius: var(--z-radius-sm);
     border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); color: var(--z-color-text);
     font-size: var(--fs-xs); white-space: pre-line; pointer-events: none; animation: fadeIn var(--z-motion-fast) both; }

@@ -84,7 +84,7 @@ const TICK: Duration = Duration::from_secs(1);
 const POLL: f64 = 2.5;
 /// The composer's availability while Send can start a stopped session
 /// (`SessionsWindow.cpp:3987-3988`).
-const STOPPED: &str = "Session stopped. Send asks whether to resume it or start fresh.";
+const CONTINUE: &str = "Send asks how to continue this session.";
 
 /// The session's state for the composer view.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -326,6 +326,10 @@ pub(super) fn first_input_details(row: &ViewRow, details: &Value) -> bool {
 }
 
 fn matches_input_target(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
+    text(details, "runtime_state") == "live" && matches_session_target(row, target, details)
+}
+
+fn matches_session_target(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
     let (run, conversation) = target;
     !run.is_empty()
         && text(details, "run_id") == run
@@ -336,7 +340,6 @@ fn matches_input_target(row: &ViewRow, target: (&str, &str), details: &Value) ->
         && (!row.account_binding_reported
             || (text(details, "account_id") == row.account_id
                 && text(details, "account_home") == row.account_home))
-        && text(details, "runtime_state") == "live"
 }
 
 impl Context {
@@ -898,14 +901,9 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         }
     });
     // A stopped main session that Send can start stays available; a child never starts its parent.
-    let can_start = subagent.is_none()
-        && reason.is_some()
-        && rules::can_start_stopped(
-            &Composers::rules_session(&ctx),
-            Composers::start_busy(hub, &ctx),
-        );
+    let can_start = Composers::can_offer_start(hub, &ctx);
     let (available, unavailable_reason) = match &reason {
-        Some(_) if can_start => (true, STOPPED.to_owned()),
+        Some(_) if can_start => (true, CONTINUE.to_owned()),
         Some(reason) => (false, reason.clone()),
         None => (true, String::new()),
     };
@@ -946,10 +944,15 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         Some((at, text)) if *at == seconds => text.clone(),
         _ => local_time(seconds),
     };
-    let earlier_input_held = ctx.earlier_input_hold(hub).is_some();
-    let previous_message_pending = ctx
-        .previous_message_pending()
-        .filter(|pending| *pending || !earlier_input_held);
+    // A previous, dead run's input does not prohibit asking how to resume.
+    // The hold remains stored and must still gate any live send.
+    let earlier_input_held = !can_start && ctx.earlier_input_hold(hub).is_some();
+    let previous_message_pending = if can_start {
+        None
+    } else {
+        ctx.previous_message_pending()
+            .filter(|pending| *pending || !earlier_input_held)
+    };
     SessionView {
         subagent,
         available,
@@ -1190,6 +1193,26 @@ pub(crate) enum Call {
 /// the identity until the user allows a retry (zerus-5wmh.66.4.4).
 pub(crate) const ORPHANS: usize = 32;
 
+const COMPACTION_RESULT_UNKNOWN: &str = "The compaction result is still unknown. Check Terminal.";
+
+fn compaction_timeout(detail: &str, uncertain: bool) -> bool {
+    detail == rules::NOT_COMPACTED
+        || uncertain && detail == local_messages::uncertain_detail(rules::NOT_COMPACTED)
+}
+
+impl Composer {
+    pub(super) fn compaction_notice_id(&self) -> Option<&str> {
+        let request_id = self.timed_out_compaction.as_deref()?;
+        let shown = self.loaded
+            && self.error
+            && self.waiting.is_none()
+            && self.recording_owner.is_none()
+            && self.storage_error.is_none()
+            && compaction_timeout(&self.notice, self.uncertain);
+        shown.then_some(request_id)
+    }
+}
+
 /// A start or compaction call whose continuation ended while it was still
 /// in flight: its late answer decides the identity its draft holds.
 #[derive(Clone, Debug)]
@@ -1197,7 +1220,7 @@ pub(crate) struct Orphan {
     pub(crate) request: String,
     pub(crate) key: String,
     /// The notice its end showed, shown again if a definite answer resolves it.
-    pub(crate) notice: String,
+    pub(crate) notice: Option<String>,
 }
 
 /// Tracks `orphan`, the oldest going past [`ORPHANS`].
@@ -1383,7 +1406,7 @@ impl Composers {
             || composer.busy()
             || composer.uncertain
             || composer.outbox_blocks_send()
-            || ctx.ordinary_input_held(hub)
+            || (ctx.ordinary_input_held(hub) && !Self::can_offer_start(hub, &ctx))
             || composer.text_epoch != epoch
             || composer.draft.text != text
         {
@@ -1397,10 +1420,8 @@ impl Composers {
         // A stopped session asks how to start before its block reason
         // (`sendMessage` 4809, `startToSend` 4707), while Qt's Send is
         // enabled (`updateControls`, `MessageComposer.cpp:1185`).
-        let session = Self::rules_session(&ctx);
-        if ctx.session.subagent.is_none()
-            && rules::can_start_stopped(&session, Self::start_busy(hub, &ctx))
-        {
+        if Self::can_offer_start(hub, &ctx) {
+            let session = Self::rules_session(&ctx);
             if !self
                 .view_of(hub, &ctx.key)
                 .is_some_and(|view| view.can_send)
@@ -2083,6 +2104,15 @@ impl Composers {
             composer.sending = false;
             composer.waiting = None;
             composer.gave_up = None;
+            // A local continuation or its admitted service delivery still
+            // owns the same checkpoint here, before a definite end clears it.
+            composer.timed_out_compaction = composer
+                .checkpoint
+                .as_ref()
+                .filter(|saved| {
+                    saved.kind == Kind::CompactToSend && compaction_timeout(detail, uncertain)
+                })
+                .map(|saved| saved.request_id.clone());
             // A definite end sent nothing more; an uncertain one keeps the
             // original identity for its receipt.
             if !uncertain {
@@ -2541,7 +2571,24 @@ fn rules_of_row(
     row: &ViewRow,
     online: bool,
     terminating: bool,
+    details: Option<&Value>,
 ) -> Session {
+    let native_resume = matches!(row.agent.as_str(), "agy" | "dsh" | "deepseek")
+        && row.process_state == "exited"
+        && details.is_some_and(|details| {
+            let target = (
+                row.run_id.as_deref().unwrap_or(""),
+                row.conversation_id.as_deref().unwrap_or(""),
+            );
+            matches_session_target(row, target, details)
+                && row.session_id.as_deref().is_none_or(|id| text(details, "session_id") == id)
+                && details["process_state"] == "exited"
+                && details["runtime_state"] == "stopped"
+                && details["auth_required"] != true
+                && details["allowed_actions"]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|action| action == "resume"))
+        });
     Session {
         key: key.to_owned(),
         host: session.computer.clone(),
@@ -2555,6 +2602,8 @@ fn rules_of_row(
         tracked: row.tracked,
         cmd: cmd(row),
         resumable: row.resumable,
+        process_state: row.process_state.clone(),
+        native_resume,
     }
 }
 
@@ -2721,12 +2770,13 @@ impl Composers {
             &ctx.row,
             ctx.online,
             ctx.facts.terminating,
+            (!ctx.facts.inspect_error).then_some(ctx.details.as_deref()).flatten(),
         )
     }
 
     /// A continuation's session as the catalog shows it now, open or not
     /// (Qt finds it in `m_entries` by key).
-    fn rules_of(&self, key: &str, session: &SessionRef) -> Option<Session> {
+    fn rules_of(&self, key: &str, session: &SessionRef, details: Option<&Value>) -> Option<Session> {
         let (row, online) = (self.0.deps.rows)(&session.computer, &session.key, &session.name)?;
         let write = (self.0.deps.facts)(
             &session.computer,
@@ -2739,7 +2789,13 @@ impl Composers {
             &row,
             online,
             write == Some(WriteKind::Terminate),
+            details,
         ))
+    }
+
+    pub(super) fn can_offer_start(hub: &Hub, ctx: &Context) -> bool {
+        ctx.session.subagent.is_none()
+            && rules::can_start_stopped(&Self::rules_session(ctx), Self::start_busy(hub, ctx))
     }
 
     /// `canStartStopped`'s busy part (4677-4679): an update runs, another
@@ -2777,6 +2833,9 @@ impl Composers {
         let Some(original) = prompt.rules else {
             return SendReply::Busy;
         };
+        if !Self::can_offer_start(hub, ctx) {
+            return SendReply::Notice { text: CHANGED.into(), error: true };
+        }
         let current = Self::rules_session(ctx);
         let now_mark = Self::draft_mark(hub, &prompt.key);
         let begun = StartSend::begin(
@@ -3028,7 +3087,6 @@ impl Composers {
         let step = match pending {
             None => Step::Idle,
             Some(pending) => {
-                let current = self.rules_of(key, &pending.session);
                 let open = Self::open_details(&hub, key);
                 let evidence = if hub.open_key.as_deref() == Some(key) {
                     open.clone()
@@ -3043,6 +3101,7 @@ impl Composers {
                         .map(|details| text(details, "run_id"))
                         .unwrap_or(""),
                 );
+                let current = self.rules_of(key, &pending.session, evidence.as_deref());
                 // Qt's `m_pending` (and its rename).
                 let busy = matches!(write, Some(WriteKind::Update | WriteKind::Settings));
                 if start {
@@ -3076,16 +3135,6 @@ impl Composers {
     /// `read` is the reading the answer came from (`inspected`): the
     /// compaction after a start and the send at the end name its identity.
     fn step(&self, key: &str, start: bool, revision: u64, step: Step, read: Option<&Arc<Value>>) {
-        if start {
-            let ready = match &step {
-                Step::Send { run_id, .. } => Some(run_id.as_str()),
-                Step::Compact(..) => read.map(|read| text(read, "run_id")),
-                _ => None,
-            };
-            if ready.is_some_and(|run| self.listing_behind(key, revision, run)) {
-                return;
-            }
-        }
         match step {
             Step::Idle => {}
             Step::Cancelled(text) => self.cancel(key, start, revision, &text),
@@ -3109,24 +3158,36 @@ impl Composers {
         }
     }
 
-    /// zerus-77ljy: a started run can read ready (an inspect, or the
-    /// followed details) before the listing replaces the stopped row. Judged
-    /// against that stale row, which still asks to resume, the waiting
-    /// message would end with CHANGED. Until the listed row shows the ready
-    /// run the start keeps waiting: its next reading or the poll decides
-    /// again, within its limit. A missing row is not waited for, and the
-    /// send's own checks (`still_valid`) stay as they are.
-    fn listing_behind(&self, key: &str, revision: u64, run: &str) -> bool {
-        let hub = self.lock();
-        let session = match (&hub.open, hub.open_key.as_deref()) {
-            (Some(open), Some(open_key)) if open_key == key => open.clone(),
-            _ => match pending_of(&hub, key, revision) {
-                Some(pending) => pending.session.clone(),
-                None => return false,
-            },
+    /// The readiness read must still agree with the listing and, for an
+    /// open composer, still be its current Activity state. A poll can start
+    /// while the composer is closed and finish after it reopens on the old
+    /// state. Keep the continuation until a current read can advance it.
+    fn start_read_is_current(
+        &self,
+        hub: &Hub,
+        key: &str,
+        revision: u64,
+        run: &str,
+        read: Option<&Arc<Value>>,
+    ) -> bool {
+        let Some(pending) = pending_of(hub, key, revision) else {
+            return false;
         };
-        (self.0.deps.rows)(&session.computer, &session.key, &session.name)
-            .is_some_and(|(row, _)| row.run_id.as_deref().unwrap_or("") != run)
+        let open = hub.open.as_ref().filter(|_| hub.open_key.as_deref() == Some(key));
+        let session = open.unwrap_or(&pending.session);
+        if (self.0.deps.rows)(&session.computer, &session.key, &session.name)
+            .is_some_and(|(row, online)| {
+                !online
+                    || row.run_id.as_deref() != Some(run)
+                    || row.state != "running"
+                    || !zerus_client_core::view::process_may_be_live(&row.process_state)
+            })
+        {
+            return false;
+        }
+        open.is_none() || read.is_some_and(|read| {
+            Self::open_details(hub, key).is_some_and(|current| Arc::ptr_eq(&current, read))
+        })
     }
 
     /// The start or compaction call (Qt's `resumeSession`,
@@ -3259,6 +3320,9 @@ impl Composers {
         read: &Arc<Value>,
     ) {
         let mut hub = self.lock();
+        if !self.start_read_is_current(&hub, key, revision, text(read, "run_id"), Some(read)) {
+            return;
+        }
         let Some(mut pending) = take_pending(&mut hub, key, true, revision) else {
             return;
         };
@@ -3295,6 +3359,9 @@ impl Composers {
         read: Option<&Arc<Value>>,
     ) {
         let mut hub = self.lock();
+        if start && !self.start_read_is_current(&hub, key, revision, &run, read) {
+            return;
+        }
         let Some(pending) = take_pending(&mut hub, key, start, revision) else {
             return;
         };
@@ -3380,8 +3447,13 @@ impl Composers {
         if let Some(composer) = hub.composers.get_mut(&key).filter(held) {
             composer.checkpoint = None;
             composer.uncertain = false;
-            composer.error = true;
-            composer.notice = notice;
+            if let Some(notice) = notice {
+                composer.error = true;
+                composer.notice = notice;
+            } else if composer.notice == COMPACTION_RESULT_UNKNOWN {
+                composer.error = false;
+                composer.notice.clear();
+            }
             self.save(composer);
         }
     }
@@ -3409,7 +3481,7 @@ impl Composers {
                     let orphan = Orphan {
                         request: pending.request_id.clone(),
                         key: key.to_owned(),
-                        notice: text.to_owned(),
+                        notice: Some(text.to_owned()),
                     };
                     track_orphan(&mut hub.orphans, orphan);
                 }
@@ -3454,6 +3526,42 @@ impl Composers {
                 }
             }
         }
+    }
+
+    /// Dismiss the displayed timeout for this exact composer. The original
+    /// checkpoint, uncertainty and all operation state hold their values.
+    pub(super) fn dismiss_compaction_notice(&self, handle: u64, request_id: &str) {
+        let mut hub = self.lock();
+        if hub.closed {
+            return;
+        }
+        let Some(key) = hub.open_key.clone() else {
+            return;
+        };
+        let Some(composer) = hub.composers.get_mut(&key) else {
+            return;
+        };
+        if composer.handle != handle || composer.compaction_notice_id() != Some(request_id) {
+            return;
+        }
+        composer.timed_out_compaction = None;
+        composer.gave_up = None;
+        if composer.uncertain {
+            composer.notice = COMPACTION_RESULT_UNKNOWN.into();
+        } else {
+            composer.notice.clear();
+            composer.error = false;
+        }
+        // A late answer may settle the call, without showing this timeout again.
+        if let Some(orphan) = hub
+            .orphans
+            .iter_mut()
+            .find(|o| o.key == key && o.request == request_id)
+        {
+            orphan.notice = None;
+        }
+        drop(hub);
+        self.changed();
     }
 
     /// A given-up waiting send's notice goes once the open session shows it
@@ -8509,7 +8617,7 @@ mod continuations {
             let orphan = Orphan {
                 request: format!("call-{n}"),
                 key: KEY.into(),
-                notice: String::new(),
+                notice: None,
             };
             track_orphan(&mut orphans, orphan);
         }
@@ -8921,7 +9029,7 @@ mod continuations {
                         Orphan {
                             request: uuid::Uuid::new_v4().to_string(),
                             key: format!("other-{n}"),
-                            notice: format!("notice-{n}"),
+                            notice: Some(format!("notice-{n}")),
                         },
                     );
                 }
@@ -9071,20 +9179,27 @@ mod continuations {
         let root = dir("start");
         let (c, fake) = send_hub(&root);
         stopped(&fake);
+        {
+            let mut row = lock(&fake.row);
+            row.state = "stopped".into();
+            row.process_state = "exited".into();
+        }
         let mut details = ready();
         details["runtime_state"] = json!("stopped");
         details["process_state"] = json!("exited");
-        details["session_usage"] = json!({"context": {"used": 85_300, "limit": 200_000}});
-        let view = opened(&c, details);
+        details["activity"] = json!("busy");
+        details["input_queue"] = json!({"id": "earlier-native", "text": "an older queued item"});
+        details["session_usage"] = json!({"context": {"used": 130_000, "limit": 200_000}});
+        let view = opened(&c, details.clone());
         assert!(view.available, "Send stays enabled to ask");
-        assert_eq!(
-            view.unavailable_reason,
-            "Session stopped. Send asks whether to resume it or start fresh."
-        );
+        assert_eq!(view.unavailable_reason, CONTINUE);
         assert_eq!(
             view.block_reason.as_deref(),
             Some("Resume the session to send a message.")
         );
+        c.edit(view.handle, 1, view.text_epoch, "after start".into(), 11, 11);
+        let view = c.current().unwrap();
+        assert!(view.ordinary_send_block.is_none(), "retained queue is not a live send blocker: {view:?}");
         let SendReply::Start { token, question } = c.send_message(
             view.handle,
             1,
@@ -9098,7 +9213,7 @@ mod continuations {
         assert_eq!(question.title.english(), "Start the session to send?");
         let informative = question.informative.english();
         assert!(
-            informative.contains("full context (43% (85.3k/200k)).\n\n"),
+            informative.contains("full context (65% (130k/200k)).\n\n"),
             "{informative}"
         );
         assert_eq!(
@@ -9122,10 +9237,17 @@ mod continuations {
         {
             let mut row = lock(&fake.row);
             row.state = "running".into();
+            row.process_state = "running".into();
             row.run_id = Some("run-2".into());
         }
         let mut after = ready();
         after["run_id"] = json!("run-2");
+        let mut earlier = after.clone();
+        earlier["previous_message_pending"] = json!(true);
+        earlier["input_queue"] = details["input_queue"].clone();
+        c.observe(&state(earlier));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
         c.observe(&state(after.clone()));
         c.observe(&state(after));
         until(&c, |v| v.waiting.is_none() && !v.sending);
@@ -9134,6 +9256,40 @@ mod continuations {
         assert_eq!(sends[0].0.run_id, "run-2");
         let view = c.current().unwrap();
         assert!(view.text.is_empty() && !view.cancel_send);
+    }
+
+    #[test]
+    fn a_recovery_prompt_cancel_and_refusal_keep_the_draft_and_attachment() {
+        let root = dir("stopped-send-keep");
+        let file = root.join("recovery.txt");
+        std::fs::write(&file, "private fixture bytes").unwrap();
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        let view = opened(&c, ready());
+        c.edit(view.handle, 1, view.text_epoch, "saved draft".into(), 11, 11);
+        c.attach_paths(view.handle, vec![file], super::super::Selection { start: 11, end: 11 });
+        let view = until(&c, |v| v.can_send && v.attachments.len() == 1);
+        let ask = |view: crate::composer::ComposerView| {
+            let SendReply::Start { token, .. } = c.send_message(
+                view.handle, view.rev + 1, view.text_epoch, view.text, view.position, view.anchor,
+            ) else { panic!("expected a recovery chooser") };
+            token
+        };
+        let first = ask(view.clone());
+        assert!(lock(&fake.calls).is_empty());
+        c.answer(first, Answer::Cancel);
+        let kept = c.current().unwrap();
+        assert_eq!(kept.text, view.text);
+        assert_eq!(kept.attachments[0].name, "recovery.txt");
+        assert!(lock(&fake.calls).is_empty());
+
+        *lock(&fake.outcome) = Box::new(|_, _| Outcome::Failed { detail: "native resume refused".into() });
+        c.answer(ask(kept), Answer::Start { choice: StartChoice::Resume });
+        let refused = until(&c, |v| v.status == "native resume refused");
+        assert_eq!(refused.text, view.text);
+        assert_eq!(refused.attachments[0].name, "recovery.txt");
+        assert_eq!(lock(&fake.calls).len(), 1);
+        assert!(sends(&fake).is_empty());
     }
 
     /// zerus-77ljy: the resumed run can read ready (an inspect, or the
@@ -9196,6 +9352,65 @@ mod continuations {
         assert_eq!(sends[0].0.run_id, "run-2");
         let view = c.current().unwrap();
         assert!(view.text.is_empty() && view.status != CHANGED);
+    }
+
+    #[test]
+    fn reopened_composer_waits_for_current_activity_before_consuming_resume() {
+        let root = dir("resume-activity-behind");
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        let mut old = ready();
+        old["runtime_state"] = json!("stopped");
+        old["process_state"] = json!("exited");
+        let view = opened(&c, old);
+        let draft = "keep until current Activity";
+        let SendReply::Start { token, .. } =
+            c.send_message(view.handle, 1, view.text_epoch, draft.into(), 0, 0)
+        else {
+            panic!("expected recovery chooser");
+        };
+        c.answer(token, Answer::Start { choice: StartChoice::Resume });
+        until(&c, |_| {
+            c.lock().start.as_ref().is_some_and(|(pending, _)| pending.call == Call::Settled)
+        });
+
+        let mut after = ready();
+        after["run_id"] = json!("run-2");
+        let outside_read = Arc::new(after.clone());
+        {
+            let mut row = lock(&fake.row);
+            row.run_id = Some("run-2".into());
+            row.process_state = "running".into();
+            row.state = "running".into();
+        }
+        // The answer of a continuation's background read overlaps reopening
+        // the composer. The Activity read still represents the stopped run.
+        c.continue_with(KEY, &outside_read);
+        let waiting = c.current().unwrap();
+        assert_eq!(waiting.waiting.as_deref(), Some(WAITING_START));
+        assert_eq!(waiting.text, draft);
+        assert!(sends(&fake).is_empty());
+
+        // A ready Activity frame may also arrive while the catalog shows the
+        // correct run ID but has not acknowledged its running state yet.
+        lock(&fake.row).state = "stopped".into();
+        c.observe(&state(after.clone()));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
+        lock(&fake.row).state = "running".into();
+
+        // Even the right run's current native question must hold the send.
+        let mut input = after.clone();
+        input["pending_questions"] = json!([{"source":"codex_goal_resume","optional":false}]);
+        c.observe(&state(input));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
+        c.observe(&state(after.clone()));
+        c.observe(&state(after));
+        until(&c, |view| view.waiting.is_none() && !view.sending);
+        assert_eq!(sends(&fake).len(), 1);
+        assert_eq!(sends(&fake)[0].0.run_id, "run-2");
+        assert!(c.current().unwrap().text.is_empty());
     }
 
     /// zerus-dhnd: Start fresh opens Codex without a conversation, and Codex
@@ -9670,6 +9885,123 @@ mod continuations {
             "Compaction was not confirmed. Check Terminal; your draft was kept without sending."
         );
         assert_eq!(view.text, "slow");
+        assert!(sends(&fake).is_empty());
+    }
+
+    #[test]
+    fn dismiss_compaction_timeout_keeps_the_draft_and_exact_unknown_checkpoint() {
+        let root = dir("dismiss-compaction-timeout");
+        let file = root.join("fixture.txt");
+        std::fs::write(&file, "fixture bytes").unwrap();
+        let store = drafts(&root);
+        let (c, fake) = send_hub_on(&store);
+        lock(&fake.row).agent = "kimi".into();
+        let (entered, accept) = std::sync::mpsc::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        *lock(&fake.outcome) = Box::new(move |action, id| {
+            if matches!(action, Action::CompactContext) {
+                entered.send(id.to_owned()).unwrap();
+                wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            receipt(action, id)
+        });
+        let opened = opened(&c, cold());
+        c.attach_paths(opened.handle, vec![file], Default::default());
+        let view = until(&c, |v| !v.attaching && v.attachments.len() == 1);
+        let text = format!("kept {}", view.text);
+        let files = view.attachments.clone();
+        let start_compaction = |view: crate::composer::ComposerView| {
+            let answer = c.send_message(
+                view.handle,
+                view.rev + 1,
+                view.text_epoch,
+                text.clone(),
+                4,
+                0,
+            );
+            let SendReply::Cold { token, .. } = answer else {
+                panic!("expected the normal compact-and-send choice, got {answer:?}")
+            };
+            assert_eq!(
+                c.answer(
+                    token,
+                    Answer::Cold {
+                        action: ColdAction::Compact
+                    }
+                ),
+                SendReply::Sending
+            );
+        };
+        start_compaction(view);
+        let first = accept.recv_timeout(Duration::from_secs(10)).unwrap();
+        let checkpoint = on_disk(&root).unwrap();
+        assert_eq!(checkpoint.request_id, first);
+
+        *lock(&fake.now) += rules::COMPACT_LIMIT + 1.0;
+        c.tick();
+        let timed_out = until(&c, |v| v.compaction_notice_id.is_some());
+        assert_eq!(
+            timed_out.compaction_notice_id.as_deref(),
+            Some(first.as_str())
+        );
+        assert!(timed_out.uncertain && !timed_out.can_send);
+        c.dismiss_compaction_notice(timed_out.handle, "another-attempt");
+        assert_eq!(
+            c.current().unwrap().compaction_notice_id,
+            Some(first.clone())
+        );
+
+        c.dismiss_compaction_notice(timed_out.handle, &first);
+        let dismissed = c.current().unwrap();
+        assert_eq!(dismissed.status, COMPACTION_RESULT_UNKNOWN);
+        assert_eq!(dismissed.text, text);
+        assert_eq!(dismissed.attachments, files);
+        assert_eq!(
+            (dismissed.rev, dismissed.text_epoch),
+            (timed_out.rev, timed_out.text_epoch)
+        );
+        assert!(
+            dismissed.uncertain && !dismissed.can_send && dismissed.compaction_notice_id.is_none()
+        );
+        store.flush();
+        assert_eq!(on_disk(&root), Some(checkpoint));
+        c.open(None);
+        c.open(Some(session()));
+        let reopened = until(&c, |v| v.loaded);
+        assert_eq!(reopened.status, COMPACTION_RESULT_UNKNOWN);
+        assert_eq!(reopened.text, text);
+        assert_eq!(reopened.attachments, files);
+        assert!(
+            reopened.uncertain && !reopened.can_send && reopened.compaction_notice_id.is_none()
+        );
+
+        release.send(()).unwrap();
+        let resolved = until(&c, |v| !v.uncertain);
+        assert_ne!(resolved.status, rules::NOT_COMPACTED);
+        assert!(resolved.compaction_notice_id.is_none());
+        assert_eq!(resolved.text, text);
+        assert_eq!(resolved.attachments, files);
+        assert!(sends(&fake).is_empty());
+
+        compacts_as(&fake, "later-native-compaction");
+        c.observe(&state(cold()));
+        start_compaction(c.current().unwrap());
+        settled(&c, false);
+        *lock(&fake.now) += rules::COMPACT_LIMIT + 1.0;
+        c.tick();
+        let later = until(&c, |v| v.compaction_notice_id.is_some());
+        assert_ne!(later.compaction_notice_id.as_deref(), Some(first.as_str()));
+        c.dismiss_compaction_notice(later.handle, &first);
+        assert_eq!(
+            c.current().unwrap().compaction_notice_id,
+            later.compaction_notice_id
+        );
+        c.dismiss_compaction_notice(later.handle, later.compaction_notice_id.as_deref().unwrap());
+        let final_view = c.current().unwrap();
+        assert_ne!(final_view.status, rules::NOT_COMPACTED);
+        assert!(final_view.compaction_notice_id.is_none());
+        assert_eq!(final_view.text, text);
+        assert_eq!(final_view.attachments, files);
         assert!(sends(&fake).is_empty());
     }
 

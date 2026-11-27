@@ -581,6 +581,14 @@ impl Composers {
         let detail = hub.local.finished_as_is(key, plan.row(), &outcome);
         if let Some(composer) = hub.composers.get_mut(key) {
             composer.handed = None;
+            composer.timed_out_compaction = match (&outcome, plan) {
+                (Outcome::Failed { .. }, HandedPlan::Compact(plan))
+                    if detail == compact_to_send::COMPACTION_UNCONFIRMED =>
+                {
+                    Some(plan.compaction_request_id.clone())
+                }
+                _ => None,
+            };
             match outcome {
                 Outcome::Done { .. } => {
                     composer.uncertain = false;

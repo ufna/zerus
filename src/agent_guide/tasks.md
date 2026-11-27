@@ -25,6 +25,10 @@ Own project; REF: T-xxxxxx or PROJECT/T-xxxxxx. Text on stdin.
   hgs task cancel-attempt REF --attempt UUID [--reason TEXT]
 
 Add queues; --start/start records work, no resend. Accept Done when the person asks.
+To file ordinary technical work already underway, use
+`hgs task add-technical --start --criterion 'One concrete acceptance check'`
+and give the original request on stdin. Reserve technical intake for work
+whose requested result can be verified against that criterion.
 Acknowledge once as prompted. Managed work uses begin-attempt instead of start.
 Report with the pinned command and UUID.
 --progress updates. Legacy start prints report command without UUID.

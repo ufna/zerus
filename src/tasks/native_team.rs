@@ -37,6 +37,7 @@ pub(crate) fn new_document(
                 now,
                 Some(id),
                 false,
+                None,
             )
             .map_err(fail)
     })
