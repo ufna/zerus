@@ -67,7 +67,7 @@ pub(super) fn action(action: &Action) -> &'static str {
         Action::ClearContext { .. } => zerus_client_core::source!("Clear session"),
         Action::CompactContext => zerus_client_core::source!("Compact context"),
         Action::Pause | Action::PauseAll { .. } => zerus_client_core::source!("Pause session"),
-        Action::Resume | Action::ResumeAll { .. } => zerus_client_core::source!("Resume session"),
+        Action::Resume | Action::ResumeNativeForSend | Action::ResumeAll { .. } => zerus_client_core::source!("Resume session"),
         Action::StartFresh => zerus_client_core::source!("Start fresh session"),
         Action::Rename { .. } => zerus_client_core::source!("Rename session"),
         Action::Archive => zerus_client_core::source!("Archive session"),

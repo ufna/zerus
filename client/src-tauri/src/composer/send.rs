@@ -84,7 +84,7 @@ const TICK: Duration = Duration::from_secs(1);
 const POLL: f64 = 2.5;
 /// The composer's availability while Send can start a stopped session
 /// (`SessionsWindow.cpp:3987-3988`).
-const STOPPED: &str = "Session stopped. Send asks whether to resume it or start fresh.";
+const CONTINUE: &str = "Send asks how to continue this session.";
 
 /// The session's state for the composer view.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -903,7 +903,7 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
     // A stopped main session that Send can start stays available; a child never starts its parent.
     let can_start = Composers::can_offer_start(hub, &ctx);
     let (available, unavailable_reason) = match &reason {
-        Some(_) if can_start => (true, STOPPED.to_owned()),
+        Some(_) if can_start => (true, CONTINUE.to_owned()),
         Some(reason) => (false, reason.clone()),
         None => (true, String::new()),
     };
@@ -944,10 +944,15 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         Some((at, text)) if *at == seconds => text.clone(),
         _ => local_time(seconds),
     };
-    let earlier_input_held = ctx.earlier_input_hold(hub).is_some();
-    let previous_message_pending = ctx
-        .previous_message_pending()
-        .filter(|pending| *pending || !earlier_input_held);
+    // A previous, dead run's input does not prohibit asking how to resume.
+    // The hold remains stored and must still gate any live send.
+    let earlier_input_held = !can_start && ctx.earlier_input_hold(hub).is_some();
+    let previous_message_pending = if can_start {
+        None
+    } else {
+        ctx.previous_message_pending()
+            .filter(|pending| *pending || !earlier_input_held)
+    };
     SessionView {
         subagent,
         available,
@@ -1381,7 +1386,7 @@ impl Composers {
             || composer.busy()
             || composer.uncertain
             || composer.outbox_blocks_send()
-            || ctx.ordinary_input_held(hub)
+            || (ctx.ordinary_input_held(hub) && !Self::can_offer_start(hub, &ctx))
             || composer.text_epoch != epoch
             || composer.draft.text != text
         {
@@ -2550,6 +2555,7 @@ fn rules_of_row(
                 && row.session_id.as_deref().is_none_or(|id| text(details, "session_id") == id)
                 && details["process_state"] == "exited"
                 && details["runtime_state"] == "stopped"
+                && details["auth_required"] != true
                 && details["allowed_actions"]
                     .as_array()
                     .is_some_and(|actions| actions.iter().any(|action| action == "resume"))
@@ -9108,10 +9114,7 @@ mod continuations {
         details["session_usage"] = json!({"context": {"used": 130_000, "limit": 200_000}});
         let view = opened(&c, details.clone());
         assert!(view.available, "Send stays enabled to ask");
-        assert_eq!(
-            view.unavailable_reason,
-            "Session stopped. Send asks whether to resume it or start fresh."
-        );
+        assert_eq!(view.unavailable_reason, CONTINUE);
         assert_eq!(
             view.block_reason.as_deref(),
             Some("Resume the session to send a message.")
@@ -9188,7 +9191,7 @@ mod continuations {
         c.edit(view.handle, 1, view.text_epoch, "saved draft".into(), 11, 11);
         c.attach_paths(view.handle, vec![file], super::super::Selection { start: 11, end: 11 });
         let view = until(&c, |v| v.can_send && v.attachments.len() == 1);
-        let ask = |view: ComposerView| {
+        let ask = |view: crate::composer::ComposerView| {
             let SendReply::Start { token, .. } = c.send_message(
                 view.handle, view.rev + 1, view.text_epoch, view.text, view.position, view.anchor,
             ) else { panic!("expected a recovery chooser") };
