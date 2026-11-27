@@ -240,6 +240,17 @@ impl Composers {
             return ManualSend::Direct;
         }
         let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);
+        // Antigravity's Activity can confirm the end of a prompt before the
+        // Sessions row catches up. The ordinary send rechecks the exact worker.
+        if ctx.row.agent == "agy"
+            && c.outbox.is_empty()
+            && details["phase"] == "idle"
+            && details["activity"] == "idle"
+            && details["send_available"] == true
+            && ctx.exact_outbox_details(details)
+        {
+            return ManualSend::Direct;
+        }
         let busy = details["activity"] == "busy"
             || matches!(
                 ctx.row.phase.as_deref(),

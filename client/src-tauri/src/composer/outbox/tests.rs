@@ -293,6 +293,67 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
 }
 
 #[test]
+fn antigravity_send_uses_exact_ready_activity_while_the_list_is_still_working() {
+    let root = dir("agy-ready-before-list");
+    let (c, fake) = send_hub_on(&drafts(&root));
+    let session = target_session("agy");
+    {
+        let mut row = lock(&fake.row);
+        row.name.clone_from(&session.name);
+        row.agent = "agy".into();
+        row.process_state = "running".into();
+        row.phase = Some("working".into());
+    }
+    c.open(Some(session.clone()));
+    let mut working = details(&session, "agy", true, None);
+    working["phase"] = json!("working");
+    working["send_supported"] = json!(true);
+    working["send_available"] = json!(false);
+    c.observe(&state(working));
+    let view = until(&c, |view| view.loaded);
+    assert!(matches!(
+        c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "next".into(),
+            4,
+            4
+        ),
+        SendReply::Notice { error: true, .. }
+    ));
+    assert_eq!(c.current().unwrap().text, "next");
+    assert!(lock(&fake.calls).is_empty());
+
+    let mut ready = details(&session, "agy", false, None);
+    ready["send_supported"] = json!(true);
+    ready["send_available"] = json!(true);
+    c.observe(&state(ready));
+    let view = c.current().unwrap();
+    assert!(view.ordinary_send_block.is_none());
+    assert!(matches!(
+        c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "next".into(),
+            4,
+            4
+        ),
+        SendReply::Sending
+    ));
+    let view = until(&c, |view| !view.sending && view.text.is_empty());
+    assert!(view.waiting_in_zerus.is_empty());
+    assert_eq!(lock(&fake.row).phase.as_deref(), Some("working"));
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.name, session.name);
+    assert_eq!(calls[0].0.run_id, "run-1");
+    assert_eq!(calls[0].0.conversation_id, "conv-1");
+    assert!(matches!(&calls[0].1, Action::Send { text, .. } if text == "next"));
+}
+
+#[test]
 fn ordinary_send_keeps_the_older_hosts_ready_route_and_preserves_its_busy_draft() {
     let root = dir("single-send-old-host");
     let store = drafts(&root);
