@@ -1476,7 +1476,8 @@ fn classify_antigravity_settings(
                 && receipt["model"] == model
                 && effort.is_none_or(|value| receipt["effort"] == value)
                 && receipt["config_revision"].as_str().is_some_and(|value| {
-                    crate::creation::canonical_uuid(value) && value != expected_revision
+                    crate::creation::canonical_uuid(value)
+                        && receipt["changed"].as_bool() == Some(value != expected_revision)
                 }) =>
         {
             done(receipt, None)
@@ -2726,7 +2727,7 @@ mod tests {
 
         let receipt = json!({"status":"applied","scope":"session","request_id":request,"name":target.name,
             "session_id":id,"run_id":target.run_id,"conversation_id":target.conversation_id,
-            "model":"fixture/first","effort":"high","config_revision":after});
+            "model":"fixture/first","effort":"high","config_revision":after,"changed":true});
         let result = |code, receipt: &Value| classify(&target, &action, &call, exit(code, receipt.to_string().as_bytes(), ""));
         assert!(matches!(result(0, &receipt), Outcome::Done { .. }));
         for field in ["session_id", "name", "request_id", "run_id", "conversation_id", "model", "effort", "scope"] {
@@ -2737,6 +2738,8 @@ mod tests {
         let mut wrong = receipt.clone();
         wrong["config_revision"] = json!(before);
         assert!(matches!(result(0, &wrong), Outcome::Uncertain { .. }));
+        wrong["changed"] = json!(false);
+        assert!(matches!(result(0, &wrong), Outcome::Done { .. }));
         wrong["status"] = json!("uncertain");
         assert!(matches!(result(1, &wrong), Outcome::Uncertain { .. }));
         wrong["status"] = json!("refused");

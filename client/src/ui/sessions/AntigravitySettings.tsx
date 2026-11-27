@@ -102,6 +102,10 @@ export function AntigravitySettings(props: {
     let outcome: Outcome | undefined;
     try { outcome = await props.apply(s.target, action); } catch { /* An unconfirmed call cannot authorize another write. */ }
     if (attempt() !== original) return;
+    if (outcome?.outcome === "done" && record(outcome.receipt).changed === false) {
+      setAttempt(undefined);
+      return;
+    }
     setAttempt({ ...original, state: outcome?.outcome === "done" ? "applied" : outcome?.outcome === "failed" ? "refused" : "uncertain" });
   }
 
