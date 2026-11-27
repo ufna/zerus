@@ -811,13 +811,13 @@ const SETTINGS_UNCONFIRMED: &str = "the agent did not react to the last model se
 /// a user's existing draft. Never clear/edit the terminal's current draft.
 /// Reverse video marks the caret Claude draws itself (`claude_caret_placeholder`).
 #[derive(Clone, Copy, Default)]
-struct TerminalStyle {
-    dim: bool,
+pub(super) struct TerminalStyle {
+    pub(super) dim: bool,
     background: bool,
-    inverse: bool,
+    pub(super) inverse: bool,
 }
 
-fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, TerminalStyle)> {
+pub(super) fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, TerminalStyle)> {
     let mut chars = row.chars().peekable();
     let mut result = Vec::new();
     while let Some(ch) = chars.next() {
