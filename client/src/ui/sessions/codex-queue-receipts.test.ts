@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTranscript, createTranscriptProjection } from "./transcript";
+import { buildTranscript, createTranscriptProjection, timeText } from "./transcript";
 import type { ActivityEvent, LocalMessage } from "../../types";
 import type { OutboxItem } from "./types";
 
@@ -97,6 +97,57 @@ describe("Codex queue acceptance in Activity", () => {
       expect(rows.at(-1)).toMatchObject({ body: "Later" });
       expect(rows.some(row => row.kind === "receipt" && row.label === "Queued in Codex")).toBe(false);
     }
+  });
+
+  it("places exact consumed bodies at their native times before the journal echoes arrive", () => {
+    const otherClient = "00000005-2222-4444-8888-000000000005";
+    const fileReceipt = { ...receipt, codex_client_id: client, native_queue_state: "consumed" };
+    const otherReceipt = { ...fileReceipt, request_id: second, message_id: second, native_queued_message_id: second,
+      codex_client_id: otherClient, at: 6, attachments: [] };
+    const nativeBody = (codex_client_id: string, at: number) => ({ type: "UserMessageBody", source: "codex_transcript",
+      agent_id: "", conversation_id: scope.conversation_id, message_id: `codex-client:${codex_client_id}`,
+      codex_client_id, at, detail: "Native text including private attachment path" });
+    const fileBody = nativeBody(client, 180), otherBody = nativeBody(otherClient, 240);
+    const s = { ...summary([fileReceipt, otherReceipt]), user_message_bodies: [fileBody, otherBody] };
+    const before = { type: "AgentMessage", seq: 1, at: 120, detail: "Earlier native reply" };
+    const between = { type: "AgentMessage", seq: 3, at: 210, detail: "Intervening native reply" };
+    const echo = { ...fileBody, ...scope, type: "UserPromptSubmit", seq: 4, at: 220 };
+    const expected = [{ kind: "agent", body: before.detail },
+      { id, kind: "user", at: timeText(fileBody.at), body: text, receipt: "Sent", attachments: [{ request_id: request, index: 0, name: file.name }] },
+      { kind: "agent", body: between.detail }, { id: `local-${second}`, kind: "user", at: timeText(otherBody.at), body: text }];
+    const p = createTranscriptProjection();
+    expect(p.build([before, between], s)).toMatchObject(expected);
+    expect(p.build([before, between, echo], s)).toMatchObject(expected);
+    p.reset();
+    expect(p.build([before, between], s)).toMatchObject(expected);
+  });
+
+  it("requires a unique timed own body and leaves contradictory echoes untouched", () => {
+    const durable = { ...receipt, codex_client_id: client, native_queue_state: "consumed" };
+    const body = { type: "UserMessageBody", source: "codex_transcript", conversation_id: scope.conversation_id,
+      message_id: `codex-client:${client}`, codex_client_id: client, at: 20, detail: text };
+    const s = { ...summary([durable]), user_message_bodies: [body] };
+    const fallback = (snapshot: Record<string, unknown>, events: ActivityEvent[] = []) => {
+      expect(buildTranscript(events, snapshot).filter(row => row.id === id)).toMatchObject([{ kind: "receipt" }]);
+    };
+    for (const changed of [
+      { at: undefined }, { at: NaN }, { at: Infinity }, { at: 0 }, { message_id: "" },
+      { source: "other" }, { codex_client_id: second }, { conversation_id: "other" }, { run_id: "other" },
+      { agent_id: "child" }, { inherited_from: "old" }, { origin: "task_notification" }, { turn_origin: "keep_warm" },
+    ]) fallback({ ...s, user_message_bodies: [{ ...body, ...changed }] });
+    for (const duplicate of [body, { ...body, message_id: "another" }, { ...body, codex_client_id: second }]) {
+      fallback({ ...s, user_message_bodies: [body, duplicate] });
+    }
+    for (const native_queue_state of ["queued", undefined]) {
+      fallback({ ...s, codex_queued_messages: [{ ...durable, native_queue_state }] });
+    }
+    const echo = { ...scope, type: "UserPromptSubmit", source: "codex_transcript", seq: 1, at: 21, message_id: body.message_id,
+      detail: text };
+    for (const changed of [{ codex_client_id: second }, { run_id: "other" }, { conversation_id: "other" },
+      { source: "other" }, { inherited_from: "old" }, { attachment_request_id: second }]) fallback(s, [{ ...echo, ...changed }]);
+    fallback(s, [echo, { ...echo, seq: 2 }]);
+    const unrelated = { ...echo, message_id: "another" };
+    expect(buildTranscript([unrelated], s)).toMatchObject([{ id, kind: "user", body: text }, { id: "s1", kind: "user", body: text }]);
   });
 
   it("transfers a receipt and files to one exactly bound turn with the same display key", () => {

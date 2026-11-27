@@ -49,16 +49,15 @@ export function mergeCodexQueueReceipts(events: readonly ActivityEvent[], summar
     if (positions) positions.push(i); else map.set(key, [i]);
   }
   for (const [i, event] of events.entries()) {
-    if (!mainPrompt(event) || (event.source && event.source !== "codex_transcript")) continue;
     if (uuid(event.codex_client_id)) index(byClient, event.codex_client_id, i);
-    if (event.source === "codex_transcript" && event.message_id) index(byBody, event.message_id, i);
+    if (event.message_id) index(byBody, event.message_id, i);
   }
   const nativeIds = new Map<unknown, number>(), clients = new Map<string, number>();
   for (const receipt of receipts.values()) {
     nativeIds.set(receipt.native_queued_message_id, 1 + (nativeIds.get(receipt.native_queued_message_id) ?? 0));
     if (uuid(receipt.codex_client_id)) clients.set(receipt.codex_client_id, 1 + (clients.get(receipt.codex_client_id) ?? 0));
   }
-  const bodies = Array.isArray(summary?.user_message_bodies) ? summary.user_message_bodies.filter(obj) : [];
+  const bodies = Array.isArray(summary?.user_message_bodies) ? summary.user_message_bodies.slice(-100).filter(obj) : [];
   const accepted: QueueReceiptEvent[] = [], queued: QueueReceiptEvent[] = [];
   const hidden = new Set<number>();
   for (const [request, receipt] of receipts) {
@@ -70,26 +69,49 @@ export function mergeCodexQueueReceipts(events: readonly ActivityEvent[], summar
     if (exactOwner) {
       const boundBodies = bodies.filter(body => body.type === "UserMessageBody" && body.source === "codex_transcript"
         && !body.agent_id && !body.origin && !body.inherited_from && body.codex_client_id === client
-        && body.conversation_id === receipt.conversation_id && typeof body.message_id === "string" && !!body.message_id);
-      const candidates = new Set((byClient.get(client) ?? []).filter(i => sameScope(events[i], receipt)));
-      if (boundBodies.length === 1) for (const i of byBody.get(boundBodies[0].message_id!) ?? []) candidates.add(i);
-      const matches = [...candidates].filter(i => {
+        && (!body.turn_origin || body.turn_origin === "user") && body.conversation_id === receipt.conversation_id
+        && (body.run_id === undefined || body.run_id === receipt.run_id)
+        && typeof body.message_id === "string" && !!body.message_id);
+      const body = boundBodies.length === 1 ? boundBodies[0] : undefined;
+      const messageId = body?.message_id;
+      const bodyId = messageId && bodies.filter(candidate => candidate.message_id === messageId).length === 1 ? messageId : undefined;
+      const claims = new Set(byClient.get(client) ?? []);
+      if (bodyId) for (const i of byBody.get(bodyId) ?? []) claims.add(i);
+      const matches = [...claims].filter(i => {
         const event = events[i];
-        return (!event.run_id || event.run_id === receipt.run_id)
-          && (!event.conversation_id || event.conversation_id === receipt.conversation_id)
+        return mainPrompt(event) && (!event.source || event.source === "codex_transcript")
+          && (event.codex_client_id === undefined || event.codex_client_id === client)
+          && ((event.codex_client_id === client && sameScope(event, receipt))
+            || (bodyId && event.source === "codex_transcript" && event.message_id === bodyId))
+          && (event.run_id === undefined || event.run_id === receipt.run_id)
+          && (event.conversation_id === undefined || event.conversation_id === receipt.conversation_id)
           && (!event.activity_display_key || event.activity_display_key === display.activity_display_key)
           && (!event.attachment_request_id || event.attachment_request_id === request)
           && (!event.attachments?.some(file => file.request_id && file.request_id !== request));
       });
-      if (matches.length === 1) {
-        const i = matches[0];
+      const echo = matches.length === 1 ? matches[0] : undefined;
+      const at = body?.at;
+      const timed = receipt.native_queue_state === "consumed" && bodyId && typeof at === "number"
+        && at > 0 && at <= 8.64e12 && claims.size === (echo === undefined ? 0 : 1);
+      const promptText = { ...display, message_text: receipt.detail, message_text_truncated: false };
+      if (echo !== undefined) {
         if (stillQueued) {
           // Current native queue membership takes precedence over one exactly bound echo.
-          hidden.add(i);
+          hidden.add(echo);
         } else {
-          out[i] = { ...out[i], ...display, message_text: receipt.detail, message_text_truncated: false };
+          const event = { ...out[echo], ...promptText };
+          if (timed) {
+            hidden.add(echo);
+            accepted.push({ ...event, at });
+          } else out[echo] = event;
           continue;
         }
+      }
+      if (timed) {
+        // Native history can precede hooks. Use the original receipt for text and files.
+        accepted.push({ type: "UserPromptSubmit", source: "codex_transcript", run_id: receipt.run_id,
+          conversation_id: receipt.conversation_id, message_id: bodyId, codex_client_id: client, at, ...promptText });
+        continue;
       }
     }
     const row: QueueReceiptEvent = { ...receipt, ...display, [CODEX_QUEUE_RECEIPT]: true };
