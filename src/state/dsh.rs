@@ -2137,6 +2137,10 @@ fn inspect_record(name: &str, record: &Value, agent_id: Option<&str>, include_pr
         result["guarded_idle_send"] = json!(true);
         result["dsh_outbox_supported"] = json!(true);
         result["dsh_outbox_ready"] = json!(inspected["outboxReady"] == true);
+        if ping["outboxQueueSend"] == true {
+            result["dsh_busy_outbox_supported"] = json!(true);
+            result["dsh_busy_outbox_ready"] = json!(inspected["outboxQueueReady"] == true);
+        }
     }
     result["terminal_supported"]=json!(false);
     result["terminal_reason"]=json!(backend::DEEPSEEK_TERMINAL.text());

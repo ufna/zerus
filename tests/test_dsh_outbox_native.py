@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+import time
 import uuid
 
 import test_dsh_native as native
@@ -39,6 +40,107 @@ class NativeDeepSeekOutbox(native.NativeHarness):
         records = self.rpc('inspect', {'sessionId': binding['conversation_id']})['page']['records']
         return [row['event'] for row in records if row.get('event', {}).get('type') == 'user/message'
                 and row['event']['data']['source'].get('rpcId') == request_id]
+
+    def test_busy_desktop_offer_appends_exact_files_and_recovers_lost_ack(self):
+        binding = self.create()
+        conversation = binding['conversation_id']
+        release = self.root / 'holds/OUTBOX_HELD_TURN_FIXTURE.release'
+        started = release.with_suffix('.started')
+        release.unlink(missing_ok=True)
+        started.unlink(missing_ok=True)
+        self.addCleanup(release.touch)
+        self.cli('send', binding, self.payload(binding, text='OUTBOX_HELD_TURN_FIXTURE'))
+        self.wait(started.exists)
+        busy = self.cli('inspect', binding)
+        self.assertEqual(busy['activity'], 'busy')
+        self.assertTrue(busy['dsh_busy_outbox_supported'])
+        self.assertTrue(busy['dsh_busy_outbox_ready'])
+        earlier = str(uuid.uuid4())
+        self.rpc('send', {'sessionId': conversation, 'requestId': earlier, 'mode': 'queue',
+                          'content': [{'type': 'text', 'text': 'Earlier native next-turn entry'}]})
+        data = b'Original synthetic file bytes while DeepSeek is busy.\n'
+        first = self.payload(binding, text='Read [File #1]', only_when_idle=True,
+                             attachments=[{'name': 'fixture.txt', 'mime': 'text/plain', 'reference': '[File #1]',
+                                           'data_base64': base64.b64encode(data).decode()}])
+        second = self.payload(binding, text='Second quietly queued desktop input', only_when_idle=True)
+
+        def queued(request):
+            return self.hgs('delivery', 'outbox-offer', binding['name'], '--session-id', binding['session_id'],
+                            '--deepseek-queue', '--json', request=request)
+
+        def pending(request_id):
+            return self.rpc('outbox-proof', {'sessionId': conversation, 'requestId': request_id,
+                            'generation': self.rpc('ping')['generation'], 'queue': True, 'waitMs': 0})['queued']
+
+        offers = []
+
+        def intercept(message, forward):
+            if message['method'] == 'outbox-queue-send':
+                self.assertEqual(message['params']['mode'], 'queue')
+                real = forward(message)
+                self.assertTrue(real['ok'], real)
+                self.assertTrue(real['value']['accepted'], real)
+                offers.append(message['params']['requestId'])
+                return None
+            return None if message['method'] == 'outbox-proof' else forward(message)
+
+        changed = dict(second, expected_run_id=str(uuid.uuid4()))
+        self.assertNotEqual(queued(changed).returncode, 0)
+        with self.archive_rpc_proxy(intercept):
+            unknown = queued(first)
+            self.assertEqual(unknown.returncode, 1, unknown.stdout)
+            self.assertIn('delivery uncertain', unknown.stderr.lower())
+            self.assertEqual(queued(first).returncode, 1)
+        self.assertEqual(offers, [first['request_id']])
+        recovered = self.outbox_status(binding, first)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        one = json.loads(recovered.stdout)
+        self.assertTrue(one['queued'])
+        self.assertEqual(json.loads(queued(first).stdout), one)
+        result = queued(second)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        two = json.loads(result.stdout)
+        self.assertTrue(two['queued'])
+        order = [pending(request_id) for request_id in (earlier, first['request_id'], second['request_id'])]
+        self.assertEqual([p['seq'] for p in order], sorted({p['seq'] for p in order}))
+        self.assertEqual([p['id'] for p in order[1:]], [one['native_message_id'], two['native_message_id']])
+        self.assertEqual(order[1]['attachmentIds'], ['sha256:' + hashlib.sha256(data).hexdigest()])
+        self.assertEqual(self.native_messages(binding, first['request_id']), [])
+        self.assertEqual(self.native_messages(binding, second['request_id']), [])
+        self.assertFalse(release.exists())
+        release.touch()
+        event, = self.wait(lambda: self.native_messages(binding, first['request_id']))
+        self.assertEqual(event['data']['id'], one['native_message_id'])
+        self.wait(lambda: self.native_messages(binding, second['request_id']))
+        attachment = self.hgs('attachment', binding['name'], '--request', first['request_id'], '--index', '0',
+                              '--conversation', conversation)
+        self.assertEqual(attachment.returncode, 0, attachment.stderr)
+        self.assertEqual(base64.b64decode(json.loads(attachment.stdout)['data_base64']), data)
+
+    def test_busy_desktop_offer_preserves_the_original_native_recovery(self):
+        binding = self.create()
+        conversation = binding['conversation_id']
+        recovery = self.state / 'recovery'
+        recovery.mkdir(exist_ok=True)
+        policy, heartbeat = recovery / 'policy.json', recovery / 'heartbeat.json'
+        policy.write_text(json.dumps({'enabled': True}))
+        heartbeat.write_text(json.dumps({'enabled': True, 'at': time.time()}))
+        self.addCleanup(policy.unlink, missing_ok=True)
+        self.addCleanup(heartbeat.unlink, missing_ok=True)
+        self.cli('send', binding, self.payload(binding, text='PROVIDER_CAPACITY_FIXTURE'))
+        pending = self.wait(lambda: self.rpc('inspect', {'sessionId': conversation})['nativeRecovery'])
+        try:
+            detail = self.cli('inspect', binding)
+            self.assertTrue(detail['dsh_busy_outbox_supported'])
+            self.assertFalse(detail['dsh_busy_outbox_ready'])
+            request = self.payload(binding, text='Another next-turn input', only_when_idle=True)
+            result = self.hgs('delivery', 'outbox-offer', binding['name'], '--deepseek-queue', '--json', request=request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
+            self.assertEqual(self.rpc('inspect', {'sessionId': conversation})['nativeRecovery']['id'], pending['id'])
+            self.assertEqual(self.native_messages(binding, request['request_id']), [])
+        finally:
+            self.rpc('cancel-recovery', {'sessionId': conversation, 'id': pending['id']})
 
     def test_lost_bridge_ack_recovers_durable_native_file_on_reconnect(self):
         binding = self.create()

@@ -2731,15 +2731,15 @@ read in bounded pages from Activity. On older hosts the desktop waits for the ex
 route. After an interrupted turn, a live Codex session can receive input when
 the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
-input lock before offering the message. OpenCode checks the
-exact conversation and makes a queue-only offer. Any messages already parked
-in the OpenCode inbox keep their order. Claude's existing native queue also
-keeps its order while Desktop waits. DeepSeek checks the exact native
-conversation and waits for its existing inbox, then uses a native queue offer
-so a new turn cannot turn the offer into steering. If the host confirms that
-the agent became busy before any input was offered, that same message waits with its original
-request ID. Queueing requires guarded Send support from the computer running
-the session. A ready session on an older computer still uses ordinary Send.
+input lock before offering the message. A compatible OpenCode service or
+DeepSeek bridge can accept an exact next-turn offer while the agent works.
+Desktop can send a new message or advance its original waiting entries and
+files as soon as that route is available. The existing native inbox keeps its
+order. Questions, approvals and active DeepSeek recovery keep their normal
+controls. Older helpers and resident bridges continue to use their previously
+supported route. A confirmed refusal before input keeps the original request
+ID in the local queue. A ready session on an older computer still uses
+ordinary Send.
 After restarting, Desktop checks saved queues in the background.
 Messages can leave the queue while another session is selected or the editor is closed. The queue holds up to 16 messages, 80 KiB of text and
 20 MiB of files per session. The queue saves its messages and files separately
@@ -2755,8 +2755,8 @@ row and its files. A native queue hook can reuse the active prompt ID, so it
 keeps its own Activity row.
 For DeepSeek, the original request and native message ID bind the Activity row
 and files. Desktop can recover a lost acknowledgement after the same native
-host reconnects when its durable log proves the original message, including the
-ordered attachment hashes. If that proof is unavailable, the original remains
+host reconnects when its durable log proves the original queued or delivered
+message, including the ordered attachment hashes. If that proof is unavailable, the original remains
 unknown and later messages remain queued. A resident bridge that lacks this
 capability continues to use its existing Send route while ready.
 Check Activity or Terminal before deciding whether to remove an unknown message

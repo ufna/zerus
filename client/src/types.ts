@@ -971,6 +971,7 @@ export interface ComposerView {
   /** A definite refusal is waiting for a fresh release of this exact target. */
   earlier_input_held?: boolean;
   offers_outbox?: boolean;
+  offers_native_queue?: boolean;
   ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;

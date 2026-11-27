@@ -53,7 +53,9 @@ pub fn confirmed(exit: &Exit) -> bool {
 pub fn selects(action: &Action) -> bool {
     match action {
         Action::Send { .. }
-        | Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
+        | Action::SendWhenIdle { .. }
+        | Action::SendToCodexQueue { .. }
+        | Action::SendToNativeQueue { .. }
         | Action::SendNow { .. }
         | Action::Answer { .. }
         | Action::RemoveQueued { .. }
@@ -73,8 +75,11 @@ pub fn selects(action: &Action) -> bool {
 
 /// Where `--session-id` goes: right after the session's name, which follows
 /// the command and, on a peer, its `@alias`.
-fn after_name(target: &Target) -> usize {
-    usize::from(!target.computer.is_empty()) + 2
+fn after_name(target: &Target, call: &Invocation) -> usize {
+    let command = usize::from(!target.computer.is_empty());
+    let outbox = call.args.get(command).is_some_and(|word| word == "delivery")
+        && call.args.get(command + 1).is_some_and(|word| word == "outbox-offer");
+    command + 2 + usize::from(outbox)
 }
 
 /// [`invocation`], selecting the session by its ID as well. `session_id` is
@@ -104,7 +109,7 @@ pub fn selected_invocation(
     }
     let mut call = invocation(target, action, request_id)?;
     if let Some(id) = id {
-        let at = after_name(target);
+        let at = after_name(target, &call);
         if call.args.get(at - 1) == Some(&target.name) {
             call.args
                 .splice(at..at, ["--session-id".to_owned(), id.to_owned()]);
@@ -116,7 +121,7 @@ pub fn selected_invocation(
 /// The session ID a call for `target` selects by, as [`selected_invocation`]
 /// placed it.
 pub fn selected_id<'a>(target: &Target, call: &'a Invocation) -> Option<&'a str> {
-    let at = after_name(target);
+    let at = after_name(target, call);
     (call.args.get(at - 1) == Some(&target.name)
         && call.args.get(at).is_some_and(|flag| flag == "--session-id"))
     .then(|| call.args.get(at + 1).map(String::as_str))

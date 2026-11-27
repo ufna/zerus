@@ -32,6 +32,19 @@ fn details(target: &SessionRef, agent: &str, is_busy: bool, pending: Option<bool
     value
 }
 
+fn native_queue_details(target: &SessionRef, agent: &str) -> Value {
+    let mut value = details(target, agent, true, Some(true));
+    if agent == "opencode" {
+        value["opencode_busy_outbox_supported"] = json!(true);
+    } else {
+        value["dsh_busy_outbox_supported"] = json!(true);
+        value["dsh_busy_outbox_ready"] = json!(true);
+    }
+    value["input_queue"] = json!({"id":"earlier-native"});
+    value["pending_questions"] = json!([]);
+    value
+}
+
 fn present(c: &Composers, fake: &Fake, target: &SessionRef, agent: &str) -> ComposerView {
     let mut row = lock(&fake.row);
     row.name.clone_from(&target.name);
@@ -102,6 +115,97 @@ fn ordinary_send_accepts_a_busy_draft_without_native_input() {
         assert_eq!(saved.draft.outbox[0].target.name, target.name);
         assert!(saved.draft.draft.text.is_empty());
         assert!(lock(&fake.calls).is_empty());
+    }
+}
+
+#[test]
+fn ordinary_send_starts_the_exact_guarded_offer_before_the_busy_native_turn_ends() {
+    for agent in ["opencode", "dsh"] {
+        let root = dir("native-queue-ordinary-send");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let target = target_session(agent);
+        present(&c, &fake, &target, agent);
+        c.observe(&state(native_queue_details(&target, agent)));
+        let view = until(&c, |view| view.offers_native_queue);
+        assert!(view.offers_outbox);
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1",
+                "conversation_id":"conv-1","queued":true}),
+            cleanup: None,
+        });
+        let SendReply::Accepted { view, waiting: false } = c.send_message(
+            view.handle, view.rev + 1, view.text_epoch, "Native next turn".into(), 0, 0,
+        ) else {
+            panic!("ordinary Send waited for idle despite exact native queue admission");
+        };
+        let original = &view.waiting_in_zerus[0];
+        assert_eq!(original.state, State::Reserved);
+        until(&c, |view| view.waiting_in_zerus.is_empty());
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, original.request_id);
+        assert_eq!(calls[0].0.name, target.name);
+        assert!(matches!(&calls[0].1, Action::SendToNativeQueue { text, .. } if text == "Native next turn"));
+    }
+}
+
+#[test]
+fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
+    for agent in ["opencode", "dsh"] {
+        let root = dir("native-queue-saved-fifo");
+        let store = drafts(&root);
+        let (first, fake) = send_hub_on(&store);
+        let target = target_session(agent);
+        let view = present(&first, &fake, &target, agent);
+        let mut legacy = details(&target, agent, true, Some(true));
+        legacy["attachments_supported"] = json!(true);
+        first.observe(&state(legacy));
+        until(&first, |view| view.attachments_available);
+        let path = root.join("input.txt");
+        std::fs::write(&path, b"original file before restart").unwrap();
+        first.attach_paths(view.handle, vec![path.clone()], Default::default());
+        let attached = until(&first, |view| view.attachments.len() == 1);
+        let one = enqueue(&first, &attached.text).waiting_in_zerus[0].request_id.clone();
+        let view = enqueue(&first, "two");
+        let two = view.waiting_in_zerus[1].request_id.clone();
+        first.edit(view.handle, view.rev + 1, view.text_epoch, "separate draft".into(), 0, 0);
+        first.flush();
+        store.flush();
+        drop(first);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        present(&c, &fake, &target, agent);
+        until(&c, |view| view.waiting_in_zerus.len() == 2);
+        let ready = native_queue_details(&target, agent);
+        for (key, value) in [
+            ("pending_questions", json!([{"question_id":"real-question"}])),
+            ("pending_questions_complete", json!(false)),
+            ("conversation_id", json!("foreign-conversation")),
+            ("run_id", json!("foreign-run")),
+        ] {
+            let mut blocked = ready.clone();
+            blocked[key] = value;
+            settle_next(&c, &fake, &store, blocked);
+            assert!(lock(&fake.calls).is_empty(), "{agent} {key}");
+        }
+        let name = target.name.clone();
+        *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+            receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1",
+                "conversation_id":"conv-1","queued":true}),
+            cleanup: None,
+        });
+        settle_next(&c, &fake, &store, ready);
+        assert_eq!(until(&c, |view| view.waiting_in_zerus.is_empty()).text, "separate draft");
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.iter().map(|call| &call.2).collect::<Vec<_>>(), [&one, &two]);
+        assert!(matches!(&calls[0].1, Action::SendToNativeQueue { attachments, .. }
+            if attachments.len() == 1 && attachments[0].bytes.as_ref() == b"original file before restart"));
+        assert!(matches!(&calls[1].1, Action::SendToNativeQueue { text, .. } if text == "two"));
     }
 }
 
