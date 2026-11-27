@@ -1035,7 +1035,7 @@ fn a_definite_refusal_or_unmatched_receipt_keeps_the_original_and_later_draft() 
 }
 
 #[test]
-fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_metadata() {
+fn terminal_delivery_status_follows_the_queue_write_and_keeps_file_metadata() {
     use crate::composer::send::tests::{held_spawn, next_job};
 
     let root = dir("outbox-activity-settlement");
@@ -1079,12 +1079,18 @@ fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_met
     store.flush();
     let sent = c.current().unwrap();
     assert!(sent.waiting_in_zerus.is_empty());
-    assert_eq!(sent.local.len(), 1);
-    assert_eq!(sent.local[0].id, original.request_id);
-    assert_eq!(sent.local[0].attachments[0]["name"], "fixture.txt");
-    assert_eq!(sent.local[0].attachments[0]["request_id"], original.request_id);
-    assert!(sent.local[0].attachments[0].get("local_path").is_none());
-    assert_eq!(sent.local[0].submitted_at, 1_793_000_104.5);
+    assert!(sent.local.is_empty());
+    let [receipt] = sent.terminal_only_outbox.as_slice() else { panic!("expected the original terminal delivery status") };
+    assert_eq!(receipt.request_id, original.request_id);
+    assert_eq!(receipt.run_id, original.run_id);
+    assert_eq!(receipt.conversation_id, original.conversation_id);
+    assert_eq!(receipt.queued_at, original.queued_at);
+    assert!(receipt.delivery_in_composer);
+    assert_eq!(receipt.attachments[0].name, "fixture.txt");
+    let projected = serde_json::to_value(receipt).unwrap();
+    assert_eq!(projected["attachments"][0]["bytes"], 11);
+    assert!(projected["attachments"][0].get("path").is_none());
+    assert!(projected["attachments"][0].get("data_base64").is_none());
 }
 
 #[test]
