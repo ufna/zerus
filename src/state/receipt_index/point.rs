@@ -269,6 +269,44 @@ pub(in crate::state) fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
         .filter(|id| uuid(id))
 }
 
+/// Read one legacy or current public-send refusal. The original input digest
+/// binds the attachments and the guarded-send flag as well as the message text.
+pub(in crate::state) fn terminal_outbox_refusal(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
+    use zerus_client_core::desktop::deferred_send::Refusal;
+    let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid terminal outbox query")?;
+    if !(name.starts_with("codex/") || name.starts_with("kimi/")) || !bounded_identity(name, 512)
+        || !uuid(&query.request_id) || !bounded_identity(&query.expected_run_id, 128)
+        || query.expected_run_id.is_empty() || !bounded_identity(&query.expected_conversation_id, 512)
+        || query.expected_conversation_id.is_empty() || !hex(&query.input_sha256)
+    {
+        return Err("Invalid terminal outbox identity".into());
+    }
+    let bytes = original_bytes(state, Source::Terminal, &query.request_id)
+        .map_err(|_| "Original terminal refusal is unconfirmed")?;
+    let refusal = Refusal::from_cli_record(&bytes).map_err(str::to_owned)?;
+    if refusal.request_id != query.request_id || refusal.session != name
+        || refusal.run_id != query.expected_run_id || refusal.conversation_id != query.expected_conversation_id
+        || refusal.input_sha256 != query.input_sha256
+    {
+        return Err("Original terminal refusal does not match this message".into());
+    }
+    #[derive(Deserialize)]
+    struct QueueGate {
+        outbox_waiting: Option<bool>,
+    }
+    let gate: QueueGate = serde_json::from_slice(&bytes).map_err(|_| "Invalid terminal refusal")?;
+    // Older records lack the typed gate. Recognize only the historic draft
+    // and idle reasons, after verifying the complete negative and payload.
+    let waiting = gate.outbox_waiting.unwrap_or_else(|| {
+        refusal.reason == input::DRAFT || refusal.reason == input::Gate::NotIdle.reason()
+    });
+    let status = if waiting { "waiting_for_idle" } else { "not_offered" };
+    Ok(json!({"schema":1,"status":status,"proof":"native_input_lock","transport":"terminal",
+        "request_id":refusal.request_id,"name":name,"run_id":refusal.run_id,
+        "conversation_id":refusal.conversation_id,"input_sha256":refusal.input_sha256,
+        "reason":refusal.reason}))
+}
+
 /// Read one final native Claude receipt. No transcript search, pane input,
 /// or replay can result from a missing or non-final receipt.
 pub(in crate::state) fn claude_outbox_status(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {

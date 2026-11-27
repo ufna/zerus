@@ -10,7 +10,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if format == "--json" && operation == "outbox-status" && name.starts_with("dsh/") {
         return dsh::outbox_status(name);
     }
-    if format == "--json" && operation == "outbox-status" && !name.starts_with("claude/") {
+    if format == "--json" && operation == "outbox-status" && name.starts_with("opencode/") {
         return opencode::outbox_status(name);
     }
     if !matches!(operation.as_str(), "receipt" | "outbox-status") || format != "--json" {
@@ -25,7 +25,12 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("Delivery receipt query exceeds 8 KiB".into());
     }
     if operation == "outbox-status" {
-        println!("{}", receipt_index::claude_outbox_status(&root(), name, &bytes)?);
+        let status = if name.starts_with("claude/") {
+            receipt_index::claude_outbox_status(&root(), name, &bytes)?
+        } else {
+            receipt_index::terminal_outbox_refusal(&root(), name, &bytes)?
+        };
+        println!("{status}");
         return Ok(0);
     }
     let query: receipt_index::DeliveryQuery =

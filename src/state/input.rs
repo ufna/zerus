@@ -1685,12 +1685,18 @@ fn dispatch_send(
         }
         let receipt = match submit_core(name, &input, Origin::Person, true, false, None, process) {
             Ok(receipt) => receipt,
-            Err(Failure::NotOffered(witness)) if witness.idle_refusal => json!({
-                "schema": 1, "status": "waiting_for_idle", "proof": "native_input_lock",
-                "request_id": witness.request_id, "name": witness.name, "run_id": witness.run_id,
-                "conversation_id": witness.conversation_id, "input_sha256": witness.digest,
-            }),
-            Err(Failure::NotOffered(witness)) => return Err(witness.reason),
+            Err(Failure::NotOffered(witness)) => {
+                let status = if witness.waits_for_idle_send() {
+                    "waiting_for_idle"
+                } else if name.starts_with("codex/") || name.starts_with("kimi/") {
+                    "not_offered"
+                } else {
+                    return Err(witness.reason);
+                };
+                json!({"schema": 1, "status": status, "proof": "native_input_lock", "transport": "terminal",
+                    "request_id": witness.request_id, "name": witness.name, "run_id": witness.run_id,
+                    "conversation_id": witness.conversation_id, "input_sha256": witness.digest, "reason": witness.reason})
+            }
             Err(Failure::Unknown(error)) => return Err(error),
             Err(Failure::TerminalRefusal(_)) => return Err("Unexpected Send outcome".into()),
         };
@@ -2094,6 +2100,10 @@ pub(crate) struct NotOffered {
 }
 
 impl NotOffered {
+    fn waits_for_idle_send(&self) -> bool {
+        self.idle_refusal || (self.waiting && (self.name.starts_with("codex/") || self.name.starts_with("kimi/")))
+    }
+
     /// Whether this witness is for exactly this request, submitted to `name`
     /// with this run, conversation and payload digest.
     pub(crate) fn binds(
