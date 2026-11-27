@@ -445,6 +445,15 @@ pub(in crate::state) fn allows_hook(record: &Value, event: &Value) -> bool {
     ) {
         return true;
     }
+    // Kimi may deliver the previous prompt's callback after Terminal accepts
+    // the next paste. Only the ordered native turn can confirm this original.
+    if record["agent"] == "kimi" && input_unconfirmed(record)
+        && record["input_pending_kimi_outbox"].is_string()
+        && record["input_pending_kimi_outbox"] == record["input_pending_request"]
+        && matches!(string(event, "hook_event_name"), "UserPromptSubmit" | "UserPromptQueued")
+    {
+        return false;
+    }
     if string(record, "agent") == "kimi"
         && matches!(
             string(event, "hook_event_name"),

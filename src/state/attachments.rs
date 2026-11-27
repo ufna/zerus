@@ -194,6 +194,11 @@ fn projected_page(record:&Value,agent:&str,cursor:&str,limit:usize)->Result<(Val
             "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)});
         if record["agent"] == "claude" && receipt["claude_outbox"] == true {
             message["claude_outbox"] = json!(true);
+            if receipt["native"] == "queue" {
+                message["claude_queued_outbox"] = json!(true);
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
             if let Some(prompt) = receipt_index::claude_outbox_prompt(&receipt) {
                 message["claude_prompt_id"] = json!(prompt);
                 message["claude_outbox_request_id"] = receipt["request_id"].clone();

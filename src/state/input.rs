@@ -2641,6 +2641,9 @@ fn submit_core(
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
     record["input_pending_request"] = json!(request_id);
+    if receipt["kimi_outbox"] == true {
+        record["input_pending_kimi_outbox"] = json!(request_id);
+    }
     record["input_pending_digest"] = receipt["digest"].clone();
     record["input_pending_text_sha256"] = json!(format!("{:x}", Sha256::digest(string(&receipt, "submitted_text").as_bytes())));
     // From this send on the record follows the acceptance rule.

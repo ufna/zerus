@@ -80,6 +80,14 @@ class NativeClaudeNext(Original, claude.NativeClaudeOutbox):
         duplicate = self.offer(self.name, raw)
         submitted = duplicate['submitted_text']
         self.assertEqual(duplicate['request_id'], receipt['request_id'])
+        def attachment_banner():
+            detail = self.call('inspect', self.name)
+            return next((event for event in detail.get('attachment_messages', [])
+                         if event.get('message_id') == receipt['request_id']), None)
+        projected = self.wait_for(attachment_banner)
+        self.assertTrue(projected['claude_queued_outbox'])
+        self.assertEqual((projected['run_id'], projected['conversation_id']), (self.run_id, self.conversation_id))
+        self.assertNotIn('claude_prompt_id', projected)
         self.assertEqual(len(self.enqueued(submitted)), 1)
         self.assertFalse(release.exists(), 'receipt arrived only after the tool was released')
         release.touch()
@@ -118,9 +126,17 @@ class NativeKimiNext(Original, kimi.NativeKimi):
         duplicate = self.offer(name, raw)
         self.assertEqual(duplicate['request_id'], receipt['request_id'])
         self.assertFalse(hold.is_set(), 'receipt arrived only after the native turn was released')
+        self.assertTrue(self.inspect(name)['previous_message_pending'])
+        for callback in ('UserPromptQueued', 'UserPromptSubmit'):
+            # Deliver a delayed callback through the actual tracked hook
+            # ingress while the new original is still in native custody.
+            old = self.send_event(name, callback, prompt='An unrelated earlier native callback.')
+            self.assertEqual(old.returncode, 0, old.stderr)
+            self.assertTrue(self.inspect(name)['previous_message_pending'], callback)
         hold.set()
         submitted = duplicate['submitted_text']
-        self.until(lambda: self.held(submitted) == 1 and self.settled(name, duplicate), name)
+        self.until(lambda: self.held(submitted) == 1 and self.settled(name, duplicate)
+                   and self.inspect(name)['previous_message_pending'] is False, name)
         self.assertEqual(self.held(submitted), 1)
         self.assertEqual(self.held(DRAFT), 0)
 
