@@ -907,7 +907,7 @@ fn dismiss_the_exact_compaction_timeout_from_immediate_and_readback_service_rece
         store.flush();
         let saved = zerus_client_core::drafts::read_draft(store.root(), &dismissed.key);
         assert_eq!(
-            saved.draft.draft.attachments[0].bytes,
+            saved.draft.draft.attachments[0].bytes.as_ref(),
             b"private fixture bytes"
         );
         assert_eq!(
