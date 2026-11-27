@@ -1186,6 +1186,23 @@ pub async fn follow(
     }
 }
 
+#[cfg(feature = "live")]
+#[tauri::command(rename_all = "snake_case")]
+pub async fn codex_receipt_page(
+    state: State<'_, AppState>, computer: String, key: String, run_id: String,
+    conversation_id: String, cursor: String,
+) -> Result<Value, String> {
+    let row = state.pump().row(&computer, &key).ok_or("Session is unavailable")?;
+    if row.agent != "codex" || row.run_id.as_ref() != Some(&run_id)
+        || row.conversation_id.as_ref() != Some(&conversation_id) {
+        return Err("Message history target changed".into());
+    }
+    blocking(move || zerus_client_core::reads::codex_receipt_page(
+        &zerus_client_core::default_hgs(), &zerus_client_core::ComputerId::from(computer.as_str()),
+        &row.name, &run_id, &conversation_id, &cursor,
+    ).map_err(|error| error.to_string())).await
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn unfollow(
     state: State<'_, AppState>,

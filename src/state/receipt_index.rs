@@ -179,6 +179,11 @@ struct Binding {
     files: bool,
     fingerprint: String,
 }
+fn delivery_fingerprint(value: &Value, graph_target: &Value) -> String {
+    hash(&json!([value["request_id"], value["name"], value["run_id"], value["conversation_id"],
+        value["agent_id"], value["digest"], value["first_message"], graph_target]).to_string())
+}
+
 impl Binding {
     fn parse(source: Source, value: &Value, filename: &str) -> Result<Self> {
         let id = string(value, "request_id");
@@ -239,19 +244,7 @@ impl Binding {
                     .to_string(),
                 )
             } else {
-                hash(
-                    &json!([
-                        value["request_id"],
-                        value["name"],
-                        value["run_id"],
-                        value["conversation_id"],
-                        value["agent_id"],
-                        value["digest"],
-                        value["first_message"],
-                        value["graph_target"]
-                    ])
-                    .to_string(),
-                )
+                delivery_fingerprint(value, &value["graph_target"])
             },
         })
     }
@@ -1010,6 +1003,17 @@ impl Catalog {
         })
     }
     pub(super) fn original(&self, locator: &Locator) -> std::result::Result<Value, &'static str> {
+        self.read_locator(locator, false)
+    }
+
+    /// For queue display only. A waiting refusal can be indexed before the
+    /// native offer adds its graph target. Historical rows retain that earlier
+    /// fingerprint. All original request and scope fields must still agree.
+    pub(super) fn codex_queue_original(&self, locator: &Locator) -> std::result::Result<Value, &'static str> {
+        self.read_locator(locator, true)
+    }
+
+    fn read_locator(&self, locator: &Locator, queue_display: bool) -> std::result::Result<Value, &'static str> {
         if locator.id.is_empty()
             || !bounded_identity(&locator.id, 128)
             || locator.id.contains(['/', '\\'])
@@ -1020,7 +1024,15 @@ impl Catalog {
         let value = read_original(&self.state.join(locator.source.directory()).join(&filename))?;
         let binding = Binding::parse(locator.source, &value, &filename).map_err(|_| "corrupt")?;
         if binding.fingerprint != locator.fingerprint {
-            return Err("binding_changed");
+            let target = &value["graph_target"];
+            if !(queue_display && locator.source == Source::Terminal && locator.at == 0.
+                && value["codex_outbox"] == true && value["transport"] == "codex_queue"
+                && value["status"] == "submitted" && value["first_message"] == false
+                && target["schema"] == 1 && target["name"] == value["name"] && target["run_id"] == value["run_id"]
+                && target["endpoint"]["provider"] == "codex" && target["endpoint"]["conversation"] == value["conversation_id"]
+                && delivery_fingerprint(&value, &Value::Null) == locator.fingerprint) {
+                return Err("binding_changed");
+            }
         }
         Ok(value)
     }
@@ -1708,9 +1720,12 @@ pub(super) fn page(
     cursor: &str,
     limit: usize,
 ) -> Result<(Catalog, Page)> {
+    scoped_page(record, agent, cursor, limit, true)
+}
+pub(super) fn scoped_page(record: &Value, agent: &str, cursor: &str, limit: usize, files: bool) -> Result<(Catalog, Page)> {
     let state = root();
     let catalog = Catalog::open(&state, false)?;
-    let page = catalog.page(&Scope::new(record, agent), cursor, limit, true)?;
+    let page = catalog.page(&Scope::new(record, agent), cursor, limit, files)?;
     if page.metadata["migration_complete"] != true || catalog.verification_due() {
         migration::request(&state);
     }

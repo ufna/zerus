@@ -356,6 +356,7 @@ fn add(db: &Connection, canonical: &str, mut row: Value, stream: &str) -> Result
         "submitted_text",
         "source_offset",
         "native_match_hash",
+        "codex_client_id",
         "voice",
         "inherited_from",
     ] {

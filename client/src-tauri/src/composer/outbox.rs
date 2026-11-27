@@ -135,6 +135,13 @@ fn codex_work_phase(phase: Option<&str>) -> bool {
     matches!(phase, Some("working" | "tool" | "compacting"))
 }
 
+/// A Waiting entry came from the saved FIFO. An immediate ordinary send
+/// owns a Reserved entry from the outset and keeps its existing transport.
+fn idle_codex_queue(entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+    entry.state == State::Waiting && row.agent == "codex"
+        && row.phase.as_deref() == Some("idle") && details["codex_idle_outbox_supported"] == true
+}
+
 fn dsh_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "deepseek")
 }
@@ -255,6 +262,17 @@ impl Composers {
             return ManualSend::Direct;
         }
         let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);
+        // Antigravity's Activity can confirm the end of a prompt before the
+        // Sessions row catches up. The ordinary send rechecks the exact worker.
+        if ctx.row.agent == "agy"
+            && c.outbox.is_empty()
+            && details["phase"] == "idle"
+            && details["activity"] == "idle"
+            && details["send_available"] == true
+            && ctx.exact_outbox_details(details)
+        {
+            return ManualSend::Direct;
+        }
         let busy = details["activity"] == "busy"
             || matches!(
                 ctx.row.phase.as_deref(),
@@ -272,6 +290,16 @@ impl Composers {
         let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
         let target = target(ctx);
         let exact = ctx.exact_outbox_details(details);
+        // A person's Send to the current working Codex turn uses its normal
+        // guarded composer and Enter. A saved FIFO head keeps its own route.
+        if supported && exact && c.outbox.is_empty()
+            && ctx.row.agent == "codex" && codex_work_phase(ctx.row.phase.as_deref())
+            && details["codex_manual_turn_send"] == true
+            && !ctx.ordinary_input_held(hub)
+            && self.outbox_ready(&ctx.row, &target, details)
+        {
+            return ManualSend::Direct;
+        }
         if waiting {
             if let Some(reason) = ctx.reason() {
                 return ManualSend::Blocked(reason);
@@ -580,7 +608,14 @@ impl Composers {
         let Some(row) = self.outbox_row(entry) else {
             return false;
         };
-        self.outbox_ready(&row, &entry.target, details)
+        self.entry_ready(entry, &row, details)
+    }
+
+    fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+        self.outbox_ready(row, &entry.target, details)
+            && (!idle_codex_queue(entry, row, details)
+                || (details["pending_questions_complete"] == true
+                    && details["pending_questions"].as_array().is_some_and(Vec::is_empty)))
     }
 
     fn outbox_ready(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
@@ -703,13 +738,15 @@ impl Composers {
             return;
         }
         let outcome = if let Some(row) = self.outbox_row(&entry) {
-            if !self.outbox_ready(&row, &entry.target, details)
+            if !self.entry_ready(&entry, &row, details)
                 || self.lock().outbox_route_revision != route_revision
             {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = if row.agent == "codex" && codex_work_phase(row.phase.as_deref()) {
+            let action = if (row.agent == "codex" && codex_work_phase(row.phase.as_deref()))
+                || idle_codex_queue(&entry, &row, details)
+            {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
             } else {
                 guarded_action(&entry, terminal_native_supported(&row.agent, details))
@@ -842,7 +879,7 @@ impl Composers {
                     // Failed/unknown probes (including a later busy refusal) keep their backoff.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
-                    if exact && notice.is_none() {
+                    if exact && (native_queued || notice.is_none()) {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }

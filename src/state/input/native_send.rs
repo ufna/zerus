@@ -709,6 +709,14 @@ mod tests {
             assert_eq!(original.matches(new).count(), 1);
             original = original.replace(new, prior);
         }
+        // Codex queue receipts now also retain their exact native client ID.
+        let client_id = r#"            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
+"#;
+        assert_eq!(original.matches(client_id).count(), 1);
+        original = original.replacen(client_id, "", 1);
         // Desktop's outbox can verify an empty interrupted Codex prompt. The
         // ordinary and Team entry points continue to use their own idle guard.
         for (new, prior, count) in [

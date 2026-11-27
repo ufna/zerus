@@ -17,6 +17,31 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("pages accepted messages by exact run and drops late pages after changing selection", async () => {
+    const selected = { ...target, runId: "a", conversationId: "first" };
+    const base = { run_id: "a", conversation_id: "first", codex_queued_messages: [{ request_id: "new" }],
+      codex_queue_projection: { has_more: true, next_cursor: "c1" } };
+    let reply!: (value: Record<string, unknown>) => void;
+    const receiptPage = vi.fn(() => new Promise<Record<string, unknown>>(resolve => { reply = resolve; }));
+    const store = createActivity({ follow: async () => {}, unfollow: async () => {}, receiptPage });
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    const first = store.loadEarlierReceipts();
+    expect(receiptPage).toHaveBeenCalledWith(selected, "c1");
+    reply({ ...base, codex_queued_messages: [{ request_id: "new" }, { request_id: "old" }],
+      codex_queue_projection: { has_more: true, next_cursor: "c2" } });
+    await first;
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "new" }, { request_id: "old" }]);
+    expect(store.nextReceiptCursor()).toBe("c2");
+    const late = store.loadEarlierReceipts();
+    store.follow({ ...target, id: "another", key: "run:b", runId: "b", conversationId: "second" });
+    reply(base);
+    await late;
+    expect(store.hasReceiptPage()).toBe(false);
+    expect(store.nextReceiptCursor()).toBeUndefined();
+    store.follow(undefined);
+  });
+
   it("keeps one OpenCode user row through a late snapshot and preserves another with equal text and time", () => {
     const { store } = setup();
     store.follow(target);

@@ -26,6 +26,12 @@ export interface ActivitySource {
   ended(): boolean;
   /** Reads before the oldest event, optionally from a saved reading window's cursor. */
   loadOlder(after?: number): void;
+  nextReceiptCursor?(): string | undefined;
+  loadEarlierReceipts?(): Promise<void>;
+  hasReceiptPage?(): boolean;
+  resetReceiptPage?(): void;
+  receiptLoading?(): boolean;
+  receiptError?(): string | undefined;
   /** Why the last read failed; a read-only source shows it as a notice while set. */
   error(): string | undefined;
   /** The first answer did not come in time (the live follow only); `retry` asks again. */

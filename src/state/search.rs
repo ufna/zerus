@@ -790,6 +790,11 @@ pub(super) fn provider_event(agent: &str, event: &Value) -> Option<(Value, &'sta
     let text = journal::clipped(&json!(text), MAX_LINE_BYTES);
     let mut message = json!({"type":if role == "user" { "UserPromptSubmit" } else { "AgentMessage" },
         "source":source,"at":at,"message_id":id,"agent_id":"","detail":text});
+    if agent == "codex" && event["type"] == "event_msg" && event["payload"]["type"] == "user_message"
+        && session_id::canonical(string(&event["payload"], "client_id"))
+        && event["payload"]["client_id"] != uuid::Uuid::nil().to_string() {
+        message["codex_client_id"] = event["payload"]["client_id"].clone();
+    }
     if agent == "codex" && role == "assistant" {
         let payload = &event["payload"];
         let phase = [string(&payload["item"], "phase"), string(payload,"phase"), string(payload,"channel")]

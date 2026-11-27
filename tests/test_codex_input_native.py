@@ -241,13 +241,132 @@ class NativeCodexInput(unittest.TestCase):
         self.assertNotIn(draft, messages)
         self.assertNotIn(refused, messages)
 
+    def test_ordinary_busy_send_enters_the_same_turn_after_a_running_tool_and_preserves_a_draft(self):
+        import base64
+        # Hold the first actual tool call until the regular guarded Send finishes.
+        # Its next Responses request identifies whether Enter steered this turn.
+        marker = self.root / 'tool-started'
+        release_tool = self.root / 'tool-release'
+        hold = 'Hold a private tool for the manual Send.'
+        calls = []
+        fallback = self.server.RequestHandlerClass.do_POST
+        def respond(handler):
+            raw = handler.rfile.read(int(handler.headers['Content-Length']))
+            wire = json.loads(raw)
+            items = wire.get('input', [])
+            texts = [part.get('text', '') for row in items if row.get('role') == 'user'
+                     for part in row.get('content', []) if isinstance(part, dict)]
+            if hold not in texts or calls:
+                if any(row.get('call_id') == 'manual_wait' and row.get('type') == 'function_call_output' for row in items):
+                    calls.append(texts)
+                handler.rfile = io.BytesIO(raw)
+                return fallback(handler)
+            calls.append(texts)
+            shell = f'touch "{marker}"; for i in $(seq 1 160); do test -f "{release_tool}" && break; sleep .05; done; pwd'
+            item = dict(type='function_call', id='fc_manual', call_id='manual_wait', namespace='functions',
+                        name='exec_command', arguments=json.dumps(dict(cmd=shell, yield_time_ms=10000)), status='completed')
+            response = dict(id='resp_manual', object='response', status='completed', output=[item],
+                            usage=dict(input_tokens=1, output_tokens=1, total_tokens=2))
+            handler.send_response(200)
+            handler.send_header('Content-Type', 'text/event-stream')
+            handler.end_headers()
+            handler.emit('response.created', response=dict(response, status='in_progress', output=[]))
+            handler.emit('response.output_item.added', output_index=0, item=dict(item, status='in_progress'))
+            handler.emit('response.output_item.done', output_index=0, item=item)
+            handler.emit('response.completed', response=response)
+        self.server.RequestHandlerClass.do_POST = respond
+        self.tmux('send-keys', '-l', '-t', self.pane, hold)
+        self.wait_for(lambda: hold in self.screen())
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.wait_for(marker.exists)
+        self.record.update(activity='busy', phase='tool')
+        self.write_record()
+        typed = 'Keep my unsent native draft'
+        self.tmux('send-keys', '-l', '-t', self.pane, typed)
+        self.wait_for(lambda: typed in self.screen())
+        blocked = self.payload(text='Never offer this item.')
+        self.assertIn('draft', self.send(blocked, success=False))
+        self.assertIn(typed, self.screen())
+        # The fixture user removes only their own draft and issues a fresh Send.
+        self.tmux('send-keys', '-t', self.pane, 'C-a', 'C-k')
+        self.wait_for(lambda: typed not in self.screen())
+        content = b'private same-turn attachment'
+        request = self.payload(text='Read the same-turn file', attachments=[dict(name='turn.txt', mime='text/plain',
+                                    data_base64=base64.b64encode(content).decode())])
+        receipt = self.send(request)
+        self.assertEqual((receipt['status'], receipt['transport'], receipt['request_id']),
+                         ('submitted', 'terminal', request['request_id']))
+        self.assertEqual(receipt['conversation_id'], self.conversation_id)
+        self.assertEqual(Path(receipt['attachments'][0]['path']).read_bytes(), content)
+        self.assertEqual(self.send(request), receipt)
+        release_tool.touch()
+        self.wait_for(lambda: len(calls) >= 2)
+        self.assertIn(receipt['submitted_text'], calls[1])
+        turns = {}
+        turn = None
+        for line in Path(self.record['transcript']).read_text().splitlines():
+            row = json.loads(line)
+            event = row.get('payload', {})
+            if row.get('type') == 'event_msg' and event.get('type') == 'task_started':
+                turn = event['turn_id']
+            if row.get('type') == 'event_msg' and event.get('type') == 'user_message':
+                turns.setdefault(event['message'], []).append(turn)
+        self.assertEqual(len(turns[hold]), 1)
+        self.assertEqual(turns[receipt['submitted_text']], turns[hold])
+        self.assertNotIn(blocked['text'], turns)
+        self.assertNotIn(typed, turns)
+
     def test_busy_native_queue_admits_equal_requests_and_file_without_steering(self):
         self.busy_native_queue("working")
 
     def test_compacting_native_queue_admits_equal_requests_and_file_without_steering(self):
         self.busy_native_queue("compacting")
 
-    def busy_native_queue(self, phase):
+    def test_busy_native_queue_stays_on_the_original_main_in_a_multi_task_session(self):
+        self.busy_native_queue("working", separate_task=True)
+
+    def track_private_supervisor(self):
+        parent = subprocess.check_output(['ps', '-p', str(self.record['pid']), '-o', 'ppid='], text=True).strip()
+        start = subprocess.check_output(['ps', '-p', parent, '-o', 'lstart='],
+                                        env=dict(self.env, LC_ALL='C', TZ='UTC'), text=True).strip()
+        self.record.update(run_identity_version=1, startup_kind='resume', supervisor=dict(pid=int(parent), start=start))
+
+    def test_idle_native_queue_preserves_the_terminal_draft(self):
+        self.track_private_supervisor()
+        self.record.update(phase='idle', activity='idle')
+        self.write_record()
+        draft = 'My untouched terminal draft'
+        text = 'Queued follow-up to an idle thread'
+        self.tmux('send-keys', '-t', self.pane, '-l', draft)
+        self.wait_for(lambda: draft in self.screen())
+        snapshot = subprocess.run([str(test_input.HGS), 'inspect', self.name], env=self.env, text=True,
+                                  capture_output=True, timeout=15, check=True)
+        details = json.loads(snapshot.stdout)
+        self.assertEqual((details['activity'], details['phase']), ('idle', 'idle'))
+        self.assertIs(details['codex_idle_outbox_supported'], True)
+        request = self.payload(text=text, only_when_idle=True)
+        until = time.monotonic() + 8
+        def send():
+            result = subprocess.run([str(test_input.HGS), 'send', self.name, '--codex-queue', '--json'],
+                                    env=self.env, text=True, input=json.dumps(request), capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        while True:
+            receipt = send()
+            if receipt['status'] != 'waiting_for_idle' or time.monotonic() > until:
+                break
+            time.sleep(.1)  # A new private locator can take a moment to become current.
+        self.assertEqual((receipt['status'], receipt['transport']), ('submitted', 'codex_queue'), receipt)
+        self.assertTrue(receipt['native_queued_message_id'])
+        self.assertEqual(send(), receipt)
+        test_input.InputTransport.wait_until(self, lambda: any(r['texts'][-1:] == [text] for r in self.server.requests), 30)
+        self.assertEqual(sum(r['texts'][-1:] == [text] for r in self.server.requests), 1)
+        self.assertFalse(any(draft in r['texts'] for r in self.server.requests))
+        # A physical edit in the SAME composer extends the original text.
+        self.tmux('send-keys', '-t', self.pane, '-l', ' remains editable')
+        self.wait_for(lambda: draft + ' remains editable' in self.screen())
+
+    def busy_native_queue(self, phase, separate_task=False):
         import base64
         import hashlib
         # Hold this real native turn while Zerus offers the later inputs.
@@ -266,6 +385,11 @@ class NativeCodexInput(unittest.TestCase):
         if phase == "compacting":
             self.wait_for(lambda: "Compacting context" in self.screen())
         self.record.update(phase=phase, activity='busy')
+        sibling = '11111111-1111-4111-8111-111111111111'
+        if separate_task:
+            self.track_private_supervisor()
+            self.record['codex_native_tasks'] = dict(parent=self.conversation_id, run=self.run_id,
+                                                      threads={sibling: True}, pending={})
         self.write_record()
         def invoke(args, request):
             return subprocess.run([str(test_input.HGS), *args], env=self.env, text=True,
@@ -286,6 +410,21 @@ class NativeCodexInput(unittest.TestCase):
                 if result["status"] != "waiting_for_idle" or time.monotonic() > until:
                     return result
                 time.sleep(.1)  # New private receipt indexes are initially unknown.
+        if separate_task:
+            snapshot = invoke(['inspect', self.name], {})
+            self.assertEqual(snapshot.returncode, 0, snapshot.stderr)
+            details = json.loads(snapshot.stdout)
+            self.assertIs(details['codex_busy_outbox_supported'], True)
+            self.assertEqual((details['phase'], details['run_id'], details['conversation_id']),
+                             (phase, self.run_id, self.conversation_id))
+            other = self.payload(text='Do not send to the sibling', expected_conversation_id=sibling, only_when_idle=True)
+            result = invoke(['send', self.name, '--codex-queue', '--json'], other)
+            self.assertTrue(result.returncode or json.loads(result.stdout)['status'] == 'not_offered')
+            self.record['codex_native_tasks']['pending'] = {'creating-a-thread': True}
+            self.write_record()
+            self.assertEqual(send(a)['status'], 'waiting_for_idle')
+            self.record['codex_native_tasks']['pending'] = {}
+            self.write_record()
         receipts = [admitted(r) for r in (a, b, file)]
         for receipt in receipts:
             self.assertEqual((receipt['status'], receipt['transport']), ('submitted', 'codex_queue'), receipt)
@@ -293,6 +432,30 @@ class NativeCodexInput(unittest.TestCase):
             self.assertTrue(receipt['codex_outbox'])
         ids = [r['native_queued_message_id'] for r in receipts]
         self.assertEqual(len(set(ids)), 3)
+        queued = self.inspect_native_queue()
+        expected_by_id = {r['request_id']: (r['native_queued_message_id'], r['text']) for r in receipts}
+        self.assertEqual({r['request_id']: (r['native_queued_message_id'], r['detail']) for r in queued}, expected_by_id)
+        self.assertTrue(all(r['native_queue_state'] == 'queued' for r in queued))
+        clients = {r['codex_client_id'] for r in queued}
+        self.assertEqual(len(clients), 3)
+        self.assertTrue(clients.isdisjoint(ids))
+        files = next(r['attachments'] for r in queued if r['request_id'] == file['request_id'])
+        self.assertEqual([f['name'] for f in files], ['sample.txt'])
+        self.assertNotIn('path', files[0])
+        page_request = dict(expected_run_id=self.run_id, expected_conversation_id=self.conversation_id,
+                            projection='codex_queue', limit=1)
+        seen = []
+        while True:
+            result = invoke(['__state', 'receipt-index-page', self.name, '--json'], page_request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = json.loads(result.stdout)
+            seen.extend(r['request_id'] for r in page['codex_queued_messages'])
+            meta = page['codex_queue_projection']
+            if not meta['has_more']:
+                break
+            page_request['cursor'] = meta['next_cursor']
+            self.assertLessEqual(len(seen), 3)
+        self.assertCountEqual(seen, expected_by_id)
         # A lost HGS reply reads exactly the durable original, without a new native offer.
         query = dict(request_id=file['request_id'], expected_run_id=self.run_id,
                      expected_conversation_id=self.conversation_id,
@@ -316,6 +479,17 @@ class NativeCodexInput(unittest.TestCase):
         self.wait_for(lambda: native_texts()[-3:] == expected)
         self.assertEqual(native_texts().count(text), 2)
         self.wait_for(lambda: any(req['texts'][-1:] == expected[-1:] for req in self.server.requests))
+        consumed = self.inspect_native_queue()
+        self.assertEqual({r['request_id']: r['native_queue_state'] for r in consumed},
+                         {r['request_id']: 'consumed' for r in receipts})
+        self.assertEqual({r['codex_client_id'] for r in consumed}, clients)
+
+
+    def inspect_native_queue(self):
+        result = subprocess.run([str(test_input.HGS), 'inspect', self.name], env=self.env,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)['codex_queued_messages']
 
     def test_native_refusal_has_an_opted_in_terminal_outcome(self):
         import native_send_outcome

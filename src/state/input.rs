@@ -255,9 +255,10 @@ impl SendMode {
 
     fn idle_input_ready(self, record: &Value) -> bool {
         if self == Self::CodexQueue {
-            return record["agent"] == "codex" && record["activity"] == "busy"
-                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"))
-                && !codex_tasks::multiple(record)
+            let busy = record["activity"] == "busy"
+                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"));
+            return record["agent"] == "codex" && (busy || idle_reminder_ready(record))
+                && !codex_tasks::unresolved(record)
                 && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
                 && input_queue::codex_waiting(record) == Ok(false);
         }
@@ -2733,6 +2734,10 @@ fn submit_core(
     let result: Result<()> = (|| {
         if let Some(queue) = &mut queue {
             let id = queue.offer()?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
             receipt["native_queued_message_id"] = json!(id);
             receipt["status"] = json!("submitted");
             receipt_index::persist(&receipt_path, &receipt)?;

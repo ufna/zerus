@@ -542,7 +542,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   const inboxScope = useContext(InboxScope);
   return (
     <div class="act-body">
-      <Show when={it().kind === "user"} fallback={<Body text={it().body ?? ""} />}>
+      <Show when={it().kind === "user" || it().kind === "receipt"} fallback={<Body text={it().body ?? ""} />}>
         {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
         <Show when={it().replies?.length} fallback={<OwnMessageBody text={it().body ?? ""} truncated={it().bodyTruncated} />}>
           <For each={it().replies}>{(r) => (
@@ -1351,6 +1351,13 @@ export function ActivityView(props: { source?: ActivitySource }) {
             <span style={{ visibility: source().loadingOlder() ? "hidden" : "inherit" }}>{tr("Recorded activity — messages and tool excerpts")}</span>
             <span class="act-older hint" style={{ position: "absolute", inset: "0", padding: "0", display: "flex", "align-items": "center", "justify-content": "center", "text-transform": "none", "letter-spacing": "normal", "font-weight": "normal", visibility: source().loadingOlder() ? "inherit" : "hidden" }} aria-hidden={!source().loadingOlder()}>{tr("Reading earlier activity…")}</span>
           </div>
+          <Show when={source().receiptError?.()}>{reason => <span role="status">{reason()}</span>}</Show>
+          <Show when={source().nextReceiptCursor?.()}>
+            <button type="button" class="btn small ghost" disabled={source().receiptLoading?.()} onClick={() => void source().loadEarlierReceipts?.()}>{tr("Earlier sent messages")}</button>
+          </Show>
+          <Show when={source().hasReceiptPage?.()}>
+            <button type="button" class="btn small ghost" onClick={() => source().resetReceiptPage?.()}>{tr("Latest sent messages")}</button>
+          </Show>
           <Show when={!source().olderDone() && source().events().length > 0}>
             <button type="button" class="btn small ghost act-read-older" disabled={source().loadingOlder()} onClick={() => source().loadOlder()}>{tr("Read earlier activity")}</button>
           </Show>
