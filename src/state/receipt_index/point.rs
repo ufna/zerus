@@ -155,6 +155,10 @@ struct Original {
     graph_target: Option<GraphTarget>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     claude_outbox: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    codex_outbox: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_queued_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     native: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -283,6 +287,22 @@ pub(in crate::state) fn terminal_outbox_refusal(state: &Path, name: &str, bytes:
     }
     let bytes = original_bytes(state, Source::Terminal, &query.request_id)
         .map_err(|_| "Original terminal refusal is unconfirmed")?;
+    if name.starts_with("codex/") {
+        if let Ok(receipt) = decode_metadata(&bytes, Source::Terminal, &query.request_id) {
+            if receipt.codex_outbox && receipt.transport == "codex_queue" && receipt.status == "submitted"
+                && receipt.name == name && receipt.request_id == query.request_id
+                && receipt.run_id == query.expected_run_id && receipt.conversation_id == query.expected_conversation_id
+                && receipt.digest == query.input_sha256 && !receipt.first_message && receipt.agent_id.is_empty()
+                && receipt.submitted_at.is_finite() && receipt.submitted_at > 0.0
+                && receipt.native_queued_message_id.as_deref().is_some_and(uuid)
+            {
+                return Ok(json!({"schema":1,"status":"submitted","proof":"native_codex_receipt","codex_outbox":true,
+                    "transport":"codex_queue","native_queued_message_id":receipt.native_queued_message_id,
+                    "request_id":receipt.request_id,"name":name,"run_id":receipt.run_id,"conversation_id":receipt.conversation_id,
+                    "input_sha256":receipt.digest,"submitted_at":receipt.submitted_at}));
+            }
+        }
+    }
     let refusal = Refusal::from_cli_record(&bytes).map_err(str::to_owned)?;
     if refusal.request_id != query.request_id || refusal.session != name
         || refusal.run_id != query.expected_run_id || refusal.conversation_id != query.expected_conversation_id

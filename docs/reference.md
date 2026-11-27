@@ -2715,9 +2715,13 @@ waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
 outgoing row with **Queued in Zerus**, its original local enqueue time, and
 its attachments. The agent receives no input during that save. The desktop
-checks the original run and sends in order when the agent is ready for input
-and no earlier message is pending. For Codex, this can include a live session
-after an interrupted turn when the host confirms an empty, usable native prompt.
+checks the original run and sends messages in order. On a host with native
+Codex queue support, **Send** can hand a message to the exact working Codex
+conversation for its next turn. **Queued in Codex** confirms native acceptance.
+The host keeps the original request and attachment references through this
+handoff. On older hosts the desktop waits for the existing guarded input
+route. After an interrupted turn, a live Codex session can receive input when
+the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
 input lock before offering the message. OpenCode checks the
 exact conversation and makes a queue-only offer. Any messages already parked

@@ -52,6 +52,7 @@ const COMPOSER_STATUS_SOURCES: readonly string[] = [
   trNoop("Checking the session…"),
   trNoop("This session cannot queue messages in Zerus. Wait for the agent to become ready."),
   trNoop("The original session changed. The draft is still in the editor."),
+  trNoop("Queued in Codex"),
   trNoop("Submitted to OpenCode"),
   trNoop("Update hgs on this computer to queue messages. The draft stays in the editor."),
 ];

@@ -213,10 +213,23 @@ enum SendMode {
     Ordinary,
     TerminalOutcome,
     DesktopOutbox,
+    CodexQueue,
 }
 
 impl SendMode {
+    fn check_send_gate(self, record: &Value) -> std::result::Result<(), Gate> {
+        // The native queue never types into the composer's current draft or dialog.
+        if self == Self::CodexQueue { Ok(()) } else { checked_send_gate(record) }
+    }
+
     fn idle_input_ready(self, record: &Value) -> bool {
+        if self == Self::CodexQueue {
+            return record["agent"] == "codex" && record["activity"] == "busy"
+                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"))
+                && !codex_tasks::multiple(record)
+                && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
+                && input_queue::codex_waiting(record) == Ok(false);
+        }
         if idle_reminder_ready(record) {
             return true;
         }
@@ -1650,12 +1663,14 @@ pub(super) fn safe_filename(name: &str, index: usize) -> String {
 }
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
-    let terminal_outcome = args.len() == 3 && args[1] == "--delivery-outcome-v2" && args[2] == "--json";
-    let when_idle = args.len() == 3 && args[1] == "--when-idle" && args[2] == "--json";
-    if !terminal_outcome && !when_idle && (args.len() != 2 || args[1] != "--json") {
-        return Err("usage: hgs send <session> --json (JSON from stdin)".into());
-    }
-    dispatch_send(&args[0], terminal_outcome, when_idle, ProcessCheck::Legacy)
+    let mode = match args {
+        [_, json] if json == "--json" => SendMode::Ordinary,
+        [_, outcome, json] if outcome == "--delivery-outcome-v2" && json == "--json" => SendMode::TerminalOutcome,
+        [_, idle, json] if idle == "--when-idle" && json == "--json" => SendMode::DesktopOutbox,
+        [name, queue, json] if name.starts_with("codex/") && queue == "--codex-queue" && json == "--json" => SendMode::CodexQueue,
+        _ => return Err("usage: hgs send <session> --json (JSON from stdin)".into()),
+    };
+    dispatch_send(&args[0], mode, ProcessCheck::Legacy)
 }
 
 #[cfg(target_os = "linux")]
@@ -1667,7 +1682,7 @@ pub(super) fn dispatch_verified(
     } else {
         // Selection remains read-only until the ordinary send owns Root.
         super::resolve_label_unrepaired(name)?;
-        dispatch_send(name, false, false, ProcessCheck::Verify)
+        dispatch_send(name, SendMode::Ordinary, ProcessCheck::Verify)
     }
 }
 
@@ -1699,7 +1714,7 @@ pub(super) fn send_desktop_verified(permit: &crate::desktop::verified_send::Perm
 }
 
 fn dispatch_send(
-    name: &str, terminal_outcome: bool, when_idle: bool, process: ProcessCheck,
+    name: &str, mode: SendMode, process: ProcessCheck,
 ) -> Result<i32> {
     let mut input = Vec::new();
     io::stdin()
@@ -1709,12 +1724,12 @@ fn dispatch_send(
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
     }
-    if when_idle {
+    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue) {
         let request: Request = serde_json::from_slice(&input).map_err(|error| error.to_string())?;
         if !request.only_when_idle || request.expected_conversation_id.is_empty() {
             return Err("Automatic Send requires an exact conversation and the idle guard".into());
         }
-        let receipt = match submit_core(name, &input, Origin::Person, true, SendMode::DesktopOutbox, None, process) {
+        let receipt = match submit_core(name, &input, Origin::Person, true, mode, None, process) {
             Ok(receipt) => receipt,
             Err(Failure::NotOffered(witness)) => {
                 let status = if witness.waits_for_idle_send() {
@@ -1741,7 +1756,6 @@ fn dispatch_send(
             return Ok(0);
         }
     }
-    let mode = if terminal_outcome { SendMode::TerminalOutcome } else { SendMode::Ordinary };
     match submit_core(name, &input, Origin::Person, true, mode, None, process) {
         Ok(receipt) => { println!("{receipt}"); Ok(0) }
         Err(Failure::TerminalRefusal(value)) => {
@@ -2426,7 +2440,7 @@ fn submit_core(
     // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
     // before any pending settings key too; the gate after them stays.
     if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
-        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+        mode.check_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
@@ -2437,7 +2451,7 @@ fn submit_core(
         Origin::KeepWarm(id) => keep_warm::check_submission(&record, id).map_err(|e| refused(typed, e))?,
         Origin::Person | Origin::Answer => {}
     }
-    checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+    mode.check_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     let attachments_root = root.join("attachments");
     private_dir(&attachments_root).map_err(|e| refused(typed, e))?;
     let attachments = tempfile::Builder::new()
@@ -2518,14 +2532,15 @@ fn submit_core(
     };
     let buffer = format!("hgs-input-{request_id}");
     let terminal = backend::current();
-    let mut queue = if codex_tasks::multiple(&record) {
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
         if !matches!(origin, Origin::Person) {
             return Err(refused(
                 typed,
                 "This Codex native-task operation needs its exact native input route".into(),
             ));
         }
-        Some(codex_queue::Queue::prepare(&record, &text).map_err(|e| refused(typed, e))?)
+        Some(codex_queue::Queue::prepare(&record, &text, mode == SendMode::CodexQueue)
+            .map_err(|e| if mode == SendMode::CodexQueue { gated(typed, Gate::NotIdle) } else { refused(typed, e) })?)
     } else {
         None
     };
@@ -2548,7 +2563,7 @@ fn submit_core(
     };
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(gate) = checked_record_gate(name, &request, &mut process, mode).and_then(|r| checked_send_gate(&r)) {
+    if let Err(gate) = checked_record_gate(name, &request, &mut process, mode).and_then(|r| mode.check_send_gate(&r)) {
         cleanup();
         return Err(gated(typed, gate));
     }
@@ -2571,6 +2586,7 @@ fn submit_core(
     if queued {
         receipt["transport"] = json!("codex_queue");
     }
+    if mode == SendMode::CodexQueue { receipt["codex_outbox"] = json!(true); }
     if agent == "claude" && request.only_when_idle {
         receipt["claude_outbox"] = json!(true);
     }
