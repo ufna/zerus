@@ -1192,6 +1192,11 @@ pub(crate) const ORPHANS: usize = 32;
 
 const COMPACTION_RESULT_UNKNOWN: &str = "The compaction result is still unknown. Check Terminal.";
 
+fn compaction_timeout(detail: &str, uncertain: bool) -> bool {
+    detail == rules::NOT_COMPACTED
+        || uncertain && detail == local_messages::uncertain_detail(rules::NOT_COMPACTED)
+}
+
 impl Composer {
     pub(super) fn compaction_notice_id(&self) -> Option<&str> {
         let request_id = self.timed_out_compaction.as_deref()?;
@@ -1200,9 +1205,7 @@ impl Composer {
             && self.waiting.is_none()
             && self.recording_owner.is_none()
             && self.storage_error.is_none()
-            && (self.notice == rules::NOT_COMPACTED
-                || self.uncertain
-                    && self.notice == local_messages::uncertain_detail(rules::NOT_COMPACTED));
+            && compaction_timeout(&self.notice, self.uncertain);
         shown.then_some(request_id)
     }
 }
@@ -2100,7 +2103,15 @@ impl Composers {
             composer.sending = false;
             composer.waiting = None;
             composer.gave_up = None;
-            composer.timed_out_compaction = None;
+            // A local continuation or its admitted service delivery still
+            // owns the same checkpoint here, before a definite end clears it.
+            composer.timed_out_compaction = composer
+                .checkpoint
+                .as_ref()
+                .filter(|saved| {
+                    saved.kind == Kind::CompactToSend && compaction_timeout(detail, uncertain)
+                })
+                .map(|saved| saved.request_id.clone());
             // A definite end sent nothing more; an uncertain one keeps the
             // original identity for its receipt.
             if !uncertain {
@@ -3416,69 +3427,67 @@ impl Composers {
     /// this one, so a late cancel never ends a newer continuation or the
     /// delivery that followed.
     pub(super) fn cancel(&self, key: &str, start: bool, revision: u64, text: &str) {
-        let mut hub = self.lock();
-        let Some(pending) = take_pending(&mut hub, key, start, revision) else {
-            return;
-        };
-        // An unconfirmed call stays bound to the draft. A late definitive
-        // reply can settle only that original checkpoint.
-        let uncertain = matches!(pending.call, Call::Running | Call::Unresolved);
-        if pending.call == Call::Running {
-            track_orphan(
-                &mut hub.orphans,
-                Orphan {
-                    request: pending.request_id.clone(),
-                    key: key.to_owned(),
-                    notice: Some(text.to_owned()),
-                },
-            );
-        }
-        let detail = if uncertain {
-            local_messages::uncertain_detail(text)
-        } else {
-            text.to_owned()
-        };
-        let current = hub
-            .composers
-            .get(key)
-            .is_some_and(|c| c.delivering == Some(revision));
-        self.finish_in(
-            &mut hub,
-            key,
-            Some(revision),
-            End {
-                ok: false,
-                detail: &detail,
-                uncertain,
-                preserve: false,
-            },
-        );
-        if let Some(composer) = hub.composers.get_mut(key).filter(|_| current) {
-            if !start && text == rules::NOT_COMPACTED && !pending.request_id.is_empty() {
-                composer.timed_out_compaction = Some(pending.request_id);
-            }
-            // A fresh same-run phase transition can retire a definite timeout.
-            if !uncertain && [rules::NOT_READY, rules::NOT_COMPACTED].contains(&text) {
-                let evidence = pending.evidence.as_deref();
-                let seen = |key: &str| {
-                    evidence
-                        .and_then(|details| details[key].as_str())
-                        .unwrap_or("")
+        let pending = {
+            let mut hub = self.lock();
+            let Some(pending) = take_pending(&mut hub, key, start, revision) else {
+                return;
+            };
+            // Its start or compaction was asked for and has no definite
+            // outcome: it may have run. The draft keeps that call's identity
+            // and stays uncertain until the user allows a retry
+            // (zerus-5wmh.66.4.4). A call still in flight is tracked, in the
+            // same lock, so its own late definite answer can resolve it; one
+            // that answered uncertainly has no later answer to wait for.
+            if matches!(pending.call, Call::Running | Call::Unresolved) {
+                if pending.call == Call::Running {
+                    let orphan = Orphan {
+                        request: pending.request_id.clone(),
+                        key: key.to_owned(),
+                        notice: Some(text.to_owned()),
+                    };
+                    track_orphan(&mut hub.orphans, orphan);
+                }
+                let detail = local_messages::uncertain_detail(text);
+                let end = End {
+                    ok: false,
+                    detail: &detail,
+                    uncertain: true,
+                    preserve: false,
                 };
-                if !seen("run_id").is_empty() {
+                self.finish_in(&mut hub, key, Some(revision), end);
+                drop(hub);
+                self.reconcile();
+                self.changed();
+                return;
+            }
+            pending
+        };
+        self.finish(key, Some(revision), false, text, false, false);
+        // A waiting send given up at its time limit says the session did not
+        // get there; the session can still get there later (zerus-le5s). Its
+        // last reading names the target a later reading must match.
+        if [rules::NOT_READY, rules::NOT_COMPACTED].contains(&text) {
+            let seen = |key: &str| {
+                pending
+                    .evidence
+                    .as_deref()
+                    .and_then(|details| details.get(key))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            if let Some(composer) = self.lock().composers.get_mut(key) {
+                if composer.error && composer.notice == text && !seen("run_id").is_empty() {
                     composer.gave_up = Some(super::GaveUp {
-                        notice: detail,
-                        run: seen("run_id").to_owned(),
-                        conversation: seen("conversation_id").to_owned(),
-                        phase: seen("phase").to_owned(),
-                        activity: seen("activity").to_owned(),
+                        notice: text.to_owned(),
+                        run: seen("run_id"),
+                        conversation: seen("conversation_id"),
+                        phase: seen("phase"),
+                        activity: seen("activity"),
                     });
                 }
             }
         }
-        drop(hub);
-        self.reconcile();
-        self.changed();
     }
 
     /// Dismiss the displayed timeout for this exact composer. The original
@@ -9756,11 +9765,17 @@ mod continuations {
         let view = until(&c, |v| !v.attaching && v.attachments.len() == 1);
         let text = format!("kept {}", view.text);
         let files = view.attachments.clone();
-        let start_compaction = |view: ComposerView, rev| {
-            let SendReply::Cold { token, .. } =
-                c.send_message(view.handle, rev, view.text_epoch, text.clone(), 4, 0)
-            else {
-                panic!("expected the normal compact-and-send choice")
+        let start_compaction = |view: crate::composer::ComposerView| {
+            let answer = c.send_message(
+                view.handle,
+                view.rev + 1,
+                view.text_epoch,
+                text.clone(),
+                4,
+                0,
+            );
+            let SendReply::Cold { token, .. } = answer else {
+                panic!("expected the normal compact-and-send choice, got {answer:?}")
             };
             assert_eq!(
                 c.answer(
@@ -9772,7 +9787,7 @@ mod continuations {
                 SendReply::Sending
             );
         };
-        start_compaction(view, 1);
+        start_compaction(view);
         let first = accept.recv_timeout(Duration::from_secs(10)).unwrap();
         let checkpoint = on_disk(&root).unwrap();
         assert_eq!(checkpoint.request_id, first);
@@ -9824,7 +9839,8 @@ mod continuations {
         assert!(sends(&fake).is_empty());
 
         compacts_as(&fake, "later-native-compaction");
-        start_compaction(resolved, 2);
+        c.observe(&state(cold()));
+        start_compaction(c.current().unwrap());
         settled(&c, false);
         *lock(&fake.now) += rules::COMPACT_LIMIT + 1.0;
         c.tick();

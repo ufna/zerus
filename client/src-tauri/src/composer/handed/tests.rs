@@ -792,6 +792,133 @@ fn a_handed_compact_and_continue_ends_as_its_send_ended() {
     }
 }
 
+#[test]
+fn dismiss_the_exact_compaction_timeout_from_immediate_and_readback_service_receipts() {
+    use zerus_client_core::desktop::compact_to_send as wire;
+
+    for mode in ["immediate", "checked", "reopened"] {
+        let root = dir(mode);
+        let store = drafts(&root);
+        let (mut c, mut fake) = send_hub_on(&store);
+        let session = SessionRef {
+            name: "kimi/sample-project/review".into(),
+            ..local()
+        };
+        let select = |c: &Composers, fake: &send::tests::Fake, details: Value| {
+            {
+                let mut row = lock(&fake.row);
+                row.agent = "kimi".into();
+                row.name = session.name.clone();
+            }
+            c.open(Some(session.clone()));
+            let mut batch = state(details);
+            batch.activity[0].computer = zerus_client_core::ComputerId::from("");
+            c.observe(&batch);
+            until(c, |v| v.loaded)
+        };
+        let settled = Arc::new(Mutex::new(None::<wire::Receipt>));
+        let (retained, readback) = (settled.clone(), settled.clone());
+        let check: Arc<CompactCheckFn> = Arc::new(move |plan| {
+            match lock(&readback)
+                .as_ref()
+                .and_then(|receipt| compact_to_send::settled(receipt, plan))
+            {
+                Some(answer) => Checked::Settled(answer),
+                None => Checked::InProgress,
+            }
+        });
+        c.set_compact(CompactRoute {
+            offer: Arc::new(move |name, checkpoint, compaction, input, handing| {
+                let scope = wire::Scope {
+                    configuration: "a".repeat(64),
+                    service_epoch: "33333333-3333-4333-8333-333333333333".into(),
+                };
+                let verified = compact_to_send::intent(&scope, name, checkpoint, compaction, input)
+                    .unwrap()
+                    .verify()
+                    .unwrap();
+                assert!(handing(&verified.plan));
+                let receipt = compact_to_send::tests::receipt(
+                    &verified,
+                    wire::Step::Recorded,
+                    wire::Step::NotStarted,
+                    true,
+                );
+                let answer = if mode == "immediate" {
+                    CompactAnswer::Settled(
+                        compact_to_send::settled(&receipt, &verified.plan).unwrap(),
+                    )
+                } else {
+                    CompactAnswer::Pending(verified.plan)
+                };
+                *lock(&retained) = Some(receipt);
+                answer
+            }),
+            check: check.clone(),
+        });
+        let file = root.join("private.txt");
+        std::fs::write(&file, b"private fixture bytes").unwrap();
+        let view = select(&c, &fake, cold());
+        c.attach_paths(view.handle, vec![file], Default::default());
+        let attached = until(&c, |v| !v.attaching && v.attachments.len() == 1);
+        let text = format!("Keep {}", attached.text);
+        compact_and_continue(&c, &attached, &text);
+        if mode != "immediate" {
+            let pending = until(&c, |v| v.delivery_pending);
+            assert!(
+                pending.uncertain && !pending.can_send && pending.compaction_notice_id.is_none()
+            );
+        }
+        if mode == "reopened" {
+            c.flush();
+            store.flush();
+            drop(c);
+            (c, fake) = send_hub_on(&store);
+            c.set_compact(CompactRoute {
+                offer: Arc::new(|_, _, _, _, _| panic!("must not reoffer after reopening")),
+                check,
+            });
+            select(&c, &fake, ready());
+        }
+        let timed_out = ticks(&c, &fake, FIRST, |view| {
+            view.status == compact_to_send::COMPACTION_UNCONFIRMED
+        });
+        let request = timed_out.compaction_notice_id.as_deref().expect(mode);
+        assert!(timed_out.status_error && !timed_out.uncertain && !timed_out.delivery_pending);
+        assert_eq!(
+            request,
+            lock(&settled)
+                .as_ref()
+                .unwrap()
+                .binding
+                .compaction_request_id
+        );
+        c.dismiss_compaction_notice(timed_out.handle, request);
+        let dismissed = c.current().unwrap();
+        assert!(dismissed.compaction_notice_id.is_none());
+        assert_eq!(dismissed.text, text);
+        assert_eq!(dismissed.attachments.len(), 1);
+        let visible = &dismissed.attachments[0];
+        let original = &attached.attachments[0];
+        assert_eq!(
+            (&visible.name, &visible.reference, visible.bytes),
+            (&original.name, &original.reference, original.bytes)
+        );
+        store.flush();
+        let saved = zerus_client_core::drafts::read_draft(store.root(), &dismissed.key);
+        assert_eq!(
+            saved.draft.draft.attachments[0].bytes,
+            b"private fixture bytes"
+        );
+        assert_eq!(
+            (dismissed.uncertain, dismissed.can_send),
+            (timed_out.uncertain, timed_out.can_send)
+        );
+        assert!(held(&c).is_none());
+        assert!(direct_calls(&fake).is_empty());
+    }
+}
+
 /// One the service does not take goes the unchanged direct way; one that
 /// never reached it ends with nothing run.
 #[test]
