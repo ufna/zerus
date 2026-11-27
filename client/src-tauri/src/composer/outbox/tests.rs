@@ -1164,3 +1164,94 @@ fn claude_fifo_waits_for_native_queue_and_reconciles_one_lost_acknowledgement() 
     assert_eq!(waiting.local[0].message_id.as_deref(), Some(prompt));
     assert_eq!(lock(&fake.calls).len(), 1);
 }
+
+#[test]
+fn codex_refused_before_input_recovers_the_original_file_and_fifo_after_restart() {
+    use sha2::{Digest, Sha256};
+    use zerus_client_core::actions::{invocation, outbox_receipt, outbox_status};
+
+    let root = dir("codex-refused-outbox-restart");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    let path = root.join("file.txt");
+    std::fs::write(&path, b"original bytes").unwrap();
+    c.attach_paths(view.handle, vec![path.clone()], Default::default());
+    let file = until(&c, |v| v.attachments.len() == 1);
+    let first = enqueue(&c, &file.text).waiting_in_zerus[0].clone();
+    let queued = enqueue(&c, "second");
+    let second = queued.waiting_in_zerus[1].clone();
+    c.edit(queued.handle, queued.rev + 1, queued.text_epoch, "next draft".into(), 0, 0);
+    lock(&fake.row).phase = Some("idle".into());
+    let idle = details(&session, "codex", false, Some(false));
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "lost reply".into() });
+    settle_next(&c, &fake, &store, idle.clone());
+    until(&c, |v| v.waiting_in_zerus[0].state == State::Unknown);
+    let input = {
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.len(), 1);
+        let (target, action, id) = &calls[0];
+        invocation(target, action, id).unwrap().stdin.unwrap()
+    };
+    c.flush();
+    drop(c);
+    std::fs::remove_file(path).unwrap();
+
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let restored = present(&c, &fake, &session, "codex");
+    assert_eq!(restored.text, "next draft");
+    assert_eq!(restored.waiting_in_zerus[0].state, State::Unknown);
+    assert_eq!(restored.waiting_in_zerus[1], second);
+    let response = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+    let for_status = response.clone();
+    c.set_outbox_status(std::sync::Arc::new(move |target, action, id| {
+        let query = outbox_status(target, action, id).ok()?;
+        let value = lock(&for_status).clone()?;
+        outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+            code: 0, stderr: String::new(), stdout: serde_json::to_vec(&value).unwrap(),
+        })
+    }));
+    let receipt = json!({
+        "schema": 1, "status": "waiting_for_idle", "transport": "terminal", "proof": "native_input_lock",
+        "request_id": first.request_id, "name": session.name, "run_id": "run-1",
+        "conversation_id": "conv-1", "input_sha256": format!("{:x}", Sha256::digest(&input)),
+    });
+    settle_next(&c, &fake, &store, idle.clone());
+    assert_eq!(c.current().unwrap().waiting_in_zerus[0].state, State::Unknown);
+    for (key, wrong) in [
+        ("request_id", second.request_id.as_str()), ("conversation_id", "other"),
+        ("input_sha256", "wrong"), ("status", "unknown"),
+    ] {
+        let mut invalid = receipt.clone();
+        invalid[key] = json!(wrong);
+        *lock(&response) = Some(invalid);
+        settle_next(&c, &fake, &store, idle.clone());
+        assert_eq!(c.current().unwrap().waiting_in_zerus[0].state, State::Unknown);
+    }
+    *lock(&response) = Some(receipt);
+    settle_next(&c, &fake, &store, idle.clone());
+    let waiting = until(&c, |v| v.waiting_in_zerus[0].state == State::Waiting);
+    assert_eq!(waiting.waiting_in_zerus, vec![first.clone(), second.clone()]);
+    settle_next(&c, &fake, &store, details(&session, "codex", true, Some(true)));
+    assert!(lock(&fake.calls).is_empty(), "a receipt check never dispatches");
+
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","transport":"terminal","request_id":id,
+            "name":name,"run_id":"run-1","conversation_id":"conv-1"}),
+        cleanup: None,
+    });
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(&c, &fake, &store, idle.clone());
+    until(&c, |v| v.waiting_in_zerus.len() == 1);
+    settle_next(&c, &fake, &store, idle);
+    assert_eq!(until(&c, |v| v.waiting_in_zerus.is_empty()).text, "next draft");
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 2);
+    let (target, action, id) = &calls[0];
+    assert_eq!(id, &first.request_id);
+    assert!(matches!(action, Action::SendWhenIdle { .. }));
+    assert_eq!(invocation(target, action, id).unwrap().stdin.unwrap(), input);
+    assert_eq!(calls[1].2, second.request_id);
+}

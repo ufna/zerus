@@ -1857,7 +1857,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
             return done(receipt, None);
         }
         if let (true, Some(reason)) = (
-            dsh && exact_pre_offer && receipt["status"] == "not_offered",
+            exact_pre_offer && (dsh || terminal_outbox_refusal(target, &receipt)) && receipt["status"] == "not_offered",
             receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty()),
         ) {
             return failed(reason);
@@ -1894,7 +1894,7 @@ pub fn outbox_status(
 ) -> Result<Invocation, String> {
     use sha2::{Digest, Sha256};
 
-    if !(target.name.starts_with("opencode/") || target.name.starts_with("claude/") || target.name.starts_with("dsh/"))
+    if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
         || !matches!(action, Action::SendWhenIdle { .. })
     {
         return Err("Expected an original outbox request.".into());
@@ -1934,11 +1934,19 @@ pub(crate) fn dsh_outbox_submitted(receipt: &Value) -> bool {
         })
 }
 
+pub fn terminal_outbox_refusal(target: &Target, receipt: &Value) -> bool {
+    (target.name.starts_with("codex/") || target.name.starts_with("kimi/"))
+        && receipt["schema"] == 1 && receipt["proof"] == "native_input_lock"
+        && receipt["transport"] == "terminal"
+        && matches!(receipt["status"].as_str(), Some("waiting_for_idle" | "not_offered"))
+}
+
 pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
     let Exit::Code { code: 0, stdout, .. } = exit else { return None };
     if stdout.len() > 8192 { return None; }
     let receipt: Value = serde_json::from_slice(&stdout).ok()?;
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+    let terminal_refusal = terminal_outbox_refusal(target, &receipt);
     let provider = if target.name.starts_with("claude/") {
         receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
     } else if target.name.starts_with("dsh/") {
@@ -1948,7 +1956,7 @@ pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option
             && receipt["transport"] == "native_opencode"
             && receipt["native_message_id"].as_str().is_some_and(native_message_id)
     };
-    (provider && receipt["schema"] == 1 && receipt["status"] == "submitted"
+    ((terminal_refusal || (provider && receipt["status"] == "submitted")) && receipt["schema"] == 1
         && receipt["request_id"].as_str() == query.request_id.as_deref()
         && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
         && receipt["name"] == target.name && receipt["run_id"] == target.run_id
@@ -2205,6 +2213,25 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guarded_terminal_refusal_requires_the_exact_input_digest() {
+        use sha2::{Digest, Sha256};
+
+        let mut target = target("");
+        target.name = "codex/sample/terminal".into();
+        let action = Action::SendWhenIdle { text: "queued prompt".into(), attachments: vec![] };
+        let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
+        let inv = invocation(&target, &action, request).unwrap();
+        let mut refusal = json!({"schema":1,"transport":"terminal","proof":"native_input_lock",
+            "status":"not_offered","reason":"target changed","request_id":request,"name":target.name,
+            "run_id":target.run_id,"conversation_id":target.conversation_id,
+            "input_sha256":format!("{:x}", Sha256::digest(inv.stdin.as_deref().unwrap()))});
+        let result = |value: &Value| classify(&target, &action, &inv, exit(0, value.to_string().as_bytes(), ""));
+        assert!(matches!(result(&refusal), Outcome::Failed { .. }));
+        refusal["input_sha256"] = json!("b".repeat(64));
+        assert!(matches!(result(&refusal), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn claude_outbox_submission_requires_the_original_input_digest() {
         use sha2::{Digest, Sha256};

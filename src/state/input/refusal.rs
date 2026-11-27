@@ -104,7 +104,8 @@ pub(super) fn prepare(witness: &NotOffered) -> Result<()> {
 }
 
 pub(super) fn remember(witness: &NotOffered) -> Result<()> {
-    let value = value(witness)?;
+    let mut value = value(witness)?;
+    value["outbox_waiting"] = json!(witness.waits_for_idle_send());
     publish(witness, &value)
 }
 

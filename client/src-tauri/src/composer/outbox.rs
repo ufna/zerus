@@ -148,8 +148,7 @@ fn guarded_action(entry: &Entry) -> Action {
 }
 
 fn can_probe(entry: &Entry) -> bool {
-    entry.state == State::Waiting || entry.state == State::Unknown
-        && (opencode_outbox(entry) || dsh_outbox(entry) || entry.target.name.starts_with("claude/"))
+    matches!(entry.state, State::Waiting | State::Unknown)
 }
 
 fn guarded_supported(agent: &str, details: &serde_json::Value) -> bool {
@@ -679,7 +678,9 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
-        if expected == State::Unknown && !exact {
+        let terminal_refusal = receipt.is_some_and(|receipt|
+            zerus_client_core::actions::terminal_outbox_refusal(&entry.target, receipt));
+        if expected == State::Unknown && !exact && !terminal_refusal {
             return;
         }
         let terminal_only = exact
@@ -705,7 +706,7 @@ impl Composers {
         } else {
             entries[0].state = if busy {
                 State::Waiting
-            } else if matches!(outcome, Some(Outcome::Failed { .. })) {
+            } else if terminal_refusal || matches!(outcome, Some(Outcome::Failed { .. })) {
                 State::Failed
             } else {
                 State::Unknown

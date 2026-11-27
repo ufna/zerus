@@ -114,6 +114,36 @@ class NativeSendOutcome(unittest.TestCase):
         self.assertEqual(self.fixture.received(), sent_keys)
         self.assertEqual((self.receipt.read_bytes(), self.receipt.stat().st_mtime_ns), original)
 
+    def test_guarded_outbox_waits_for_the_empty_prompt_and_reuses_the_original(self):
+        f = self.fixture
+        f.record.update(phase='idle', activity='idle')
+        f.write_record()
+        f.screen('\x1b[2J\x1b[H› draft', '7:0')
+        raw = json.dumps({**self.request, 'only_when_idle': True})
+        query = {key: self.request[key] for key in ('request_id', 'expected_run_id', 'expected_conversation_id')}
+        query['input_sha256'] = hashlib.sha256(raw.encode()).hexdigest()
+
+        def invoke(args, body):
+            result = subprocess.run([str(test_input.HGS), *args], input=body, text=True,
+                                    capture_output=True, env=f.env, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        send = ['send', f.name, '--when-idle', '--json']
+        check = ['delivery', 'outbox-status', f.name, '--json']
+        before = f.received()
+        self.assertEqual(invoke(send, raw)['status'], 'waiting_for_idle')
+        self.assertEqual(invoke(check, json.dumps(query))['status'], 'waiting_for_idle')
+        self.assertEqual(f.received(), before)
+        f.screen('\x1b[2J\x1b[H› ', '2:0')
+        accepted = invoke(send, raw)
+        self.assertEqual(accepted['status'], 'submitted')
+        self.assertEqual(accepted['request_id'], self.request['request_id'])
+        f.wait_for(lambda: f.received().endswith(b'\r'))
+        entered = f.received()
+        self.assertEqual(invoke(send, raw), accepted)
+        self.assertEqual(f.received(), entered)
+
     def test_legacy_negative_stays_retryable_and_is_never_v2_lookup_proof(self):
         p = self.send(versioned=False)
         self.assertNotEqual(p.returncode, 0)
