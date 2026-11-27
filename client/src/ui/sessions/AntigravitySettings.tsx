@@ -186,7 +186,7 @@ export function AntigravitySettings(props: {
     </dialog>;
   }
   return <>
-    <button ref={anchor} type="button" class="btn ghost small cmp-model" aria-label={tr("Antigravity model settings")}
+    <button ref={anchor} type="button" class="btn ghost cmp-model" aria-label={tr("Antigravity model settings")}
       aria-haspopup="dialog" aria-expanded={opened()} title={tr("Antigravity model settings")}
       onClick={() => { setSelection(undefined); setOpened(true); }}>
       <span class="ell cmp-model-name">{state().modelLabel || tr("Model unavailable")}</span>

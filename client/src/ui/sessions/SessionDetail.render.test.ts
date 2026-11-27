@@ -1138,7 +1138,23 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
   expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
 });
 
-it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exact Activity in %s", async (lang) => {
+function antigravityComposer(row: ViewRow): ComposerView {
+  return {
+    handle: 118, key: draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name, session_id: row.session_id, archive_id: null }),
+    loaded: true, rev: 1, text_epoch: 1, text: "Private Antigravity draft", position: 0, anchor: 0,
+    attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false,
+    status: "", status_error: false, can_send: false, send_label: { source: "Send" }, available: false,
+    unavailable_reason: "On this computer, run agy acp --login, then refresh the session. Your draft stays here.",
+    block_reason: null, attachments_available: false, attachments_reason: "", session_status: "", session_status_error: false,
+    session_blocks_input: false, inspect_error: false, local: [], compacting: false, cancel_send: false, input_visible: true,
+    question: null, queue: null, cache: { visible: false, tone: "quiet", label: "", short_label: "" },
+    cache_warning: "", cache_details: "",
+    context: { visible: false, tone: "quiet", text: "", tooltip: "", warning: false, percent: null, accessible_name: "" },
+    clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "", cache_enabled: false, running: false, reason: "", cache_reason: "" },
+  };
+}
+
+it.each(["en", "ru"] as const)("changes Antigravity model and thinking in the shared composer slot in %s", async (lang) => {
   transport.language = lang;
   const label = lang === "ru" ? {
     settings: "Настройки модели Antigravity", apply: "Применить", quota: "Квота аккаунта", context: "Использование контекста",
@@ -1152,6 +1168,8 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   const row: ViewRow = { ...fixtureRow(), name: "agy/example/settings", agent: "agy", run_id: uuid(801), conversation_id: uuid(802),
     process_state: "running", model: "Stale catalog choice", terminal_supported: false };
   const before = uuid(810), after = uuid(811), refreshed = uuid(812);
+  const draft = { ...antigravityComposer(row), available: true, can_send: true, unavailable_reason: "" };
+  vi.mocked(bridge.composerOpen).mockImplementation(async session => session?.name === row.name ? draft : null);
   const key = (await open(row)).slice(1);
   const settings = (current: string, effort: string, revision: string) => ({
     settings_model: current, effort, agy_settings: { status: "confirmed", revision, mode: { id: "default", label: "Review changes" } },
@@ -1176,7 +1194,14 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
     if (["send_message", "local_retry", "composer_allow_retry"].includes(command)) otherWrites.push(command);
     return undefined;
   };
-  const button = host.querySelector<HTMLButtonElement>(`.detail-tabs [aria-label="${label.settings}"]`)!;
+  const selector = `[aria-label="${label.settings}"]`;
+  const button = host.querySelector<HTMLButtonElement>(`.cmp-actions ${selector}`)!;
+  expect(button).not.toBeNull();
+  expect(host.querySelectorAll(selector)).toHaveLength(1);
+  expect(host.querySelector(`.detail-tabs ${selector}`)).toBeNull();
+  expect(button.compareDocumentPosition(host.querySelector(".cmp-actions .primary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const draftText = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value;
+  expect(draftText()).toBe(draft.text);
   const dialog = () => host.querySelector<HTMLDialogElement>('dialog[aria-labelledby="agy-settings-title"]')!;
   const field = (selector: string) => dialog().querySelector<HTMLButtonElement>(selector)!;
   const action = (caption: string) => [...dialog().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === caption)!;
@@ -1190,6 +1215,8 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   expect(dialog().textContent).toContain(label.old);
   expect(host.querySelector(".detail-head")?.textContent).not.toContain("Stale catalog choice");
   expect(dialog().textContent).not.toContain("stale legacy cache");
+  expect(draftText()).toBe(draft.text);
+  expect(calls).toEqual([]);
   expect(action(label.apply).disabled).toBe(true);
   state(3, settings("first", "mid", before));
   expect(button.textContent).toContain("Fixture Flash");
@@ -1199,6 +1226,10 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   expect(dialog().querySelector(`[role="group"][aria-label^="${label.context}"]`)?.getAttribute("aria-label")).toContain("180");
   expect(dialog().textContent).toContain("180");
   expect(dialog().textContent).toContain("/usage");
+  field("#agy-model").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
+  await flush();
+  expect(calls).toEqual([]);
+  expect(otherWrites).toEqual([]);
   await choose("#agy-model", "second");
   expect(field("#agy-effort").disabled).toBe(true);
   const connection = (ready: boolean) => receive({ ...emptyBatch(), activity: [{
@@ -1238,6 +1269,7 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   state(3, settings("second", "max", refreshed));
   expect(button.textContent).toContain("Maximum");
   expect(field("#agy-effort").disabled).toBe(false);
+  expect(draftText()).toBe(draft.text);
   expect(calls).toHaveLength(2);
   expect(otherWrites).toEqual([]);
 });
@@ -1252,19 +1284,7 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     : { menu: "Session actions", stop: "Stop session…", confirm: "Stop session", resume: "Resume session", retry: "Retry start", cancel: "Cancel" };
   const fixture = fixtureRow("Private Antigravity");
   const row: ViewRow = { ...fixture, name: "agy/example/fixture", agent: "agy", terminal_supported: false };
-  const view: ComposerView = {
-    handle: 118, key: draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name, session_id: row.session_id, archive_id: null }),
-    loaded: true, rev: 1, text_epoch: 1, text: "Private Antigravity draft", position: 0, anchor: 0,
-    attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false,
-    status: "", status_error: false, can_send: false, send_label: { source: "Send" }, available: false,
-    unavailable_reason: "On this computer, run agy acp --login, then refresh the session. Your draft stays here.",
-    block_reason: null, attachments_available: false, attachments_reason: "", session_status: "", session_status_error: false,
-    session_blocks_input: false, inspect_error: false, local: [], compacting: false, cancel_send: false, input_visible: true,
-    question: null, queue: null, cache: { visible: false, tone: "quiet", label: "", short_label: "" },
-    cache_warning: "", cache_details: "",
-    context: { visible: false, tone: "quiet", text: "", tooltip: "", warning: false, percent: null, accessible_name: "" },
-    clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "", cache_enabled: false, running: false, reason: "", cache_reason: "" },
-  };
+  const view = antigravityComposer(row);
   vi.mocked(bridge.composerOpen).mockImplementation(async s => s?.name === row.name ? view : null);
   const key = (await open(row)).slice(1);
   const lifecycle: unknown[] = [], sendCalls: unknown[] = [], inspections: unknown[] = [];
