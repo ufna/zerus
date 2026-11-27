@@ -124,7 +124,9 @@ impl Client {
                             json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"Client capability unavailable"}})
                         };
                         self.write(response)?;
-                        return Ok(None);
+                        // A reader draining buffered frames can distinguish
+                        // an answered request from an empty receive queue.
+                        return Ok(Some(frame));
                     }
                 }
                 Ok(Some(frame))

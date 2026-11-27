@@ -1,5 +1,6 @@
 """Run the real Antigravity CLI against a disposable, loopback model endpoint."""
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hashlib
 import json
@@ -20,6 +21,7 @@ import uuid
 
 AGY = os.environ.get("AGY_TEST_BIN")
 HGS = os.environ.get("HGS_TEST_BIN")
+LEGACY_HGS = os.environ.get("AGY_LEGACY_HGS_TEST_BIN")
 TMUX = shutil.which("tmux")
 
 
@@ -114,6 +116,306 @@ class AntigravityNative(unittest.TestCase):
     def action(self, row, action, check=True, **fields):
         return self.cli("session-action", row["name"], "--json",
                         payload=self.identity_request(row, action=action, **fields), check=check)
+
+    def settings_request(self, row, **fields):
+        return self.identity_request(row, expected_session_id=row["session_id"],
+                                     expected_config_revision=row["agy_settings"]["revision"], **fields)
+
+    def settings(self, row, request, check=True):
+        result = self.cli("settings", row["name"], "--json", payload=request, check=check)
+        if not check:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        answer = json.loads(result.stdout)
+        self.assertEqual((answer["request_id"], answer["name"], answer["run_id"],
+                          answer["conversation_id"], answer["session_id"]),
+                         (request["request_id"], row["name"], request["expected_run_id"],
+                          request["expected_conversation_id"], request["expected_session_id"]))
+        return answer
+
+    def test_native_settings_use_the_offered_model_and_effort_without_a_prompt(self):
+        from test_watch import Stream
+
+        with self.model() as endpoint:
+            first = self.launch("native-settings")
+            self.assertTrue(first["settings_change_supported"])
+            self.assertTrue(first["model_change_supported"])
+            self.assertEqual(first["agy_settings"]["status"], "confirmed")
+            self.assertEqual(first["agy_quota"]["status"], "unavailable")
+            self.assertIsNone(first["session_usage"]["last_turn"])
+            stream = Stream(self, executable=HGS)
+            stream.next(lambda frame: frame["t"] == "hello")
+            stream.next(lambda frame: frame["t"] == "snapshot" and frame["topic"] == "catalog" and frame["last"])
+            stream.send(op="subscribe", topic="activity", session={
+                key: first[key] for key in ("name", "session_id", "run_id", "conversation_id")
+            })
+            watched = stream.next(lambda frame: frame["t"] == "state")["value"]
+            self.assertEqual(watched["agy_settings"], first["agy_settings"])
+            mode = first["agy_settings"]["mode"]
+            selected = first["settings_model"]
+            next_model = next(option for option in first["model_options"] if option["id"] != selected)
+            self.assertNotIn("effort_options", next_model)
+            model_id = next_model["id"]
+            bad = self.settings_request(first, model="never-advertised-model")
+            self.assertEqual(self.settings(first, bad, check=False)["status"], "refused")
+            wrong_run = dict(self.settings_request(first, model=model_id), expected_run_id=str(uuid.uuid4()))
+            self.assertEqual(self.settings(first, wrong_run, check=False)["status"], "refused")
+            both = self.settings_request(first, model=model_id, effort="high")
+            self.assertEqual(self.settings(first, both, check=False)["status"], "refused")
+            self.assertEqual(self.inspect(first["name"])["settings_model"], selected)
+
+            change = self.settings_request(first, model=model_id)
+            receipt = self.settings(first, change)
+            self.assertEqual((receipt["status"], receipt["model"]), ("applied", model_id))
+            now = self.inspect(first["name"])
+            self.assertEqual(now["model"], model_id)
+            self.assertEqual(now["agy_settings"]["revision"], receipt["config_revision"])
+            self.assertNotEqual(now["agy_settings"]["revision"], first["agy_settings"]["revision"])
+            self.assertEqual(self.settings(first, change), receipt)
+            stale = self.settings_request(first, model=selected)
+            self.assertEqual(self.settings(first, stale, check=False)["status"], "refused")
+
+            offered = next(option for option in now["model_options"] if option["id"] == model_id)
+            different = next(effort for effort in offered["effort_options"] if effort != now["effort"])
+            effort = self.settings_request(now, model=model_id, effort=different)
+            result = self.settings(now, effort)
+            self.assertEqual((result["status"], result["model"], result["effort"]),
+                             ("applied", model_id, different))
+            now = self.inspect(first["name"])
+            self.assertEqual(now["agy_settings"]["mode"], mode)
+            self.assertEqual(now["effort"], different)
+            self.assertEqual(endpoint.offers, [])
+            watched = stream.next(lambda frame: frame["t"] == "state"
+                                  and frame["value"]["agy_settings"].get("revision") == result["config_revision"])["value"]
+            self.assertEqual((watched["model"], watched["effort"]), (model_id, different))
+
+            prompt = self.identity_request(now, text="Disposable context usage fixture")
+            self.cli("send", now["name"], "--json", payload=prompt)
+            observed = self.wait_for_reply(now["name"], prompt)
+            self.assertGreater(observed["session_usage"]["context"]["limit"], 0)
+            self.assertGreater(observed["session_usage"]["context"]["used"], 0)
+            self.assertGreater(observed["session_usage"]["last_turn"]["total_tokens"], 0)
+            self.assertEqual(observed["agy_quota"]["status"], "unavailable")
+            self.assertEqual(stream.close(), 0)
+
+    def test_settings_refuse_during_the_original_prompt(self):
+        with self.model() as endpoint:
+            row = self.launch("busy-settings")
+            next_model = next(model["id"] for model in row["model_options"] if model["id"] != row["model"])
+            active = self.identity_request(row, text="HOLD-NATIVE-TEST original turn")
+            with ThreadPoolExecutor(max_workers=1) as sender:
+                pending = sender.submit(self.cli, "send", row["name"], "--json", payload=active)
+                try:
+                    self.assertTrue(endpoint.entered.get(timeout=5))
+                    current = self.inspect(row["name"])
+                    self.assertFalse(current["settings_change_supported"])
+                    self.assertEqual(current["model"], row["model"])
+                    request = self.settings_request(row, model=next_model)
+                    self.assertEqual(self.settings(row, request, check=False)["status"], "refused")
+                finally:
+                    endpoint.release.set()
+                pending.result(timeout=6)
+            self.assertEqual(self.wait_for_reply(row["name"], active)["model"], row["model"])
+
+    def hold_settings_response(self):
+        """Delay one exact reply from the real ACP process, forwarding other frames."""
+        wrapper = self.bin / "agy"
+        wrapper.unlink()
+        wrapper.write_text(
+            r"""#!/usr/bin/env python3
+import json
+from pathlib import Path
+import subprocess
+import sys
+from threading import Lock, Thread
+import time
+
+root = Path(sys.argv[0]).parent
+provider = subprocess.Popen([str(root / "provider"), *sys.argv[1:]],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+pending = set()
+writer = Lock()
+
+def emit(line):
+    with writer:
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+
+def later(line):
+    (root / "held").touch()
+    while not (root / "release").exists():
+        if provider.poll() is not None:
+            return
+        time.sleep(.02)
+    emit(line)
+
+def read():
+    for line in provider.stdout:
+        frame = json.loads(line)
+        if "method" not in frame and frame.get("id") in pending:
+            if (root / "malformed").exists():
+                emit((json.dumps({"jsonrpc": "2.0", "id": frame["id"]}) + "\n").encode())
+            else:
+                Thread(target=later, args=(line,), daemon=True).start()
+        else:
+            emit(line)
+
+def notices():
+    while provider.poll() is None:
+        notice = root / "native-notice"
+        if notice.exists():
+            emit(notice.read_bytes() + b"\n")
+            notice.unlink()
+            (root / "native-notice-sent").touch()
+        time.sleep(.02)
+
+reader = Thread(target=read, daemon=True)
+reader.start()
+Thread(target=notices, daemon=True).start()
+for line in sys.stdin.buffer:
+    frame = json.loads(line)
+    if frame.get("method") == "session/set_config_option":
+        pending.add(frame["id"])
+        with (root / "settings-offers").open("a") as trace:
+            trace.write("one offer\n")
+    provider.stdin.write(line)
+    provider.stdin.flush()
+provider.stdin.close()
+result = provider.wait(timeout=5)
+reader.join(1)
+sys.exit(result)
+"""
+        )
+        wrapper.chmod(0o700)
+        (self.bin / "provider").symlink_to(Path(AGY).resolve())
+        self.addCleanup((self.bin / "release").touch)
+
+    def test_config_update_while_root_is_held_refuses_before_provider_offer(self):
+        import fcntl
+
+        self.hold_settings_response()
+        with self.model() as endpoint:
+            first = self.launch("options-race")
+            models = first["model_options"]
+            next_model = next(model["id"] for model in models if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            frame = {"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": first["conversation_id"], "update": {
+                    "sessionUpdate": "config_option_update", "configOptions": [{
+                        "id": "model", "type": "select", "category": "model", "currentValue": next_model,
+                        "options": [{"value": model["id"], "name": model["label"]} for model in models],
+                    }],
+                },
+            }}
+            with ThreadPoolExecutor(max_workers=1) as sender:
+                with (self.root / "state" / ".lock").open("rb") as writer:
+                    fcntl.flock(writer, fcntl.LOCK_EX)
+                    pending = sender.submit(self.settings, first, request, False)
+                    # The worker takes the control frame, then waits for Root.
+                    time.sleep(.25)
+                    self.assertFalse(pending.done())
+                    staged = self.bin / "native-notice-staged"
+                    staged.write_text(json.dumps(frame))
+                    staged.rename(self.bin / "native-notice")
+                    limit = time.monotonic() + .5
+                    while not (self.bin / "native-notice-sent").exists() and time.monotonic() < limit:
+                        time.sleep(.02)
+                    self.assertTrue((self.bin / "native-notice-sent").exists())
+                    time.sleep(.1)
+                self.assertEqual(pending.result(timeout=6)["status"], "refused")
+            self.wait_for(lambda: self.inspect(first["name"]).get("model") == next_model)
+            self.assertFalse((self.bin / "settings-offers").exists())
+            self.assertEqual(endpoint.offers, [])
+
+    def test_malformed_settings_result_keeps_original_worker_available(self):
+        self.hold_settings_response()
+        (self.bin / "malformed").touch()
+        with self.model() as endpoint:
+            first = self.launch("malformed-options")
+            next_model = next(model["id"] for model in first["model_options"] if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            outcome = self.settings(first, request, check=False)
+            self.assertEqual(outcome["status"], "uncertain")
+            self.assertEqual(self.settings(first, request, check=False), outcome)
+            self.assertEqual(endpoint.offers, [])
+            row = self.inspect(first["name"])
+            self.assertTrue(row["send_available"])
+            self.assertEqual(row["run_id"], first["run_id"])
+            prompt = self.identity_request(row, text="Disposable prompt after malformed settings reply")
+            self.cli("send", row["name"], "--json", payload=prompt)
+            self.wait_for_reply(row["name"], prompt)
+            self.assertEqual((self.bin / "settings-offers").read_text().splitlines(), ["one offer"])
+
+    def test_unknown_settings_never_reoffer_and_late_result_confirms_original(self):
+        self.hold_settings_response()
+        with self.model() as endpoint:
+            first = self.launch("slow-settings")
+            next_model = next(model["id"] for model in first["model_options"] if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            try:
+                unknown = self.settings(first, request, check=False)
+                self.assertEqual(unknown["status"], "uncertain")
+                self.assertTrue((self.bin / "held").exists())
+                pending = self.inspect(first["name"])
+                self.assertEqual(pending["agy_settings"]["reason"], "awaiting_native_result")
+                self.assertFalse(pending["settings_change_supported"])
+                self.assertEqual(self.settings(first, request, check=False), unknown)
+                self.assertEqual((self.bin / "settings-offers").read_text().splitlines(), ["one offer"])
+            finally:
+                (self.bin / "release").touch()
+            updated = self.wait_for(lambda: row if (row := self.inspect(first["name"]))["settings_change_supported"] else None)
+            result = self.settings(first, request)
+            self.assertEqual(result["config_revision"], updated["agy_settings"]["revision"])
+            self.assertEqual(result["model"], next_model)
+            no_op = self.settings(updated, self.settings_request(updated, model=next_model))
+            self.assertFalse(no_op["changed"])
+            self.assertEqual(no_op["config_revision"], result["config_revision"])
+            self.assertEqual(endpoint.offers, [])
+            self.assertEqual((self.bin / "settings-offers").read_text().splitlines(), ["one offer"])
+
+    def test_resume_keeps_an_earlier_unconfirmed_settings_request_unknown(self):
+        self.hold_settings_response()
+        with self.model() as endpoint:
+            original = self.launch("unknown-settings")
+            next_model = next(model["id"] for model in original["model_options"] if model["id"] != original["model"])
+            request = self.settings_request(original, model=next_model)
+            unknown = self.settings(original, request, check=False)
+            self.assertEqual(unknown["status"], "uncertain")
+            self.assertTrue((self.bin / "held").exists())
+            self.action(original, "pause")
+            self.wait_for(lambda: "resume" in self.inspect(original["name"])["allowed_actions"])
+            self.action(original, "resume")
+            resumed = self.inspect(original["name"])
+            self.assertEqual(resumed["conversation_id"], original["conversation_id"])
+            self.assertNotEqual(resumed["run_id"], original["run_id"])
+            self.assertEqual(resumed["agy_settings"]["status"], "confirmed")
+            self.assertNotEqual(resumed["agy_settings"]["revision"], original["agy_settings"]["revision"])
+            self.assertEqual(self.settings(original, request, check=False), unknown)
+            self.assertEqual((self.bin / "settings-offers").read_text().splitlines(), ["one offer"])
+            self.assertEqual(endpoint.offers, [])
+
+    @unittest.skipUnless(LEGACY_HGS, "Optional mixed worker compatibility test")
+    def test_older_worker_resumes_without_inheriting_current_model_evidence(self):
+        with self.model() as endpoint:
+            first = self.launch("mixed-settings")
+            next_model = next(model["id"] for model in first["model_options"] if model["id"] != first["model"])
+            request = self.settings_request(first, model=next_model)
+            applied = self.settings(first, request)
+            self.action(first, "pause")
+            self.wait_for(lambda: "resume" in self.inspect(first["name"])["allowed_actions"])
+            old_resume = self.identity_request(first, action="resume")
+            result = subprocess.run([LEGACY_HGS, "session-action", first["name"], "--json"],
+                                    input=json.dumps(old_resume), text=True, capture_output=True,
+                                    timeout=15, cwd=self.project, env=self.env)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            restored = self.inspect(first["name"])
+            self.assertNotEqual(restored["run_id"], first["run_id"])
+            self.assertEqual(restored["conversation_id"], first["conversation_id"])
+            self.assertEqual(restored["agy_settings"], {"status": "unavailable", "reason": "legacy_worker"})
+            self.assertFalse(restored["settings_change_supported"])
+            self.assertNotIn("model", restored)
+            self.assertNotIn("session_usage", restored)
+            self.assertEqual(self.settings(first, request), applied)
+            self.assertEqual(endpoint.offers, [])
 
     def wait_for_reply(self, name, request):
         def settled():

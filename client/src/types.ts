@@ -460,6 +460,7 @@ export interface Target { computer: ComputerId; name: string; run_id: string; co
 export type Action =
   | { kind: "fork"; tag: string; archive_id: string | null }
   | { kind: "settings"; model: string; effort: string; expected_pending_id?: string; without_terminal: boolean }
+  | { kind: "antigravity_settings"; model: string; effort?: string; expected_session_id: string; expected_config_revision: string }
   | { kind: "interrupt"; turn_started: number }
   | { kind: "compact_context" }
   | { kind: "mark_read"; reply_id: string | null; attention_signature: string | null }

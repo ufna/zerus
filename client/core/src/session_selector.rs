@@ -65,6 +65,7 @@ pub fn selects(action: &Action) -> bool {
         | Action::CompactContext
         | Action::Interrupt { .. }
         | Action::Settings { .. }
+        | Action::AntigravitySettings { .. }
         | Action::Pause
         | Action::Resume
         | Action::StartFresh => true,

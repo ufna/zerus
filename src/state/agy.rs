@@ -11,6 +11,7 @@ use std::{
 
 mod acp;
 pub(super) mod archives;
+mod settings;
 mod worker;
 pub(super) use worker::run as run_worker;
 
@@ -169,6 +170,7 @@ fn start(mut record: Value) -> Result<Value> {
         return Err("Install the official Antigravity CLI before starting a session".into());
     }
     locations(&record)?;
+    settings::reset(&mut record);
     record
         .as_object_mut()
         .unwrap()
@@ -490,6 +492,73 @@ fn print_receipt(answer: &Value) -> Result<i32> {
     })
 }
 
+fn dispatch_settings(name: &str, args: &[String]) -> Result<i32> {
+    if args != ["--json"] {
+        return Err("usage: hgs settings <Antigravity session> --json".into());
+    }
+    let mut bytes = Vec::new();
+    io::stdin()
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read Antigravity settings request")?;
+    if bytes.len() > 8192 {
+        return Err("Antigravity settings request exceeds its bound".into());
+    }
+    let request: settings::Request =
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid Antigravity settings request")?;
+    if !request.valid() {
+        return Err("Antigravity settings need exact session and options identities".into());
+    }
+    let previous = request.receipt(name);
+    if let Ok(Some(receipt)) = &previous {
+        println!("{receipt}");
+        return Ok(i32::from(receipt["status"] != "applied"));
+    }
+    let current = binding(name)?;
+    let answer = if let Err(error) = previous {
+        request.answer(&current, "uncertain", &error)
+    } else if !request.matches(&current) {
+        request.answer(
+            &current,
+            "refused",
+            "Antigravity session changed; nothing was submitted",
+        )
+    } else if let Err(error) = request.select(&current) {
+        request.answer(&current, "refused", &error)
+    } else {
+        let offered = std::cell::Cell::new(false);
+        match contact(
+            current.clone(),
+            json!({"action":"settings","settings":request}),
+            || offered.set(true),
+        ) {
+            Ok(answer) => answer,
+            Err(error) => request.answer(
+                &current,
+                if offered.get() {
+                    "uncertain"
+                } else {
+                    "refused"
+                },
+                &error,
+            ),
+        }
+    };
+    // A concurrent original may have published uncertainty after our first
+    // receipt read but before the control connection or binding failed.
+    let answer = if answer["status"] != "applied" {
+        match request.receipt(name) {
+            Ok(Some(prior)) => prior,
+            Err(error) => request.answer(&current, "uncertain", &error),
+            Ok(None) => answer,
+        }
+    } else {
+        answer
+    };
+    println!("{answer}");
+    Ok(i32::from(answer["status"] != "applied"))
+}
+
 pub(super) fn action(
     name: &str,
     action: &str,
@@ -617,7 +686,19 @@ pub(super) fn row(record: &Value, inspect: bool) -> Value {
     row.as_object_mut()
         .expect("Antigravity summary")
         .extend(controls.as_object().expect("Antigravity controls").clone());
+    settings::project(
+        &mut row,
+        record,
+        live && locations_valid && !auth,
+        ready,
+        inspect,
+    );
     if inspect {
+        if live && locations_valid && !auth && settings::same_scope(record) {
+            row["session_usage"] = json!({
+                "context":record["agy_context"],"last_turn":record["agy_last_turn_usage"]
+            });
+        }
         row["events"] = record["agy_events"].clone();
         row["cursor"] = record["agy_seq"].clone();
         row["replace_events"] = json!(true);
@@ -694,6 +775,7 @@ pub(super) fn dispatch(command: &str, name: &str, args: &[String]) -> Result<i32
             Ok(0)
         }
         "send" => dispatch_send(name, args),
+        "settings" => dispatch_settings(name, args),
         "exists" if args.is_empty() => Ok(if binding(name).is_ok() { 0 } else { 1 }),
         _ => Err(
             "This operation is unavailable for Antigravity; use its guarded session controls"
