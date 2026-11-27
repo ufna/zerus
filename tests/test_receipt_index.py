@@ -107,6 +107,40 @@ class ReceiptIndex(unittest.TestCase):
                   payload=dict(expected_run_id="wrong", expected_conversation_id=self.fixture.conversation_id),
                   success=False)
 
+    def test_long_codex_queue_receipts_keep_a_gapless_cursor_across_the_watch_byte_budget(self):
+        self.fixture.record["agent"] = "codex"
+        self.fixture.write_record()
+        records = []
+        saved_file = self.state / "attachments" / "message-test" / "notes.txt"
+        saved_file.parent.mkdir(parents=True)
+        saved_file.write_bytes(b"test")
+        for n in range(1, 24):
+            # Exercise the serialized size: each quote expands to two JSON bytes.
+            text = '"' * (65536 if n == 23 else 32000)
+            files = [] if n < 23 else [dict(name="notes.txt", mime="text/plain", bytes=4,
+                                              reference="[File #1]", path=str(saved_file))]
+            path = self.original(n, text=text, submitted_text=text, attachments=files,
+                                 transport="codex_queue", codex_outbox=True,
+                                 native_queued_message_id=str(uuid.uuid4()))
+            records.append((path.stem, text))
+        self.migrate()
+        page = self.inspect()
+        rows = page["codex_queued_messages"]
+        self.assertEqual([row["request_id"] for row in rows], [records[-1][0]])
+        fetched = self.call("attachment", self.fixture.name, "--request", records[-1][0],
+                            "--index", "0", "--conversation", self.fixture.conversation_id)
+        self.assertEqual(base64.b64decode(fetched["data_base64"]), b"test")
+        seen = [(row["request_id"], row["detail"]) for row in rows]
+        while page["codex_queue_projection"]["has_more"]:
+            cursor = page["codex_queue_projection"]["next_cursor"]
+            page = self.page(projection="codex_queue", limit=25, cursor=cursor)
+            rows = page["codex_queued_messages"]
+            self.assertTrue(rows)
+            self.assertLess(len(json.dumps(rows).encode()), 200_000)
+            seen.extend((row["request_id"], row["detail"]) for row in rows)
+            self.assertLessEqual(len(seen), len(records))
+        self.assertEqual(seen, records[::-1])
+
     def test_codex_queue_page_recovers_indexed_waiting_receipts_with_exact_original_binding(self):
         self.fixture.record['agent'] = 'codex'
         self.fixture.write_record()

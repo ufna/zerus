@@ -51,9 +51,27 @@ pub(super) fn codex_queue_page(
     let (catalog, mut page) = receipt_index::scoped_page(record, agent, cursor, limit, false)?;
     let mut rows = Vec::new();
     let mut gaps = Vec::new();
-    for locator in &page.locators {
+    // Leave room in a Watch frame for the rest of the session. A single row
+    // may exceed this budget; its entire original is bounded to 384 KiB.
+    const PAGE_BYTES: usize = 128 * 1024;
+    let mut encoded = 2;
+    for (index, locator) in page.locators.iter().enumerate() {
         match catalog.codex_queue_original(locator) {
-            Ok(receipt) => rows.extend(codex_queue_receipt(record, agent, &receipt)),
+            Ok(receipt) => {
+                if let Some(row) = codex_queue_receipt(record, agent, &receipt) {
+                    // Include headroom for the optional native queue state and client ID.
+                    let bytes = serde_json::to_vec(&row)
+                        .map_err(|error| error.to_string())?
+                        .len()
+                        + 128;
+                    if !rows.is_empty() && encoded + bytes > PAGE_BYTES {
+                        page.resume_after(index - 1)?;
+                        break;
+                    }
+                    encoded += bytes;
+                    rows.push(row);
+                }
+            }
             Err(reason) => gaps.push(json!({"request_id":locator.id,"state":reason})),
         }
     }
