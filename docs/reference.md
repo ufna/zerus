@@ -5548,6 +5548,22 @@ on stdin. Set it in Backlog or To do, alongside the executor assignment.
 `technical` is for the coordinator or reviewer. `review-owner REF unspecified`
 clears the assignment. The task details show the reviewer and criterion.
 
+An agent already working on an ordinary technical request can file and start
+it in one step. Give a specific, one-line criterion of at most 512 bytes
+and put the original request on stdin.
+
+```sh
+hgs task add-technical --project example --start \
+  --criterion 'The isolated CLI reopens the exact task once after restart.' <<'EOF'
+Fix and verify task reopen after an interrupted delivery.
+EOF
+```
+
+The creation records the criterion before starting the task in the calling
+agent's session. For a named card, reuse the same optional `--request-id`
+with the same title, request and criterion to check a lost reply. This takes
+the normal technical review route after the agent's report.
+
 The shared **In review** stage still includes all reports. The desktop board
 opens **Your decision**, **Technical review** and **Coordinator triage**
 directly. Counts cover the whole selected project, or the current session and
