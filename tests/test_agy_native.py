@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from queue import Queue
 import shutil
+import shlex
 import socket
 import subprocess
 import sys
@@ -72,7 +73,6 @@ class AntigravityNative(unittest.TestCase):
             folder.mkdir(mode=0o700)
         (self.bin / "agy").symlink_to(Path(AGY).resolve())
         wrapper = self.bin / "tmux"
-        import shlex
         wrapper.write_text(f"#!/bin/sh\nexec {shlex.quote(TMUX)} -S {shlex.quote(str(self.tmux / 'socket'))} -f /dev/null \"$@\"\n")
         wrapper.chmod(0o700)
         self.env = {"HOME": str(self.home), "PATH": f"{self.bin}:/usr/bin:/bin:/usr/local/bin",
@@ -391,6 +391,55 @@ class AntigravityNative(unittest.TestCase):
             current = self.inspect(name)
             self.assertEqual(current["conversation_id"], first["conversation_id"])
             self.assertEqual(current["events"], ready["events"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux worker admission gate")
+    def test_restore_recovers_after_launcher_exits_before_worker_adoption(self):
+        gate = self.root / "worker-gate.so"
+        source = Path(__file__).parent / "fixtures/agy_worker_start_gate.c"
+        subprocess.run(["cc", "-shared", "-fPIC", str(source), "-o", str(gate)], check=True,
+                       env=self.env, capture_output=True, timeout=30)
+        with self.model():
+            first = self.launch("abandoned-restore")
+            name = first["name"]
+            request = self.identity_request(first, text="Keep the original in the abandoned restore")
+            self.cli("send", name, "--json", payload=request)
+            self.wait_for_reply(name, request)
+            self.action(first, "pause")
+            archive_id = json.loads(self.action(first, "archive").stdout)["result_target"]["archive_id"]
+            worker_log = self.root / "original-worker.log"
+            release = self.root / "release"
+            provider_starts = self.root / "provider-starts"
+            agy = self.bin / "agy"
+            agy.unlink()
+            agy.write_text(f"#!/bin/sh\necho started >> {shlex.quote(str(provider_starts))}\n"
+                           f"exec {shlex.quote(str(Path(AGY).resolve()))} \"$@\"\n")
+            agy.chmod(0o700)
+
+            env = dict(self.env, LD_PRELOAD=str(gate), AGY_TEST_WORKER_LOG=str(worker_log),
+                       AGY_TEST_WORKER_RELEASE=str(release))
+            with subprocess.Popen([HGS, "resume", name, "--archive", archive_id], cwd=self.project,
+                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as launcher:
+                try:
+                    self.wait_for(worker_log.exists)
+                    pending = self.inspect(name, "--archive", archive_id)
+                    self.assertNotIn("restore", pending["allowed_actions"])
+                    self.assertEqual(json.loads(self.action(first, "restore", archive_id=archive_id).stdout)["status"], "failed")
+                    old_run = self.record(name)["run_id"]
+                    launcher.kill()
+                    launcher.wait(timeout=4)
+                    self.assertFalse(provider_starts.exists())
+                    self.assertIn("restore", self.inspect(name, "--archive", archive_id)["allowed_actions"])
+                    receipt = json.loads(self.action(first, "restore", archive_id=archive_id).stdout)
+                    self.assertEqual(receipt["status"], "completed", receipt)
+                    restored = self.inspect(name)
+                    self.assertEqual(restored["conversation_id"], first["conversation_id"])
+                    self.assertNotIn(restored["run_id"], (old_run, first["run_id"]))
+                finally:
+                    launcher.kill()
+                    release.touch()
+            self.wait_for(lambda: "already selected" in worker_log.read_text())
+            self.assertEqual(provider_starts.read_text().splitlines(), ["started"])
+            self.assertEqual(self.inspect(name)["run_id"], restored["run_id"])
 
     def test_interrupt_reservation_has_bounded_writer_admission(self):
         import fcntl

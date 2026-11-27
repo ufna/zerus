@@ -115,17 +115,28 @@ fn retryable(record: &Value) -> bool {
     record["state"] != "starting" && original_exited(record)
 }
 
-// Only an explicit Restore can supersede an orphaned pre-adoption run.
-// The worker must acquire the same state writer and publish its pin before
-// starting ACP. A delayed old worker then fails its original run check.
+// Before spawning ACP the worker durably changes the provider pin from
+// explicit null to spawn_unconfirmed. Only a fresh Restore may supersede
+// a dead launcher here. Under the same writer a delayed unadopted worker
+// will find a different run, and an adopted worker must already be dead.
 fn abandoned_start(record: &Value) -> bool {
-    let launcher = &record["agy_restore_launcher"];
-    record["state"] == "starting"
-        && launcher.is_object()
-        && pinned_state(launcher) == Some(crate::platform::ProcessState::Exited)
-        && ["agy_worker", "agy_provider", "agy_socket"]
-            .into_iter()
-            .all(|key| record.get(key) == Some(&Value::Null))
+    let exited = |pin: &Value| {
+        pin.is_object() && pinned_state(pin) == Some(crate::platform::ProcessState::Exited)
+    };
+    if record["state"] != "starting"
+        || !exited(&record["agy_restore_launcher"])
+        || record.get("agy_provider") != Some(&Value::Null)
+    {
+        return false;
+    }
+    match (record.get("agy_worker"), record.get("agy_socket")) {
+        (Some(Value::Null), Some(Value::Null)) => true,
+        (Some(worker), Some(Value::String(socket))) => {
+            let path = Path::new(socket);
+            path.is_absolute() && path.ends_with("control") && exited(worker)
+        }
+        _ => false,
+    }
 }
 
 fn may_retry_restore(record: &Value) -> bool {
