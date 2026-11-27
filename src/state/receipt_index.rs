@@ -23,7 +23,7 @@ mod question;
 pub(super) use admission::Wait as QuestionAdmission;
 pub(super) use point::{
     claude_outbox_prompt, claude_outbox_status, claude_prompt_uuid, delivery_binding, delivery_receipt,
-    dsh_outbox_original, terminal_outbox_refusal,
+    dsh_outbox_original, terminal_outbox_status,
     DeliveryBinding, DeliveryQuery,
 };
 // The independently developed recovery consumer stacks on this interface.
@@ -264,6 +264,31 @@ struct CachedRow {
     files: i64,
 }
 impl CachedRow {
+    // The original writer admitted this exact typed negative under the input
+    // lock. A cache can already have its graphless, zero-time locator. Promote
+    // only that locator when the same original has a terminal submission.
+    fn precedes_native_submission(&self, binding: &Binding, value: &Value) -> bool {
+        let provider = binding.name.split_once('/').map(|(provider, _)| provider);
+        let target = &value["graph_target"];
+        value["terminal_native_after_refusal"] == true
+            && value["status"] == "submitted"
+            && value["transport"] == "terminal"
+            && match provider {
+                Some("claude") => value["claude_outbox"] == true
+                    && matches!(value["native"].as_str(), Some("queue" | "transcript")),
+                Some("kimi") => true,
+                _ => false,
+            }
+            && !binding.first && !binding.conversation.is_empty() && binding.at > 0.0
+            && target["schema"] == 1 && target["name"] == binding.name && target["run_id"] == binding.run
+            && target["endpoint"]["provider"].as_str() == provider
+            && target["endpoint"]["conversation"] == binding.conversation
+            && self.at == 0.0 && self.files == 0 && self.first == 0
+            && self.agent.is_empty() && binding.agent.is_empty()
+            && self.name == binding.name && self.run == binding.run && self.conversation == binding.conversation
+            && self.fingerprint == delivery_fingerprint(value, &Value::Null)
+    }
+
     fn matches(&self, binding: &Binding) -> bool {
         self.conversation == binding.conversation && self.matches_except_conversation(binding)
     }
@@ -728,7 +753,9 @@ impl Catalog {
         let stamp = file_stamp(path)?;
         let mut proven_pin = false;
         if let Some(prior) = self.cached_row(source, &binding.id)? {
-            if prior.fingerprint != binding.fingerprint
+            let promoted = source == Source::Terminal && prior.fingerprint != binding.fingerprint
+                && prior.precedes_native_submission(&binding, value);
+            if (!promoted && prior.fingerprint != binding.fingerprint)
                 || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
             {
                 return self.error(source, filename, "binding_changed");
@@ -739,7 +766,7 @@ impl Catalog {
             // An empty cached conversation with an equally empty original is
             // unchanged: rewriting it would publish a change on every walk.
             let resolved = prior.conversation.is_empty();
-            if prior.stamp != stamp || !prior.matches(&binding) {
+            if promoted || prior.stamp != stamp || !prior.matches(&binding) {
                 let proof = if resolved && !binding.conversation.is_empty() {
                     let original = self.state.join(source.directory()).join(filename);
                     let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)
@@ -753,8 +780,8 @@ impl Catalog {
                 let change = self.bump()?;
                 let write = || {
                     self.db.execute(
-                    "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
-                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
+                    "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=?,binding=? WHERE source=? AND request=?",
+                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, binding.fingerprint, source.key(), binding.id],
                 )
                 };
                 if let Some(proof) = proof.filter(|_| prior.matches_except_conversation(&binding)) {

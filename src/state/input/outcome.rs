@@ -200,6 +200,7 @@ mod tests {
             reason: "settings may have been typed".into(),
             waiting: true,
             idle_refusal: false,
+            native_accept: false,
             dialog: None,
         };
         assert!(matches!(

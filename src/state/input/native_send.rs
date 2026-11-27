@@ -669,6 +669,46 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // The opt-in terminal route contributes only these additions
+        // inside the shared submitter. The ordinary body retains its seal.
+        for addition in [
+            "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
+            r#"    if prior_refusal && matches!(mode, SendMode::DesktopNativeAccept | SendMode::DesktopOutbox)
+        && matches!(agent, "claude" | "kimi")
+    {
+        receipt["terminal_native_after_refusal"] = json!(true);
+    }
+"#,
+            "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
+            "        witness.idle_refusal |= native_wait;\n",
+            r#"    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        match acceptance::kimi_outbox_floor(&record) {
+            Some(floor) => Some(floor),
+            None => {
+                cleanup();
+                return Err(gated(typed, Gate::Waiting {
+                    reason: "Kimi's earlier native turn could not be confirmed".into(),
+                    dialog: None,
+                }));
+            }
+        }
+    } else {
+        None
+    };
+"#,
+            "    if let Some(floor) = kimi_turn_floor {\n        receipt[\"kimi_outbox\"] = json!(true);\n        receipt[\"kimi_turn_floor\"] = json!(floor);\n    }\n",
+            "    if receipt[\"kimi_outbox\"] == true {\n        record[\"input_pending_kimi_outbox\"] = json!(request_id);\n    }\n",
+            "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            mode.check_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
+        ] {
+            assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
+            original = original.replacen(addition, "", 1);
+        }
+        let retained_admission = r#"    let (existing, prior_refusal) =
+        refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);
+    match existing {"#;
+        assert_eq!(original.matches(retained_admission).count(), 1);
+        original = original.replacen(retained_admission,
+            "    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {", 1);
         assert_eq!(original.matches("mode.check_send_gate(").count(), 3);
         original = original.replace("mode.check_send_gate(", "checked_send_gate(");
         for (new, prior) in [
@@ -681,6 +721,14 @@ mod tests {
             assert_eq!(original.matches(new).count(), 1);
             original = original.replace(new, prior);
         }
+        // Codex queue receipts now also retain their exact native client ID.
+        let client_id = r#"            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
+"#;
+        assert_eq!(original.matches(client_id).count(), 1);
+        original = original.replacen(client_id, "", 1);
         // Desktop's outbox can verify an empty interrupted Codex prompt. The
         // ordinary and Team entry points continue to use their own idle guard.
         for (new, prior, count) in [

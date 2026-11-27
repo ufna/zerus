@@ -12,6 +12,40 @@ const local = (status: "sending" | "error" | "sent", uncertain = false, extra: P
   ...extra,
 });
 
+it("keeps Claude's queued file receipt across reload without matching equal native text", () => {
+  const request = "78456006-9c7c-4ee9-bab7-893489a3a29a";
+  const file = { request_id: request, index: 0, name: "changes.txt", mime: "text/plain", bytes: 12, reference: "[File #1]" };
+  const receipt: ActivityEvent = { type: "UserPromptSubmit", source: "hgs_delivery", at: 10,
+    detail: "Review [File #1]", submitted_text: "Review [File #1] (private file)", message_id: request,
+    attachments: [file], run_id: "run-1", conversation_id: "conversation-1", claude_outbox: true, claude_queued_outbox: true };
+  const same: ActivityEvent = { type: "UserPromptSubmit", seq: 4, detail: receipt.detail, at: 11 };
+  const summary = { run_id: "run-1", conversation_id: "conversation-1", attachment_messages: [receipt] };
+  const [original, native] = mergeAttachmentMessages([same], summary);
+  expect(native).toBe(same);
+  expect(original).toMatchObject({ attachment_request_id: request, attachments: [file] });
+  const reload = buildTranscript([same], summary) as ActivityItem[];
+  expect(reload.filter(item => item.attachments?.length)).toMatchObject([
+    { kind: "user", body: receipt.detail, receipt: "Submitted to terminal",
+      attachments: [{ name: file.name, mime: file.mime, request_id: request, index: 0 }] },
+  ]);
+  expect(mergeAttachmentMessages([same, original], summary)).toHaveLength(2);
+  expect(mergeAttachmentMessages([same], { ...summary, run_id: "another-run" })).toEqual([same]);
+  expect(mergeAttachmentMessages([same], { ...summary, attachment_messages: [receipt, receipt] })).toEqual([same]);
+
+  const projection = createTranscriptProjection();
+  const pending = { request_id: request, run_id: summary.run_id, conversation_id: summary.conversation_id,
+    handle: 4, preview: receipt.detail!, state: "unknown" } as const;
+  for (const state of ["waiting", "reserved", "unknown"] as const) {
+    const items = projection.build([same], summary, [], [], [{ ...pending, state }]) as ActivityItem[];
+    expect(items.map(item => item.id)).toEqual(["s4", `local-${request}`]);
+    expect(items[1]).toMatchObject({ outbox: { state } });
+  }
+  const settled = projection.build([same], summary) as ActivityItem[];
+  expect(settled.filter(item => item.attachments?.length)).toHaveLength(1);
+  expect(settled[0]).toMatchObject({ id: `local-${request}`, receipt: "Submitted to terminal" });
+  expect(settled[0].outbox).toBeUndefined();
+});
+
 it("displays a typed child policy advisory as a system notice", () => {
   const child = "codex/example/child";
   const notice: ActivityEvent = {

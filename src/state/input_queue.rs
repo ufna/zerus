@@ -10,6 +10,12 @@ const CAPTURE_BYTES: usize = 512 * 1024;
 
 #[derive(Debug)]
 struct Queue { text: String, keys: Vec<&'static str>, hint: String }
+
+pub(super) fn kimi_queue_hint(row: &str) -> bool {
+    let row = row.trim();
+    row.starts_with("↑ to edit") && (row.contains("ctrl-s to steer immediately") || row.contains("will send after"))
+}
+
 fn parse(agent: &str, screen: &str) -> Option<Queue> {
     let rows: Vec<_> = screen.lines().collect();
     if agent == "codex" {
@@ -40,7 +46,7 @@ fn parse(agent: &str, screen: &str) -> Option<Queue> {
     let end = rows.iter().rposition(|row| {
         let row = row.trim();
         if agent == "claude" { row == "ctrl+x ctrl+s to send now" }
-        else if agent == "kimi" { row.starts_with("↑ to edit") && (row.contains("ctrl-s to steer immediately") || row.contains("will send after")) }
+        else if agent == "kimi" { kimi_queue_hint(row) }
         else { false }
     })?;
     let mut start = end;

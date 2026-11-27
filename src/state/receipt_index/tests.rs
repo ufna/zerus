@@ -1683,7 +1683,7 @@ fn terminal_outbox_refusal_only_recovers_the_exact_untyped_original() {
     let path = receipts.join(format!("{id}.json"));
     let query = json!({"request_id":id,"expected_run_id":run,
         "expected_conversation_id":conversation,"input_sha256":digest});
-    let status = |name, query: &Value| terminal_outbox_refusal(&root, name, &serde_json::to_vec(query).unwrap());
+    let status = |name, query: &Value| terminal_outbox_status(&root, name, &serde_json::to_vec(query).unwrap());
     assert!(status(name, &query).is_err());
     persist(&path, &original).unwrap();
     let recovered = status(name, &query).unwrap();

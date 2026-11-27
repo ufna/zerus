@@ -2731,7 +2731,11 @@ read in bounded pages from Activity. On older hosts the desktop waits for the ex
 route. After an interrupted turn, a live Codex session can receive input when
 the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
-input lock before offering the message. A compatible OpenCode service or
+input lock before offering the message. A compatible terminal can accept an
+ordinary next message while Claude Code or Kimi works. The host checks the
+exact native composer, preserves earlier input and leaves the message waiting
+if the terminal holds an unsent draft.
+A compatible OpenCode service or
 DeepSeek bridge can accept an exact next-turn offer while the agent works.
 Desktop can send a new message or advance its original waiting entries and
 files as soon as that route is available. The existing native inbox keeps its
@@ -2753,6 +2757,9 @@ For Claude, a final original receipt can settle a lost command response. Activit
 matches the original request and Claude's typed prompt ID to link the outgoing
 row and its files. A native queue hook can reuse the active prompt ID, so it
 keeps its own Activity row.
+For Kimi, the original terminal receipt proves delivery to its terminal. The
+next offer still waits for Kimi's native input acknowledgement, and Activity
+uses native history to identify the turn.
 For DeepSeek, the original request and native message ID bind the Activity row
 and files. Desktop can recover a lost acknowledgement after the same native
 host reconnects when its durable log proves the original queued or delivered

@@ -75,7 +75,8 @@ pub(super) fn action(action: &Action) -> &'static str {
             zerus_client_core::source!("Terminate session")
         }
         Action::Send { .. } | Action::SendWhenIdle { .. }
-        | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. } => zerus_client_core::source!("Send message"),
+        | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. } => zerus_client_core::source!("Send message"),
         Action::StopProcess { .. } => zerus_client_core::source!("Stop process"),
         Action::Fork { .. } => zerus_client_core::source!("Fork session"),
         Action::StageFiles { .. } => zerus_client_core::source!("Transfer attachments"),

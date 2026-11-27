@@ -107,7 +107,8 @@ impl Lane {
             Action::MarkRead { .. } => Self::Read,
             Action::Interrupt { .. } => Self::Interrupt,
             Action::Send { .. } | Action::SendWhenIdle { .. }
-            | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. } => Self::Send,
+            | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }
+            | Action::SendWhenNativeAccepts { .. } => Self::Send,
             Action::StopProcess { .. } => Self::Process,
             Action::SendNow { .. } => Self::Queue,
             Action::RemoveQueued { .. } => Self::Inbox,
@@ -1456,7 +1457,8 @@ pub(crate) async fn dispatch_outbox_as(
     if blocked() {
         return Ok(Some(failed(REPLAY_NEEDS_HGS)));
     }
-    if !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }) {
+    if !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. }) {
         return Err("Expected a guarded Send.".into());
     }
     let probe = session_selector::probe(&target.computer);

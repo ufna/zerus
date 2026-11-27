@@ -53,6 +53,12 @@ pub enum Action {
         text: String,
         attachments: Vec<Attachment>,
     },
+    /// Only a reserved Composer head on an exact capable terminal uses this route.
+    #[serde(skip_deserializing)]
+    SendWhenNativeAccepts {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// A reserved FIFO head for an explicitly supported OpenCode or DeepSeek queue.
     #[serde(skip_deserializing)]
     SendToNativeQueue {
@@ -581,18 +587,19 @@ pub fn invocation(
         }
         Action::SendWhenIdle { text, attachments }
         | Action::SendToCodexQueue { text, attachments }
+        | Action::SendWhenNativeAccepts { text, attachments }
         | Action::SendToNativeQueue { text, attachments } => {
-            let flag = if matches!(action, Action::SendToCodexQueue { .. }) {
-                if !target.name.starts_with("codex/") {
-                    return Err("The native queue needs a Codex session.".into());
-                }
-                "--codex-queue"
-            } else {
-                "--when-idle"
-            };
             if target.conversation_id.is_empty() {
                 return Err("Queued input needs an exact conversation.".into());
             }
+            let flag = match action {
+                Action::SendToCodexQueue { .. } if target.name.starts_with("codex/") => "--codex-queue",
+                Action::SendToCodexQueue { .. } => return Err("The native queue needs a Codex session.".into()),
+                Action::SendWhenNativeAccepts { .. }
+                    if target.name.starts_with("claude/") || target.name.starts_with("kimi/") => "--when-native-accepts",
+                Action::SendWhenNativeAccepts { .. } => return Err("Expected a native terminal Send target.".into()),
+                _ => "--when-idle",
+            };
             let mut input = send_value(target, text, attachments, None, None, request_id)?;
             // Keep the frozen outbox envelope byte-for-byte compatible. The
             // extra argv flag selects the new guarded provider admission.
@@ -1335,7 +1342,8 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
-        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. } => {
+        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
+        | Action::SendWhenNativeAccepts { .. } | Action::SendToNativeQueue { .. } => {
             classify_idle_send(target, invocation, exit, matches!(action, Action::SendToCodexQueue { .. }))
         }
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
@@ -1874,6 +1882,8 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, code
     let opencode = target.name.starts_with("opencode/");
     let claude = target.name.starts_with("claude/");
     let dsh = target.name.starts_with("dsh/");
+    let native_kimi = target.name.starts_with("kimi/")
+        && invocation.args.iter().any(|flag| flag == "--when-native-accepts");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         let exact_pre_offer = receipt["schema"] == 1
@@ -1927,6 +1937,11 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, code
         })) {
             return uncertain("The original DeepSeek Send is unconfirmed.");
         }
+        if native_kimi && !(kimi_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+            receipt["digest"] == format!("{:x}", Sha256::digest(input))
+        })) {
+            return uncertain("The original Kimi Send is unconfirmed.");
+        }
     }
     let started = !matches!(exit, Exit::StartFailed(_));
     match classify_send(target, invocation, None, exit) {
@@ -1944,7 +1959,8 @@ pub fn outbox_status(
     use sha2::{Digest, Sha256};
 
     if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
-        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. })
+        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
+            | Action::SendWhenNativeAccepts { .. } | Action::SendToNativeQueue { .. })
     {
         return Err("Expected an original outbox request.".into());
     }
@@ -1989,10 +2005,14 @@ pub(crate) fn dsh_outbox_submitted(receipt: &Value) -> bool {
 }
 
 pub fn terminal_outbox_refusal(target: &Target, receipt: &Value) -> bool {
-    (target.name.starts_with("codex/") || target.name.starts_with("kimi/"))
+    (target.name.starts_with("codex/") || target.name.starts_with("kimi/") || target.name.starts_with("claude/"))
         && receipt["schema"] == 1 && receipt["proof"] == "native_input_lock"
         && receipt["transport"] == "terminal"
         && matches!(receipt["status"].as_str(), Some("waiting_for_idle" | "not_offered"))
+}
+
+fn kimi_outbox_submitted(receipt: &Value) -> bool {
+    receipt["kimi_outbox"] == true && receipt["status"] == "submitted" && receipt["transport"] == "terminal"
 }
 
 pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
@@ -2005,6 +2025,8 @@ pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option
         receipt["proof"] == "native_codex_receipt" && codex_outbox_submitted(&receipt)
     } else if target.name.starts_with("claude/") {
         receipt["proof"] == "native_claude_receipt" && claude_outbox_submitted(&receipt)
+    } else if target.name.starts_with("kimi/") {
+        receipt["proof"] == "native_kimi_terminal_receipt" && kimi_outbox_submitted(&receipt)
     } else if target.name.starts_with("dsh/") {
         dsh_outbox_submitted(&receipt)
     } else {
@@ -2269,6 +2291,38 @@ pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn new_terminal_route_keeps_the_original_stdin_and_checks_kimi_receipts() {
+        use sha2::{Digest, Sha256};
+
+        let mut target = target("fixture-peer");
+        target.name = "kimi/sample/terminal".into();
+        let text = "same original prompt".to_owned();
+        let action = Action::SendWhenNativeAccepts { text: text.clone(), attachments: vec![] };
+        let legacy = Action::SendWhenIdle { text, attachments: vec![] };
+        let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
+        let native = invocation(&target, &action, request).unwrap();
+        let idle = invocation(&target, &legacy, request).unwrap();
+        assert_eq!(native.stdin, idle.stdin);
+        assert!(native.args.iter().any(|arg| arg == "--when-native-accepts"));
+        let native_query = outbox_status(&target, &action, request).unwrap();
+        let legacy_query = outbox_status(&target, &legacy, request).unwrap();
+        assert_eq!(native_query.stdin, legacy_query.stdin);
+
+        let hash = format!("{:x}", Sha256::digest(native.stdin.as_deref().unwrap()));
+        let mut receipt = json!({"schema":1,"status":"submitted","transport":"terminal",
+            "proof":"native_kimi_terminal_receipt","request_id":request,"name":target.name,
+            "run_id":target.run_id,"conversation_id":target.conversation_id,
+            "input_sha256":hash,"digest":hash,"kimi_outbox":true});
+        let response = |value: &Value| exit(0, value.to_string().as_bytes(), "");
+        assert!(matches!(classify(&target, &action, &native, response(&receipt)), Outcome::Done { .. }));
+        assert!(outbox_receipt(&target, &legacy_query, response(&receipt)).is_some());
+        receipt["input_sha256"] = json!("wrong original");
+        assert!(outbox_receipt(&target, &legacy_query, response(&receipt)).is_none());
+        receipt["kimi_outbox"] = json!(false);
+        assert!(matches!(classify(&target, &action, &native, response(&receipt)), Outcome::Uncertain { .. }));
+    }
+
     #[test]
     fn guarded_terminal_refusal_requires_the_exact_input_digest() {
         use sha2::{Digest, Sha256};
