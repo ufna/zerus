@@ -242,6 +242,16 @@ class NativeCodexInput(unittest.TestCase):
         self.assertNotIn(refused, messages)
 
     def test_ordinary_busy_send_enters_the_same_turn_after_a_running_tool_and_preserves_a_draft(self):
+        self.held_tool_manual_send(ordered=False, earlier=False)
+
+    def test_ordered_manual_send_steers_a_working_turn_with_an_empty_native_queue(self):
+        self.held_tool_manual_send(ordered=True, earlier=False)
+
+    def test_ordered_manual_send_appends_behind_older_native_input_after_desktop_ack(self):
+        self.held_tool_manual_send(ordered=True, earlier=True)
+
+    def held_tool_manual_send(self, ordered, earlier):
+        import hashlib
         import base64
         # Hold the first actual tool call until the regular guarded Send finishes.
         # Its next Responses request identifies whether Enter steered this turn.
@@ -293,14 +303,52 @@ class NativeCodexInput(unittest.TestCase):
         content = b'private same-turn attachment'
         request = self.payload(text='Read the same-turn file', attachments=[dict(name='turn.txt', mime='text/plain',
                                     data_base64=base64.b64encode(content).decode())])
-        receipt = self.send(request)
+        def guarded(flag, body):
+            body = dict(body, only_when_idle=True)
+            until = time.monotonic() + 6
+            while True:
+                result = subprocess.run([str(test_input.HGS),'send',self.name,flag,'--json'],env=self.env,
+                    input=json.dumps(body),text=True,capture_output=True,timeout=15)
+                self.assertEqual(result.returncode,0,result.stderr)
+                value = json.loads(result.stdout)
+                if value['status'] != 'waiting_for_idle' or time.monotonic() >= until:
+                    return value
+                time.sleep(.06)
+        if earlier:
+            first = guarded('--codex-queue', self.payload(text='Older accepted native head'))
+            self.assertEqual(first['transport'],'codex_queue')
+            details = subprocess.run([str(test_input.HGS),'inspect',self.name],env=self.env,capture_output=True,check=True)
+            self.assertFalse(json.loads(details.stdout).get('input_queue'))
+        send = (lambda body: guarded('--codex-ordered-turn',body)) if ordered else self.send
+        receipt = send(request)
         self.assertEqual((receipt['status'], receipt['transport'], receipt['request_id']),
-                         ('submitted', 'terminal', request['request_id']))
+                         ('submitted','codex_queue' if earlier else 'terminal',request['request_id']))
         self.assertEqual(receipt['conversation_id'], self.conversation_id)
         self.assertEqual(Path(receipt['attachments'][0]['path']).read_bytes(), content)
-        self.assertEqual(self.send(request), receipt)
+        if earlier:
+            # Lose the first successful acknowledgement. The exact outbox
+            # status reader and same-UUID duplicate cannot offer it again.
+            query = dict(request_id=request['request_id'], expected_run_id=self.run_id,
+                expected_conversation_id=self.conversation_id,
+                input_sha256=hashlib.sha256(json.dumps(dict(request,only_when_idle=True)).encode()).hexdigest())
+            check = subprocess.run([str(test_input.HGS),'delivery','outbox-status',self.name,'--json'],
+                env=self.env,input=json.dumps(query),capture_output=True,text=True,check=True)
+            self.assertEqual(json.loads(check.stdout)['native_queued_message_id'], receipt['native_queued_message_id'])
+            last = send(self.payload(text='Later ordinary message after the file'))
+            self.assertEqual(last['transport'],'codex_queue')
+        self.assertEqual(send(request), receipt)
         release_tool.touch()
         self.wait_for(lambda: len(calls) >= 2)
+        if earlier:
+            self.assertNotIn(receipt['submitted_text'], calls[1])
+            def queued_inputs():
+                return [p['message'] for line in Path(self.record['transcript']).read_bytes().splitlines()
+                        if (p:=json.loads(line).get('payload',{})).get('type')=='user_message']
+            expected = [first['submitted_text'], receipt['submitted_text'], last['submitted_text']]
+            self.wait_for(lambda: queued_inputs()[-3:] == expected)
+            self.wait_for(lambda: any(req['texts'][-1:] == expected[-1:] for req in self.server.requests))
+            self.assertEqual([queued_inputs().count(text) for text in expected],[1,1,1])
+            return
         self.assertIn(receipt['submitted_text'], calls[1])
         turns = {}
         turn = None

@@ -2712,8 +2712,11 @@ through that refusal.
 When the owner host confirms a single live Codex conversation, an empty
 Desktop queue, and a working turn with no pending question or earlier input,
 a manual Send uses the ordinary native composer and Enter. Codex can read
-the follow-up when the current tool call completes. The owning host checks the
-terminal before input. A native draft or dialog stays intact on refusal.
+the follow-up when the current tool call completes. Hosts with ordered
+Codex Send also check this conversation's native queue under the input
+lock. A manual Send appends behind an already accepted native item even
+after that item has left the Desktop queue. If the queue cannot be
+verified, the message waits. The owning host checks the terminal before input. A native draft or dialog stays intact on refusal.
 For other busy live Codex, Claude, Kimi, supported OpenCode or supported DeepSeek
 conversation, or one with earlier Zerus messages
 waiting, Send saves the message and its attachments in the local queue and

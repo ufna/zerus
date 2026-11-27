@@ -311,6 +311,9 @@ impl Composers {
             && !ctx.ordinary_input_held(hub)
             && self.guarded_send_details(&ctx.row, &target, details)
         {
+            if details["codex_ordered_manual_turn_send"] == true {
+                return ManualSend::TryNow;
+            }
             return ManualSend::Direct;
         }
         let native_queue = exact && supported && self.native_queue_details(&ctx.row, &target, details);
@@ -779,7 +782,11 @@ impl Composers {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = if (row.agent == "codex" && codex_work_phase(row.phase.as_deref()))
+            let action = if entry.state == State::Reserved && row.agent == "codex"
+                && (row.phase.as_deref() == Some("idle") || codex_work_phase(row.phase.as_deref()))
+                && details["codex_ordered_manual_turn_send"] == true {
+                Action::SendToOrderedCodexTurn { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if (row.agent == "codex" && codex_work_phase(row.phase.as_deref()))
                 || idle_codex_queue(&entry, &row, details)
             {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }

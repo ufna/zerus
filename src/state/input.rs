@@ -221,6 +221,7 @@ enum SendMode {
     TerminalOutcome,
     DesktopOutbox,
     CodexQueue,
+    CodexOrderedTurn,
     DesktopNativeAccept,
 }
 
@@ -254,7 +255,7 @@ impl SendMode {
     }
 
     fn idle_input_ready(self, record: &Value) -> bool {
-        if self == Self::CodexQueue {
+        if matches!(self, Self::CodexQueue | Self::CodexOrderedTurn) {
             let busy = record["activity"] == "busy"
                 && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"));
             return record["agent"] == "codex" && (busy || idle_reminder_ready(record))
@@ -1743,6 +1744,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         [_, json] if json == "--json" => SendMode::Ordinary,
         [_, outcome, json] if outcome == "--delivery-outcome-v2" && json == "--json" => SendMode::TerminalOutcome,
         [_, idle, json] if idle == "--when-idle" && json == "--json" => SendMode::DesktopOutbox,
+        [name, order, json] if name.starts_with("codex/") && order == "--codex-ordered-turn" && json == "--json" => SendMode::CodexOrderedTurn,
         [name, queue, json] if name.starts_with("codex/") && queue == "--codex-queue" && json == "--json" => SendMode::CodexQueue,
         [_, native, json] if native == "--when-native-accepts" && json == "--json" => SendMode::DesktopNativeAccept,
         _ => return Err("usage: hgs send <session> --json (JSON from stdin)".into()),
@@ -1801,7 +1803,7 @@ fn dispatch_send(
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
     }
-    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue | SendMode::DesktopNativeAccept) {
+    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue | SendMode::CodexOrderedTurn | SendMode::DesktopNativeAccept) {
         let request: Request = serde_json::from_slice(&input).map_err(|error| error.to_string())?;
         if !request.only_when_idle || request.expected_conversation_id.is_empty() {
             return Err("Automatic Send requires an exact conversation and the original outbox request".into());
@@ -2616,6 +2618,18 @@ fn submit_core(
     };
     let buffer = format!("hgs-input-{request_id}");
     let terminal = backend::current();
+    // The original input lock still protects this decision from another
+    // Desktop Send. A matching duplicate returned its receipt before here.
+    let mode = if mode == SendMode::CodexOrderedTurn {
+        if codex_tasks::multiple(&record) {
+            return Err(refused(typed, "Codex task bindings changed before the ordered Send".into()));
+        }
+        match codex_queue::has_earlier(&record) {
+            Ok(true) => SendMode::CodexQueue,
+            Ok(false) => SendMode::CodexOrderedTurn,
+            Err(_) => return Err(gated(typed, Gate::NotIdle)),
+        }
+    } else { mode };
     let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
         if !matches!(origin, Origin::Person) {
             return Err(refused(

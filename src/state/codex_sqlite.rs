@@ -194,13 +194,14 @@ mod snapshot {
     enum Catalog<'a> {
         Threads,
         Queue { thread: &'a str },
+        QueueHead,
     }
 
     impl Catalog<'_> {
         fn file(self, home: &Path, suffix: &str) -> PathBuf {
             let name = match self {
                 Self::Threads => "state_5.sqlite",
-                Self::Queue { .. } => "queue_1.sqlite",
+                Self::Queue { .. } | Self::QueueHead => "queue_1.sqlite",
             };
             home.join(format!("{name}{suffix}"))
         }
@@ -430,6 +431,18 @@ mod snapshot {
         }
         let mut paths = BTreeMap::new();
         for id in ids {
+            if let Catalog::QueueHead = catalog {
+                let head: Option<String> = tx.query_row(
+                    "SELECT id FROM queued_items WHERE thread_id=?1 ORDER BY queue_order LIMIT 1",
+                    [id], |row| row.get(0)).optional().map_err(failed)?;
+                if let Some(head) = head {
+                    if !session_id::canonical(&head) || head == uuid::Uuid::nil().to_string() {
+                        return Err(failed("Invalid native queue head"));
+                    }
+                    paths.insert(id.clone(), head);
+                }
+                continue;
+            }
             if let Catalog::Queue { thread } = catalog {
                 // Exact native PK and thread bind the two distinct identities.
                 // Missing after consumption is unknown, never proof of delivery.
@@ -536,6 +549,22 @@ mod snapshot {
         read_catalog(Catalog::Queue { thread }, home, ids, until)
     }
 
+    pub(in crate::state) fn has_queued_input(home: &Path, thread: &str, until: Instant) -> Result<bool> {
+        if !session_id::canonical(thread) || thread == uuid::Uuid::nil().to_string() {
+            return Err("Invalid native queue thread".into());
+        }
+        // Native Codex can create this database on its first externally queued
+        // item. An absent database (including all SQLite companions) is empty;
+        // errors, dangling links and incomplete or incompatible databases aren't.
+        let absent = ["-wal", "-shm", "-journal", ""].iter().all(|suffix| {
+            matches!(fs::symlink_metadata(Catalog::QueueHead.file(home, suffix)), Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound)
+        });
+        if absent { return Ok(false); }
+        let rows = read_catalog(Catalog::QueueHead, home, &[thread.to_owned()], until)?;
+        Ok(rows.contains_key(thread))
+    }
+
     fn read_catalog(
         catalog: Catalog,
         home: &Path,
@@ -544,7 +573,7 @@ mod snapshot {
     ) -> Result<BTreeMap<String, String>> {
         let limit = match catalog {
             Catalog::Threads => MAX_CHILDREN,
-            Catalog::Queue { .. } => receipt_index::PAGE_LIMIT,
+            Catalog::Queue { .. } | Catalog::QueueHead => receipt_index::PAGE_LIMIT,
         };
         if ids.len() > limit || ids.iter().any(|id| !session_id::canonical(id)) {
             return Err("Codex child identities exceed their bound".into());
@@ -593,7 +622,7 @@ mod snapshot {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) use snapshot::{queued_clients, rollout_paths};
+pub(super) use snapshot::{has_queued_input, queued_clients, rollout_paths};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(in crate::state) use snapshot::{
     AFTER_DIRECTORY, AFTER_READ, MAX_SOURCE, RAW_OPENS, WAL_PROGRESS,
