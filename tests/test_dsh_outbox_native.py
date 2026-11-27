@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+import time
 import uuid
 
 import test_dsh_native as native
@@ -114,6 +115,31 @@ class NativeDeepSeekOutbox(native.NativeHarness):
                               '--conversation', conversation)
         self.assertEqual(attachment.returncode, 0, attachment.stderr)
         self.assertEqual(base64.b64decode(json.loads(attachment.stdout)['data_base64']), data)
+
+    def test_busy_desktop_offer_preserves_the_original_native_recovery(self):
+        binding = self.create()
+        conversation = binding['conversation_id']
+        recovery = self.state / 'recovery'
+        recovery.mkdir(exist_ok=True)
+        policy, heartbeat = recovery / 'policy.json', recovery / 'heartbeat.json'
+        policy.write_text(json.dumps({'enabled': True}))
+        heartbeat.write_text(json.dumps({'enabled': True, 'at': time.time()}))
+        self.addCleanup(policy.unlink, missing_ok=True)
+        self.addCleanup(heartbeat.unlink, missing_ok=True)
+        self.cli('send', binding, self.payload(binding, text='PROVIDER_CAPACITY_FIXTURE'))
+        pending = self.wait(lambda: self.rpc('inspect', {'sessionId': conversation})['nativeRecovery'])
+        try:
+            detail = self.cli('inspect', binding)
+            self.assertTrue(detail['dsh_busy_outbox_supported'])
+            self.assertFalse(detail['dsh_busy_outbox_ready'])
+            request = self.payload(binding, text='Another next-turn input', only_when_idle=True)
+            result = self.hgs('send', binding['name'], '--when-idle', '--deepseek-queue', '--json', request=request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
+            self.assertEqual(self.rpc('inspect', {'sessionId': conversation})['nativeRecovery']['id'], pending['id'])
+            self.assertEqual(self.native_messages(binding, request['request_id']), [])
+        finally:
+            self.rpc('cancel-recovery', {'sessionId': conversation, 'id': pending['id']})
 
     def test_lost_bridge_ack_recovers_durable_native_file_on_reconnect(self):
         binding = self.create()

@@ -199,10 +199,7 @@ fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
                 "conversation_id":"conv-1","queued":true}),
             cleanup: None,
         });
-        settle_next(&c, &fake, &store, ready.clone());
-        until(&c, |view| view.waiting_in_zerus.len() == 1);
-        let now = *lock(&fake.now);
-        c.tick_outbox(now);
+        settle_next(&c, &fake, &store, ready);
         assert_eq!(until(&c, |view| view.waiting_in_zerus.is_empty()).text, "separate draft");
         let calls = lock(&fake.calls);
         assert_eq!(calls.iter().map(|call| &call.2).collect::<Vec<_>>(), [&one, &two]);

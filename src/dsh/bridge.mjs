@@ -711,6 +711,7 @@ export function apply(ctx, config) {
       : agent.status === 'idle' && agent.inbox.nextStep.length === 0 && agent.inbox.nextTurn.length === 0;
     return accepts
       && publicQuestions(sessionId).length === 0
+      && (!nativeQueue || !recovery.has(sessionId))
       && compactionPublic(sessionId)?.status !== 'compacting';
   }
   function outboxState(sessionId) {
@@ -745,9 +746,11 @@ export function apply(ctx, config) {
             scope.waiting = true;
             throw new Error('DeepSeek became busy before the outbox offer');
           }
-          const compact = compactionPublic(scope.sessionId);
-          if (compact) compact.status = 'cancelled';
-          recovery.get(scope.sessionId)?.finish(undefined);
+          if (!scope.nativeQueue || this.status === 'idle') {
+            const compact = compactionPublic(scope.sessionId);
+            if (compact) compact.status = 'cancelled';
+            recovery.get(scope.sessionId)?.finish(undefined);
+          }
         }
         return Reflect.apply(original, this, [message, ...args]);
       };
