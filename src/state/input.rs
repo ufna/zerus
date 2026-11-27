@@ -224,9 +224,10 @@ impl SendMode {
 
     fn idle_input_ready(self, record: &Value) -> bool {
         if self == Self::CodexQueue {
-            return record["agent"] == "codex" && record["activity"] == "busy"
-                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"))
-                && !codex_tasks::multiple(record)
+            let busy = record["activity"] == "busy"
+                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"));
+            return record["agent"] == "codex" && (busy || idle_reminder_ready(record))
+                && !codex_tasks::unresolved(record)
                 && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
                 && input_queue::codex_waiting(record) == Ok(false);
         }

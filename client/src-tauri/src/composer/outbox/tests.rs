@@ -240,7 +240,11 @@ fn ordinary_ready_send_attempts_immediately_and_a_proven_busy_result_keeps_the_o
         let view = present(&c, &fake, &target, agent);
         let idle = details(&target, agent, false, Some(false));
         lock(&fake.row).phase = Some("idle".into());
-        c.observe(&state(idle.clone()));
+        let mut selected = idle.clone();
+        selected["codex_idle_outbox_supported"] = json!(agent == "codex");
+        selected["pending_questions_complete"] = json!(true);
+        selected["pending_questions"] = json!([]);
+        c.observe(&state(selected));
         let name = target.name.clone();
         *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
             receipt: json!({"status":"waiting_for_idle", "proof":"native_input_lock",
@@ -347,6 +351,67 @@ fn ordinary_send_never_pastes_a_busy_unsupported_or_mismatched_target() {
         assert!(view.waiting_in_zerus.is_empty());
         assert!(lock(&fake.calls).is_empty());
     }
+}
+
+#[test]
+fn antigravity_send_uses_exact_ready_activity_while_the_list_is_still_working() {
+    let root = dir("agy-ready-before-list");
+    let (c, fake) = send_hub_on(&drafts(&root));
+    let session = target_session("agy");
+    {
+        let mut row = lock(&fake.row);
+        row.name.clone_from(&session.name);
+        row.agent = "agy".into();
+        row.process_state = "running".into();
+        row.phase = Some("working".into());
+    }
+    c.open(Some(session.clone()));
+    let mut working = details(&session, "agy", true, None);
+    working["phase"] = json!("working");
+    working["send_supported"] = json!(true);
+    working["send_available"] = json!(false);
+    c.observe(&state(working));
+    let view = until(&c, |view| view.loaded);
+    assert!(matches!(
+        c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "next".into(),
+            4,
+            4
+        ),
+        SendReply::Notice { error: true, .. }
+    ));
+    assert_eq!(c.current().unwrap().text, "next");
+    assert!(lock(&fake.calls).is_empty());
+
+    let mut ready = details(&session, "agy", false, None);
+    ready["send_supported"] = json!(true);
+    ready["send_available"] = json!(true);
+    c.observe(&state(ready));
+    let view = c.current().unwrap();
+    assert!(view.ordinary_send_block.is_none());
+    assert!(matches!(
+        c.send_message(
+            view.handle,
+            view.rev + 1,
+            view.text_epoch,
+            "next".into(),
+            4,
+            4
+        ),
+        SendReply::Sending
+    ));
+    let view = until(&c, |view| !view.sending && view.text.is_empty());
+    assert!(view.waiting_in_zerus.is_empty());
+    assert_eq!(lock(&fake.row).phase.as_deref(), Some("working"));
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0.name, session.name);
+    assert_eq!(calls[0].0.run_id, "run-1");
+    assert_eq!(calls[0].0.conversation_id, "conv-1");
+    assert!(matches!(&calls[0].1, Action::Send { text, .. } if text == "next"));
 }
 
 #[test]
@@ -1350,6 +1415,15 @@ fn codex_refused_before_input_recovers_the_original_file_and_fifo_after_restart(
 
 #[test]
 fn cold_start_drains_saved_fifo_without_opening_a_composer() {
+    cold_start_idle_fifo(false);
+}
+
+#[test]
+fn cold_start_prefers_the_native_codex_queue_on_a_capable_idle_host() {
+    cold_start_idle_fifo(true);
+}
+
+fn cold_start_idle_fifo(native: bool) {
     use zerus_client_core::drafts::read_draft;
     let root = dir("outbox-background-restart");
     let store = drafts(&root);
@@ -1381,12 +1455,24 @@ fn cold_start_drains_saved_fifo_without_opening_a_composer() {
     }
     let name = session.name.clone();
     *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
-        receipt: json!({"status":"submitted","transport":"terminal","request_id":id,"name":name,
+        receipt: json!({"status":"submitted","transport":if native { "codex_queue" } else { "terminal" },
+            "codex_outbox":native,"native_queued_message_id":id,"request_id":id,"name":name,
             "run_id":"run-1","conversation_id":"conv-1"}),
         cleanup: None,
     });
-    let busy = details(&session, "codex", true, Some(true));
-    let idle = details(&session, "codex", false, Some(false));
+    let mut idle = details(&session, "codex", false, Some(false));
+    // Hosts supporting only busy native handoff retain their guarded idle path.
+    idle["codex_busy_outbox_supported"] = json!(true);
+    let blocked = if native {
+        idle["codex_idle_outbox_supported"] = json!(true);
+        idle["pending_questions_complete"] = json!(true);
+        idle["pending_questions"] = json!([]);
+        let mut question = idle.clone();
+        question["pending_questions"] = json!([{"question_id":"dialog"}]);
+        question
+    } else {
+        details(&session, "codex", true, Some(true))
+    };
     // Follow app startup on a second store without ever opening the editor.
     // A tick driven by the test would conceal a missed wake-up on restart.
     struct Ticker<'a>(&'a Composers);
@@ -1396,15 +1482,17 @@ fn cold_start_drains_saved_fifo_without_opening_a_composer() {
         }
     }
     let _ticker = Ticker(&c);
-    *lock(&fake.inspected) = Some(busy);
+    *lock(&fake.inspected) = Some(blocked);
     c.start_ticker(true);
     crate::composer::send::tests::eventually(|| {
-        fake.inspects.load(std::sync::atomic::Ordering::SeqCst) > 0
+        fake.inspects.load(std::sync::atomic::Ordering::SeqCst) > 0 && !c.lock().outbox_probe
     });
+    assert_eq!(c.lock().composers[&view.key].outbox[0].state, State::Waiting);
     assert!(c.current().is_none());
     assert!(lock(&fake.calls).is_empty());
     *lock(&fake.inspected) = Some(idle);
-    for remaining in [1, 0] {
+    let expected_counts: &[usize] = if native { &[0] } else { &[1, 0] };
+    for &remaining in expected_counts {
         *lock(&fake.now) += 4.0;
         crate::composer::send::tests::eventually(|| {
             let hub = c.lock();
@@ -1415,8 +1503,16 @@ fn cold_start_drains_saved_fifo_without_opening_a_composer() {
     }
     let calls = lock(&fake.calls);
     assert_eq!(calls.iter().map(|call| &call.2).collect::<Vec<_>>(), [&one, &two]);
-    assert!(matches!(&calls[0].1, Action::SendWhenIdle { attachments, .. }
-        if attachments.len() == 1 && attachments[0].bytes.as_ref() == b"queued attachment"));
+    assert!(calls.iter().all(|call| match &call.1 {
+        Action::SendToCodexQueue { .. } => native,
+        Action::SendWhenIdle { .. } => !native,
+        _ => false,
+    }));
+    let (Action::SendToCodexQueue { attachments, .. } | Action::SendWhenIdle { attachments, .. }) = &calls[0].1 else {
+        unreachable!()
+    };
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].bytes.as_ref(), b"queued attachment");
     assert!(c.current().is_none());
     let saved = read_draft(store.root(), &view.key);
     assert_eq!(saved.draft.draft.text, "independent");
