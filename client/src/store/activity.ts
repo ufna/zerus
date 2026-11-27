@@ -142,13 +142,27 @@ export function createActivity(port: ActivityPort) {
       if (receiptGeneration === generation) setReceiptLoading(false);
     }
   }
+  function historicalReceipt(row: ActivityEvent): ActivityEvent {
+    if (row?.native_queue_state !== "queued") return row;
+    const { native_queue_state, ...receipt } = row;
+    return receipt;
+  }
   function displayedTranscript() {
-    const current = transcriptSummary(), page = receiptPage();
-    if (!page || !current || current.run_id !== page.run_id || current.conversation_id !== page.conversation_id) return current;
-    const first = current.codex_queued_messages, older = page.codex_queued_messages;
-    if (!Array.isArray(first) || !Array.isArray(older)) return current;
-    const ids = new Set(first.map(row => row.request_id));
-    return { ...current, codex_queued_messages: [...first, ...older.filter(row => !ids.has(row.request_id))] };
+    const current = transcriptSummary(), page = receiptPage(), t = target();
+    const recent = current?.codex_queued_messages;
+    if (!current || !Array.isArray(recent)) return current;
+    const live = current === currentSummary()
+      && (!t?.runId || current.run_id === t.runId)
+      && (!t?.conversationId || current.conversation_id === t.conversationId);
+    // Retained transcript and earlier pages can preserve their receipts.
+    // Only this follow's current snapshot describes the live native queue.
+    const first = live ? recent : recent.map(historicalReceipt);
+    const older = page?.codex_queued_messages;
+    if (current.run_id !== page?.run_id || current.conversation_id !== page?.conversation_id || !Array.isArray(older)) {
+      return live ? current : { ...current, codex_queued_messages: first };
+    }
+    const ids = new Set(first.map(row => row?.request_id));
+    return { ...current, codex_queued_messages: [...first, ...older.filter(row => !ids.has(row?.request_id)).map(historicalReceipt)] };
   }
   const [ended, setEnded] = createSignal(false);
   const [loaded, setLoaded] = createSignal(false);

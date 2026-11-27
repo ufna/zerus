@@ -59,12 +59,15 @@ export function mergeCodexQueueReceipts(events: readonly ActivityEvent[], summar
     if (uuid(receipt.codex_client_id)) clients.set(receipt.codex_client_id, 1 + (clients.get(receipt.codex_client_id) ?? 0));
   }
   const bodies = Array.isArray(summary?.user_message_bodies) ? summary.user_message_bodies.filter(obj) : [];
-  const accepted: QueueReceiptEvent[] = [];
+  const accepted: QueueReceiptEvent[] = [], queued: QueueReceiptEvent[] = [];
+  const hidden = new Set<number>();
   for (const [request, receipt] of receipts) {
     if (pending?.has(request) || conflicted.has(request)) continue;
     const display = { activity_display_key: `local-${request}`, detail: receipt.detail, attachments: receipt.attachments };
     const client = receipt.codex_client_id;
-    if (uuid(client) && clients.get(client) === 1 && nativeIds.get(receipt.native_queued_message_id) === 1) {
+    const exactOwner = uuid(client) && clients.get(client) === 1 && nativeIds.get(receipt.native_queued_message_id) === 1;
+    const stillQueued = receipt.native_queue_state === "queued" && exactOwner;
+    if (exactOwner) {
       const boundBodies = bodies.filter(body => body.type === "UserMessageBody" && body.source === "codex_transcript"
         && !body.agent_id && !body.origin && !body.inherited_from && body.codex_client_id === client
         && body.conversation_id === receipt.conversation_id && typeof body.message_id === "string" && !!body.message_id);
@@ -80,23 +83,33 @@ export function mergeCodexQueueReceipts(events: readonly ActivityEvent[], summar
       });
       if (matches.length === 1) {
         const i = matches[0];
-        out[i] = { ...out[i], ...display, message_text: receipt.detail, message_text_truncated: false };
-        continue;
+        if (stillQueued) {
+          // Current native queue membership takes precedence over one exactly bound echo.
+          hidden.add(i);
+        } else {
+          out[i] = { ...out[i], ...display, message_text: receipt.detail, message_text_truncated: false };
+          continue;
+        }
       }
     }
-    // An acknowledgement proves admission even if the client ID cannot be recovered after consumption.
-    accepted.push({ ...receipt, ...display, [CODEX_QUEUE_RECEIPT]: true });
-  }
-  if (accepted.length) {
-    accepted.sort((a, b) => a.at! - b.at!);
-    // Preserve journal order (including inherited and undated entries) and only place new receipts by time.
-    const merged: QueueReceiptEvent[] = [];
-    let cursor = 0;
-    for (const event of out) {
-      while (cursor < accepted.length && accepted[cursor].at! < (event.at ?? 0)) merged.push(accepted[cursor++]);
-      merged.push(event);
+    const row: QueueReceiptEvent = { ...receipt, ...display, [CODEX_QUEUE_RECEIPT]: true };
+    if (stillQueued) queued.push(row);
+    else {
+      // Admission alone proves no current queue position.
+      if (row.native_queue_state === "queued") delete row.native_queue_state;
+      accepted.push(row);
     }
-    return merged.concat(accepted.slice(cursor));
   }
-  return out;
+  if (!queued.length && !accepted.length) return out;
+  accepted.sort((a, b) => a.at! - b.at!);
+  queued.sort((a, b) => a.at! - b.at!);
+  // Preserve journal order. Only current native queue entries sit at the live end.
+  const merged: QueueReceiptEvent[] = [];
+  let cursor = 0;
+  for (const [i, event] of out.entries()) {
+    if (hidden.has(i)) continue;
+    while (cursor < accepted.length && accepted[cursor].at! < (event.at ?? 0)) merged.push(accepted[cursor++]);
+    merged.push(event);
+  }
+  return merged.concat(accepted.slice(cursor), queued);
 }

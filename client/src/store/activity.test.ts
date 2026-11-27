@@ -42,6 +42,42 @@ describe("activity store", () => {
     store.follow(undefined);
   });
 
+  it("keeps current Codex queue state live and treats a loaded earlier receipt page as history", async () => {
+    const selected = { ...target, runId: "a", conversationId: "conversation" };
+    const binding = { run_id: "a", conversation_id: "conversation" };
+    const live = { request_id: "current", native_queue_state: "queued" };
+    const old = { request_id: "older", native_queue_state: "queued" };
+    const consumed = { request_id: "consumed", native_queue_state: "consumed" };
+    const base = { ...binding, codex_queued_messages: [live],
+      codex_queue_projection: { has_more: true, next_cursor: "earlier" } };
+    const store = createActivity({ follow: async () => {}, unfollow: async () => {},
+      receiptPage: async () => ({ ...binding, codex_queued_messages: [live, old, consumed] }) });
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    await store.loadEarlierReceipts();
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live, { request_id: "older" }, consumed]);
+    expect(base.codex_queued_messages).toEqual([live]);
+    store.follow(undefined);
+  });
+
+  it("retires Codex queue state across reconnect and rejects an out-of-scope fresh status", () => {
+    const { store } = setup();
+    const selected = { ...target, runId: "a", conversationId: "conversation" };
+    const live = { request_id: "current", native_queue_state: "queued" };
+    const base = { run_id: "a", conversation_id: "conversation", codex_queued_messages: [live] };
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live]);
+    store.applyActivity([out("connection", { pending: true })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "current" }]);
+    store.applyActivity([out("connection", { ready: true })]);
+    store.applyActivity([out("state", { value: { ...base, run_id: "different" }, rev: 1 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "current" }]);
+    store.applyActivity([out("state", { value: base, rev: 2 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live]);
+    store.follow(undefined);
+  });
+
   it("keeps one OpenCode user row through a late snapshot and preserves another with equal text and time", () => {
     const { store } = setup();
     store.follow(target);
