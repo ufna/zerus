@@ -323,6 +323,7 @@ fn resume(name: &str, scope: &session_action::Scope) -> Result<Value> {
             "agy_restore_archive",
             "agy_restore_source",
             "agy_restore_confirmed",
+            "agy_restore_launcher",
         ] {
             record.as_object_mut().unwrap().remove(key);
         }

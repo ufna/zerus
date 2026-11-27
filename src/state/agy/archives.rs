@@ -56,6 +56,7 @@ pub(super) fn archive(name: &str, dry: bool, scope: Option<&session_action::Scop
         "agy_restore_archive",
         "agy_restore_source",
         "agy_restore_confirmed",
+        "agy_restore_launcher",
     ] {
         completed.as_object_mut().unwrap().remove(key);
     }
@@ -114,6 +115,23 @@ fn retryable(record: &Value) -> bool {
     record["state"] != "starting" && original_exited(record)
 }
 
+// Only an explicit Restore can supersede an orphaned pre-adoption run.
+// The worker must acquire the same state writer and publish its pin before
+// starting ACP. A delayed old worker then fails its original run check.
+fn abandoned_start(record: &Value) -> bool {
+    let launcher = &record["agy_restore_launcher"];
+    record["state"] == "starting"
+        && launcher.is_object()
+        && pinned_state(launcher) == Some(crate::platform::ProcessState::Exited)
+        && ["agy_worker", "agy_provider", "agy_socket"]
+            .into_iter()
+            .all(|key| record.get(key) == Some(&Value::Null))
+}
+
+fn may_retry_restore(record: &Value) -> bool {
+    retryable(record) || abandoned_start(record)
+}
+
 fn existing(archived: &Value) -> Result<Option<Value>> {
     let name = string(archived, "name");
     if live()?.contains_key(name) {
@@ -149,7 +167,7 @@ pub(in crate::state) fn row(
     let pending = held.as_ref().filter(|record| same_source(record, archived));
     let free = !name_taken.unwrap_or_else(|| storage::label_taken(name));
     let can_restore = pending.is_some_and(confirmed)
-        || locations(archived).is_ok() && (free || pending.is_some_and(retryable));
+        || locations(archived).is_ok() && (free || pending.is_some_and(may_retry_restore));
     for (key, value) in [
         ("state", "archived"),
         ("conversation_state", "archived"),
@@ -215,7 +233,7 @@ pub(super) fn restore(
                 }
                 return finish(current, &archived, scope);
             }
-            if !retryable(current) {
+            if !may_retry_restore(current) {
                 return Err(
                     "The original Antigravity restore is still running or unconfirmed".into(),
                 );
@@ -240,6 +258,7 @@ pub(super) fn restore(
             record.as_object_mut().unwrap().remove(key);
         }
         record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
+        record["agy_restore_launcher"] = process_pin(std::process::id())?;
         record["agy_restore_archive"] = json!(id);
         record["agy_restore_source"] = json!(record_source::Digest::capture(&archived).hex());
         if let Some(scope) = scope {
