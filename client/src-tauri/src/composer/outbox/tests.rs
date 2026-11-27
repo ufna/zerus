@@ -1139,7 +1139,14 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     settle_next(&c, &fake, &store, details(&session, agent, false, Some(false)));
     let view = until(&c, |view| view.waiting_in_zerus.is_empty());
     assert_eq!(view.local.len(), usize::from(!terminal_status));
-    assert_eq!(view.terminal_only_outbox, if terminal_status { vec![original] } else { vec![] });
+    if terminal_status {
+        let [receipt] = view.terminal_only_outbox.as_slice() else { panic!("expected one transport-only receipt") };
+        assert_eq!((&receipt.request_id, receipt.run_id.as_str(), receipt.conversation_id.as_str()), (&original, "run-1", "conv-1"));
+        assert_eq!(receipt.preview, "Synthetic native prompt");
+        assert!(receipt.queued_at.is_some());
+    } else {
+        assert!(view.terminal_only_outbox.is_empty());
+    }
     assert_eq!(view.status == "Submitted to terminal", terminal_status);
     assert!(!view.status_error);
     assert_eq!(lock(&fake.calls).len(), 1);

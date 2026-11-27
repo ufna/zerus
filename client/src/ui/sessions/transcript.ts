@@ -1,4 +1,4 @@
-import type { ActivityEvent, EventAttachment, LocalMessage, Reply } from "../../types";
+import type { ActivityEvent, EventAttachment, LocalMessage, TerminalOutboxReceipt, Reply } from "../../types";
 import { eventKey, opencodePromptId } from "../../store/activity";
 import type { ActivityItem, InboxItem, LocalItem, MediaMessage, OutboxItem, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
 import type { RouteActivity } from "../../store/questionRouteActivity";
@@ -911,7 +911,7 @@ type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id">;
 interface OriginalChanges {
   removed?: readonly string[];
   removedNative?: readonly string[];
-  terminalOnly?: readonly string[];
+  terminalOnly?: readonly TerminalOutboxReceipt[];
 }
 
 /** Only a bound receipt can take over a queued row's display identity. */
@@ -977,14 +977,17 @@ interface OriginalRow {
 const outgoing = (item: TranscriptItem): item is ActivityItem =>
   item.kind === "user" || (item.kind === "receipt" && !item.route);
 
-const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local ? 1 : 2;
+const TERMINAL_RECEIPT = Symbol("transport-only Activity receipt");
+type TerminalReceiptItem = ActivityItem & { [TERMINAL_RECEIPT]?: true };
+const terminalReceipt = (item: ActivityItem) => (item as TerminalReceiptItem)[TERMINAL_RECEIPT] === true;
+const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local || terminalReceipt(item) ? 1 : 2;
 
 /** Remember only outgoing originals visible to this Activity. The composer
  * and journal are separate readers: neither one's absence releases a row.
  * Use preceding journal rows as its insertion point, not a later echo's time. */
 function placeOriginals(positions: Map<string, OriginalRow>, items: readonly TranscriptItem[],
   active: ReadonlyMap<string, number>, removed: ReadonlySet<string>, conflicts: ReadonlySet<string>,
-  terminalOnly: ReadonlySet<string>, times: ReadonlyMap<string, number>): TranscriptItem[] {
+  times: ReadonlyMap<string, number>): TranscriptItem[] {
   for (const request of removed) positions.delete(`local-${request}`);
   // Keep the still-visible composer rows even as old settled positions age out.
   let excess = positions.size - 50;
@@ -1005,8 +1008,8 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
     } else {
       const previous = projected.get(item.id);
       if (!previous || evidenceOrder(item) > evidenceOrder(previous)) projected.set(item.id, item);
-      if (!insertion.has(item.id) || item.outbox) insertion.set(item.id, ordinary.length);
-      if (item.outbox) queues.add(item.id);
+      if (!insertion.has(item.id) || item.outbox || terminalReceipt(item)) insertion.set(item.id, ordinary.length);
+      if (item.outbox || terminalReceipt(item)) queues.add(item.id);
     }
   }
   for (const [id, at] of active) {
@@ -1037,10 +1040,6 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       // Delete and Retry retire a failed local row explicitly.
       positions.delete(id);
       continue;
-    }
-    if (terminalOnly.has(id) && (!item || evidenceOrder(item) < 2)) {
-      const { kind, at, body, attachments } = original.item;
-      item = { id, kind, at, body, attachments, receipt: tr("Submitted to terminal") };
     }
     if (!item && conflicts.has(id)) {
       const { id, kind, at, body, attachments } = original.item;
@@ -1099,6 +1098,9 @@ export function createTranscriptProjection() {
       for (const id of discarded) recent.delete(id);
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
       const queued = outbox.filter(row => !sent.has(row.request_id) && !discarded.has(row.request_id));
+      const terminalOnly = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
+        && !!row.run_id && !!row.conversation_id);
+      for (const row of terminalOnly) outboxRequests.set(row.request_id, row);
       for (const item of outbox) if (!item.target_changed && !discarded.has(item.request_id)) {
         outboxRequests.set(item.request_id, { run_id: item.run_id, conversation_id: item.conversation_id });
       }
@@ -1145,14 +1147,22 @@ export function createTranscriptProjection() {
       // entries without a timestamp keep their place as well.
       for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: timeText(row.queued_at),
         body: row.preview, attachments: attachments({ attachments: row.attachments }), outbox: row });
+      for (const row of terminalOnly) {
+        const receipt: TerminalReceiptItem = {
+          id: `local-${row.request_id}`, kind: "user", at: timeText(row.queued_at ?? undefined),
+          body: row.preview, attachments: attachments({ attachments: row.attachments }),
+          receipt: tr("Submitted to terminal"), [TERMINAL_RECEIPT]: true,
+        };
+        items.push(receipt);
+      }
       const active = new Map([
+        ...terminalOnly.map(row => [`local-${row.request_id}`, row.queued_at ?? 0] as const),
         ...queued.map(row => [`local-${row.request_id}`, row.queued_at ?? 0] as const),
         ...local.filter(row => row.source !== "hgs_voice").map(row => [`local-${row.id}`, row.submitted_at] as const),
       ]);
       if (!active.size && !positions.size) return items;
       const times = new Map(verified.map(event => [event.activity_display_key as string || eventKey(event), eventAt(event)]));
-      const terminalOnly = new Set(changes.terminalOnly?.map(request => `local-${request}`));
-      return placeOriginals(positions, items, active, discarded, conflicts, terminalOnly, times);
+      return placeOriginals(positions, items, active, discarded, conflicts, times);
     },
   };
 }

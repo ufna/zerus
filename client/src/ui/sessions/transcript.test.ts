@@ -918,10 +918,14 @@ it("preserves an original with transport-only acknowledgement and leaves unrelat
   const before = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "same", at: 150 };
   const unbound = { ...scope, type: "UserPromptSubmit", seq: 2, detail: "same", at: 210 };
   expect(projection.build([before], scope, [], [], [outbox]).map(item => item.id)).toEqual(["s1", "local-first"]);
-  const accepted = { terminalOnly: [outbox.request_id] };
+  const accepted = { terminalOnly: [{ ...outbox, attachments: [] }] };
   expect(projection.build([before], scope, [], [], [], accepted)[1]).toMatchObject({ id: "local-first", receipt: "Submitted to terminal" });
   expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
     { id: "s1" }, { id: "local-first", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
+  ]);
+  projection.reset();
+  expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", body: "same", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
   ]);
   const proved = { ...unbound, source: "hgs_delivery", message_id: outbox.request_id };
   expect(projection.build([before, proved], scope, [], [], [], accepted)).toMatchObject([

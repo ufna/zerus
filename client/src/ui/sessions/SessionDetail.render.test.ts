@@ -596,18 +596,21 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   const other = fixtureRow("Other session");
   const otherKey = draftKey({ computer: "", key: `run:${other.run_id}`, name: other.name,
     session_id: other.session_id, archive_id: null });
-  const reopened = { ...held, handle: held.handle + 2, text: "fourth draft still editable" };
+  const reopened = { ...held, local: [], handle: held.handle + 2, text: "fourth draft still editable",
+    terminal_only_outbox: [{ ...localQueue[0], run_id: row.run_id!, conversation_id: row.conversation_id!, attachments: localQueue[0].attachments ?? [] }] };
   vi.mocked(bridge.composerOpen).mockImplementation(async (selection) =>
     selection?.key === `run:${row.run_id}` ? reopened
       : selection?.key === `run:${other.run_id}` ? { ...initial, handle: initial.handle + 1, key: otherKey } : null);
   await open(other);
   expect(waitingRows()).toHaveLength(0);
+  expect(originalNode()).toBeNull();
   expect(confirm()).toBeNull();
   staleConfirmation.click();
   expect(removals).toHaveLength(0);
 
   await open(row);
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  expect(originalNode()?.textContent).toContain("queue-fixture.txt");
   expect(confirm()).toBeNull();
   expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`));
   removeButton()!.click();

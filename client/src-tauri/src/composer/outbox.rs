@@ -73,6 +73,40 @@ pub struct EntryView {
     pub can_check_terminal: bool,
 }
 
+/// Presentation evidence from a transport acknowledgement with no native
+/// prompt binding. This view cannot be loaded as an entry or offer an input.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TerminalReceiptView {
+    pub request_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub queued_at: Option<f64>,
+    pub preview: String,
+    pub attachments: Vec<AttachmentInfo>,
+}
+
+impl TerminalReceiptView {
+    fn from_original(entry: &Entry, submitted_at: f64) -> Self {
+        Self {
+            request_id: entry.request_id.clone(),
+            run_id: entry.target.run_id.clone(),
+            conversation_id: entry.target.conversation_id.clone(),
+            queued_at: entry.queued_at.or(Some(submitted_at)),
+            preview: preview(entry),
+            attachments: entry.attachments.iter().map(Attachment::info).collect(),
+        }
+    }
+}
+
+fn preview(entry: &Entry) -> String {
+    let mut text = entry.text.trim().chars();
+    let mut preview: String = text.by_ref().take(240).collect();
+    if text.next().is_some() {
+        preview.push('…');
+    }
+    preview
+}
+
 pub(super) fn view(
     entries: &[Entry],
     key: &str,
@@ -85,14 +119,7 @@ pub(super) fn view(
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at,
-            preview: {
-                let mut text = entry.text.trim().chars();
-                let mut preview: String = text.by_ref().take(240).collect();
-                if text.next().is_some() {
-                    preview.push('…');
-                }
-                preview
-            },
+            preview: preview(entry),
             attachments: entry.attachments.iter().map(Attachment::info).collect(),
             state: entry.state,
             target_changed: entry.draft_key != key
@@ -918,7 +945,10 @@ impl Composers {
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
                     if terminal_only {
-                        c.terminal_only_outbox.push_back((entry.target.clone(), entry.request_id.clone()));
+                        c.terminal_only_outbox.push_back((
+                            entry.target.clone(),
+                            TerminalReceiptView::from_original(&entry, me.now()),
+                        ));
                         if c.terminal_only_outbox.len() > 64 {
                             c.terminal_only_outbox.pop_front();
                         }

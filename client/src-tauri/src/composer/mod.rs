@@ -365,7 +365,7 @@ pub struct ComposerView {
     pub waiting_in_zerus: Vec<outbox::EntryView>,
     /// Exact transport acknowledgements without an identifiable native message.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub terminal_only_outbox: Vec<String>,
+    pub terminal_only_outbox: Vec<outbox::TerminalReceiptView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
     pub offers_native_queue: bool,
@@ -492,7 +492,7 @@ pub(crate) struct Composer {
     pub(crate) hold_after_inspect: u64,
     outbox: Vec<zerus_client_core::drafts::outbox::Entry>,
     last_submission: Option<(Target, &'static str)>,
-    terminal_only_outbox: VecDeque<(Target, String)>,
+    terminal_only_outbox: VecDeque<(Target, outbox::TerminalReceiptView)>,
     outbox_damaged: bool,
     queue_editing: bool,
     queue_writing: bool,
@@ -2034,7 +2034,7 @@ impl Composers {
                     target.computer == ctx.session.computer && target.name == ctx.session.name
                         && ctx.row.run_id.as_ref() == Some(&target.run_id)
                         && ctx.row.conversation_id.as_ref() == Some(&target.conversation_id)
-                }).map(|(_, request)| request.clone()).collect()
+                }).map(|(_, receipt)| receipt.clone()).collect()
             }),
             offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait | outbox::ManualSend::TryNativeQueue)),
             offers_native_queue: matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)),

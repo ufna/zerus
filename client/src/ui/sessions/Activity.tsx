@@ -803,12 +803,16 @@ export function ActivityView(props: { source?: ActivitySource }) {
   // Items keep their identity while events append, including across the virtual window.
   const [view, setView] = createStore<{ items: TranscriptItem[]; expired: boolean; loaded: boolean; pane: ReturnType<typeof paneStates>; tool: string }>({ items: [], expired: false, loaded: false, pane: paneStates(source(), s()), tool: "" });
   const local = createMemo(() => localRows(source(), s()), undefined, { equals: (a, b) => a === b || (a.length === 0 && b.length === 0) });
-  const outbox = createMemo((): readonly OutboxItem[] => {
+  const mainComposer = createMemo(() => {
     const row = s(), view = composer.view();
     if (!row || !view?.loaded || source().readOnly || row.state === "archived" || subagentOpen()
-      || view.subagent || source().target()?.id !== row.key) return [];
+      || view.subagent || source().target()?.id !== row.key) return undefined;
     const key = draftKey({ computer: row.computer, key: row.catalogKey, name: row.name, session_id: row.sessionId ?? null, archive_id: null });
-    if (view.key !== key) return [];
+    return view.key === key ? view : undefined;
+  });
+  const outbox = createMemo((): readonly OutboxItem[] => {
+    const view = mainComposer(), row = s();
+    if (!view || !row) return [];
     return composer.waitingMessages().map((item) => ({
       ...item,
       handle: view.handle,
@@ -829,7 +833,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   }
   const [removedInbox, setRemovedInbox] = createSignal<{ target?: string; native: string[]; requests: string[] }>();
   const built = createMemo(() => {
-    const composerView = composer.view(), queueRemoval = composer.removedWaiting(), inboxRemoval = removedInbox();
+    const composerView = mainComposer(), queueRemoval = composer.removedWaiting(), inboxRemoval = removedInbox();
     const removed = inboxRemoval?.target === displayTarget() ? inboxRemoval : undefined;
     return project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
       subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
@@ -837,7 +841,8 @@ export function ActivityView(props: { source?: ActivitySource }) {
       {
         removed: [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []), ...(removed?.requests ?? [])],
         removedNative: removed?.native,
-        terminalOnly: composerView?.terminal_only_outbox,
+        terminalOnly: composerView?.terminal_only_outbox?.filter(receipt =>
+          receipt.run_id === s()?.runId && receipt.conversation_id === s()?.conversationId),
       });
   });
   createEffect(() => {
