@@ -86,12 +86,14 @@ pub const LAUNCH_ANYWAY: &str = "Launch anyway";
 
 /// The agents New session offers, in Qt's order; a session's own agent
 /// joins them.
-pub const AGENTS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
+pub const AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
+
+pub const ANTIGRAVITY_RETIRED: &str = crate::source!("Antigravity integration has been retired from Zerus.");
 
 /// Whether the agent starts detached (`-d`): every one but DeepSeek, which
 /// opens in Native UI, and OpenCode, which runs through its server.
 pub fn detached(agent: &str) -> bool {
-    !matches!(agent, "dsh" | "opencode" | "agy")
+    !matches!(agent, "dsh" | "opencode")
 }
 
 /// Whether Start also opens an external terminal: checked, for an agent
@@ -107,7 +109,6 @@ pub fn terminal_tooltip(agent: &str) -> &'static str {
         "opencode" => {
             crate::source!("OpenCode runs through its native server and opens in Activity.")
         }
-        "agy" => crate::source!("Google Antigravity opens in Activity."),
         _ => crate::source!("Also open an external terminal for this session."),
     }
 }
@@ -1029,9 +1030,6 @@ pub struct Form {
     pub name: String,
     pub account_count: usize,
     pub account_selected: bool,
-    /// Antigravity launches only with a positive capability from the chosen computer.
-    #[serde(default)]
-    pub native_launch_supported: bool,
     /// The account list is loading.
     pub account_loading: bool,
     /// The form opened for a given account.
@@ -1129,10 +1127,9 @@ pub fn shown(form: &Form) -> Shown {
                 && !(automatic && form.creation_failed)
         }
     };
-    let launch_block = (form.agent == "agy" && !form.native_launch_supported)
-        .then_some(crate::source!("Starting Google Antigravity is unavailable on this computer."));
+    let retired = form.agent == "agy";
     let start_enabled = !form.no_machine
-        && launch_block.is_none()
+        && !retired
         && form.account_selected
         && (!form.account_loading || form.agent == "sh")
         && !busy
@@ -1177,8 +1174,8 @@ pub fn shown(form: &Form) -> Shown {
         } else {
             MISSING_ACCOUNT
         })
-    } else if form.account_selected && !form.account_loading && launch_block.is_some() {
-        launch_block
+    } else if retired {
+        Some(ANTIGRAVITY_RETIRED)
     } else if form.account_count == 0 {
         Some(NO_ACCOUNT)
     } else if repository.is_none() && !form.path.is_empty() && !form.folder_online {

@@ -246,7 +246,6 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Mobile clear-context ABI: dismiss-prompt-v1
        session-notifications-v1
        session-keep-warm-v1
-       antigravity-native-login-v1
        delivery-receipt-v1
        receipt-index-codex-queue-page-v1
        native-send-outcome-v2
@@ -254,6 +253,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        session-question-routing-v2
        question-route-person-v1
        question-route-person-v2
+       retired-provider-selector-v1
        session-parent-v1
        session-parent-project-v1
        launch-parent-v1
@@ -981,6 +981,10 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         return Ok(1);
     };
     let args = &args[index + 1..];
+    let forwarding = !target.is_empty() && !config.is_self(&target);
+    if retired_agy_route(command, args, forwarding) {
+        return Err(Error::new(1, state::retired_agy::RETIRED));
+    }
     // The per-child question route switch (zerus-sa9qn.32): refuse a change
     // from an agent's own process tree here, before any `@host` forwarding,
     // because the peer's hgs cannot see this caller (zerus-sa9qn.47). This is
@@ -1110,6 +1114,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     } else {
         args
     };
+    if retired_agy_route(command, args, forwarding) {
+        return Err(Error::new(1, state::retired_agy::RETIRED));
+    }
     // zerus-ucck P3a: a label named without a selection is resolved among
     // its candidates here, on the computer that holds the sessions.
     // Commands exempt from local sessions (hooks, session-action-status)
@@ -1430,6 +1437,9 @@ fn run(args: &[String]) -> Result<i32> {
             "--run needs a base command after the resume arguments",
         ));
     }
+    if retired_agy_program(&args[n + 1]) || n != 0 && retired_agy_program(&args[1]) {
+        return Err(Error::new(1, state::retired_agy::RETIRED));
+    }
     if env::var("HGS_SESSION").is_ok_and(|s| !s.is_empty())
         && env::var("HGS_TRACKING").as_deref() != Ok("0")
     {
@@ -1648,6 +1658,8 @@ fn peer_json_archives(config: &Config, peer: &str, archives: bool) -> Value {
 }
 /// The help line a peer lists once it resolves `--session-id` (zerus-ucck P1).
 pub(crate) const SELECTOR: &str = "session-id-selector-v1";
+// A peer with this marker refuses a retired session after resolving its ID.
+const RETIRED_PROVIDER_SELECTOR: &str = "retired-provider-selector-v1";
 
 /// A help marker a peer lists: a whole line, or text within a line.
 #[derive(Debug)]
@@ -1661,18 +1673,19 @@ pub(crate) enum Marker {
 /// call needs already, then the selector. None without a selector.
 fn selector_markers(command: &str, args: &[String]) -> Result<Option<Vec<Marker>>> {
     let (inner, rest, mut markers) = if command == "--expect-machine" {
-        let inner = args.get(1).map(String::as_str).unwrap_or_default();
+        let offset = if args.get(1).is_some_and(|arg| arg == "--client") { 3 } else { 1 };
+        let inner = args.get(offset).map(String::as_str).unwrap_or_default();
         let mut markers = vec![Marker::Text("guarded-create-v1")];
         if inner == "session-action-status" {
             markers.push(Marker::Line("lifecycle-receipt-status-v1"));
         }
-        (inner, args.get(2..).unwrap_or_default(), markers)
+        (inner, args.get(offset + 1..).unwrap_or_default(), markers)
     } else {
         (command, args, Vec::new())
     };
-    let selector = session_id_flag(inner, rest)?.is_some();
+    let selector = session_id_flag(inner, rest)?;
     let reference = is_reference_call(inner, rest);
-    if !selector && !reference {
+    if selector.is_none() && !reference {
         return Ok(None);
     }
     match inner {
@@ -1682,8 +1695,12 @@ fn selector_markers(command: &str, args: &[String]) -> Result<Option<Vec<Marker>
         "hooks" => markers.push(Marker::Text("hooks-health-v1")),
         _ => {}
     }
-    if selector {
+    if let Some((at, _)) = selector {
         markers.push(Marker::Line(SELECTOR));
+        let has_name = rest[..at].iter().any(|word| !word.starts_with('-'));
+        if !has_name && (retired_agy_session_command(inner) || inner == "session-action") {
+            markers.push(Marker::Line(RETIRED_PROVIDER_SELECTOR));
+        }
     }
     if reference {
         markers.push(Marker::Line(REFERENCE_SELECTOR));
@@ -1757,6 +1774,60 @@ const SESSION_COMMANDS: &[&str] = &[
     "settings", "schedules", "voice", "hooks", "a", "kill", "rename", "archive", "terminate",
     "pause", "resume", "native-ui", "__dsh-ui-url", "parent",
 ];
+
+// These effectful routes must also refuse on a newer client talking to an
+// older peer. Inspection and references remain available for saved history.
+pub(crate) fn retired_agy_session_command(command: &str) -> bool {
+    matches!(command, "a" | "answer" | "archive" | "clear-context" | "compact-context"
+        | "effort" | "forget" | "fork" | "interrupt" | "kill" | "native-ui" | "pause"
+        | "rename" | "resume" | "send" | "send-now" | "settings" | "terminal" | "terminate")
+}
+
+fn retired_agy_program(command: &str) -> bool {
+    let leaf = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    leaf.eq_ignore_ascii_case("agy") || leaf.eq_ignore_ascii_case("agy.exe")
+}
+
+fn retired_agy_route(command: &str, args: &[String], forwarding: bool) -> bool {
+    use state::retired_agy::{named, ACCOUNT};
+    let (command, args) = if command == "--expect-machine" {
+        let offset = if args.get(1).is_some_and(|arg| arg == "--client") { 3 } else { 1 };
+        let Some((inner, rest)) = args.get(offset..).and_then(<[String]>::split_first) else {
+            return false;
+        };
+        (inner.as_str(), rest)
+    } else {
+        (command, args)
+    };
+    let (command, args) = if command == "__state" {
+        let Some((inner, rest)) = args.split_first() else { return false };
+        (inner.as_str(), rest)
+    } else {
+        (command, args)
+    };
+    if retired_agy_program(command) || command == "agy-worker" {
+        return true;
+    }
+    if command == "account" {
+        return args.get(1).is_some_and(|id| id == ACCOUNT)
+            || args.windows(2).any(|pair| pair == ["--provider", "agy"]);
+    }
+    if LAUNCH_COMMANDS.contains(&command)
+        && args.split(|arg| arg == "--").next().unwrap_or_default()
+            .windows(2).any(|pair| pair == ["--account", ACCOUNT])
+    {
+        return true;
+    }
+    let target = if command == "delivery" && args.first().is_some_and(|op| op == "outbox-offer") {
+        args.get(1)
+    } else if retired_agy_session_command(command) || forwarding && command == "session-action" {
+        args.first()
+    } else {
+        None
+    };
+    target.is_some_and(|name| named(name) || name.starts_with("zerus://")
+        && crate::session_reference::Reference::parse(name).is_ok_and(|reference| named(&reference.name)))
+}
 
 /// The position and value of `--session-id` for a session command, refused
 /// when repeated, empty or not a session ID. Other commands keep their own
@@ -1960,7 +2031,7 @@ fn bound_terminal(session: &str) -> Result<Option<(String, String)>> {
 /// Commands that start a session, one list for the hosted forwarding refusal,
 /// the claimed-parent gate (`fork` takes no `--parent`) and the forwarded
 /// parent link; with `--parent` a launch names its parent.
-const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "agy", "fork"];
+const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "fork"];
 
 /// Why forwarding `command` to another computer is refused for a resident
 /// DeepSeek host's tool call (`HGS_AGENT=dsh`) without its hosted proof, or
@@ -2273,13 +2344,12 @@ fn remote_via(
     global_dry: bool,
     machine: Option<&str>,
 ) -> Result<i32> {
+    if retired_agy_route(command, args, true) {
+        return Err(Error::new(1, state::retired_agy::RETIRED));
+    }
     // Every route to another computer passes here, before any ssh is built.
     person_only_forwarding(command, args)?;
     let login = account_sign_in(command, args);
-    let antigravity_login = login == Some("native-agy");
-    if antigravity_login && !global_dry && !has(args, "--dry-run") {
-        crate::accounts::require_antigravity_login_person()?;
-    }
     let answer_input = forwarded_answer_input(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
@@ -2302,12 +2372,6 @@ fn remote_via(
     let mut tab = None;
     let mut ssh = platform::ssh();
     let remote_args: Vec<String> = match command {
-        _ if antigravity_login => {
-            // The native login accepts a code in the remote terminal. It
-            // needs a tty, with no browser callback or local forwarding.
-            flags = ["-t", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].map(String::from).into();
-            std::iter::once(command.to_owned()).chain(args.clone()).collect()
-        }
         "ls" => {
             flags = vec![
                 "-o".into(),
@@ -2486,7 +2550,7 @@ fn remote_via(
             all
         }
     };
-    if login.is_some() && !antigravity_login {
+    if login.is_some() {
         // Codex finishes a browser sign-in on the signing computer's
         // localhost:1455, which a browser on this computer cannot reach.
         // Forward this computer's port there, as OpenAI documents for
@@ -2503,18 +2567,7 @@ fn remote_via(
         None => remote_args,
     };
     let wrapped_path_info = command == "--expect-machine" && args.get(1).is_some_and(|actual| actual == "path-info");
-    use zerus_client_core::account_actions::setup::ANTIGRAVITY_LOGIN_MARKER;
-    let remote = if antigravity_login {
-        let mut markers = vec![Marker::Line(ANTIGRAVITY_LOGIN_MARKER)];
-        if command == "--expect-machine" || machine.is_some() {
-            markers.push(Marker::Text("guarded-create-v1"));
-        }
-        gated_with_message(
-            &markers,
-            &remote_args,
-            "update the selected computer to open Antigravity sign-in",
-        )
-    } else if let Some(markers) = selector_markers(command, &args)? {
+    let remote = if let Some(markers) = selector_markers(command, &args)? {
         // An older peer would read the flag as a session name; it must
         // advertise the selector, and what the command needs already, first.
         gated(&markers, &remote_args)
@@ -2679,7 +2732,6 @@ fn remote_via(
         {
             markers.push((state::LISTING_METADATA_MARKER, true));
         }
-        if antigravity_login { markers.push((ANTIGRAVITY_LOGIN_MARKER, true)); }
         if machine.is_some() { markers.push(("guarded-create-v1", false)); }
         let mut words = remote_args.clone();
         // A non-POSIX peer runs the words without a shell probe: send --bounded only to one that lists it.
@@ -3301,7 +3353,7 @@ fn pause_resume(
         0,
         &format!("usage: hgs {command} <session>|--all [-d] [--archive <id> | --fresh]"),
     )?;
-    let mut detached = session == "--all" || session.starts_with("agy/");
+    let mut detached = session == "--all";
     if session.starts_with('-') && session != "--all" {
         return Err(Error::new(
             1,
@@ -3808,36 +3860,13 @@ fn launch(
     global_dry: bool,
 ) -> Result<i32> {
     let mut options = LaunchOptions::parse(args, global_dry)?;
+    if retired_agy_program(command) || options.account.as_deref() == Some(state::retired_agy::ACCOUNT) {
+        return Err(Error::new(1, state::retired_agy::RETIRED));
+    }
     let (directory, project) = resolve_project(config, command, &options)?;
     let command_name = basename(command);
     if state::parent_link::claimed_launch() && !matches!(command_name.as_str(), "claude" | "codex" | "kimi" | "dsh" | "opencode") {
         return Err(Error::new(1, "--parent is available for Claude, Codex, Kimi, DeepSeek and OpenCode launches"));
-    }
-    if command_name == "agy" {
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(Error::new(1, "Antigravity sessions are available on Linux and macOS"));
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        {
-            if options.account.as_deref().is_some_and(|id| id != state::agy::ACCOUNT)
-                || options.resume || options.resume_id.is_some() || !options.extra.is_empty()
-                || options.fresh || options.remote_control || options.model.is_some() || options.effort.is_some()
-            {
-                return Err(Error::new(1, "Use native-agy and the saved Zerus session for Antigravity resume"));
-            }
-            let project = if project == "/" { "root".into() } else { sanitize(&project) };
-            let tag = if options.tag.is_empty() { "main" } else { &options.tag };
-            if let Some(problem) = zerus_client_core::actions::tag_problem(tag) {
-                return Err(Error::new(1, problem));
-            }
-            let name = format!("agy/{project}/{tag}");
-            let result = state::agy::launch(&name, &directory, options.launch_id.as_deref(), options.dry)
-                .map_err(|error| Error::new(1, error))?;
-            if !options.dry {
-                record_native_launch(options.launch_id.as_deref(), &name);
-            }
-            println!("{result}");
-            return Ok(0);
-        }
     }
     if command_name=="opencode" {
         if options.account.as_deref().is_some_and(|id|id!="native-opencode") {return Err(Error::new(1,"Choose native-opencode; separate OpenCode profiles are not supported"));}
@@ -4275,6 +4304,52 @@ mod parent_scan_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retired_antigravity_opaque_peer_writes_need_a_peer_with_retirement() {
+        use super::{selector_markers, Marker, RETIRED_PROVIDER_SELECTOR};
+        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
+        for (command, words, gated) in [
+            ("send", vec!["--session-id", id, "--json"], true),
+            ("send", vec!["kimi/example/saved", "--session-id", id, "--json"], false),
+            ("inspect", vec!["--session-id", id], false),
+            ("--expect-machine", vec!["machine", "--client", "peer", "session-action",
+                "--session-id", id, "--json"], true),
+        ] {
+            let args: Vec<String> = words.into_iter().map(str::to_owned).collect();
+            let markers = selector_markers(command, &args).unwrap().unwrap();
+            assert_eq!(markers.iter().any(|m| matches!(m, Marker::Line(RETIRED_PROVIDER_SELECTOR))),
+                gated, "{command} {args:?}");
+        }
+    }
+
+    #[test]
+    fn retired_antigravity_old_client_routes_refuse_before_forwarding() {
+        for words in [
+            &["agy", "/srv/example"][..],
+            &["/opt/example/agy", "/srv/example"],
+            &["account", "login", "native-agy"],
+            &["account", "ls", "--provider", "agy"],
+            &["--expect-machine", "machine", "--client", "peer", "account", "install", "native-agy"],
+            &["codex", "/srv/example", "--account", "native-agy"],
+            &["resume", "agy/project/tag", "--archive", "id"],
+            &["session-action", "agy/project/tag", "--json"],
+            &["__state", "agy-worker", "agy/project/tag"],
+        ] {
+            let args: Vec<String> = words[1..].iter().map(ToString::to_string).collect();
+            assert!(super::retired_agy_route(words[0], &args, true), "{words:?}");
+        }
+        for words in [
+            &["codex", "/srv/example", "--", "--account", "native-agy"][..],
+            &["opencode", "/srv/example", "--model", "google/gemini"],
+            &["account", "ls"],
+            &["inspect", "agy/project/tag", "--archive", "id"],
+            &["reference", "agy/project/tag"],
+        ] {
+            let args: Vec<String> = words[1..].iter().map(ToString::to_string).collect();
+            assert!(!super::retired_agy_route(words[0], &args, true), "{words:?}");
+        }
+    }
+
     #[test]
     fn verified_codex_input_cannot_enter_via_programmatic_dispatch() {
         for args in [

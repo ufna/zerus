@@ -203,7 +203,7 @@ function texts(profile: Profile, usage: Usage | undefined, choice: AccountChoice
   if (!name) name = choice.cachedEmail?.(profile.provider, profile.id) ?? "";
   if (!name) name = profile.label;
   if (UNNAMED.has(name)) name = tr("Account n/a");
-  const summary = profile.provider === "agy" ? trText(profile.detail) : usage ? launchSummary(usage, choice.now) : tr("limits n/a");
+  const summary = usage ? launchSummary(usage, choice.now) : tr("limits n/a");
   // A terse balance ("$6.20") is named in full for the tooltip and assistive technology.
   const title = usage && balanceCompact(usage) ? balanceTitle(usage) : "";
   const about = title ? `\n${title}` : "";
@@ -235,6 +235,7 @@ export function accountRows(groups: Account[], choice: AccountChoice): { rows: A
   const currentId = choice.current && choice.current.host === choice.host && choice.current.provider === choice.agent ? choice.current.id : "";
   const rows: AccountRow[] = [];
   for (const group of groups) {
+    if (group.provider === "agy") continue;
     let chosen: Profile | undefined;
     let best = -1;
     for (const profile of group.members) {

@@ -1097,6 +1097,15 @@ impl Worker {
                     if self.shutdown.load(Ordering::Acquire) || !self.services.allowed {
                         continue;
                     }
+                    if text(&operation, "cmd") == "agy" || text(&operation, "account") == "native-agy" {
+                        self.fresh_launches.remove(&id);
+                        let message = Done::LaunchFailed(
+                            text(&operation, "launch_id").to_owned(),
+                            launch::ANTIGRAVITY_RETIRED.into(),
+                        );
+                        let _ = self.done.send(message);
+                        continue;
+                    }
                     // A local detached launch of the closed agent set goes to
                     // the service; only native consent in this host makes its
                     // first and only dispatch fresh.

@@ -4,8 +4,7 @@
 //! the original helper: an upgrade must never orphan a saved conversation.
 mod answer_channel;
 mod agent_hint;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) mod agy;
+pub(crate) mod retired_agy;
 mod archive;
 mod native_archive_store;
 mod record_source;
@@ -596,9 +595,8 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget(), #[cfg(target_os = "linux")] readiness_until: native_launch::catalog_deadline() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if record["backend"] == "agy" {
-            sessions.push(agy::row(&record, false));
+            sessions.push(retired_agy::row(&record, None));
             continue;
         }
         // An archive written before its binding was removed wins, as before.
@@ -950,9 +948,8 @@ pub fn fork_session(
 
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if archive.is_empty() && agy::named(name) && agent.is_empty() {
-        return agy::inspect(name);
+    if archive.is_empty() && retired_agy::named(name) && agent.is_empty() {
+        return retired_agy::inspect(name);
     }
     if archive.is_empty() && opencode::exists(name) {
         return opencode::inspect(name, if agent.is_empty() { None } else { Some(agent) });
@@ -1762,6 +1759,14 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     let Some((command, args)) = args.split_first() else {
         return Err("missing state operation".into());
     };
+    if command == "agy-worker" {
+        return Err(retired_agy::RETIRED.into());
+    }
+    if let Some((name, rest)) = args.split_first().filter(|(name, _)| retired_agy::named(name)) {
+        if crate::cli::retired_agy_session_command(command) || matches!(command.as_str(), "inspect" | "exists") {
+            return retired_agy::dispatch(command, name, rest);
+        }
+    }
     // Only this explicit flag ends a parent's live child sessions after it
     // (zerus-sa9qn.17). Before provider routing, so a DeepSeek or OpenCode
     // parent refuses with its own message and no child is touched.
@@ -1769,10 +1774,6 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         && args.iter().any(|arg| arg == end_children::FLAG)
     {
         return end_children::dispatch(command, args);
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if command == "agy-worker" {
-        return agy::run_worker(args);
     }
     if command == "worktrees" {
         return worktrees::dispatch(args);
@@ -1904,10 +1905,6 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
                 _ => Err("Native queue admission requires the exact provider session name".into()),
             };
         }
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
-        return agy::dispatch(command, name, rest);
     }
     // The Composer needs its own exact pre-offer witness for either route.
     if command == "send" && args.iter().any(|arg| arg == "--when-idle") {

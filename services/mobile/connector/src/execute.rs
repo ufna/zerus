@@ -337,6 +337,12 @@ impl<N: Native + 'static> Connector<N> {
                 Some("operation is unavailable on a Windows local gateway"),
             );
         }
+        if crate::validate::retired_antigravity_write(
+            request.get("operation").and_then(Value::as_str).unwrap_or_default(),
+            request.get("session").and_then(Value::as_str).unwrap_or_default(),
+        ) {
+            return receipt("failed", Value::Null, Some(crate::validate::ANTIGRAVITY_RETIRED));
+        }
         if crate::media::claims(request) {
             return self.media(request, request_id).await;
         }

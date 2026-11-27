@@ -221,6 +221,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   /** The draft key of the session last opened; a view of another composer is an older answer. */
   let expected: string | undefined;
   let openedSession: SessionRef | undefined;
+  const retiredSession = () => !!view() && openedSession?.name.startsWith("agy/") === true;
   let suggestionKey = "";
   let opens = 0;
   let inFlight = 0;
@@ -252,7 +253,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const waitingMessages = () => opening() > 0 ? [] : view()?.waiting_in_zerus ?? [];
   const canSubmitDraft = () => {
     const v = view();
-    if (!v || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
+    if (!v || retiredSession() || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
   const directSendEnabled = () => canSubmitDraft() && !ordinaryInputHeld() && waitingMessages().length === 0;
@@ -261,7 +262,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     ? canSubmitDraft() && waitingMessages()[0]?.state !== "reserved"
     : directSendEnabled());
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
-  const pushEnabled = () => !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
+  const pushEnabled = () => !retiredSession() && !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
   /** The old session's queue must not remain actionable while its successor opens. */
   const queue = () => opening() > 0 ? null : view()?.queue ?? null;
   /** The message a Compact and continue holds (zerus-pabah): like the queue, the open composer's own, never a successor's while it opens. */
@@ -435,7 +436,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   /** Panel and window shortcut use this hub command; a push keeps its own handle. */
   async function sendNow(queueId?: string): Promise<boolean> {
-    if (closing() || view()?.subagent) return false;
+    if (closing() || view()?.subagent || retiredSession()) return false;
     if (opening() > 0) {
       notices("info", tr("Nothing queued can be sent now"), false);
       return false;

@@ -521,7 +521,7 @@ pub fn decode(read: &Read, exit: Exit) -> Result<Value, ReadError> {
             .ok_or_else(|| invalid("not an hgs version"));
     }
     // One parse; the archive reads word a reply they cannot use as Qt does.
-    let value = match (read, serde_json::from_slice::<Value>(&stdout)) {
+    let mut value = match (read, serde_json::from_slice::<Value>(&stdout)) {
         (Read::ArchivedActivity { .. }, Ok(value @ Value::Object(_))) => value,
         (Read::ArchivedActivity { .. }, _) => return Err(archive_invalid(ACTIVITY_INVALID)),
         (Read::ArchivePage { .. }, Err(_)) => return Err(archive_invalid(ARCHIVE_PAGE_INVALID)),
@@ -569,6 +569,17 @@ pub fn decode(read: &Read, exit: Exit) -> Result<Value, ReadError> {
     }
     if matches!(read, Read::Analytics { .. }) && object.get("schema") != Some(&json!(1)) {
         return Err(invalid("unknown analytics schema"));
+    }
+    if *read == Read::Accounts {
+        // An older computer can still advertise a native Antigravity account.
+        for key in ["profiles", "removed_profiles"] {
+            if let Some(rows) = value.get_mut(key).and_then(Value::as_array_mut) {
+                rows.retain(|row| row["provider"] != "agy" && row["id"] != "native-agy");
+            }
+        }
+        if let Some(defaults) = value.get_mut("defaults").and_then(Value::as_object_mut) {
+            defaults.remove("agy");
+        }
     }
     Ok(value)
 }
@@ -1218,6 +1229,22 @@ pub fn path_info(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_old_peer_catalog_hides_only_the_retired_account() {
+        let catalog = json!({
+            "revision":"original",
+            "profiles":[{"id":"native-agy","provider":"agy"},
+                        {"id":"native-opencode","provider":"opencode","providers":[{"id":"google"}]}],
+            "removed_profiles":[{"id":"native-agy","provider":"agy"},{"id":"other","provider":"codex"}],
+            "defaults":{"agy":"native-agy","codex":"native-codex"}
+        });
+        let clean = decode(&Read::Accounts, code(&catalog.to_string())).unwrap();
+        assert_eq!(clean["revision"], "original");
+        assert_eq!(clean["profiles"], json!([catalog["profiles"][1].clone()]));
+        assert_eq!(clean["removed_profiles"], json!([catalog["removed_profiles"][1].clone()]));
+        assert_eq!(clean["defaults"], json!({"codex":"native-codex"}));
+    }
+
     #[test]
     fn path_info_reads_only_schema_one_replies() {
         let decode = |text: &str| decode_path_info(text.as_bytes());

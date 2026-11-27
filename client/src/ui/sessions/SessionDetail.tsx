@@ -105,7 +105,7 @@ function Header() {
   const act = createMemo(() => actionEntries(s(), details()));
   const copies = createMemo(() => copyEntries(s(), details()));
   const mark = createMemo(() => markEntry(s()));
-  const slot = () => headerClearSlot(!subagentOpen(), s().state);
+  const slot = () => headerClearSlot(!subagentOpen() && s().cmd !== "agy", s().state);
   const fresh = createMemo(() => freshActionEntry(s(), true));
   // Clear session goes through the composer's clear_context (Qt's clearContext): its dialog shows the identity it sends back.
   const clear = () => composer.view()?.clear;
@@ -131,7 +131,7 @@ function Header() {
     { separator: true },
     ...(slot() === "fresh" && fresh() ? [fresh()!] : slot() === "clear" ? [clearEntry()] : []),
     ...(act().archive ? [act().archive!] : []),
-    ...(s().cmd === "agy" ? [] : [act().end]),
+    act().end,
   ];
   return (
     <header class="detail-head">
@@ -163,7 +163,7 @@ function Header() {
         </Show>
         <Show when={s().worktree}><span class="dh-chip ell" title={tr("Linked worktree %1", s().worktree!)}><Icon name="folder-git-2" size={13} />{tr("worktree %1", s().worktree!)}</span></Show>
         <span class="grow" />
-        <Show when={s().cmd !== "agy"}><span class="dh-model ell">{s().model} {s().effort ?? ""}</span></Show>
+        <span class="dh-model ell">{s().model} {s().effort ?? ""}</span>
         <KeepWarmChip session={s()} />
       </div>
     </header>
@@ -197,7 +197,7 @@ createRoot(() => {
   // The inputs of terminal_status as one string: a row change that leaves them alone calls nothing.
   const inputs = createMemo(() => {
     const s = selected();
-    if (!s) return undefined;
+    if (!s || s.cmd === "agy") return undefined;
     const followed = followedFor(s.key);
     const details = detailsFor(s, !computerOffline(s.computer), followed);
     return JSON.stringify([s.key, s.name, s.runId, s.terminalConversationId ?? s.conversationId, s.cmd, s.state, s.terminalSupported, s.terminalReported, s.terminalAttachSupported,
@@ -255,7 +255,7 @@ const tabs = () => {
   const count = processes.view()?.count ?? 0;
   const all = [
     { id: "activity" as const, label: tr("Activity"), show: true },
-    { id: "terminal" as const, label: tr("Terminal"), show: !!terminalTexts()?.supported && !subagentOpen() },
+    { id: "terminal" as const, label: tr("Terminal"), show: selected()?.cmd !== "agy" && !!terminalTexts()?.supported && !subagentOpen() },
     { id: "native" as const, label: tr("Native UI"), show: selected()?.agent === "deepseek" && !subagentOpen() },
     processesTab(flag("processes/enabled"), count),
     { id: "taskview" as const, label: tr("Task View"), show: detailTab() === "taskview" && !!selectedTask() },
@@ -307,16 +307,6 @@ export function SessionDetail() {
     return s?.agent === "deepseek" && s.state === "running" && !computerOffline(s.computer)
       && detailsFor(s, true, followedFor(s.key))?.auth_required;
   });
-  const antigravitySignIn = createMemo(() => {
-    const row = selected();
-    if (row?.cmd !== "agy" || row.archiveId || computerOffline(row.computer)) return undefined;
-    const inspection = detailsFor(row, true, followedFor(row.key));
-    if (!inspection?.auth_required) return undefined;
-    if (row.conversationId) return tr("On this computer, run agy acp --login. Then resume this session.");
-    return (inspection.startup_retry_available ?? row.startupRetryAvailable)
-      ? tr("On this computer, run agy acp --login. Then choose Retry start in the session actions.")
-      : tr("On this computer, run agy acp --login. Then start a new Google Antigravity session.");
-  });
   const toggle = onCommand("panel.toggle", () => { if (page() === "sessions" && selected()) setInspectorOpen(!inspectorOpen()); });
   onCleanup(toggle);
   createEffect(() => {
@@ -357,9 +347,6 @@ export function SessionDetail() {
                           <p class="qcard-body">{tr("Sign in to DeepSeek to start using this session. Complete sign-in in the official DeepSeek UI, then return here.")}</p>
                           <div class="qcard-actions"><button class="btn small" onClick={() => nativeRoute(selected())()}>{tr("Sign in to DeepSeek…")}</button></div>
                         </div></div></Show>
-                        <Show when={antigravitySignIn()}>{(message) => <div class="cmp-col">
-                          <div class="qcard" role="status"><p class="qcard-body">{message()}</p></div>
-                        </div>}</Show>
                         <HeldMessage /><PendingZerusSubmission /><QueuePanel /><QuestionSlot />
                       </Show>
                       <div class="cmp-col"><Composer /></div>

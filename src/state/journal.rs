@@ -615,9 +615,8 @@ pub(super) fn archive_summary(record: &Value, name_taken: bool) -> Value {
 }
 
 fn observed_summary(record: &Value, live_pane: bool, archive_name_taken: Option<bool>) -> Value {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if record["backend"] == "agy" && !string(record, "archive_id").is_empty() {
-        return agy::archives::row(record, None, archive_name_taken);
+        return retired_agy::row(record, None);
     }
     let mut output = normalized_activity(record, live_pane);
     output["conversation_id"] = record["conversation_id"].clone();
@@ -1141,10 +1140,9 @@ pub(super) fn inspection_with(
     } else {
         read(name)?
     };
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if archive_id.is_some() && record["backend"] == "agy" {
         drop(_guard);
-        return Ok(agy::archives::row(&record, Some(after.max(0) as u64), None));
+        return Ok(retired_agy::row(&record, Some(after.max(0) as u64)));
     }
     if archive_id.is_some() && record["backend"] == "dsh" {
         drop(_guard);

@@ -1,7 +1,7 @@
 import {createSignal} from "solid-js";
 import {accountDistributionOpen,accountDistributionApply,accountDistributionClose,accountDistributionProgress,type AccountDistributionForm,type AccountDistributionValues,type AccountDistributionProgress} from "../bridge";
 import {notify} from "./actions";
-import {accountsPage,loadAccounts,setAccountMachine,setRequestedProfile} from "./accounts";
+import {accountsPage,activeAccounts,loadAccounts,setAccountMachine,setRequestedProfile} from "./accounts";
 import {accountSetup} from "./accountSetup";
 import { tr } from "../i18n";
 interface Port {open(account:string,profile:string):Promise<AccountDistributionForm>;apply(handle:string,values:AccountDistributionValues):Promise<AccountDistributionProgress[]>;close(handle:string):Promise<unknown>;follow(handle:string,receive:(row:AccountDistributionProgress)=>void):Promise<()=>void>;error(text:string):void;select(profile:string):void}
@@ -24,4 +24,4 @@ export function createAccountDistribution(port:Port) {
  };
 }
 export const accountDistribution=createAccountDistribution({open:accountDistributionOpen,apply:accountDistributionApply,close:accountDistributionClose,follow:accountDistributionProgress,error:text=>notify("error",text,true),select:profile=>{setAccountMachine("*");setRequestedProfile(profile);}});
-export async function signInDistributedProfile(profile:string,origin:HTMLElement) {await loadAccounts();const account=accountsPage().accounts.find(a=>a.members.some(m=>m.key===profile));if(account)await accountSetup.open("login",origin,account.key,profile);else notify("error",tr("Accounts changed on this machine. Refresh before saving."),true);}
+export async function signInDistributedProfile(profile:string,origin:HTMLElement) {await loadAccounts();const account=activeAccounts(accountsPage().accounts).find(a=>a.members.some(m=>m.key===profile));if(account)await accountSetup.open("login",origin,account.key,profile);else notify("error",tr("Accounts changed on this machine. Refresh before saving."),true);}

@@ -235,11 +235,10 @@ fn binding_reference(directory: &str, path: &Path) -> Result<Option<Reference>> 
     }
     let native_agy = name.starts_with("agy/") || value["agent"] == "agy" || value["backend"] == "agy";
     let valid = match directory {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         "" if native_agy => {
             // The native producer records both absolute folders. A damaged
             // holder must not disappear when reference() projects its paths.
-            super::agy::valid_binding(&value)
+            super::retired_agy::valid_binding(&value)
                 && ["cwd", "launch_dir"]
                     .into_iter()
                     .all(|key| Path::new(string(&value, key)).is_absolute())
@@ -3863,7 +3862,7 @@ mod binding_census_tests {
             "version": 1,
             "agent": "agy",
             "backend": "agy",
-            "account_id": super::super::agy::ACCOUNT,
+            "account_id": super::super::retired_agy::ACCOUNT,
             "name": name,
             "session_id": uuid::Uuid::new_v4().to_string(),
             "run_id": uuid::Uuid::new_v4().to_string(),
@@ -3872,6 +3871,34 @@ mod binding_census_tests {
             "launch_dir": launch_dir,
         });
         atomic(&path, &record.to_string()).unwrap();
+        let inspection = super::super::retired_agy::inspect(name).unwrap();
+        assert_eq!(inspection["session_id"], record["session_id"]);
+        assert_eq!(inspection["run_id"], record["run_id"]);
+        assert_eq!(inspection["state"], "saved");
+        assert_eq!(inspection["allowed_actions"], json!([]));
+        assert_eq!(inspection["send_supported"], false);
+
+        let mut original = record.clone();
+        original["conversation_id"] = json!(uuid::Uuid::new_v4().to_string());
+        original["agy_events"] = json!([
+            {"seq":1, "type":"UserPromptSubmit", "detail":"saved prompt"},
+            {"seq":2, "type":"AgentMessage", "detail":"saved reply"}
+        ]);
+        original["agy_seq"] = json!(2);
+        let archive_id = native_archive_store::RETIRED_AGY.publish(&original).unwrap();
+        let archived = archive::read_archive(name, &archive_id).unwrap();
+        let activity = super::super::retired_agy::row(&archived, Some(1));
+        assert_eq!(activity["archive_id"], archive_id);
+        assert_eq!(activity["conversation_id"], original["conversation_id"]);
+        assert_eq!(activity["events"], json!([original["agy_events"][1].clone()]));
+        assert_eq!(activity["resumable"], false);
+        for folder in [cwd, launch_dir] {
+            let error = archive_references::visit_related(
+                Instant::now() + Duration::from_secs(5), folder, "", |_| Ok(()),
+            ).unwrap_err();
+            assert!(error.contains("An archived Antigravity conversation still needs this folder"));
+        }
+
         let refs = bindings().unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].name, name);

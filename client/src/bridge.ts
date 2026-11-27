@@ -668,7 +668,7 @@ export async function accountEditClose(handle: string): Promise<void> {
   if (inTauri()) await invoke("account_edit_close", { handle });
 }
 export type AccountSetupKind="add"|"login"|"install"|"start"|"key";
-export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean;antigravity_installed?:boolean;antigravity_sign_in?:boolean}
+export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean}
 export interface AccountSetupView {handle:string;kind:AccountSetupKind;hosts:AccountSetupHost[];host:string;provider:string;label:string}
 export interface AccountSetupValues {host?:string;provider?:string;saved?:string;label?:string;api_key?:string}
 export interface AccountSetupResult {notices:string[];errors:string[];profile:string|null}

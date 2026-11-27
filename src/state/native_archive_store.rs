@@ -6,10 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) const AGY: Store = Store::new("agy/archives-v1.sqlite3", "Antigravity", |record| {
-    storage::binding_agent(record)
-        && record["backend"] == "agy"
-        && record["agent"] == "agy"
+pub(super) const RETIRED_AGY: Store = Store::new("agy/archives-v1.sqlite3", "Antigravity", |record| {
+    retired_agy::identity(record)
         && session_id::canonical(string(record, "session_id"))
         && session_id::canonical(string(record, "run_id"))
         && session_id::canonical(string(record, "conversation_id"))
@@ -19,7 +17,7 @@ pub(super) fn named(name: &str) -> Option<Store> {
     match name.split_once('/')?.0 {
         "dsh" => Some(dsh::native_archives::STORE),
         "opencode" => Some(opencode::archives::STORE),
-        "agy" => Some(AGY),
+        "agy" => Some(RETIRED_AGY),
         _ => None,
     }
 }

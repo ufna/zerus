@@ -63,7 +63,7 @@ pub(super) fn action(action: &Action) -> &'static str {
     match action {
         Action::Interrupt { .. } => zerus_client_core::source!("Stop agent turn"),
         Action::MarkRead { .. } => zerus_client_core::source!("Mark session read"),
-        Action::Settings { .. } | Action::AntigravitySettings { .. } => zerus_client_core::source!("Change model or effort"),
+        Action::Settings { .. } => zerus_client_core::source!("Change model or effort"),
         Action::ClearContext { .. } => zerus_client_core::source!("Clear session"),
         Action::CompactContext => zerus_client_core::source!("Compact context"),
         Action::Pause | Action::PauseAll { .. } => zerus_client_core::source!("Pause session"),

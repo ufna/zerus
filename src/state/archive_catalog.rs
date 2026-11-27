@@ -587,7 +587,7 @@ fn native_stores() -> [(&'static str, native_archive_store::Store); 3] {
     [
         ("dsh_archive", dsh::native_archives::STORE),
         ("opencode_archive", opencode::archives::STORE),
-        ("agy_archive", native_archive_store::AGY),
+        ("agy_archive", native_archive_store::RETIRED_AGY),
     ]
 }
 

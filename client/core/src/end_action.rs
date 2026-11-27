@@ -52,7 +52,8 @@ impl Captured {
     pub fn valid(&self) -> bool {
         let t = &self.target;
         let archived = matches!(self.action, Action::ForgetArchive { .. });
-        bounded(&t.computer, 512, false)
+        !t.name.starts_with("agy/")
+            && bounded(&t.computer, 512, false)
             && bounded(&t.name, 512, true)
             && bounded(
                 &t.run_id,
@@ -213,7 +214,7 @@ impl Captured {
         if !self.valid() {
             return actions::failed(STATE_CHANGED);
         }
-        if self.open_code_archive() || (matches!(self.action, Action::Archive) && self.target.name.starts_with("agy/")) {
+        if self.open_code_archive() {
             return actions::classify_archive_lifecycle(&self.target, inv, exit, None);
         }
         if matches!(&exit, Exit::Code { stdout, .. } if stdout.len() > RECEIPT_LIMIT) {

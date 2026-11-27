@@ -354,16 +354,12 @@ it("does not open a row that went offline after the menu opened", () => {
   expect(menuItem("Open terminal", sessionMenu(target))).toMatchObject({ disabled: true, hint: "Machine unavailable. Reconnect when it is online." });
 });
 
-it("offers only individually supported Antigravity lifecycle in the ordinary row menu", () => {
+it("offers no active lifecycle for a retired Antigravity record", () => {
   applyBatch({ ...emptyBatch(), computers: [{ computer: "", status: "live", attempt: 0 }] });
-  const row = { name: "agy/project/example", agent: "agy", state: "running", status: "ready", run_id: "run-agy",
-    conversation_id: "conversation-agy", resumable: true };
-  const entries = (r: ViewRow) => sessionMenu(toSession("", "run:run-agy", r))
+  const row = { name: "agy/project/example", agent: "agy", state: "stopped", status: "paused", run_id: "run-agy",
+    conversation_id: "conversation-agy", resumable: false, allowed_actions: [] };
+  const actions = sessionMenu(toSession("", "run:run-agy", row))
     .filter((entry): entry is Extract<MenuEntry, { label: string }> => "label" in entry);
-  const actions = entries({ ...row, allowed_actions: ["pause"] });
-  expect(actions.find(item => item.label === "Stop session…")).toMatchObject({ disabled: false, danger: true });
-  expect(actions.some(item => item.label === "Terminate session…" || item.label === "Archive")).toBe(false);
-  expect(entries(row).find(item => item.label === "Stop session…")).toMatchObject({ disabled: true });
-  expect(entries({ ...row, state: "paused", allowed_actions: ["resume"] }).find(item => item.label === "Resume session"))
-    .toMatchObject({ disabled: false });
+  expect(actions.some(item => ["Resume session", "Pause session", "Stop session…", "Terminate session…"].includes(item.label))).toBe(false);
+  expect(actions.find(item => item.label === "Forget saved session…")).toMatchObject({ disabled: true });
 });

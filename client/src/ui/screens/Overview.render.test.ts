@@ -66,6 +66,16 @@ function show(windows: ProjectedWindow[]) {
   return host.querySelector(".ov-acard")?.textContent;
 }
 
+it("omits retired Antigravity account cards", () => {
+  const account: Account = { key: "agy", label: "Google Antigravity", provider: "agy", installed: true, machines: [], members: [],
+    usage: usageOf({ provider: "agy" }), permission: { source: "" }, identity_lines: [], identity_note: null };
+  vi.spyOn(accounts, "accountsPage").mockReturnValue({ ...emptyAccounts(), snapshot: true, accounts: [account], overview: [account] });
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(OverviewScreen, {}), host);
+  expect(host.querySelector(".ov-acard")).toBeNull();
+  expect(host.textContent).not.toContain("Google Antigravity");
+});
+
 describe("dashboard account reset countdowns", () => {
   it.each([0, 34, 100])("shows the reset time at %s percent used", (used) => {
     expect(show([projected({ used, resets_at: NOW + 7200 })])).toContain(`5h ${used}% (2h 0m)`);

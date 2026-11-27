@@ -159,7 +159,7 @@ export interface Session {
   terminalReported: boolean;
   terminalAttachSupported: boolean;
   terminalAttachReported: boolean;
-  /** Pause all and Resume all include the row (false for OpenCode). */
+  /** Pause all and Resume all include the row (false for providers with individual or retired lifecycle). */
   bulkLifecycle: boolean;
   // The row as the host lists it, before this device's marks: store/marks.ts
   // derives status, caption, attention, unread, reviewLater, summary and muted
