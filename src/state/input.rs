@@ -995,9 +995,25 @@ fn codex_warning_footer(row: &str) -> bool {
         && matches!(tail, "warning · f2 to view" | "warnings · f2 to view")
 }
 
+// The live goal indicator uses a compact descending duration, e.g. 0s or 11h 51m.
+fn codex_active_goal(status: &str) -> bool {
+    let Some(elapsed) = status.strip_prefix("Pursuing goal (").and_then(|s| s.strip_suffix(')')) else {
+        return false;
+    };
+    let mut previous = 4;
+    elapsed.split(' ').all(|part| {
+        let Some((unit, digits)) = part.as_bytes().split_last() else { return false; };
+        let Some(rank) = b"smhd".iter().position(|u| u == unit) else { return false; };
+        let valid = rank < previous && !digits.is_empty()
+            && digits.len() <= 9 && digits.iter().all(u8::is_ascii_digit);
+        previous = rank;
+        valid
+    })
+}
+
 /// Native 0.167 adds an agent-picker hint; 0.169 uses a return-to-latest
 /// hint while its transcript is scrolled above the live composer. Accept only
-/// these fixed rows and the native paused-goal and warning indicators.
+/// these fixed rows and the native goal and warning indicators.
 fn codex_shortcuts_footer(plain: &str) -> bool {
     let plain = plain.trim();
     if plain.starts_with("? for shortcuts") {
@@ -1018,8 +1034,12 @@ fn codex_shortcuts_footer(plain: &str) -> bool {
         return false;
     }
     let status = tail.trim_start();
-    status == "Goal paused (/goal resume)"
-        || codex_warning_footer(status.strip_prefix("Goal paused (/goal resume) · ").unwrap_or(status))
+    if codex_warning_footer(status) {
+        return true;
+    }
+    let (goal, warning) = status.split_once(" · ").map_or((status, None), |(goal, tail)| (goal, Some(tail)));
+    (goal == "Goal paused (/goal resume)" || codex_active_goal(goal))
+        && warning.is_none_or(codex_warning_footer)
 }
 
 
@@ -3525,6 +3545,26 @@ mod tests {
             assert!(!composer_empty("codex", &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", draft), 2, 1));
         }
         assert!(!composer_empty("codex", screen, 3, 1));
+    }
+
+    #[test]
+    fn codex_active_goal_shortcuts_keep_empty_input_and_protect_drafts() {
+        let footer = "← for agents · ? for shortcuts          Pursuing goal (11h 51m) · ⚠ 2 warnings · f2 to view";
+        let placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+        let screen = format!("Working\n\n› {placeholder}\n\n  GPT-6.2-Astra high · /project · Title · Main [default]\n  {footer}");
+        assert!(composer_empty("codex", &screen, 2, 2));
+        for elapsed in ["0s", "3s", "2m 7s", "1h", "1d 3h"] {
+            let line = format!("← for agents · ? for shortcuts   Pursuing goal ({elapsed})");
+            assert!(composer_empty("codex", &screen.replace(footer, &line), 2, 2));
+        }
+        for draft in ["draft", "\n  more input"] {
+            assert!(!composer_empty("codex", &screen.replace(placeholder, draft), 2, 2));
+        }
+        for change in ["11h 51m) draft", "11h approve", "1m 2h", "1h 2h", ""] {
+            assert!(!composer_empty("codex", &screen.replace("11h 51m", change), 2, 2));
+        }
+        assert!(!composer_empty("codex", &screen.replace("f2 to view", "enter to approve"), 2, 2));
+        assert!(!composer_empty("codex", &screen, 3, 2));
     }
 
     #[test]
