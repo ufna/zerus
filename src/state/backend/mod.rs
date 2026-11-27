@@ -413,6 +413,15 @@ pub(crate) trait TerminalBackend: Sync {
     fn pane_info(&self, _target: Target, _fields: &[PaneField]) -> Result<PaneInfo> {
         Err(UNSUPPORTED.into())
     }
+    /// Read pane metadata within a caller's existing observation deadline.
+    fn pane_info_until(
+        &self,
+        _target: Target,
+        _fields: &[PaneField],
+        _until: std::time::Instant,
+    ) -> Result<PaneInfo> {
+        Err(UNSUPPORTED.into())
+    }
     /// `pane_info` where only the answer matters: None when the terminal gives
     /// none, its message discarded.
     fn probe(&self, _target: Target, _fields: &[PaneField]) -> Option<PaneInfo> {

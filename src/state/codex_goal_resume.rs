@@ -1,11 +1,12 @@
-//! After `codex resume`, Codex 0.162 asks whether to resume a paused, stalled or
-//! usage-limited goal before the first turn confirms the conversation. Its
+//! After `codex resume`, Codex asks whether to resume a paused, stalled or
+//! usage-limited goal. The chooser can remain after the run has bound. Its
 //! dialog floats centered over the transcript, which stays visible beside it,
 //! so only the dialog's own cells are read. The goal comes from Codex's goal
 //! database and must match the visible dialog. Resume goal lets Codex continue
 //! the goal by itself; Leave paused keeps the conversation waiting for a message.
 use super::*;
 use sha2::{Digest, Sha256};
+use std::time::{Duration, Instant};
 
 const TITLE: &str = "Resume paused goal?";
 const HINT: &str = "enter select · esc back";
@@ -17,6 +18,8 @@ const DESCRIPTIONS: [&str; 2] = [
 ];
 // Codex offers the dialog for these goal states (thread_goal_actions.rs).
 const PAUSED: [&str; 3] = ["paused", "blocked", "usage_limited"];
+const FRAME_WINDOW: Duration = Duration::from_millis(600);
+const FRAME_BYTES: usize = 512 * 1024;
 pub(super) const WAIT: &str =
     "Codex is waiting for your paused goal choice. Choose an option in Activity or Terminal before sending a message.";
 
@@ -25,6 +28,8 @@ struct Panel {
     // "Goal: <objective>" without whitespace; Codex wraps it anywhere.
     goal: String,
     selected: usize,
+    choice_rows: [usize; 2],
+    hint_row: usize,
 }
 
 fn compact(text: &str) -> String {
@@ -99,7 +104,8 @@ fn parse(screen: &str, width: usize) -> Option<Panel> {
         return None;
     }
     // Options follow blank rows; wrapped descriptions continue on indented rows.
-    let choices: Vec<&str> = body[blank..].iter().copied().skip_while(|r| r.is_empty()).collect();
+    let first = body[blank..].iter().position(|r| !r.is_empty())? + blank;
+    let choices = &body[first..];
     let choices = &choices[..choices.iter().rposition(|r| !r.is_empty())? + 1];
     let second = choices.iter().position(|r| option(r, 1).is_some()).filter(|&i| i > 0)?;
     let mut selected = None;
@@ -118,7 +124,12 @@ fn parse(screen: &str, width: usize) -> Option<Panel> {
             return None;
         }
     }
-    Some(Panel { goal: compact(&subtitle.join(" ")), selected: selected? })
+    Some(Panel {
+        goal: compact(&subtitle.join(" ")),
+        selected: selected?,
+        choice_rows: [title + 1 + first, title + 1 + first + second],
+        hint_row: hint,
+    })
 }
 
 fn width(record: &Value) -> Option<usize> {
@@ -129,7 +140,104 @@ fn width(record: &Value) -> Option<usize> {
 }
 
 fn eligible(record: &Value) -> bool {
-    resume_input::pending(record) && !pause_active(record)
+    !pause_active(record) && (resume_input::pending(record) || confirmed_resume(record))
+}
+
+fn confirmed_resume(record: &Value) -> bool {
+    record["agent"] == "codex"
+        && record["run_identity_version"] == 1
+        && record["startup_kind"] == "resume"
+        && record["supervisor"].is_object()
+        && record["conversation_state"] == "active"
+        && matches!(string(record, "activity"), "idle" | "busy")
+        && matches!(string(record, "phase"), "idle" | "tool" | "working")
+        && uuid::Uuid::parse_str(string(record, "conversation_id")).is_ok()
+        && string(record, "expected_id").is_empty()
+        && string(record, "requested_id").is_empty()
+        && string(record, "error").is_empty()
+        && record.get("session_end").is_none()
+        && !clear_context::awaiting_start(record)
+}
+
+// Once the run is confirmed, the same words could appear in the transcript.
+// Require Codex's reverse-video selection and dim inactive description in
+// the dialog's own columns. Backdrop styles never establish a selection.
+fn confirmed_frame(styled: &str, width: usize, panel: &Panel) -> bool {
+    let mut style = input::TerminalStyle::default();
+    let rows: Vec<_> = styled.lines().map(|row| input::styled_cells(row, &mut style)).collect();
+    let plain = rows.iter()
+        .map(|row| row.iter().map(|(ch, _)| *ch).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if parse(&plain, width).as_ref() != Some(panel) {
+        return false;
+    }
+    let (left, span) = columns(width);
+    panel.choice_rows.iter().enumerate().all(|(index, &row)| {
+        let mut column = 0;
+        let cells: Vec<_> = rows[row].iter().copied().filter(|(ch, _)| {
+            let start = column;
+            column += cells(*ch);
+            start >= left && column <= left + span
+        }).collect();
+        let selected = index == panel.selected;
+        let label_end = 5 + LABELS[index].len();
+        let Some((label, description)) = cells.split_at_checked(label_end) else {
+            return false;
+        };
+        let description_text: String = description.iter().map(|(ch, _)| *ch).collect();
+        description_text.trim() == DESCRIPTIONS[index]
+            && label.iter().all(|(ch, style)| ch.is_whitespace() || style.inverse == selected)
+            && description.iter().all(|(ch, style)| ch.is_whitespace()
+                || if selected { style.inverse } else { style.dim && !style.inverse })
+    })
+}
+
+fn geometry(record: &Value, until: Instant) -> Option<[usize; 3]> {
+    use backend::PaneField::{CursorX, CursorY, Width};
+    let info = backend::current()
+        .pane_info_until(backend::Target::Pane(string(record, "pane")), &[Width, CursorX, CursorY], until)
+        .ok()?;
+    let fields = info.fields();
+    let [width, x, y] = fields.as_slice() else { return None; };
+    Some([width.parse().ok()?, x.parse().ok()?, y.parse().ok()?])
+}
+
+fn captured_panel(record: &Value, plain: &str, until: Instant) -> Option<Panel> {
+    if !plain.contains(TITLE) || !plain.contains(HINT) {
+        return None;
+    }
+    if resume_input::pending(record) {
+        return parse(plain, width(record)?);
+    }
+    let before @ [width, x, y] = geometry(record, until)?;
+    let panel = parse(plain, width)?;
+    let (left, span) = columns(width);
+    if x != left + span || y != panel.hint_row {
+        return None;
+    }
+    let styled = backend::current()
+        .capture_until(string(record, "pane"), backend::Capture::Styled, until, FRAME_BYTES)
+        .ok()?;
+    if !confirmed_frame(std::str::from_utf8(&styled).ok()?, width, &panel)
+        || geometry(record, until)? != before
+    {
+        return None;
+    }
+    Some(panel)
+}
+
+fn read_panel(record: &Value) -> Option<Panel> {
+    let until = Instant::now() + FRAME_WINDOW;
+    let screen = if resume_input::pending(record) {
+        kimi_tui_choice::capture(record).ok()?
+    } else {
+        let bytes = backend::current()
+            .capture_until(string(record, "pane"), backend::Capture::Plain, until, FRAME_BYTES)
+            .ok()?;
+        String::from_utf8(bytes).ok()?
+    };
+    captured_panel(record, &screen, until)
 }
 
 fn card(record: &Value, panel: &Panel) -> Option<Value> {
@@ -141,9 +249,12 @@ fn card(record: &Value, panel: &Panel) -> Option<Value> {
     if !PAUSED.contains(&string(&goal, "status")) || compact(&format!("Goal: {objective}")) != panel.goal {
         return None;
     }
+    // Keep the prior pending hash when SessionStart clears expected_id for
+    // this same conversation. The chooser, process and answer target persist.
+    let conversation = &record["conversation_id"];
     let hash = format!("{:x}", Sha256::digest(json!([
         record["run_id"], record["pane"], record["pid"], record["process_start"],
-        record["conversation_id"], record["expected_id"], record["launch_dir"], record["agent_home"],
+        conversation, conversation, record["launch_dir"], record["agent_home"],
         goal["id"], objective, IDS
     ]).to_string()));
     Some(json!({"question_id":format!("codex-goal-resume:{hash}"),"question_hash":hash,
@@ -157,7 +268,7 @@ fn card(record: &Value, panel: &Panel) -> Option<Value> {
 }
 
 fn snapshot(record: &Value, screen: &str) -> Option<(Value, usize)> {
-    let panel = parse(screen, width(record)?)?;
+    let panel = captured_panel(record, screen, Instant::now() + FRAME_WINDOW)?;
     Some((card(record, &panel)?["question_hash"].clone(), panel.selected))
 }
 
@@ -165,7 +276,7 @@ pub(super) fn current(record: &Value) -> Option<Value> {
     if !eligible(record) {
         return None;
     }
-    let panel = parse(&kimi_tui_choice::capture(record).ok()?, width(record)?)?;
+    let panel = read_panel(record)?;
     if !process_alive(record) || !matches(record, panes_of(&live().ok()?, record)) {
         return None;
     }
@@ -175,7 +286,8 @@ pub(super) fn current(record: &Value) -> Option<Value> {
 
 pub(super) fn available(record: &Value, question: &Value) -> Result<()> {
     let active = kimi_tui_choice::identity(record)?;
-    if snapshot(&active, &kimi_tui_choice::capture(&active)?).map(|s| s.0) != Some(question["question_hash"].clone()) {
+    if read_panel(&active).and_then(|panel| card(&active, &panel)).map(|card| card["question_hash"].clone())
+        != Some(question["question_hash"].clone()) {
         return Err("Codex's paused goal question changed; nothing was sent".into());
     }
     Ok(())
@@ -260,6 +372,42 @@ mod tests {
         // Another terminal width moves the dialog's columns.
         assert!(parse(SCREEN, 100).is_none());
         assert!(parse(UPSTREAM, 87).is_none());
+    }
+
+    #[test]
+    fn confirmed_dialog_requires_native_option_styles() {
+        let panel = parse(SCREEN, 87).unwrap();
+        let selected = format!("› 1. Resume goal   {}", DESCRIPTIONS[0]);
+        let styled = SCREEN.replace(&selected, &format!("\x1b[7m{selected}\x1b[0m"))
+            .replace(DESCRIPTIONS[1], &format!("\x1b[2m{}\x1b[0m", DESCRIPTIONS[1]));
+        assert!(confirmed_frame(&styled, 87, &panel));
+        assert!(!confirmed_frame(SCREEN, 87, &panel));
+        assert!(!confirmed_frame(&styled.replace("\x1b[2m", "\x1b[7m"), 87, &panel));
+        assert!(!confirmed_frame(&styled.replace("continue when idle", "continue now"), 87, &panel));
+    }
+
+    #[test]
+    fn confirmed_resume_still_requires_the_bound_conversation_and_goal() {
+        let home = goals("paused", OBJECTIVE);
+        let panel = parse(SCREEN, 87).unwrap();
+        let mut bound = record(home.path());
+        let original = card(&bound, &panel).unwrap();
+        bound.as_object_mut().unwrap().remove("expected_id");
+        bound["conversation_state"] = json!("active");
+        bound["last_event_at"] = json!(321.);
+        for (phase, activity) in [("idle", "idle"), ("tool", "busy")] {
+            bound["phase"] = json!(phase);
+            bound["activity"] = json!(activity);
+            assert!(!resume_input::pending(&bound));
+            assert_eq!(card(&bound, &panel).unwrap()["question_hash"], original["question_hash"]);
+        }
+        for (key, value) in [("conversation_id", json!("aa87d6a8-6129-4528-a578-7d8cf4ed11ff")),
+            ("requested_id", json!(CONVERSATION)), ("session_end", json!({})),
+            ("activity", json!("unknown")), ("startup_kind", json!("new"))] {
+            let mut changed = bound.clone();
+            changed[key] = value;
+            assert!(card(&changed, &panel).is_none(), "{key}");
+        }
     }
 
     #[test]
