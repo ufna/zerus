@@ -241,6 +241,9 @@ export function normalize(b: Partial<Batch>): Batch {
 
 /** The Activity port of the current source (follow and unfollow). */
 export const activityPort: ActivityPort = {
+  receiptPage: (target, cursor) => invoke<Record<string, unknown>>("codex_receipt_page", {
+    computer: target.computer, key: target.key, run_id: target.runId, conversation_id: target.conversationId, cursor,
+  }),
   follow: (request) => source?.follow(request) ?? Promise.resolve(),
   unfollow: (computer, key) => source?.unfollow(computer, key) ?? Promise.resolve(),
 };

@@ -2718,8 +2718,11 @@ its attachments. The agent receives no input during that save. The desktop
 checks the original run and sends messages in order. On a host with native
 Codex queue support, **Send** can hand a message to the exact working Codex
 conversation for its next turn. **Queued in Codex** confirms native acceptance.
-The host keeps the original request and attachment references through this
-handoff. On older hosts the desktop waits for the existing guarded input
+Activity retains the original text and files after this handoff, including
+after a restart. A native queue receipt confirms acceptance. Activity can
+match it to the native user message once the original queue item and the
+recorded turn share a verified client ID. Older accepted messages can be
+read in bounded pages from Activity. On older hosts the desktop waits for the existing guarded input
 route. After an interrupted turn, a live Codex session can receive input when
 the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
