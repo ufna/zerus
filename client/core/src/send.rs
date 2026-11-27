@@ -25,7 +25,9 @@ pub const MESSAGE_AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "openco
 pub fn is_terminal_command(text: &str) -> bool {
     let text = text.trim_start();
     let first = text.split_whitespace().next().unwrap_or("");
-    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
+    let slash_command = first
+        .strip_prefix('/')
+        .is_some_and(|name| !name.contains('/'));
     slash_command || text.starts_with('!')
 }
 
