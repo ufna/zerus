@@ -167,9 +167,11 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
         assert!(lock(&fake.calls).is_empty(), "{field}");
     }
     let name = session.name.clone();
+    let first_request = original.clone();
+    let native_ids = ["00000001-2222-4444-8888-000000000001", "00000002-2222-4444-8888-000000000002"];
     *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
         receipt: json!({"status":"submitted","transport":"codex_queue","codex_outbox":true,"request_id":id,"name":name,
-            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":"11111111-1111-4111-8111-111111111111"}),
+            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":native_ids[usize::from(id != first_request)]}),
         cleanup: None,
     });
     // The catalog and inspect may observe different substates of the same turn.
@@ -181,12 +183,18 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
     assert!(c.current().is_none());
     let calls = lock(&fake.calls);
     assert!(calls.iter().all(|call| matches!(&call.1, Action::SendToCodexQueue { .. })));
-    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original, second]);
+    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original.clone(), second.clone()]);
     drop(calls);
     c.open(Some(session));
     c.observe(&state(busy));
     let view = until(&c, |v| v.status == "Queued in Codex");
-    assert!(view.local.is_empty());
+    assert_eq!(view.local.len(), 2);
+    for ((row, id), native) in view.local.iter().zip([original, second]).zip(native_ids) {
+        assert_eq!(row.source.as_deref(), Some("zerus_codex_queue"));
+        assert_eq!(row.id, id);
+        assert_eq!(row.message_id.as_deref(), Some(native));
+        assert_eq!(row.text, "first");
+    }
 }
 
 #[test]

@@ -1699,6 +1699,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         renderer::renderer_frame,
         renderer::renderer_diagnostics,
         window_theme::window_theme,
+        commands::codex_receipt_page,
         content_search::content_search,
         content_search::cancel_content_search,
         native_ui::runtime::native_ui_open,

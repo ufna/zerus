@@ -20,6 +20,7 @@ pub const MAX_PER_SESSION: usize = 50;
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
 pub const OPENCODE_SOURCE: &str = "opencode_native";
+const CODEX_QUEUE_SOURCE: &str = "zerus_codex_queue";
 const CLAUDE_OUTBOX_SOURCE: &str = "zerus_claude_outbox";
 const DSH_OUTBOX_SOURCE: &str = "zerus_dsh_outbox";
 /// An original durable FIFO request, which only an exact history receipt can join.
@@ -255,7 +256,11 @@ impl LocalMessages {
     /// from the original entry. It has no editable-draft or cache path.
     pub fn sent_from_outbox(&mut self, key: &str, entry: &Entry, outcome: &Outcome, now: f64) {
         let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
-        let source = if entry.target.name.starts_with("opencode/") {
+        let source = if entry.target.name.starts_with("codex/")
+            && matches!(outcome, Outcome::Done { receipt, .. } if crate::actions::codex_outbox_submitted(receipt))
+        {
+            CODEX_QUEUE_SOURCE
+        } else if entry.target.name.starts_with("opencode/") {
             OPENCODE_SOURCE
         } else if entry.target.name.starts_with("claude/") {
             CLAUDE_OUTBOX_SOURCE
@@ -389,6 +394,9 @@ impl LocalMessages {
                         row.message_id = Some(id.into());
                     }
                 }
+                if row.source.as_deref() == Some(CODEX_QUEUE_SOURCE) {
+                    row.message_id = receipt["native_queued_message_id"].as_str().map(str::to_owned);
+                }
                 if row.source.as_deref() == Some(CLAUDE_OUTBOX_SOURCE)
                     && receipt["status"] == "submitted" && request == row.id
                     && receipt["run_id"] == row.run_id && receipt["conversation_id"] == row.conversation_id
@@ -454,6 +462,21 @@ impl LocalMessages {
             }
             if row.source.as_deref() == Some("hgs_voice") {
                 let shown = listed("voice_messages", &row.message_id);
+                result.removed += usize::from(shown);
+                return !shown;
+            }
+            if row.source.as_deref() == Some(CODEX_QUEUE_SOURCE) {
+                // A later native turn can have a different ID and identical text.
+                // Retain this bounded bridge until the durable receipt is visible.
+                let shown = details["codex_queued_messages"].as_array().is_some_and(|messages| {
+                    messages.iter().any(|event| event["type"] == "CodexQueueReceipt"
+                        && event["source"] == "hgs_delivery" && event["status"] == "submitted"
+                        && event["transport"] == "codex_queue" && event["request_id"] == row.id
+                        && event["message_id"] == row.id && event["detail"] == row.text
+                        && event["attachments"].is_array() && row.message_id.is_some()
+                        && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
+                        && event["native_queued_message_id"].as_str() == row.message_id.as_deref())
+                });
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -716,6 +739,34 @@ mod tests {
 
     fn send(messages: &mut LocalMessages, id: &str, text: &str, files: &[StoredFile]) {
         messages.sending(KEY, id, None, text, files, "run-1", "conv-1", 100.0, None);
+    }
+
+    #[test]
+    fn codex_queue_keeps_original_text_and_files_until_its_durable_receipt_arrives() {
+        let mut messages = LocalMessages::default();
+        let id = "00000001-2222-4444-8888-000000000001";
+        let native = "00000002-2222-4444-8888-000000000002";
+        let mut receipt = json!({"transport":"codex_queue","status":"submitted","codex_outbox":true,
+            "request_id":id,"native_queued_message_id":native,"run_id":"run-1","conversation_id":"conv-1"});
+        messages.sending(KEY, id, None, "same", &[file("note.txt")], "run-1", "conv-1", 100.0, Some(CODEX_QUEUE_SOURCE));
+        messages.finished(KEY, id, &Outcome::Done { receipt: receipt.clone(), cleanup: None });
+        let echo = json!({"type":"UserPromptSubmit","detail":"same","at":100});
+        let details = json!({"run_id":"run-1","conversation_id":"conv-1","attachment_messages":[{"message_id":id}]});
+        assert_eq!(messages.reconcile(KEY, &details, &[echo]).removed, 0);
+        let row = &messages.rows(KEY)[0];
+        assert_eq!(row.message_id.as_deref(), Some(native));
+        assert_eq!(row.attachments[0]["request_id"], id);
+        receipt["type"] = json!("CodexQueueReceipt");
+        receipt["source"] = json!("hgs_delivery");
+        receipt["message_id"] = json!(id);
+        receipt["detail"] = json!("same");
+        receipt["attachments"] = json!(row.attachments);
+        for (key, wrong) in [("request_id","other"), ("native_queued_message_id","other"), ("run_id","other"), ("conversation_id","other")] {
+            let mut other = receipt.clone();
+            other[key] = json!(wrong);
+            assert_eq!(messages.reconcile(KEY, &json!({"codex_queued_messages":[other]}), &[]).removed, 0);
+        }
+        assert_eq!(messages.reconcile(KEY, &json!({"codex_queued_messages":[receipt]}), &[]).removed, 1);
     }
 
     #[test]

@@ -6,6 +6,7 @@ import { imageSize } from "./attachment-image";
 import { messageTimeOf } from "../lib/dates";
 import { tr, trNoop } from "../../i18n";
 import { ownMessageText, ownMessageTruncated, restoreOwnMessages } from "./full-own-text";
+import { CODEX_QUEUE_RECEIPT, CODEX_QUEUE_SOURCE, mergeCodexQueueReceipts, type QueueReceiptEvent } from "./codex-queue-receipts";
 import { earlierInputRefusal } from "./send-error";
 
 // A Symbol cannot arrive from a provider's JSON. Only our own local send
@@ -182,7 +183,7 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
   const receipts = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
   if (!receipts.length) return given;
   const events = [...given];
-  const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.attachments?.length
+  const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.codex_outbox !== true && receipt.attachments?.length
     && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim()
     && (receipt.claude_outbox === true || receipt.dsh_outbox === true
       || echoMatchesFiles(receipt.submitted_text, receipt.attachments)));
@@ -398,6 +399,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   const claimed = new Set<number>();
   const candidates = [...local, ...bindingOnly];
   for (const row of candidates) {
+    if (row.source === CODEX_QUEUE_SOURCE) continue;
     const append = local.includes(row);
     if (row.source === "hgs_voice") {
       if (append && !source.some((e) => e.source === "hgs_voice" && e.message_id === row.message_id)) appended.push(localEvent(row));
@@ -715,9 +717,8 @@ export function mergeRoutes(events: readonly ActivityEvent[], routes: readonly R
 
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
   const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
-  if (!provider.length && !local.length && !routes.length) return recordedContext(summary);
   const events = mergeRoutes(mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary), routes);
-  return transcriptItems(events, summary, !provider.length);
+  return transcriptItems(mergeCodexQueueReceipts(events, summary, local, receiptFiles), summary, !provider.length);
 }
 
 /** The index of the Stop that ends the keep-warm ping at `from`, or -1 while it runs or a person's prompt comes first. */
@@ -752,6 +753,12 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     }
     const role = messageRole(e);
     const at = timeText(e.at);
+    if ((e as QueueReceiptEvent)[CODEX_QUEUE_RECEIPT]) {
+      const label = e.native_queue_state === "consumed" ? tr("Received by Codex")
+        : e.native_queue_state === "queued" ? tr("Queued in Codex") : tr("Accepted into the Codex queue");
+      items.push({ id, kind: "receipt", at, label, body: e.detail, attachments: attachments(e) });
+      i++; continue;
+    }
     const route = routeOf(e);
     if (route) {
       items.push({ id, kind: "receipt", at, sender: route.outcome === "not_sent" ? tr("Question not sent to %1", route.parent.split("/").at(-1) ?? route.parent) : route.outcome === "uncertain" ? tr("Question delivery to %1 uncertain", route.parent.split("/").at(-1) ?? route.parent) : route.role === "child" ? tr("Question sent to the parent session") : tr("Question from a child session"), route });
@@ -853,7 +860,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     // Adjacent operational events form one group; messages and attention stay boundaries.
     const group = [e];
     i++;
-    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i]) && !openCodeCompaction(events[i])
+    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i]) && !(events[i] as QueueReceiptEvent)[CODEX_QUEUE_RECEIPT] && !openCodeCompaction(events[i])
       && events[i].inherited_from === e.inherited_from
       && !messageRole(events[i]) && !attention(e) && !attention(events[i])) group.push(events[i++]);
     const tools: string[] = [];
@@ -952,7 +959,8 @@ export function createTranscriptProjection() {
         return id ? { ...event, activity_display_key: id } : event;
       });
       trim(bindings, 1000);
-      const items = transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
+      const timeline = mergeRoutes(mergeAttachmentMessages(events, summary), routes);
+      const items = transcriptItems(mergeCodexQueueReceipts(timeline, summary, [...local, ...missing], receiptFiles, queuedIds), summary, !provider.length);
       // Waiting entries appear at the live end in FIFO order. Legacy
       // entries without a timestamp keep their place as well.
       for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: "", outbox: row });

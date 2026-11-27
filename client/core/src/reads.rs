@@ -932,6 +932,36 @@ pub fn read(hgs: &Path, computer: &ComputerId, read: &Read) -> Result<Value, Rea
     decode(read, limited(hgs, &invocation, read.limit())?)
 }
 
+/// Read an older page for one exact live Codex conversation. Peers must
+/// advertise the projection before receiving its command.
+pub fn codex_receipt_page(
+    hgs: &Path, computer: &ComputerId, name: &str, run: &str, conversation: &str, cursor: &str,
+) -> Result<Value, ReadError> {
+    if computer.alias().is_some_and(|alias| !valid_alias(alias)) || !valid_id(name)
+        || !valid_id(run) || !valid_id(conversation) || cursor.is_empty() || cursor.len() > 2048 {
+        return Err(bad("Invalid message history target"));
+    }
+    let mut call = Invocation {
+        args: arguments(computer, &["--help"]), stdin: None,
+        timeout: timeout(10, 20, computer), request_id: None,
+    };
+    let help = output(limited(hgs, &call, HELP_LIMIT)?)?;
+    if !String::from_utf8_lossy(&help).contains("receipt-index-codex-queue-page-v1") {
+        return Err(ReadError::Unsupported);
+    }
+    call.args = arguments(computer, &["__state", "receipt-index-page", name, "--json"]);
+    call.stdin = Some(json!({"projection":"codex_queue", "expected_run_id":run,
+        "expected_conversation_id":conversation,"cursor":cursor,"limit":25}).to_string().into_bytes());
+    let bytes = output(limited(hgs, &call, READ_LIMIT)?)?;
+    let page: Value = serde_json::from_slice(&bytes).map_err(|_| invalid("invalid message history"))?;
+    if page["run_id"] != run || page["conversation_id"] != conversation
+        || !page["codex_queued_messages"].as_array().is_some_and(|rows| rows.len() <= 25)
+        || !page["codex_queue_projection"].is_object() {
+        return Err(invalid("unexpected message history target or page"));
+    }
+    Ok(page)
+}
+
 /// The largest attachment reply: 10 MiB as base64 plus its metadata.
 pub const ATTACHMENT_LIMIT: usize = crate::attachments::MAX_ATTACHMENT_BYTES * 4 / 3 + 8192;
 

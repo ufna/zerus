@@ -807,7 +807,7 @@ impl Composers {
                     // Failed/unknown probes (including a later busy refusal) keep their backoff.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
-                    if exact && notice.is_none() {
+                    if exact && (native_queued || notice.is_none()) {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }

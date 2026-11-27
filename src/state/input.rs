@@ -2651,6 +2651,10 @@ fn submit_core(
     let result: Result<()> = (|| {
         if let Some(queue) = &mut queue {
             let id = queue.offer()?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
             receipt["native_queued_message_id"] = json!(id);
             receipt["status"] = json!("submitted");
             receipt_index::persist(&receipt_path, &receipt)?;

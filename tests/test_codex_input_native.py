@@ -293,6 +293,30 @@ class NativeCodexInput(unittest.TestCase):
             self.assertTrue(receipt['codex_outbox'])
         ids = [r['native_queued_message_id'] for r in receipts]
         self.assertEqual(len(set(ids)), 3)
+        queued = self.inspect_native_queue()
+        expected_by_id = {r['request_id']: (r['native_queued_message_id'], r['text']) for r in receipts}
+        self.assertEqual({r['request_id']: (r['native_queued_message_id'], r['detail']) for r in queued}, expected_by_id)
+        self.assertTrue(all(r['native_queue_state'] == 'queued' for r in queued))
+        clients = {r['codex_client_id'] for r in queued}
+        self.assertEqual(len(clients), 3)
+        self.assertTrue(clients.isdisjoint(ids))
+        files = next(r['attachments'] for r in queued if r['request_id'] == file['request_id'])
+        self.assertEqual([f['name'] for f in files], ['sample.txt'])
+        self.assertNotIn('path', files[0])
+        page_request = dict(expected_run_id=self.run_id, expected_conversation_id=self.conversation_id,
+                            projection='codex_queue', limit=1)
+        seen = []
+        while True:
+            result = invoke(['__state', 'receipt-index-page', self.name, '--json'], page_request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = json.loads(result.stdout)
+            seen.extend(r['request_id'] for r in page['codex_queued_messages'])
+            meta = page['codex_queue_projection']
+            if not meta['has_more']:
+                break
+            page_request['cursor'] = meta['next_cursor']
+            self.assertLessEqual(len(seen), 3)
+        self.assertCountEqual(seen, expected_by_id)
         # A lost HGS reply reads exactly the durable original, without a new native offer.
         query = dict(request_id=file['request_id'], expected_run_id=self.run_id,
                      expected_conversation_id=self.conversation_id,
@@ -316,6 +340,17 @@ class NativeCodexInput(unittest.TestCase):
         self.wait_for(lambda: native_texts()[-3:] == expected)
         self.assertEqual(native_texts().count(text), 2)
         self.wait_for(lambda: any(req['texts'][-1:] == expected[-1:] for req in self.server.requests))
+        consumed = self.inspect_native_queue()
+        self.assertEqual({r['request_id']: r['native_queue_state'] for r in consumed},
+                         {r['request_id']: 'consumed' for r in receipts})
+        self.assertEqual({r['codex_client_id'] for r in consumed}, clients)
+
+
+    def inspect_native_queue(self):
+        result = subprocess.run([str(test_input.HGS), 'inspect', self.name], env=self.env,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)['codex_queued_messages']
 
     def test_native_refusal_has_an_opted_in_terminal_outcome(self):
         import native_send_outcome

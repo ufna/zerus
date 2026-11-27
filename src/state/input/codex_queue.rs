@@ -232,6 +232,15 @@ impl Queue {
         Ok(())
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn client_id(&self, queue_id: &str) -> Option<String> {
+        let ids = [queue_id.to_owned()];
+        let mut clients = codex_sqlite::queued_clients(self.account.path(), &self.conversation, &ids,
+            Instant::now() + Duration::from_millis(120)).ok()?;
+        self.account.verify().ok()?;
+        clients.remove(queue_id)
+    }
+
     /// Once invoked, every failure is delivery-unknown. The caller reserved the
     /// original request first, so no caller can replay this native queue write.
     pub(super) fn offer(&mut self) -> Result<String> {
