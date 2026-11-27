@@ -18,10 +18,19 @@ struct Turn {
     text: String,
 }
 
+struct Setting {
+    id: u64,
+    request: settings::Request,
+    client: Option<UnixStream>,
+    deadline: Instant,
+}
+
 struct Owner {
     native: Client,
     record: Value,
     turn: Option<Turn>,
+    setting: Option<Setting>,
+    projection_dirty: bool,
 }
 
 fn disposition(status: &str, error: &str) -> Value {
@@ -204,6 +213,13 @@ impl Owner {
         if self.turn.is_some() || self.record["phase"] != "idle" {
             return Err("Antigravity already has a turn in progress".into());
         }
+        if self
+            .setting
+            .as_ref()
+            .is_some_and(|setting| setting.client.is_some())
+        {
+            return Err("Antigravity is applying model settings".into());
+        }
         let current = binding(string(&self.record, "name"))?;
         verify(&current, &self.record)?;
         locations(&current)?;
@@ -235,6 +251,31 @@ impl Owner {
     }
 
     fn provider_frame(&mut self, frame: Value) -> Result<()> {
+        if frame["method"] == "session/update"
+            && frame["params"]["sessionId"] == self.record["conversation_id"]
+        {
+            let update = &frame["params"]["update"];
+            match string(update, "sessionUpdate") {
+                "config_option_update" => {
+                    let revision = self.record["agy_config"]["revision"].clone();
+                    settings::observe(&mut self.record, update);
+                    self.projection_dirty |= self.record["agy_config"]["revision"] != revision;
+                }
+                "usage_update" => {
+                    let context = settings::usage_update(update);
+                    self.projection_dirty |= self.record["agy_context"] != context;
+                    self.record["agy_context"] = context;
+                }
+                _ => {}
+            }
+        }
+        if let Some(setting) = &self.setting {
+            if frame["id"] == setting.id && frame.get("method").is_none() {
+                let reply = Client::reply(frame, setting.id)?.expect("matching settings response");
+                self.finish_setting(reply);
+                return Ok(());
+            }
+        }
         let Some(turn) = self.turn.as_mut() else {
             return Ok(());
         };
@@ -255,6 +296,10 @@ impl Owner {
             return Ok(());
         };
         let mut turn = self.turn.take().expect("matching Antigravity turn");
+        let usage = match &reply {
+            Reply::Result(value) => settings::turn_usage(&value["usage"]),
+            _ => Value::Null,
+        };
         let (settled, cancelled) = match reply {
             Reply::Result(value) => {
                 let reason = string(&value, "stopReason");
@@ -286,6 +331,7 @@ impl Owner {
         edit(&mut self.record, |record| {
             record["phase"] = json!("idle");
             record["activity"] = json!("idle");
+            record["agy_last_turn_usage"] = usage;
             if !turn.text.is_empty() {
                 event(
                     record,
@@ -305,6 +351,153 @@ impl Owner {
                 );
             }
         })
+    }
+
+    fn change_settings(
+        &mut self,
+        mut client: UnixStream,
+        request: settings::Request,
+    ) -> Result<()> {
+        let refused = |record: &Value, reason: &str| request.answer(record, "refused", reason);
+        // Clear the bounded backlog of already-observed ACP option changes
+        // before validating the selection the person saw.
+        let mut current_evidence = false;
+        for _ in 0..32 {
+            let Some(frame) = self.native.receive(Duration::ZERO)? else {
+                current_evidence = true;
+                break;
+            };
+            self.provider_frame(frame)?;
+        }
+        let _guard = match state_guard() {
+            Ok(guard) => guard,
+            Err(error) => {
+                let _ = respond(&mut client, &refused(&self.record, &error));
+                return Ok(());
+            }
+        };
+        let selected = || {
+            if !request.matches(&self.record) {
+                return Err("Antigravity session changed; nothing was submitted".into());
+            }
+            let current = binding(string(&self.record, "name"))?;
+            verify(&current, &self.record)?;
+            locations(&current)?;
+            if current["agy_worker"] != self.record["agy_worker"] || !settings::same_scope(&current)
+            {
+                return Err("Antigravity worker changed before applying settings".into());
+            }
+            if !current_evidence
+                || self.setting.is_some()
+                || self.turn.is_some()
+                || current["phase"] != "idle"
+                || current["auth_required"] == true
+            {
+                return Err("Antigravity must be ready before changing model settings".into());
+            }
+            request.select(&self.record)
+        };
+        // An exact duplicate returns its prior result even after options changed.
+        if request.matches(&self.record) {
+            let answer = match request.receipt(string(&self.record, "name")) {
+                Ok(None) => None,
+                Ok(Some(answer)) => Some(answer),
+                Err(error) => Some(request.answer(&self.record, "uncertain", &error)),
+            };
+            if let Some(answer) = answer {
+                let _ = respond(&mut client, &answer);
+                return Ok(());
+            }
+        }
+        let (config, value) = match selected() {
+            Ok(Some(change)) => change,
+            Ok(None) => {
+                let mut answer = request
+                    .confirmed(&self.record)
+                    .expect("current validated selection");
+                answer["changed"] = json!(false);
+                let answer = match request.save(&answer) {
+                    Ok(()) => answer,
+                    Err(_) => refused(
+                        &self.record,
+                        "Cannot record the Antigravity settings receipt",
+                    ),
+                };
+                let _ = respond(&mut client, &answer);
+                return Ok(());
+            }
+            Err(error) => {
+                let _ = respond(&mut client, &refused(&self.record, &error));
+                return Ok(());
+            }
+        };
+        let receipt = request.answer(
+            &self.record,
+            "uncertain",
+            "Antigravity settings result is unconfirmed",
+        );
+        // Once reserved, this request ID is never offered a second time.
+        if request.save(&receipt).is_err() {
+            let _ = respond(
+                &mut client,
+                &refused(&self.record, "Cannot reserve Antigravity settings"),
+            );
+            return Ok(());
+        }
+        if edit_locked(&mut self.record, |record| {
+            record["agy_settings_pending"] = json!(true)
+        })
+        .is_err()
+        {
+            self.record["agy_settings_pending"] = Value::Null;
+            self.projection_dirty = true;
+            let _ = respond(&mut client, &receipt);
+            return Ok(());
+        }
+        let offered = self.native.request(
+            "session/set_config_option",
+            json!({"sessionId":self.record["conversation_id"],"configId":config,"value":value}),
+        );
+        let id = match offered {
+            Ok(id) => id,
+            Err(error) => {
+                let _ = respond(&mut client, &receipt);
+                return Err(error);
+            }
+        };
+        self.setting = Some(Setting {
+            id,
+            request,
+            client: Some(client),
+            deadline: Instant::now() + SEND_PROOF,
+        });
+        Ok(())
+    }
+
+    fn finish_setting(&mut self, reply: Reply) {
+        let mut setting = self.setting.take().expect("matching settings response");
+        let value = if let Reply::Result(value) = reply {
+            value
+        } else {
+            Value::Null
+        };
+        settings::observe(&mut self.record, &value);
+        self.record["agy_settings_pending"] = Value::Null;
+        self.projection_dirty = true;
+        let answer = setting
+            .request
+            .confirmed(&self.record)
+            .filter(|proof| setting.request.save(proof).is_ok())
+            .unwrap_or_else(|| {
+                setting.request.answer(
+                    &self.record,
+                    "uncertain",
+                    "Antigravity did not confirm the requested setting",
+                )
+            });
+        if let Some(mut client) = setting.client.take() {
+            let _ = respond(&mut client, &answer);
+        }
     }
 
     fn control(&mut self, mut stream: UnixStream) -> Result<bool> {
@@ -330,14 +523,37 @@ impl Owner {
                 })
                 .is_err()
         {
+            let reason = "The Antigravity session changed";
+            let answer = if string(&request, "action") == "settings" {
+                serde_json::from_value::<settings::Request>(request["settings"].clone())
+                    .ok()
+                    .filter(settings::Request::valid)
+                    .map(|request| request.answer(&self.record, "refused", reason))
+            } else {
+                None
+            };
             let _ = respond(
                 &mut stream,
-                &disposition("refused", "The Antigravity session changed"),
+                &answer.unwrap_or_else(|| disposition("refused", reason)),
             );
             return Ok(false);
         }
         match string(&request, "action") {
             "send" => self.begin(&request, stream)?,
+            "settings" => {
+                let request =
+                    serde_json::from_value::<settings::Request>(request["settings"].clone())
+                        .ok()
+                        .filter(settings::Request::valid);
+                if let Some(request) = request {
+                    self.change_settings(stream, request)?;
+                } else {
+                    let _ = respond(
+                        &mut stream,
+                        &disposition("refused", "Invalid Antigravity settings request"),
+                    );
+                }
+            }
             "interrupt" => {
                 let Some(turn) = self.turn.as_mut().filter(|turn| {
                     turn.interruption.is_none()
@@ -355,7 +571,14 @@ impl Owner {
                 )?;
                 turn.interruption = Some(stream);
             }
-            "pause" if self.turn.is_none() && self.record["phase"] == "idle" => {
+            "pause"
+                if self.turn.is_none()
+                    && self.record["phase"] == "idle"
+                    && self
+                        .setting
+                        .as_ref()
+                        .is_none_or(|setting| setting.client.is_none()) =>
+            {
                 let until = Instant::now() + Duration::from_secs(5);
                 let closed = self.native.call(
                     "session/close",
@@ -403,6 +626,26 @@ impl Owner {
             }
             if let Some(frame) = self.native.receive(Duration::from_millis(20))? {
                 self.provider_frame(frame)?;
+            }
+            // The latest native observations stay in memory while a different
+            // session holds Root. Optional telemetry cannot end this worker.
+            if self.projection_dirty {
+                let deadline = Instant::now() + Duration::from_millis(20);
+                if let Ok(Some(_guard)) = storage::writer_until(deadline) {
+                    self.projection_dirty = edit_locked(&mut self.record, |_| {}).is_err();
+                }
+            }
+            if let Some(setting) = &mut self.setting {
+                if Instant::now() >= setting.deadline {
+                    if let Some(mut client) = setting.client.take() {
+                        let answer = setting.request.answer(
+                            &self.record,
+                            "uncertain",
+                            "Antigravity settings result is unconfirmed",
+                        );
+                        let _ = respond(&mut client, &answer);
+                    }
+                }
             }
             if let Some(turn) = self.turn.as_mut() {
                 if Instant::now() >= turn.confirm_by {
@@ -527,6 +770,8 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
                 r["agy_restore_confirmed"] = r["run_id"].clone();
             }
             r["conversation_id"] = json!(next);
+            settings::bind_scope(r);
+            settings::observe(r, &proof);
             r["state"] = json!("running");
             r["phase"] = json!("idle");
             r["activity"] = json!("idle");
@@ -539,6 +784,8 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
                 native,
                 record,
                 turn: None,
+                setting: None,
+                projection_dirty: false,
             };
             if let Err(error) = owner.run(&listener) {
                 drop(owner.native);
