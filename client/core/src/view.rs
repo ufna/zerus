@@ -1348,6 +1348,7 @@ pub fn row(value: &Value) -> ViewRow {
         cmd => cmd,
     };
     let flag = |field: &str| value.get(field).and_then(Value::as_bool);
+    let retired = agent == "agy" || session.name.starts_with("agy/");
     ViewRow {
         catalog_source: None,
         name: session.name.to_owned(),
@@ -1430,11 +1431,11 @@ pub fn row(value: &Value) -> ViewRow {
         // A live row lists no state; Qt reads it as running (`HgsClient.cpp`).
         state: session.state.to_owned(),
         tracked: session.tracked,
-        resumable: value
+        resumable: !retired && value
             .get("resumable")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        startup_retry_available: flag("startup_retry_available").unwrap_or(false),
+        startup_retry_available: !retired && flag("startup_retry_available").unwrap_or(false),
         activity: session.activity.to_owned(),
         process_state: session.process_state.to_owned(),
         native_readiness: value.get("native_readiness").and_then(|proof| {
@@ -1454,7 +1455,7 @@ pub fn row(value: &Value) -> ViewRow {
         read_attention_signature: some(session.read_mark("attention_signature")),
         local_read_reply: false,
         local_read_attention: false,
-        allowed_actions: value
+        allowed_actions: if retired { Some(Vec::new()) } else { value
             .get("allowed_actions")
             .and_then(Value::as_array)
             .map(|list| {
@@ -1462,7 +1463,7 @@ pub fn row(value: &Value) -> ViewRow {
                     .filter_map(Value::as_str)
                     .map(str::to_owned)
                     .collect()
-            }),
+            }) },
         action_reasons: object(value, "action_reasons")
             .map(|map| {
                 map.iter()
@@ -1488,12 +1489,12 @@ pub fn row(value: &Value) -> ViewRow {
                     .map(|s| (*s).to_owned())
             })
             .flatten(),
-        terminal_supported: flag("terminal_supported").unwrap_or(!matches!(cmd, "dsh" | "opencode" | "agy")),
+        terminal_supported: !retired && flag("terminal_supported").unwrap_or(!matches!(cmd, "dsh" | "opencode")),
         terminal_reported: flag("terminal_supported").is_some(),
-        terminal_attach_supported: flag("terminal_attach_supported").unwrap_or(false),
+        terminal_attach_supported: !retired && flag("terminal_attach_supported").unwrap_or(false),
         terminal_attach_reported: flag("terminal_attach_supported").is_some(),
         notify,
-        bulk_lifecycle_supported: flag("bulk_lifecycle_supported").unwrap_or(!matches!(cmd, "opencode" | "agy")),
+        bulk_lifecycle_supported: !retired && flag("bulk_lifecycle_supported").unwrap_or(cmd != "opencode"),
     }
 }
 

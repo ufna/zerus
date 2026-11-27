@@ -872,7 +872,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     open: (process) => { if (processes.reveal(process, processView())) setDetailTab("processes"); },
   } : undefined;
   /** The guidance an empty Activity shows (ActivityView.cpp:1145-1150). */
-  const empty = createMemo(() => emptyActivity(source().summary(), !!s()?.tracked, s()?.cmd));
+  const empty = createMemo(() => emptyActivity(source().summary(), !!s()?.tracked));
   let olderQueued = false;
   // Keep a named row and its offset while the end pin is released.
   const selectionInside = () => {

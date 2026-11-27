@@ -12,22 +12,19 @@ import { composer } from "../../store/composer";
 import { suggestions, suggestedInput } from "../../store/suggestions";
 import { contentScale, selected } from "../../store/ui";
 import { computerFresh, computerOffline } from "../../store/catalog";
-import { detailsFor, followedFor, updating } from "../../store/actions";
-import { activity } from "../../store/session";
+import { detailsFor, followedFor } from "../../store/actions";
 import { onCommand, platform } from "../../store/shortcuts";
-import { clipboardFiles, clipboardImage, runAction } from "../../bridge";
+import { clipboardFiles, clipboardImage } from "../../bridge";
 import { pasteClipboardImage, pasteNative, pasteRoute, samePaste, type PasteBinding } from "./paste-files";
 import { actionEntries } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
 import { markReadChip, runMarkRead } from "./mark-entries";
 import { ModelSettingsButton } from "./ModelSettings";
-import { AntigravitySettings } from "./AntigravitySettings";
 import { DeliveryHistoryHint } from "./DeliveryHistoryHint";
 import { AttachmentsChip } from "./Attachments";
 import { RecoveryChip } from "./RecoveryChip";
 import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
 import { allowRetryShown, moveFocusOff } from "./composer-ui";
-import { AGY_DELIVERY_UNCONFIRMED } from "./send-error";
 import { focusTranscript, following, jumpToLatest, shownSearchPreview, unseen } from "./Activity";
 import { jumpButton } from "./search-hit";
 import { OwnMessageNavigation } from "./OwnMessageNavigation";
@@ -269,7 +266,11 @@ export function Composer() {
     onCleanup(stop);
   });
 
-  const status = () => composer.status();
+  const status = () => {
+    const current = composer.status();
+    return s()?.cmd === "agy" && !current.text
+      ? { ...current, text: tr("Antigravity integration has been retired from Zerus.") } : current;
+  };
   const statusDetail = () => {
     const text = status().text, session = v()?.session_status ?? "";
     return session && session !== text ? `${text}\n${session}` : text;
@@ -357,23 +358,11 @@ export function Composer() {
           <button type="button" class="icon-btn cmp-attach" aria-label={tr("Refresh this session")} title={`${tr("Refresh this session")}\n${v()!.session_status}`}
             disabled={composer.operationLocked()} onClick={() => { void composer.refresh(); }}><Icon name="refresh-cw" size={17} /></button>
         </Show>
-        <Show when={allowRetryShown(v(), composer.operationLocked())}>
-          <button type="button" class="btn ghost" title={s()?.agent === "agy" ? tr(AGY_DELIVERY_UNCONFIRMED)
-            : tr("Check the terminal before sending again to avoid a duplicate message")}
+        <Show when={s()?.cmd !== "agy" && allowRetryShown(v(), composer.operationLocked())}>
+          <button type="button" class="btn ghost" title={tr("Check the terminal before sending again to avoid a duplicate message")}
             onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />{tr("Allow retry")}</button>
         </Show>
-        <Show when={!child() && (s()?.cmd !== "agy" || !subagentOpen())}>
-          <Show when={s()?.cmd === "agy" && s()} fallback={<ModelSettingsButton />}>{(row) =>
-            <AntigravitySettings row={row()} online={!computerOffline(row().computer)}
-              followed={activity.target()?.id === row().key && !activity.error() && !activity.ended() ? activity.currentSummary() : undefined}
-              busy={updating(row().computer, row().name) || !!v()?.sending || !!v()?.waiting}
-              apply={runAction} refresh={(target) => {
-                const followed = activity.target();
-                return followed?.name === target.name && followed.computer === target.computer
-                  && activity.refresh(followed, target.run_id, target.conversation_id);
-              }} />
-          }</Show>
-        </Show>
+        <Show when={!child() && s()?.cmd !== "agy"}><ModelSettingsButton /></Show>
         <Show when={!child() && act().stop.shown}>
           <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>

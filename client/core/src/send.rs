@@ -18,7 +18,7 @@ pub const NO_COLOR: &str = crate::source!(
 );
 
 /// The agents the composer sends to; any other is typed into in Terminal.
-pub const MESSAGE_AGENTS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
+pub const MESSAGE_AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
 
 /// What the client knows about a session besides its inspected details.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +77,9 @@ pub fn block_reason(facts: &BlockFacts, details: Option<&Value>) -> Option<Strin
 /// identity for these exact details. Other callers keep the ordinary gate.
 pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, verified: bool) -> Option<String> {
     let block = |reason: &str| Some(reason.to_owned());
+    if facts.cmd == "agy" {
+        return block(crate::launch::ANTIGRAVITY_RETIRED);
+    }
     if facts.start_send_waiting {
         return block("Waiting for the session to start. This exact message will be sent automatically when ready. Cancel send to edit.");
     }
@@ -111,17 +114,6 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
         Some(details) if details.as_object().is_some_and(|object| !object.is_empty()) => details,
         _ => return block("Checking the session…"),
     };
-    if facts.cmd == "agy" {
-        if flag(details, "auth_required") {
-            return block(crate::source!("On this computer, run agy acp --login, then refresh the session. Your draft stays here."));
-        }
-        if !flag(details, "send_supported")
-            || !flag(details, "send_available")
-            || text(details, "conversation_id").is_empty()
-        {
-            return block(crate::source!("Sending to this Google Antigravity session is unavailable. Your draft stays here."));
-        }
-    }
     if !flag(details, "tracked") {
         return block("This session has no HGS tracking. Use Terminal to send a message.");
     }
@@ -138,9 +130,7 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
         return block("Sign in to DeepSeek above. Your draft stays here.");
     }
     if !text(details, "error").is_empty() {
-        return block(if facts.cmd == "agy" {
-            crate::source!("Refresh the Google Antigravity session before sending. Your draft stays here.")
-        } else if opencode {
+        return block(if opencode {
             "Refresh the native session and check OpenCode configuration on this computer before sending."
         } else {
             "Check the agent in the Terminal tab before sending."
@@ -166,7 +156,7 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
     }
     let phase = text(details, "phase");
     if phase == "approval" || phase == "input" {
-        return block(if opencode || facts.cmd == "agy" {
+        return block(if opencode {
             "Answer the pending native request in Activity before sending."
         } else {
             "Respond to the agent in the Terminal tab."
@@ -990,22 +980,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn antigravity_requires_positive_send_and_conversation_evidence() {
-        let (mut facts, mut details) = ready();
-        facts.cmd = "agy".into();
-        let unavailable = "Sending to this Google Antigravity session is unavailable. Your draft stays here.";
-        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
-        details["send_supported"] = json!(true);
-        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
-        details["send_available"] = json!(true);
-        assert_eq!(block_reason(&facts, Some(&details)), None);
-        details["conversation_id"] = json!("");
-        assert_eq!(block_reason(&facts, Some(&details)).as_deref(), Some(unavailable));
-        details["auth_required"] = json!(true);
-        assert_eq!(block_reason(&facts, Some(&details)).as_deref(),
-            Some("On this computer, run agy acp --login, then refresh the session. Your draft stays here."));
-    }
 
     #[test]
     fn opencode_and_busy_agents() {
@@ -1260,38 +1234,36 @@ mod continuation_tests {
 
     #[test]
     fn a_native_resume_offers_only_confirmed_resume_and_waits_for_its_acknowledgement() {
-        for agent in ["agy", "dsh"] {
-            let mut session = stopped();
-            session.cmd = agent.into();
-            session.state = "paused".into();
-            assert!(!can_start_stopped(&session, false));
-            session.native_resume = true;
-            assert!(can_start_stopped(&session, false));
-            let question = start_question(&session, "65%");
-            assert!(question.text.english().contains("is paused"));
-            assert_eq!(question.options.len(), 1);
-            assert_eq!(question.options[0].choice, StartChoice::Resume);
-            assert!(question.informative.english().contains("65%"));
+        let mut session = stopped();
+        session.cmd = "dsh".into();
+        session.state = "paused".into();
+        assert!(!can_start_stopped(&session, false));
+        session.native_resume = true;
+        assert!(can_start_stopped(&session, false));
+        let question = start_question(&session, "65%");
+        assert!(question.text.english().contains("is paused"));
+        assert_eq!(question.options.len(), 1);
+        assert_eq!(question.options[0].choice, StartChoice::Resume);
+        assert!(question.informative.english().contains("65%"));
 
-            let begin = |choice| StartSend::begin(
-                &session, Some(&session), false, choice, draft(), &draft(), 0.0,
-            );
-            assert!(begin(StartChoice::Fresh).is_err());
-            assert!(begin(StartChoice::ResumeCompact).is_err());
-            let (mut start, _) = begin(StartChoice::Resume).unwrap();
-            assert_eq!(start.prepared(true, Some(&session), None, false), Step::Run(Action::ResumeNativeForSend));
-            let mut details = ready("run-2", "conv-1");
-            assert_eq!(start.inspected(&details, &draft(), false, false, 1.0), Step::Idle);
-            assert!(matches!(start.clone().start_finished(&Outcome::Done { receipt: Value::Null, cleanup: None }), Step::Cancelled(_)));
-            start.start_finished(&Outcome::Done {
-                receipt: json!({"result_target":{"run_id":"run-2","conversation_id":"conv-1","name":session.name}}),
-                cleanup: None,
-            });
-            assert!(matches!(start.clone().inspected(&ready("run-3", "conv-1"), &draft(), false, false, 2.0), Step::Cancelled(_)));
-            assert_eq!(start.inspected(&details, &draft(), false, false, 2.0), Step::Idle);
-            details["send_available"] = json!(true);
-            assert!(matches!(start.inspected(&details, &draft(), false, false, 3.0), Step::Send { .. }));
-        }
+        let begin = |choice| StartSend::begin(
+            &session, Some(&session), false, choice, draft(), &draft(), 0.0,
+        );
+        assert!(begin(StartChoice::Fresh).is_err());
+        assert!(begin(StartChoice::ResumeCompact).is_err());
+        let (mut start, _) = begin(StartChoice::Resume).unwrap();
+        assert_eq!(start.prepared(true, Some(&session), None, false), Step::Run(Action::ResumeNativeForSend));
+        let mut details = ready("run-2", "conv-1");
+        assert_eq!(start.inspected(&details, &draft(), false, false, 1.0), Step::Idle);
+        assert!(matches!(start.clone().start_finished(&Outcome::Done { receipt: Value::Null, cleanup: None }), Step::Cancelled(_)));
+        start.start_finished(&Outcome::Done {
+            receipt: json!({"result_target":{"run_id":"run-2","conversation_id":"conv-1","name":session.name}}),
+            cleanup: None,
+        });
+        assert!(matches!(start.clone().inspected(&ready("run-3", "conv-1"), &draft(), false, false, 2.0), Step::Cancelled(_)));
+        assert_eq!(start.inspected(&details, &draft(), false, false, 2.0), Step::Idle);
+        details["send_available"] = json!(true);
+        assert!(matches!(start.inspected(&details, &draft(), false, false, 3.0), Step::Send { .. }));
     }
 
     #[test]

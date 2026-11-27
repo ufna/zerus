@@ -354,6 +354,12 @@ pub(crate) fn valid_session(session: Option<&Value>) -> Option<&str> {
     .then_some(session)
 }
 
+pub(crate) const ANTIGRAVITY_RETIRED: &str = "Antigravity integration has been retired from Zerus.";
+
+pub(crate) fn retired_antigravity_write(operation: &str, session: &str) -> bool {
+    session.starts_with("agy/") && crate::journal::is_mutation(operation)
+}
+
 /// `Connector.validate(request)` for an implemented operation, after the
 /// claim. `request_id` is the checked identity.
 pub fn validate(
@@ -576,5 +582,23 @@ pub fn validate(
         Ok(size) if size > MAX_PAYLOAD => Err(error(crate::native::REQUEST_TOO_LARGE)),
         Ok(_) => Ok(validated(session, Some(payload.clone()))),
         Err(_) => Err(error("invalid native payload")),
+    }
+}
+
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn mobile_antigravity_history_stays_readable_and_writes_are_refused() {
+        let saved = "agy/example/retired";
+        for operation in ["send", "send_outcome", "settings", "restore", "terminate"] {
+            assert!(retired_antigravity_write(operation, saved), "{operation}");
+            assert!(!retired_antigravity_write(operation, "opencode/example/gemini"));
+        }
+        for operation in ["inspect", "history", "history_projection", "send_receipt"] {
+            assert!(!retired_antigravity_write(operation, saved), "{operation}");
+        }
     }
 }

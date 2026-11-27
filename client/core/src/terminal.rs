@@ -39,7 +39,7 @@ fn flag(details: &Value, key: &str) -> Option<bool> {
 /// as the frontend's `terminal()` in `actions-ui.ts` reads it: DeepSeek under
 /// either command name has Native UI instead).
 pub fn supported(facts: &TerminalFacts, details: &Value) -> bool {
-    if facts.cmd == "dsh" || facts.cmd == "deepseek" {
+    if matches!(facts.cmd.as_str(), "dsh" | "deepseek" | "agy") {
         return false;
     }
     if facts.cmd == "opencode" {
@@ -53,7 +53,7 @@ pub fn supported(facts: &TerminalFacts, details: &Value) -> bool {
     if let Some(supported) = flag(details, "terminal_supported") {
         return supported;
     }
-    if matches!(facts.cmd.as_str(), "opencode" | "agy") && !facts.terminal_reported {
+    if facts.cmd == "opencode" && !facts.terminal_reported {
         return false;
     }
     facts.terminal_supported
@@ -61,6 +61,9 @@ pub fn supported(facts: &TerminalFacts, details: &Value) -> bool {
 
 /// Why the session has no terminal (`NativeSessionCapabilities::terminalReason`).
 pub fn unsupported_reason(facts: &TerminalFacts, details: &Value) -> String {
+    if facts.cmd == "agy" {
+        return crate::launch::ANTIGRAVITY_RETIRED.into();
+    }
     let text = |key: &str, fallback: &str| -> String {
         details
             .get(key)

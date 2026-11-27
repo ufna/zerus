@@ -579,7 +579,7 @@ fn visit_native(
     mut visit: impl FnMut(Value) -> Result<()>,
 ) -> Result<()> {
     let (mut remaining_rows, mut remaining_bytes) = (rows, bytes);
-    for store in [dsh::native_archives::STORE, opencode::archives::STORE, native_archive_store::AGY] {
+    for store in [dsh::native_archives::STORE, opencode::archives::STORE, native_archive_store::RETIRED_AGY] {
         let (used_rows, used_bytes) =
             store.visit_references(until, remaining_rows, remaining_bytes, &mut visit)?;
         remaining_rows -= used_rows;

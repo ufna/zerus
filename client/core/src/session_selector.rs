@@ -65,7 +65,6 @@ pub fn selects(action: &Action) -> bool {
         | Action::CompactContext
         | Action::Interrupt { .. }
         | Action::Settings { .. }
-        | Action::AntigravitySettings { .. }
         | Action::Pause
         | Action::Resume
         | Action::ResumeNativeForSend
@@ -352,33 +351,31 @@ mod tests {
 
     #[test]
     fn native_resume_for_send_keeps_the_negotiated_id_and_exact_receipt() {
-        for provider in ["agy", "dsh"] {
-            let t = Target { name: format!("{provider}/project/session"), ..target("mac") };
-            let action = Action::ResumeNativeForSend;
-            let call = selected_invocation(&t, &action, "req-1", Some(ID)).unwrap();
-            assert_eq!(selected_id(&t, &call), Some(ID));
-            assert_eq!(selected_id(&t, &selected_invocation(&t, &action, "req-1", None).unwrap()), None);
-            let input: Value = serde_json::from_slice(call.stdin.as_deref().unwrap()).unwrap();
-            assert_eq!(input["action"], "resume");
-            assert_eq!(input["expected_run_id"], t.run_id);
-            assert_eq!(input["expected_conversation_id"], t.conversation_id);
-            let mut receipt = serde_json::json!({
-                "request_id":"req-1", "name":t.name, "run_id":t.run_id,
-                "conversation_id":t.conversation_id, "status":"completed",
-                "result_target":{"name":t.name, "run_id":"run-2", "conversation_id":t.conversation_id},
-            });
-            let classify_receipt = |receipt: &Value| classify(
-                &t, &action, &call, exit(0, &serde_json::to_vec(receipt).unwrap(), ""),
-            );
-            assert!(matches!(classify_receipt(&receipt), Outcome::Done { .. }));
-            receipt["status"] = serde_json::json!("uncertain");
-            receipt["result_target"] = Value::Null;
-            assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
-            receipt["status"] = serde_json::json!("failed");
-            assert!(matches!(classify_receipt(&receipt), Outcome::Failed { .. }));
-            receipt["status"] = serde_json::json!("completed");
-            assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
-        }
+        let t = Target { name: "dsh/project/session".into(), ..target("mac") };
+        let action = Action::ResumeNativeForSend;
+        let call = selected_invocation(&t, &action, "req-1", Some(ID)).unwrap();
+        assert_eq!(selected_id(&t, &call), Some(ID));
+        assert_eq!(selected_id(&t, &selected_invocation(&t, &action, "req-1", None).unwrap()), None);
+        let input: Value = serde_json::from_slice(call.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(input["action"], "resume");
+        assert_eq!(input["expected_run_id"], t.run_id);
+        assert_eq!(input["expected_conversation_id"], t.conversation_id);
+        let mut receipt = serde_json::json!({
+            "request_id":"req-1", "name":t.name, "run_id":t.run_id,
+            "conversation_id":t.conversation_id, "status":"completed",
+            "result_target":{"name":t.name, "run_id":"run-2", "conversation_id":t.conversation_id},
+        });
+        let classify_receipt = |receipt: &Value| classify(
+            &t, &action, &call, exit(0, &serde_json::to_vec(receipt).unwrap(), ""),
+        );
+        assert!(matches!(classify_receipt(&receipt), Outcome::Done { .. }));
+        receipt["status"] = serde_json::json!("uncertain");
+        receipt["result_target"] = Value::Null;
+        assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
+        receipt["status"] = serde_json::json!("failed");
+        assert!(matches!(classify_receipt(&receipt), Outcome::Failed { .. }));
+        receipt["status"] = serde_json::json!("completed");
+        assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
     }
 
     /// Reads, read marks, archived conversations and other calls never select

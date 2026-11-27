@@ -460,7 +460,6 @@ export interface Target { computer: ComputerId; name: string; run_id: string; co
 export type Action =
   | { kind: "fork"; tag: string; archive_id: string | null }
   | { kind: "settings"; model: string; effort: string; expected_pending_id?: string; without_terminal: boolean }
-  | { kind: "antigravity_settings"; model: string; effort?: string; expected_session_id: string; expected_config_revision: string }
   | { kind: "interrupt"; turn_started: number }
   | { kind: "compact_context" }
   | { kind: "mark_read"; reply_id: string | null; attention_signature: string | null }
@@ -715,7 +714,6 @@ export interface LaunchRepository {
 export interface LaunchForm {
   no_machine: boolean; can_enable_local_sessions: boolean; online: boolean; agent: string; name: string;
   account_count: number; account_selected: boolean; account_loading: boolean; account_preset: boolean;
-  native_launch_supported?: boolean;
   path: string; listed_folder: boolean; folder_online: boolean; prefill_pending: boolean;
   /** Qt's `m_catalogRequest`. */
   catalog_pending: boolean;

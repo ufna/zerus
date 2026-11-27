@@ -517,8 +517,8 @@ impl LocalMessages {
                 return !shown;
             }
             if details["backend"] == "agy" {
-                // AGY records the offer before ACP confirms it. Text and time
-                // never establish delivery or clear a draft in this adapter.
+                // A saved Antigravity offer is written before its receipt.
+                // Only preserved delivery evidence can settle this draft.
                 let exact = |event: &&Value| {
                     event["source"] == "agy_acp"
                         && !row.id.is_empty()

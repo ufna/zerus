@@ -309,6 +309,9 @@ fn validate(request: &Request, name: &str) -> Result<()> {
 }
 
 fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
+    if retired_agy::named(name) {
+        return Err(retired_agy::RETIRED.into());
+    }
     if request.action == "terminate_shell" {
         return untracked_shell::terminate(
             name,
@@ -318,10 +321,6 @@ fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
                 .ok_or(zerus_client_core::untracked_shell::UNVERIFIED)?,
             scope,
         );
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if agy::named(name) {
-        return agy::action(name, &request.action, request.archive_id.as_deref(), scope);
     }
     if request.archive_id.is_none() && opencode::exists(name) {
         scope.opencode_error();

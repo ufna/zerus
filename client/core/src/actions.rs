@@ -80,12 +80,6 @@ pub enum Action {
         #[serde(default)]
         without_terminal: bool,
     },
-    AntigravitySettings {
-        model: String,
-        effort: Option<String>,
-        expected_session_id: String,
-        expected_config_revision: String,
-    },
     Interrupt {
         turn_started: f64,
     },
@@ -441,43 +435,17 @@ pub fn invocation(
     action: &Action,
     request_id: &str,
 ) -> Result<Invocation, String> {
+    if target.name.starts_with("agy/")
+        && !matches!(action, Action::MarkRead { .. } | Action::PauseAll { .. } | Action::ResumeAll { .. })
+    {
+        return Err(crate::launch::ANTIGRAVITY_RETIRED.into());
+    }
     let name = if matches!(action, Action::PauseAll { .. } | Action::ResumeAll { .. }) {
         String::new()
     } else {
         target.name.clone()
     };
     let (mut args, stdin, local, peer, request) = match action {
-        Action::AntigravitySettings {
-            model,
-            effort,
-            expected_session_id,
-            expected_config_revision,
-        } => {
-            if !target.name.starts_with("agy/")
-                || !crate::creation::canonical_uuid(expected_session_id)
-                || !crate::creation::canonical_uuid(&target.run_id)
-                || !crate::creation::canonical_uuid(&target.conversation_id)
-                || !settings_token(model, 256)
-                || effort.as_deref().is_some_and(|value| !settings_token(value, 80))
-                || !crate::creation::canonical_uuid(expected_config_revision)
-            {
-                return Err("Refresh Activity before changing Antigravity settings.".into());
-            }
-            let mut input = json!({"request_id":request_id,"expected_run_id":target.run_id,
-                "expected_conversation_id":target.conversation_id,"model":model,
-                "expected_session_id":expected_session_id,
-                "expected_config_revision":expected_config_revision});
-            if let Some(effort) = effort {
-                input["effort"] = json!(effort);
-            }
-            (
-                vec!["settings".into(), name, "--json".into()],
-                Some(serde_json::to_vec(&input).map_err(|e| e.to_string())?),
-                20,
-                35,
-                Some(request_id.to_owned()),
-            )
-        }
         Action::Settings {
             model,
             effort,
@@ -564,14 +532,8 @@ pub fn invocation(
                 None,
             )
         }
-        Action::Pause if name.starts_with("agy/") => {
-            return scoped_lifecycle_invocation(target, "pause", request_id, 45, 60);
-        }
-        Action::Resume if name.starts_with("agy/") => {
-            return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
-        }
         Action::ResumeNativeForSend => {
-            if !matches!(name.split('/').next(), Some("agy" | "dsh")) || target.conversation_id.is_empty() {
+            if !matches!(name.split('/').next(), Some("dsh")) || target.conversation_id.is_empty() {
                 return Err("Native resume requires an exact saved conversation.".into());
             }
             return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
@@ -831,7 +793,7 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
-        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode" | "agy")) => {
+        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode")) => {
             if !crate::creation::canonical_uuid(archive_id) || target.conversation_id.is_empty() {
                 return Err("Missing exact archive identity".into());
             }
@@ -931,6 +893,9 @@ pub(crate) fn scoped_lifecycle_invocation(
     local: u64,
     peer: u64,
 ) -> Result<Invocation, String> {
+    if target.name.starts_with("agy/") {
+        return Err(crate::launch::ANTIGRAVITY_RETIRED.into());
+    }
     if target.run_id.is_empty() {
         return Err("the session has no identified run".into());
     }
@@ -1351,20 +1316,6 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         return failed(crate::termination_cleanup::STATE_CHANGED);
     }
     match action {
-        Action::AntigravitySettings {
-            model,
-            effort,
-            expected_session_id,
-            expected_config_revision,
-        } => classify_antigravity_settings(
-            target,
-            invocation,
-            model,
-            effort.as_deref(),
-            expected_session_id,
-            expected_config_revision,
-            exit,
-        ),
         Action::Settings {
             model,
             effort,
@@ -1424,13 +1375,10 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
             classify_recovery(target, invocation, job_id, *action, exit)
         }
         Action::ResumeNativeForSend => classify_native_resume_for_send(target, invocation, exit),
-        Action::Pause | Action::Resume if target.name.starts_with("agy/") => {
-            classify_scoped_lifecycle(target, invocation, exit, "The session change did not complete.")
-        }
         Action::Pause if invocation.request_id.is_some() => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not paused.")
         }
-        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode" | "agy")) => {
+        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode")) => {
             classify_archive_lifecycle(target, invocation, exit, Some(archive_id))
         }
         Action::ForgetBinding => {
@@ -1445,55 +1393,6 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         }
         .completed(invocation, exit),
         _ => classify_write(exit, false),
-    }
-}
-
-fn settings_token(value: &str, limit: usize) -> bool {
-    !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
-}
-
-fn classify_antigravity_settings(
-    target: &Target,
-    invocation: &Invocation,
-    model: &str,
-    effort: Option<&str>,
-    expected_session_id: &str,
-    expected_revision: &str,
-    exit: Exit,
-) -> Outcome {
-    const UNKNOWN: &str = "Antigravity settings change is unconfirmed. Check Activity before trying again.";
-    let (code, receipt) = match exit {
-        Exit::StartFailed(error) => return failed(error),
-        Exit::Code { code, stdout, .. } => (code, serde_json::from_slice::<Value>(&stdout).ok()),
-        _ => return uncertain(UNKNOWN),
-    };
-    let Some(receipt) = receipt.filter(|value| {
-        invocation
-            .request_id
-            .as_deref()
-            .is_some_and(|id| value["request_id"] == id)
-            && value["name"] == target.name
-            && value["scope"] == "session"
-            && value["run_id"] == target.run_id
-            && value["conversation_id"] == target.conversation_id
-            && value["session_id"] == expected_session_id
-    }) else {
-        return uncertain(UNKNOWN);
-    };
-    match receipt["status"].as_str() {
-        Some("applied")
-            if code == 0
-                && receipt["model"] == model
-                && effort.is_none_or(|value| receipt["effort"] == value)
-                && receipt["config_revision"].as_str().is_some_and(|value| {
-                    crate::creation::canonical_uuid(value)
-                        && receipt["changed"].as_bool() == Some(value != expected_revision)
-                }) =>
-        {
-            done(receipt, None)
-        }
-        Some("refused") if code == 1 => failed("Antigravity refused the change. Refresh Activity."),
-        _ => uncertain(UNKNOWN),
     }
 }
 
@@ -2003,12 +1902,7 @@ fn classify_send(
         Exit::Abnormal { stderr } => uncertain(detail(&stderr, -1)),
         Exit::Code { code, stderr, .. } if code != 0 => {
             let text = detail(&stderr, code);
-            // ACP can lose the reply after the provider has taken input.
-            // This adapter has no private structured pre-offer witness.
-            if target.name.starts_with("agy/")
-                || code != 1
-                || stderr.to_lowercase().contains("delivery uncertain")
-            {
+            if code != 1 || stderr.to_lowercase().contains("delivery uncertain") {
                 uncertain(text)
             } else {
                 failed(text)
@@ -2439,10 +2333,12 @@ pub(crate) fn cleanup_line(stderr: &str) -> Option<WorktreeCleanup> {
 /// actions win; without them every operation is allowed except that an
 /// "opencode" session only renames and forgets.
 pub fn allowed(row: &ViewRow, operation: &str) -> bool {
+    if row.agent == "agy" || row.name.starts_with("agy/") {
+        return false;
+    }
     match &row.allowed_actions {
         Some(list) => list.iter().any(|action| action == operation),
         None => match row.agent.as_str() {
-            "agy" => false,
             "opencode" => matches!(operation, "rename" | "forget"),
             _ => true,
         },
@@ -2452,6 +2348,9 @@ pub fn allowed(row: &ViewRow, operation: &str) -> bool {
 /// `NativeSessionCapabilities::action` with the inspection: its
 /// `allowed_actions` list wins over the row's.
 pub fn allowed_with(row: &ViewRow, details: &Value, operation: &str) -> bool {
+    if row.agent == "agy" || row.name.starts_with("agy/") {
+        return false;
+    }
     match details.get("allowed_actions").and_then(Value::as_array) {
         Some(list) => list.iter().any(|action| action.as_str() == Some(operation)),
         None => allowed(row, operation),
@@ -2636,28 +2535,26 @@ mod tests {
 
     #[test]
     fn native_restore_names_the_archive_and_classifies_only_the_original_receipt() {
-        for provider in ["opencode", "agy"] {
-            let mut target = target("fixture-peer");
-            target.name = format!("{provider}/example/restore");
+        let mut target = target("fixture-peer");
+        target.name = "opencode/example/restore".into();
             let archive_id = "22222222-2222-4222-8222-222222222222";
-            let request = "11111111-1111-4111-8111-111111111111";
-            let action = Action::Restore { archive_id: archive_id.into() };
-            let inv = invocation(&target, &action, request).unwrap();
-            assert_eq!(inv.args, ["@fixture-peer", "session-action", target.name.as_str(), "--json"]);
-            assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(),
-                json!({"action":"restore","archive_id":archive_id,"request_id":request,
-                       "expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id}));
-            let receipt = json!({"request_id":request,"status":"completed","name":target.name,
-                "run_id":target.run_id,"conversation_id":target.conversation_id,"archive_id":archive_id,
-                "result_target":{"name":target.name,"run_id":"33333333-3333-4333-8333-333333333333",
-                "conversation_id":target.conversation_id}});
-            let outcome = |value: &Value| classify(&target, &action, &inv,
-                Exit::Code {code:0,stdout:value.to_string().into_bytes(),stderr:String::new()});
-            assert!(matches!(outcome(&receipt), Outcome::Done { .. }));
-            let mut wrong = receipt;
-            wrong["archive_id"] = json!("44444444-4444-4444-8444-444444444444");
-            assert!(matches!(outcome(&wrong), Outcome::Uncertain { .. }));
-        }
+        let request = "11111111-1111-4111-8111-111111111111";
+        let action = Action::Restore { archive_id: archive_id.into() };
+        let inv = invocation(&target, &action, request).unwrap();
+        assert_eq!(inv.args, ["@fixture-peer", "session-action", target.name.as_str(), "--json"]);
+        assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(),
+            json!({"action":"restore","archive_id":archive_id,"request_id":request,
+                   "expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id}));
+        let receipt = json!({"request_id":request,"status":"completed","name":target.name,
+            "run_id":target.run_id,"conversation_id":target.conversation_id,"archive_id":archive_id,
+            "result_target":{"name":target.name,"run_id":"33333333-3333-4333-8333-333333333333",
+            "conversation_id":target.conversation_id}});
+        let outcome = |value: &Value| classify(&target, &action, &inv,
+            Exit::Code {code:0,stdout:value.to_string().into_bytes(),stderr:String::new()});
+        assert!(matches!(outcome(&receipt), Outcome::Done { .. }));
+        let mut wrong = receipt;
+        wrong["archive_id"] = json!("44444444-4444-4444-8444-444444444444");
+        assert!(matches!(outcome(&wrong), Outcome::Uncertain { .. }));
     }
 
     #[test]
@@ -2750,59 +2647,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn antigravity_settings_require_exact_native_revision_and_one_acknowledgement() {
-        let id = "d16a12b4-5a79-4a28-9db4-4b5ba23cba11";
-        let request = "1636ce39-2c7a-4024-9f0a-d3f6b8c6aeb5";
-        let before = "da45226f-8c12-4f03-aba9-47bc4969d04a";
-        let after = "9850e2a7-24de-426e-a1fd-ea4c36c17dd2";
-        let target = Target {
-            computer: "mac".into(),
-            name: "agy/sample/settings".into(),
-            run_id: "29442f7c-fa18-46ce-a3b2-538e42e51241".into(),
-            conversation_id: "dbcd01fc-b01d-4b44-95a4-166ed4d6a89a".into(),
-        };
-        let settings = |effort: Option<&str>| Action::AntigravitySettings {
-            model: "fixture/first".into(),
-            effort: effort.map(str::to_owned),
-            expected_session_id: id.into(),
-            expected_config_revision: before.into(),
-        };
-        let action = settings(Some("high"));
-        let call = crate::session_selector::selected_invocation(&target, &action, request, Some(id)).unwrap();
-        assert_eq!(call.args, ["@mac", "settings", &target.name, "--session-id", id, "--json"]);
-        let body: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
-        assert_eq!(body, json!({"request_id":request,"expected_run_id":target.run_id,
-            "expected_conversation_id":target.conversation_id,"expected_config_revision":before,
-            "expected_session_id":id,
-            "model":"fixture/first","effort":"high"}));
-        let model_only = invocation(&target, &settings(None), request).unwrap();
-        let body: Value = serde_json::from_slice(model_only.stdin.as_ref().unwrap()).unwrap();
-        assert!(body.get("effort").is_none());
-
-        let receipt = json!({"status":"applied","scope":"session","request_id":request,"name":target.name,
-            "session_id":id,"run_id":target.run_id,"conversation_id":target.conversation_id,
-            "model":"fixture/first","effort":"high","config_revision":after,"changed":true});
-        let result = |code, receipt: &Value| classify(&target, &action, &call, exit(code, receipt.to_string().as_bytes(), ""));
-        assert!(matches!(result(0, &receipt), Outcome::Done { .. }));
-        for field in ["session_id", "name", "request_id", "run_id", "conversation_id", "model", "effort", "scope"] {
-            let mut wrong = receipt.clone();
-            wrong[field] = json!("other");
-            assert!(matches!(result(0, &wrong), Outcome::Uncertain { .. }), "{field}");
-        }
-        let mut wrong = receipt.clone();
-        wrong["config_revision"] = json!(before);
-        assert!(matches!(result(0, &wrong), Outcome::Uncertain { .. }));
-        wrong["changed"] = json!(false);
-        assert!(matches!(result(0, &wrong), Outcome::Done { .. }));
-        wrong["status"] = json!("uncertain");
-        assert!(matches!(result(1, &wrong), Outcome::Uncertain { .. }));
-        wrong["status"] = json!("refused");
-        assert!(matches!(result(1, &wrong), Outcome::Failed { .. }));
-        assert!(matches!(classify(&target, &action, &call, Exit::TimedOut), Outcome::Uncertain { .. }));
-        assert!(matches!(classify(&target, &action, &call, Exit::WriteFailed), Outcome::Uncertain { .. }));
-        assert!(invocation(&Target { conversation_id: "".into(), ..target }, &action, request).is_err());
-    }
 
     #[test]
     fn settings_receipts_must_echo_every_requested_field() {
@@ -3878,54 +3722,22 @@ mod tests {
         assert_eq!(fork_texts::forking("studio"), "Forking session on studio…");
     }
 
-    #[test]
-    fn antigravity_lifecycle_binds_the_original_session_and_validates_completion() {
-        let t = Target { name: "agy/project/session".into(), ..target("mac") };
-        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
-        for (action, op) in [(Action::Pause, "pause"), (Action::Resume, "resume")] {
-            let inv = invocation(&t, &action, id).unwrap();
-            assert_eq!(inv.args, ["@mac", "session-action", &t.name, "--json"]);
-            assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(), json!({
-                "request_id": id, "action": op, "expected_run_id": t.run_id, "expected_conversation_id": t.conversation_id
-            }));
-            let mut reply = json!({"request_id":id,"name":t.name,"run_id":t.run_id,
-                "conversation_id":t.conversation_id,"status":"completed"});
-            let result = |reply: &Value| classify(&t, &action, &inv, exit(0, &serde_json::to_vec(reply).unwrap(), ""));
-            assert!(matches!(result(&reply), Outcome::Done { .. }));
-            reply["conversation_id"] = json!("different");
-            assert!(matches!(result(&reply), Outcome::Failed { .. }));
-        }
-    }
+
 
     #[test]
-    fn antigravity_does_not_expose_regular_retry_after_possible_delivery() {
-        let t = Target { name: "agy/project/session".into(), ..target("mac") };
-        let id = "c1d76d6d-7846-44e2-ac8b-afaac26cf0bd";
-        let action = Action::Send {
-            text: "Private fixture".into(), attachments: vec![],
-            agent_id: None, expected_compaction_id: None,
-        };
-        let inv = invocation(&t, &action, id).unwrap();
-        let receipt = |status| serde_json::to_vec(&json!({
-            "request_id": id, "name": t.name, "run_id": t.run_id,
-            "conversation_id": t.conversation_id, "status": status
-        })).unwrap();
-        for failure in [
-            exit(1, &receipt("uncertain"), ""),
-            exit(1, b"", "hgs: Antigravity control reply is unavailable"),
-            exit(1, b"", "hgs: Antigravity control delivery is unconfirmed"),
-            Exit::TimedOut,
+    fn retired_antigravity_cannot_write_even_when_an_old_peer_reports_actions() {
+        let t = Target { name: "agy/project/session".into(), ..target("old-peer") };
+        let row = ViewRow { name: t.name.clone(), agent: "agy".into(), ..ViewRow::default() };
+        let details = json!({"allowed_actions":["resume","restore","terminate"]});
+        assert!(!allowed_with(&row, &details, "resume"));
+        for action in [
+            Action::Pause,
+            Action::Resume,
+            Action::Restore { archive_id: "22222222-2222-4222-8222-222222222222".into() },
+            Action::Send { text: "keep draft".into(), attachments: vec![], agent_id: None, expected_compaction_id: None },
         ] {
-            let outcome = classify(&t, &action, &inv, failure);
-            assert!(matches!(outcome, Outcome::Uncertain { .. }));
-            let key = "draft";
-            let mut messages = crate::local_messages::LocalMessages::default();
-            messages.sending(key, id, None, "Private fixture", &[], &t.run_id, &t.conversation_id, 1.0, None);
-            messages.finished(key, id, &outcome);
-            assert!(messages.retryable(key, id, &t.run_id, &t.conversation_id).is_none());
+            assert_eq!(invocation(&t, &action, "request").unwrap_err(), crate::launch::ANTIGRAVITY_RETIRED);
         }
-        assert!(matches!(classify(&t, &action, &inv, exit(0, &receipt("submitted"), "")), Outcome::Done { .. }));
-        assert!(matches!(classify(&t, &action, &inv, Exit::StartFailed("no executable".into())), Outcome::Failed { .. }));
     }
 
     #[test]

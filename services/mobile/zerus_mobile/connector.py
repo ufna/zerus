@@ -707,6 +707,8 @@ class Connector:
         operation, session = request.get("operation"), request.get("session")
         if not isinstance(operation, str) or operation not in OPERATIONS:
             raise ConnectorError("unsupported operation")
+        if isinstance(session, str) and session.startswith("agy/") and operation in MUTATIONS:
+            raise ConnectorError("Antigravity integration has been retired from Zerus.")
         if operation in send_outcome.OPERATIONS:
             payload=request.get('payload')
             computer=request.get('computer_id',request.get('gateway_route',{}).get('computer_id',payload.get('binding',{}).get('computer_id')))

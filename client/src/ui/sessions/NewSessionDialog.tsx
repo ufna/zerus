@@ -45,7 +45,7 @@ export type NewSessionChild =
   | { kind: "create-worktree"; target: string; computer: string; project: string; path: string; catalog: Json; branch: string; style: PathStyle };
 export const [newSessionChild, setNewSessionChild] = createSignal<NewSessionChild>();
 
-const AGENTS = new Set(["codex", "claude", "kimi", "dsh", "opencode", "agy"]);
+const AGENTS = new Set(["codex", "claude", "kimi", "dsh", "opencode"]);
 const sameKeys = (a: string[], b: string[]) => a.length === b.length && a.every((key, i) => key === b[i]);
 
 /** The row whose key is `key`, keeping the last one found while a removed row is disposed. */

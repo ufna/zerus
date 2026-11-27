@@ -182,11 +182,10 @@ hides the Clear session icon and offers
 place. **Restore session** follows the computer's restore decision, as batch
 Restore does; a computer that reports no actions keeps the earlier rule.
 
-Google Antigravity runs through the Agent Client Protocol (ACP). Use **Activity**
-to send messages and read replies. Its worker has no interactive terminal.
-After **Stop session**, choose **Archive** in the session menu to move
-the saved conversation to **Archive**. Choose **Restore session** there to use
-the original conversation again.
+Google Antigravity integration has been retired. Existing Zerus sessions and
+archives remain available for reading their saved Activity and identifiers.
+Zerus leaves existing account files and running programs in place, and retained
+session and archive records still protect their working folders.
 
 A Claude or Codex session that exited before its first message reported a
 conversation ID but wrote no transcript. Its archive therefore does not offer
@@ -506,7 +505,10 @@ With `@host` the flag reaches a peer only once its `hgs --help` lists
 `session-id-selector-v1` and every marker the call needs already, including a
 guarded `--expect-machine` call that wraps the command and `native-ui`, whose
 peer resolves the ID itself; an older peer is refused with "update the
-selected computer". Names stay unique for now. When several sessions later
+selected computer". A write addressed only by ID also requires the peer's
+`retired-provider-selector-v1` capability. On an older peer, the current
+session name and its ID can still identify a supported session for a write.
+Names stay unique for now. When several sessions later
 share a name, commands exit with status 5 and list the candidates; see
 `docs/superpowers/specs/2026-11-04-session-names-as-labels.md`. Because an
 older hgs can change a session's ID once, a client whose `--session-id` is no

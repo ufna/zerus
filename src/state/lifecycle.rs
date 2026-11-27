@@ -779,6 +779,7 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
         // In label order, as the terminal names were.
         let mut names: Vec<String> = records()?
             .iter()
+            .filter(|record| !retired_agy::identity(record))
             .filter(|record| terminal_live(&snapshot, record).unwrap_or(true))
             .map(|record| string(record, "name").to_owned())
             .collect();
@@ -1267,7 +1268,8 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
     let names = if names == ["--all"] {
         let mut stopped = Vec::new();
         for record in records()? {
-            if !string(&record, "conversation_id").is_empty()
+            if !retired_agy::identity(&record)
+                && !string(&record, "conversation_id").is_empty()
                 && !archive::equivalent(&record, &archived)
                 && !already_live(&record, &snapshot)?
             {

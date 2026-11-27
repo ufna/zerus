@@ -1139,13 +1139,13 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
   expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
 });
 
-function antigravityComposer(row: ViewRow): ComposerView {
+function sessionComposer(row: ViewRow): ComposerView {
   return {
     handle: 118, key: draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name, session_id: row.session_id, archive_id: null }),
     loaded: true, rev: 1, text_epoch: 1, text: "Private Antigravity draft", position: 0, anchor: 0,
     attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false,
     status: "", status_error: false, can_send: false, send_label: { source: "Send" }, available: false,
-    unavailable_reason: "On this computer, run agy acp --login, then refresh the session. Your draft stays here.",
+    unavailable_reason: "Antigravity integration has been retired from Zerus.",
     block_reason: null, attachments_available: false, attachments_reason: "", session_status: "", session_status_error: false,
     session_blocks_input: false, inspect_error: false, local: [], compacting: false, cancel_send: false, input_visible: true,
     question: null, queue: null, cache: { visible: false, tone: "quiet", label: "", short_label: "" },
@@ -1174,7 +1174,7 @@ it.each(["en", "ru"] as const)("dismisses a past Kimi compaction notice without 
     { name: "fixture.txt", mime: "text/plain", reference: "@fixture.txt", bytes: 4, path: "zerus-file://fixture.txt", excerpt: "test" },
   ];
   let draft: ComposerView & { compaction_notice_id?: string } = {
-    ...antigravityComposer(row), text: "Keep my draft @fixture.txt", attachments, available: true,
+    ...sessionComposer(row), text: "Keep my draft @fixture.txt", attachments, available: true,
     attachments_available: true, unavailable_reason: "", status: source,
     status_error: true, uncertain: true, can_send: false, compaction_notice_id: original,
   };
@@ -1222,191 +1222,45 @@ it.each(["en", "ru"] as const)("dismisses a past Kimi compaction notice without 
   expect(send().disabled).toBe(true);
 });
 
-it.each(["en", "ru"] as const)("changes Antigravity model and thinking in the shared composer slot in %s", async (lang) => {
-  transport.language = lang;
-  const label = lang === "ru" ? {
-    settings: "Настройки модели Antigravity", apply: "Применить", quota: "Квота аккаунта", context: "Использование контекста",
-    check: "Проверить активность", unknown: "Изменение настроек Antigravity не подтверждено",
-    old: "Этот процесс Antigravity не сообщает текущие настройки модели",
-  } : {
-    settings: "Antigravity model settings", apply: "Apply", quota: "Account quota", context: "Context usage",
-    check: "Check Activity", unknown: "Antigravity settings change is unconfirmed",
-    old: "This Antigravity worker does not report its current model settings",
-  };
-  const row: ViewRow = { ...fixtureRow(), name: "agy/example/settings", agent: "agy", run_id: uuid(801), conversation_id: uuid(802),
-    process_state: "running", model: "Stale catalog choice", terminal_supported: false };
-  const before = uuid(810), after = uuid(811), refreshed = uuid(812);
-  const draft = { ...antigravityComposer(row), available: true, can_send: true, unavailable_reason: "" };
-  vi.mocked(bridge.composerOpen).mockImplementation(async session => session?.name === row.name ? draft : null);
-  const key = (await open(row)).slice(1);
-  const settings = (current: string, effort: string, revision: string) => ({
-    settings_model: current, effort, agy_settings: { status: "confirmed", revision, mode: { id: "default", label: "Review changes" } },
-    settings_change_supported: true, model_change_supported: true, effort_change_supported: true, settings_apply_when: "now",
-    model_options: [
-      { id: "first", label: "Fixture Flash", ...(current === "first" ? { effort_options: ["mid", "high"], effort_labels: { mid: "Medium", high: "High" } } : {}) },
-      { id: "second", label: "Fixture Pro", ...(current === "second" ? { effort_options: ["mid", "max"], effort_labels: { mid: "Medium", max: "Maximum" } } : {}) },
-    ],
-    session_usage: { context: { used: 180, limit: 512, used_source: "agy_acp", limit_source: "agy_acp" } },
-    agy_quota: { status: "unavailable", reason: "provider_interface_unavailable" },
-  });
-  const state = (rev: number, value: Record<string, unknown>) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key, kind: "state", payload: { rev, value: { name: row.name, session_id: row.session_id, run_id: row.run_id,
-      conversation_id: row.conversation_id, agent: "agy", process_state: "running", activity: "idle", phase: "idle", ...value } },
-  }] });
-  const calls: unknown[] = [], otherWrites: string[] = [];
-  transport.composer = (command, args) => {
-    if (command === "run_action") {
-      calls.push(args);
-      return calls.length === 1 ? { outcome: "done", receipt: { model: "receipt is not the displayed model" }, cleanup: null } : { outcome: "uncertain", detail: "Private fixture" };
-    }
-    if (["send_message", "local_retry", "composer_allow_retry"].includes(command)) otherWrites.push(command);
-    return undefined;
-  };
-  const selector = `[aria-label="${label.settings}"]`;
-  const button = host.querySelector<HTMLButtonElement>(`.cmp-actions ${selector}`)!;
-  expect(button).not.toBeNull();
-  expect(host.querySelectorAll(selector)).toHaveLength(1);
-  expect(host.querySelector(`.detail-tabs ${selector}`)).toBeNull();
-  expect(button.compareDocumentPosition(host.querySelector(".cmp-actions .primary")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const draftText = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value;
-  expect(draftText()).toBe(draft.text);
-  const dialog = () => host.querySelector<HTMLDialogElement>('dialog[aria-labelledby="agy-settings-title"]')!;
-  const field = (selector: string) => dialog().querySelector<HTMLButtonElement>(selector)!;
-  const action = (caption: string) => [...dialog().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === caption)!;
-  const choose = async (selector: string, value: string) => {
-    field(selector).click(); await flush();
-    dialog().querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click();
-  };
-  state(2, { agy_settings: { status: "unavailable", reason: "legacy_worker" }, resumable: true,
-    settings_model: "stale legacy cache", settings_change_supported: true });
-  button.click(); await flush();
-  expect(dialog().textContent).toContain(label.old);
-  expect(host.querySelector(".detail-head")?.textContent).not.toContain("Stale catalog choice");
-  expect(dialog().textContent).not.toContain("stale legacy cache");
-  expect(draftText()).toBe(draft.text);
-  expect(calls).toEqual([]);
-  expect(action(label.apply).disabled).toBe(true);
-  state(3, settings("first", "mid", before));
-  expect(button.textContent).toContain("Fixture Flash");
-  expect(dialog().textContent).toContain(label.quota);
-  expect(dialog().textContent).toContain(label.context);
-  expect(dialog().querySelector(`[role="group"][aria-label^="${label.quota}"]`)).not.toBeNull();
-  expect(dialog().querySelector(`[role="group"][aria-label^="${label.context}"]`)?.getAttribute("aria-label")).toContain("180");
-  expect(dialog().textContent).toContain("180");
-  expect(dialog().textContent).toContain("/usage");
-  field("#agy-model").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
-  await flush();
-  expect(calls).toEqual([]);
-  expect(otherWrites).toEqual([]);
-  await choose("#agy-model", "second");
-  expect(field("#agy-effort").disabled).toBe(true);
-  const connection = (ready: boolean) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key, kind: "connection", payload: { ready },
-  }] });
-  connection(false);
-  expect(action(label.apply).disabled).toBe(true);
-  connection(true);
-  expect(activity.currentSummary()).toBeUndefined();
-  expect(action(label.apply).disabled, "Apply needs fresh provider settings after reconnect").toBe(true);
-  action(label.apply).click();
-  expect(calls).toEqual([]);
-  state(1, settings("first", "mid", before));
-  expect(action(label.apply).disabled).toBe(false);
-  action(label.apply).click(); await flush();
-  const target = { computer: "", name: row.name, run_id: row.run_id, conversation_id: row.conversation_id };
-  const change = { kind: "antigravity_settings", model: "second", expected_session_id: row.session_id };
-  expect(calls).toEqual([{ target, action: { ...change, expected_config_revision: before }, delay: undefined }]);
-  expect(button.textContent).toContain("Fixture Flash");
-  expect(action(label.apply).disabled).toBe(true);
-  state(2, settings("second", "mid", after));
-  expect(button.textContent).toContain("Fixture Pro");
-  await choose("#agy-effort", "max");
-  action(label.apply).click(); await flush();
-  expect(calls).toEqual([
-    { target, action: { ...change, expected_config_revision: before }, delay: undefined },
-    { target, action: { ...change, effort: "max", expected_config_revision: after }, delay: undefined },
-  ]);
-  expect(dialog().textContent).toContain(label.unknown);
-  expect(action(label.apply).disabled).toBe(true);
-  action(label.check).click(); await flush();
-  state(1, settings("second", "mid", after));
-  expect(field("#agy-effort").disabled).toBe(true);
-  state(2, { ...settings("first", "high", refreshed), session_id: uuid(899) });
-  expect(button.textContent).not.toContain("Fixture Flash");
-  expect(action(label.apply).disabled).toBe(true);
-  state(3, settings("second", "max", refreshed));
-  expect(button.textContent).toContain("Maximum");
-  expect(field("#agy-effort").disabled).toBe(false);
-  expect(draftText()).toBe(draft.text);
-  expect(calls).toHaveLength(2);
-  expect(otherWrites).toEqual([]);
-});
-
-it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle through the ordinary menu in %s", async (lang) => {
+it.each(["en", "ru"] as const)("keeps retired Antigravity history readable without active controls in %s", async (lang) => {
   transport.language = lang;
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
   const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
   onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
-  const labels = lang === "ru"
-    ? { menu: "Действия сессии", stop: "Остановить сессию…", confirm: "Остановить сессию", resume: "Возобновить сессию", retry: "Повторить запуск", cancel: "Отмена" }
-    : { menu: "Session actions", stop: "Stop session…", confirm: "Stop session", resume: "Resume session", retry: "Retry start", cancel: "Cancel" };
-  const fixture = fixtureRow("Private Antigravity");
-  const row: ViewRow = { ...fixture, name: "agy/example/fixture", agent: "agy", terminal_supported: false };
-  const view = antigravityComposer(row);
+  const row: ViewRow = { ...fixtureRow("Private Antigravity"), name: "agy/example/fixture", agent: "agy",
+    state: "running", status: "working", process_state: "running", resumable: true,
+    allowed_actions: ["pause", "archive", "rename", "terminate"], model: "Historical model", effort: "high", terminal_supported: true };
+  const view = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "" };
   vi.mocked(bridge.composerOpen).mockImplementation(async s => s?.name === row.name ? view : null);
   const key = (await open(row)).slice(1);
-  const lifecycle: unknown[] = [], sendCalls: unknown[] = [], inspections: unknown[] = [];
+  const writes: unknown[] = [], inspections: unknown[] = [];
   transport.composer = (command, args) => {
     if (command === "local_inspect") {
       inspections.push(args);
       return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
     }
-    if (command === "send_message") {
-      sendCalls.push(args);
-      return { kind: "sending" };
-    }
-    if (command === "run_action") {
-      lifecycle.push(args);
-      return { outcome: "done", receipt: {}, cleanup: null };
-    }
+    if (["send_message", "local_retry", "composer_allow_retry", "run_action"].includes(command)) writes.push(args);
     return undefined;
   };
-  const menus = () => [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
-  const openMenu = async (label: string) => {
-    setMenu(undefined);
-    host.querySelector<HTMLButtonElement>(`.detail-head button[data-tip="${labels.menu}"]`)!.click();
-    await flush();
-    return menus().find((button) => button.textContent?.trim() === label);
-  };
-  const state = (rev: number, extra: Record<string, unknown>) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key, kind: "state", payload: { rev, value: { backend: "agy", run_id: row.run_id,
-      conversation_id: row.conversation_id, terminal_supported: false, ...extra } },
+  receive({ ...emptyBatch(), activity: [{
+    computer: "", key, kind: "state", payload: { rev: 2, value: { backend: "agy", run_id: row.run_id,
+      conversation_id: row.conversation_id, terminal_supported: true, activity_supported: true, send_supported: true,
+      send_available: true, allowed_actions: ["pause", "archive", "rename", "terminate"], resumable: true,
+      runtime_state: "live", phase: "working", interrupt_supported: true, turn_started: 5, settings_change_supported: true } },
   }] });
-  const confirmButton = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('dialog[aria-labelledby="action-dlg-title"] button')]
-    .find(b => b.textContent?.trim() === label);
   expect(selected()?.agent).toBe("agy");
   expect(host.querySelector(".detail-head .agent-badge")?.getAttribute("title")).toBe("Google Antigravity");
-  state(2, { activity_supported: false, auth_required: true });
-  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain("agy acp --login");
+  expect(host.querySelector(".detail-head")?.textContent).toContain("Historical model");
+  expect(host.querySelector(".cmp-actions .cmp-model")).toBeNull();
+  expect(host.querySelector('[data-tab="terminal"]')).toBeNull();
+  expect(host.querySelector(".cmp-actions .btn:not(.primary)")).toBeNull();
+  expect(host.querySelector(".cmp-status")?.textContent).toContain(lang === "ru"
+    ? "Интеграция Antigravity удалена из Zerus." : "Antigravity integration has been retired from Zerus.");
+  expect(host.querySelector(".qcard[role=status]")).toBeNull();
   const sendDraft = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
   expect(sendDraft().disabled).toBe(true);
-  sendDraft().click();
-  expect(sendCalls).toEqual([]);
   expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
-  expect((await openMenu(labels.stop))?.getAttribute("aria-disabled")).toBe("true");
-  expect(lifecycle).toEqual([]);
 
-  state(3, { activity_supported: true, send_supported: true, send_available: true,
-    allowed_actions: ["pause"], activity: "idle", phase: "idle", runtime_state: "live" });
-  receive({ ...emptyBatch(), composer: { ...view, available: true, can_send: true, unavailable_reason: "" } });
-  expect(host.querySelector(".qcard[role=status]")).toBeNull();
-  expect(sendDraft().disabled).toBe(false);
-  sendDraft().click();
-  await vi.waitFor(() => expect(sendCalls).toHaveLength(1));
-  expect(sendCalls[0]).toMatchObject({ handle: view.handle, text: view.text });
-  const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
-  receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [reply], cursor: 2 } }] });
-  expect(activity.events()).toEqual([reply]);
   const unknownId = uuid(99801);
   const unknown: LocalMessage = {
     id: unknownId, text: view.text, status: "error", attachments: [], run_id: row.run_id ?? "",
@@ -1414,15 +1268,15 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     uncertain: true, message_id: null, submitted_text: null, source: null, voice: null,
   };
   const earlier = { seq: 1, type: "UserPromptSubmit", source: "agy_acp", detail: "Earlier Antigravity prompt", delivery_state: "submitted" };
+  const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
   const offer = { seq: 3, type: "UserPromptSubmit", source: "agy_acp", detail: unknown.text, request_id: unknownId,
     run_id: row.run_id, conversation_id: row.conversation_id, delivery_state: "unconfirmed" };
   receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [earlier, reply, offer], cursor: 3 } }] });
-  receive({ ...emptyBatch(), composer: { ...view, rev: 2, available: true, uncertain: true, local: [unknown],
-    status: unknown.error, status_error: true } });
+  receive({ ...emptyBatch(), composer: { ...view, rev: 2, uncertain: true, local: [unknown], status: unknown.error, status_error: true } });
   const localButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".act-local-actions button")];
   const checkLabel = lang === "ru" ? "Проверить активность" : "Check Activity";
   await vi.waitFor(() => expect(localButtons().map(button => button.textContent)).toContain(checkLabel));
-  expect(localButtons()).toHaveLength(2); // Inspect and Delete, with no ordinary Retry
+  expect(localButtons()).toHaveLength(2);
   const userRows = () => [...host.querySelectorAll(".act-msg.k-user")];
   expect(userRows()).toHaveLength(2);
   expect(userRows()[0].querySelector(".act-receipt")?.textContent).toBe(lang === "ru" ? "Отправлено" : "Sent");
@@ -1431,10 +1285,11 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   const guidance = lang === "ru" ? "Доставка не подтверждена. Перед повторной попыткой проверьте активность." : unknown.error;
   expect(userRows()[1].querySelector(".act-error")?.textContent).toBe(guidance);
   expect(host.querySelector(".cmp-status")?.getAttribute("aria-label")).toBe(guidance);
-  expect(sendDraft().disabled).toBe(true);
+  expect(host.querySelector(".cmp-actions .btn.ghost")).toBeNull();
   sendDraft().click();
   host.querySelector(".cmp-editor")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-  expect(sendCalls).toHaveLength(1);
+  expect(writes).toEqual([]);
+
   vi.mocked(bridge.activityPort.follow).mockClear();
   localButtons().find(button => button.textContent === checkLabel)!.click();
   await vi.waitFor(() => expect(inspections).toEqual([{ handle: view.handle, id: unknownId }]));
@@ -1442,54 +1297,25 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     computer: "", key, name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, after: undefined, tail: 100,
   }));
   expect(activity.events()).toEqual([earlier, reply, offer]);
-  expect(sendCalls).toHaveLength(1);
-  expect(detailTab()).toBe("activity");
-  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
-  const stop = await openMenu(labels.stop);
-  expect(stop?.getAttribute("aria-disabled")).toBe("false");
-  stop!.click();
-  await flush();
-  expect(lifecycle).toEqual([]);
-  confirmButton(labels.cancel)!.click();
-  expect(lifecycle).toEqual([]);
+  expect(writes).toEqual([]);
 
-  (await openMenu(labels.stop))!.click();
+  setMenu(undefined);
+  const menuLabel = lang === "ru" ? "Действия сессии" : "Session actions";
+  host.querySelector<HTMLButtonElement>(`.detail-head button[data-tip="${menuLabel}"]`)!.click();
   await flush();
-  confirmButton(labels.confirm)!.click();
-  const target = { name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, computer: "" };
-  await vi.waitFor(() => expect(lifecycle).toEqual([{ target, action: { kind: "pause" }, delay: undefined }]));
-
-  put({ ...row, state: "paused", status: "paused", resumable: true, allowed_actions: ["resume"] });
-  state(4, { activity_supported: true, allowed_actions: ["resume"], runtime_state: "stopped" });
-  await flush();
-  expect(selected()).toMatchObject({ state: "paused", cmd: "agy" });
-  const resume = await openMenu(labels.resume);
-  expect(resume?.getAttribute("aria-disabled"), menus().map(b => b.textContent).join(", ")).toBe("false");
-  resume!.click();
-  await vi.waitFor(() => expect(lifecycle).toEqual([
-    { target, action: { kind: "pause" }, delay: undefined },
-    { target, action: { kind: "resume" }, delay: undefined },
-  ]));
-
-  const signedOut = { ...fixtureRow("First-time sign-in"), name: "agy/example/sign-in", agent: "agy",
-    conversation_id: "", state: "stopped", status: "paused", resumable: true, allowed_actions: ["resume"] };
-  const authKey = (await open(signedOut)).slice(1);
-  const auth = (rev: number, retry?: boolean) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key: authKey, kind: "state", payload: { rev, value: {
-      run_id: signedOut.run_id, conversation_id: "", allowed_actions: ["resume"], auth_required: true, startup_retry_available: retry,
-    } },
-  }] });
-  auth(2);
-  expect((await openMenu(labels.resume))?.getAttribute("aria-disabled")).toBe("true");
-  expect(lifecycle).toHaveLength(2);
-  auth(3, true);
-  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain(labels.retry);
-  const retry = await openMenu(labels.retry);
-  expect(retry?.getAttribute("aria-disabled")).toBe("false");
-  retry!.click();
-  await vi.waitFor(() => expect(lifecycle).toHaveLength(3));
-  expect(lifecycle[2]).toMatchObject({
-    target: { computer: "", name: signedOut.name, run_id: signedOut.run_id, conversation_id: "" },
-    action: { kind: "resume" },
-  });
+  const menuButtons = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
+  const menuText = menuButtons.map(button => button.textContent).join("\n");
+  const item = (label: string) => menuButtons.find(button => button.textContent?.trim() === label);
+  const labels = lang === "ru" ? {
+    pause: "Приостановить сессию", command: "Копировать команду подключения", reference: "Копировать ссылку на сессию",
+  } : {
+    pause: "Pause session", command: "Copy connect command", reference: "Copy session reference",
+  };
+  expect(item(labels.pause)?.getAttribute("aria-disabled")).toBe("true");
+  expect(item(labels.command)?.getAttribute("aria-disabled")).toBe("true");
+  expect(item(labels.reference)).toBeDefined();
+  expect(item(labels.reference)?.getAttribute("aria-disabled")).not.toBe("true");
+  const lifecycle = lang === "ru" ? ["Остановить сессию", "Повторить запуск"] : ["Stop session", "Retry start"];
+  for (const label of lifecycle) expect(menuText).not.toContain(label);
+  expect(writes).toEqual([]);
 });

@@ -11,7 +11,7 @@ import type { Session } from "../sessions/types";
 import type { Account } from "../../types";
 import { agentKind, catalog, plainComputers, plainRows } from "../../store/catalog";
 import { machineCards, requestMachine } from "../../store/machines";
-import { accountsPage, loadAccounts, setAccountMachine, setRequestedProfile } from "../../store/accounts";
+import { accountsPage, activeAccounts, loadAccounts, setAccountMachine, setRequestedProfile } from "../../store/accounts";
 import { createOverview, mainSessions, overviewStats, type MachineCardModel, type OverviewStats } from "../../store/overview";
 import { setMachineFilter, setPage, setProjectFilter, setAccountFilter, setFolderFilter, setSelectedKey, setStateFilter, type StateFilter } from "../../store/ui";
 import { flag, num, setSetting } from "../../store/settings";
@@ -229,6 +229,7 @@ export function OverviewScreen() {
   // Ages, resets and pace re-render every 15 s while shown (DashboardPage.cpp:322); nothing else runs on a timer.
   const now = useNow(15_000);
   const view = accountsPage;
+  const accountView = createMemo(() => ({ ...view(), accounts: activeAccounts(view().accounts), overview: activeAccounts(view().overview) }));
   const online = () => ov.cards().filter((m) => m.connection.fresh).length;
   const go = (filter: StateFilter) => { setMachineFilter([]); setProjectFilter([]); setAccountFilter([]); setFolderFilter(undefined); setStateFilter(filter); setPage("sessions"); };
   return (
@@ -262,7 +263,7 @@ export function OverviewScreen() {
           <span class="grow" />
           <button class="su-link" onClick={() => { setAccountMachine("*"); setPage("accounts"); }}>{tr("Manage accounts")} <Icon name="arrow-right" size={12} /></button>
         </div>
-        <Show when={accountsNote(view())} fallback={<div class="ov-agrid"><Index each={view().overview}>{(a) => <AccountCard a={a()} now={now()} />}</Index></div>}>
+        <Show when={accountsNote(accountView())} fallback={<div class="ov-agrid"><Index each={accountView().overview}>{(a) => <AccountCard a={a()} now={now()} />}</Index></div>}>
           {(note) => <p class="ov-empty">{note()}</p>}
         </Show>
 
