@@ -127,6 +127,11 @@ pub(super) fn inspection(record: &Value, live: bool) -> Option<Value> {
     }
     Some(data)
 }
+pub(super) fn codex_waiting(record: &Value) -> Result<bool> {
+    let screen = capture_plain(record, Instant::now() + CAPTURE_WINDOW)?;
+    Ok(parse("codex", &screen).is_some())
+}
+
 /// The queue still belongs to Claude even if a late hook says the turn is idle.
 pub(super) fn claude_waiting(record: &Value) -> Result<bool> {
     let screen = capture_plain(record, Instant::now() + CAPTURE_WINDOW)?;

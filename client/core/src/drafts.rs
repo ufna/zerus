@@ -1067,6 +1067,20 @@ impl DraftStore {
         }));
     }
 
+    /// Visits one bounded portion of this store's saved queues on its writer.
+    pub fn scan_outboxes(
+        &self,
+        scan: outbox::Scan,
+        done: impl FnOnce(Option<outbox::Scan>, Option<String>) + Send + 'static,
+    ) {
+        let (root, fence) = (self.root.clone(), self.fence.clone());
+        self.writer.enqueue("", false, Box::new(move || {
+            if !lock(&fence).gate.writes { return done(None, None); }
+            let (next, key) = scan.page(&root);
+            done(next, key);
+        }));
+    }
+
     /// Loads after every save queued before it.
     pub fn load(&self, key: &str, done: impl FnOnce(Loaded) + Send + 'static) {
         let (root, owned) = (self.root.clone(), key.to_owned());

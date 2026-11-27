@@ -1703,6 +1703,55 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
         self.assertFalse(self.inspect()['interrupted_message_can_send'])
         self.send(success=False)
 
+    def test_desktop_outbox_recognizes_the_interrupted_codex_goal_footer(self):
+        transcript = self.root / f'rollout-{self.conversation_id}.jsonl'
+        header = {'type':'session_meta','payload':{'id':self.conversation_id}}
+        transcript.write_text(json.dumps(header)+'\n')
+        self.record['transcript'] = str(transcript)
+        self.write_record()
+        self.interrupted_turn()
+        placeholder = '\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m'
+        footer = ('\r\n\r\n  GPT-6.2-Astra high · /fixture · Fixture · Main [default]'
+                  '\r\n  ← for agents · ? for shortcuts       Goal paused (/goal resume) · ⚠ 2 warnings · f2 to view')
+        empty = '\x1b[2J\x1b[27;1H' + placeholder + footer + '\x1b[27;3H'
+        def attempt(**changes):
+            payload = self.payload(only_when_idle=True, **changes)
+            result = subprocess.run([str(HGS), 'send', self.name, '--when-idle', '--json'], env=self.env,
+                                    input=json.dumps(payload), text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)['status']
+        self.screen(empty, '2:26')
+        original = self.record.copy()
+        for changes in [dict(phase='approval'), dict(activity='busy', phase='tool'),
+                        dict(input_pending_at=time.time()+10), dict(transcript=''),
+                        dict(transcript=str(self.root / 'wrong-name.jsonl'))]:
+            self.record = dict(original, **changes)
+            self.write_record()
+            self.assertNotEqual(attempt(), 'submitted')
+        self.record = original
+        self.write_record()
+        self.assertNotEqual(attempt(expected_run_id='other-run'), 'submitted')
+        for payload in [{'id':'other-conversation'}, {'id':self.conversation_id,'source':{'subagent':{'id':'child'}}}]:
+            transcript.write_text(json.dumps({'type':'session_meta','payload':payload})+'\n')
+            self.assertNotEqual(attempt(), 'submitted')
+        transcript.write_text(json.dumps(header)+'\n')
+        for frame, pos in [
+            (empty.replace(placeholder, '› Goal paused (/goal resume)'), '2:26'),
+            (empty.replace('Goal paused (/goal resume)', 'Unknown dialog'), '2:26'),
+            (empty.replace(placeholder, '• Queued follow-up inputs\r\n  ↳ keep me\r\n' + placeholder)
+                  .replace('\x1b[27;1H', '\x1b[25;1H'), '2:26'),
+        ]:
+            self.screen(frame, pos)
+            self.assertNotEqual(attempt(), 'submitted')
+        self.screen(empty, '2:26')
+        self.assertTrue(self.inspect()['interrupted_message_can_send'])
+        # Team inbox uses ordinary send with only_when_idle; it still waits for idle.
+        self.send(self.payload(only_when_idle=True), success=False)
+        self.assertEqual(self.received(), b'')
+        self.assertEqual(attempt(text='queued after Interrupt'), 'submitted')
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~queued after Interrupt\x1b[201~\r')
+
     def test_interrupted_turn_cannot_bypass_terminal_or_identity_checks(self):
         self.interrupted_turn()
         for screen, cursor in [('› existing draft', '16:0'), ('Password: ', '10:0'),

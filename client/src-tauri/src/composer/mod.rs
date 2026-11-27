@@ -655,6 +655,10 @@ pub(crate) struct Followed {
 
 #[derive(Default)]
 pub(crate) struct Hub {
+    /// Saved queues are discovered without selecting their sessions.
+    outbox_scan: Option<drafts::outbox::Scan>,
+    outbox_scanning: bool,
+    outbox_rescan_at: Option<f64>,
     pub(crate) composers: HashMap<String, Composer>,
     /// Least recently opened first.
     order: VecDeque<String>,
@@ -1047,6 +1051,9 @@ impl Composers {
         composer.checkpoint = stored.checkpoint.map(|checkpoint| *checkpoint);
         composer.earlier_input_hold = stored.earlier_input_hold;
         composer.outbox = stored.outbox;
+        if composer.outbox.first().is_some_and(outbox::can_probe) {
+            self.0.opened.notify_all();
+        }
         composer.outbox_damaged = stored.outbox_damaged;
         composer.hold_after_inspect = inspection;
         if let Some(notice) = loaded.notice {
@@ -1204,6 +1211,12 @@ impl Composers {
             };
             let key = hub.order.remove(index).expect("found above");
             if let Some(gone) = hub.composers.remove(&key) {
+                if gone.outbox.first().is_some_and(outbox::can_probe) {
+                    // Reconsider evicted queues without retaining a list of
+                    // offline sessions or their attachment bytes.
+                    hub.outbox_rescan_at.get_or_insert_with(|| self.now() + 30.0);
+                    self.0.opened.notify_all();
+                }
                 hub.stored_keys.retain(|k| k != &key);
                 if gone.has_content() {
                     hub.stored_keys.push_front(key);

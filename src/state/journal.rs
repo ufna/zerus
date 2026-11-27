@@ -1233,6 +1233,9 @@ pub(super) fn inspection_with(
         // This owning host can return the exact pre-input refusal required
         // by the desktop FIFO. Older inspections leave the field absent.
         output["guarded_idle_send"] = json!(true);
+        if record["agent"] == "codex" {
+            output["codex_interrupted_outbox_supported"] = json!(true);
+        }
         if record["agent"] == "claude" {
             output["claude_outbox_supported"] = json!(true);
         }

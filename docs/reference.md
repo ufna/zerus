@@ -2715,9 +2715,11 @@ waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
 outgoing row with **Queued in Zerus**, its original local enqueue time, and
 its attachments. The agent receives no input during that save. The desktop
-checks the original run and sends in order when it confirms an idle input
-with no earlier message pending. For Codex, Claude and Kimi, the host checks idle again
-under its native input lock before offering the message. OpenCode checks the
+checks the original run and sends in order when the agent is ready for input
+and no earlier message is pending. For Codex, this can include a live session
+after an interrupted turn when the host confirms an empty, usable native prompt.
+For Codex, Claude and Kimi, the host checks readiness again under its native
+input lock before offering the message. OpenCode checks the
 exact conversation and makes a queue-only offer. Any messages already parked
 in the OpenCode inbox keep their order. Claude's existing native queue also
 keeps its order while Desktop waits. DeepSeek checks the exact native
@@ -2726,9 +2728,8 @@ so a new turn cannot turn the offer into steering. If the host confirms that
 the agent became busy before any input was offered, that same message waits with its original
 request ID. Queueing requires guarded Send support from the computer running
 the session. A ready session on an older computer still uses ordinary Send.
-Previously opened queues can drain while
-another session is selected. After restarting the app, open the session to
-load its saved queue. The queue holds up to 16 messages, 80 KiB of text and
+After restarting, Desktop checks saved queues in the background.
+Messages can leave the queue while another session is selected or the editor is closed. The queue holds up to 16 messages, 80 KiB of text and
 20 MiB of files per session. The queue saves its messages and files separately
 from the editable draft so an older desktop can edit that draft during rollback.
 

@@ -669,6 +669,18 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // Desktop's outbox can verify an empty interrupted Codex prompt. The
+        // ordinary and Team entry points continue to use their own idle guard.
+        for (new, prior, count) in [
+            ("    mode: SendMode,\n", "    terminal_outcome: bool,\n", 1),
+            ("    let terminal_outcome = mode == SendMode::TerminalOutcome;\n", "", 1),
+            ("checked_record_gate(name, &request, &mut process, mode)", "checked_record_gate(name, &request, &mut process)", 2),
+            ("checked_record_gate(name,&request,&mut process,mode)", "checked_record_gate(name,&request,&mut process)", 1),
+            ("!mode.idle_input_ready(&read(name)?)", "!idle_reminder_ready(&read(name)?)", 2),
+        ] {
+            assert_eq!(original.matches(new).count(), count, "interrupted outbox guard changed");
+            original = original.replace(new, prior);
+        }
         // Project away only the ordinary Linux launch proof and its extra
         // checks. The pre-existing composer, receipt and Enter seal remains.
         for (new, prior) in [
