@@ -1,4 +1,4 @@
-import { createContext, createEffect, createSignal, For, Show, useContext } from "solid-js";
+import { createContext, createEffect, createSignal, Show, useContext } from "solid-js";
 import { tr } from "../../i18n";
 import { composer } from "../../store/composer";
 import { setDetailTab } from "../../store/ui";
@@ -34,7 +34,7 @@ export function OutboxHeader(props: { item: OutboxItem }) {
   </>;
 }
 
-export function OutboxBody(props: { item: OutboxItem }) {
+export function OutboxActions(props: { item: OutboxItem }) {
   const scope = useContext(OutboxScope);
   const [review, setReview] = createSignal<{ handle: number; requestId: string }>();
   let removeButton: HTMLButtonElement | undefined;
@@ -50,15 +50,7 @@ export function OutboxBody(props: { item: OutboxItem }) {
     setReview(undefined);
     removeButton?.focus();
   };
-  return <div class="act-body">
-    <p class="wrap-pre act-outbox-preview">{props.item.preview || tr("Message with files")}</p>
-    <Show when={props.item.attachments?.length}>
-      <ul class="act-outbox-files" aria-label={tr("Attachments")}>
-        <For each={props.item.attachments}>{(file) =>
-          <li><Icon name="paperclip" size={13} /><span>{file.name}</span></li>
-        }</For>
-      </ul>
-    </Show>
+  return <>
     <Show when={props.item.target_changed}>
       <p class="act-inbox-hint">{tr("The original session changed.")}</p>
     </Show>
@@ -68,7 +60,7 @@ export function OutboxBody(props: { item: OutboxItem }) {
     <Show when={props.item.state === "failed"}>
       <p class="act-error">{tr("The agent did not accept this message.")}</p>
     </Show>
-    <Show when={scope}>
+    <Show when={current()}>
       <div class="act-local-actions act-outbox-actions">
         <Show when={current()?.can_check_terminal}>
           <button type="button" class="btn small" onClick={() => {
@@ -104,5 +96,5 @@ export function OutboxBody(props: { item: OutboxItem }) {
         </div>
       </div>
     }</Show>
-  </div>;
+  </>;
 }

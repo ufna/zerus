@@ -1,4 +1,4 @@
-import { OutboxBody, OutboxHeader, OutboxScope } from "./OutboxMessage";
+import { OutboxActions, OutboxHeader, OutboxScope } from "./OutboxMessage";
 import { earlierInputRefusal, EARLIER_INPUT_PENDING, sendErrorText } from "./send-error";
 import { OwnMessageBody } from "./OwnMessageBody";
 import { nativeRoute } from "./native-entry";
@@ -542,16 +542,18 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   const inboxScope = useContext(InboxScope);
   return (
     <div class="act-body">
-      <Show when={it().kind === "user" || it().kind === "receipt"} fallback={<Body text={it().body ?? ""} />}>
-        {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
-        <Show when={it().replies?.length} fallback={<OwnMessageBody text={it().body ?? ""} truncated={it().bodyTruncated} />}>
-          <For each={it().replies}>{(r) => (
-            <div class="act-reply">
-              <div class="act-reply-q">{tr("Question")}</div>
-              <p class="wrap-pre">{r.question}</p>
-              <div class="act-reply-a"><b>{tr("Your answer")}</b><p class="wrap-pre">{r.answer}</p></div>
-            </div>
-          )}</For>
+      <Show when={!it().outbox} fallback={<p class="wrap-pre act-outbox-preview">{it().body || tr("Message with files")}</p>}>
+        <Show when={it().kind === "user" || it().kind === "receipt"} fallback={<Body text={it().body ?? ""} />}>
+          {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
+          <Show when={it().replies?.length} fallback={<OwnMessageBody text={it().body ?? ""} truncated={it().bodyTruncated} />}>
+            <For each={it().replies}>{(r) => (
+              <div class="act-reply">
+                <div class="act-reply-q">{tr("Question")}</div>
+                <p class="wrap-pre">{r.question}</p>
+                <div class="act-reply-a"><b>{tr("Your answer")}</b><p class="wrap-pre">{r.answer}</p></div>
+              </div>
+            )}</For>
+          </Show>
         </Show>
       </Show>
       <Show when={it().local?.error}><p class="act-error">{
@@ -562,7 +564,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
       }</p></Show>
       <Show when={it().code}><pre class="act-code mono">{it().code}</pre></Show>
       <Show when={it().attachments}>
-        <div class="act-attachments">
+        <div class="act-attachments" classList={{ "act-outbox-files": !!it().outbox }}>
           <For each={it().attachments?.map((_, index) => index)}>{(index) => (
             // Reserve the same card geometry before its delivery receipt arrives.
             // A missing request remains read-only; it never authorizes a file read.
@@ -570,6 +572,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
           )}</For>
         </div>
       </Show>
+      <Show when={it().outbox}>{(queued) => <OutboxActions item={queued()} />}</Show>
       <Show when={it().local?.actions.length}><LocalActions local={it().local!} /></Show>
       {/* Not delivered is not a refusal: OpenCode keeps the message and runs it first; Zerus never resends it. */}
       <Show when={it().inbox?.state === "not_delivered"}><p class="act-inbox-hint">{tr(NOT_DELIVERED_HINT)}</p></Show>
@@ -674,9 +677,7 @@ function Item(props: {
           <Show when={it.kind === "agent" && !it.excerpt}><button class="icon-btn small act-copy" title={tr("Copy as Markdown")} onClick={() => copyText(it.body ?? "", tr("The reply is on the clipboard"))}><Icon name="copy" size={12} /></button></Show>
         </header>
         {/* A fork's inherited row belongs to its source: never this session's attachments. */}
-        <Show when={it.outbox} fallback={<EchoBody item={it} scope={rowScope(it, props.scope)} />}>
-          {(queued) => <OutboxBody item={queued()} />}
-        </Show>
+        <EchoBody item={it} scope={rowScope(it, props.scope)} />
       </article>
     </Show>
   );
@@ -828,7 +829,8 @@ export function ActivityView(props: { source?: ActivitySource }) {
   }
   const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
     subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
-      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox()));
+      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox(),
+    composer.removedWaiting()?.key === composer.view()?.key ? composer.removedWaiting()?.ids : undefined));
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;

@@ -2167,11 +2167,10 @@ impl Composers {
             .collect()
     }
 
-    /// Drops the open session's local rows its history now shows
-    /// (`reconcileMessages`); a failed row delivered after all clears a
-    /// draft that still holds it. True when a row went.
+    /// Drops the open session's local rows its history identifies. A draft is
+    /// settled by its own delivery checkpoint, even when the text is equal.
     pub(crate) fn reconcile(&self) -> bool {
-        let (removed, cleared) = {
+        let removed = {
             let mut guard = self.lock();
             let Some(key) = guard.open_key.clone() else {
                 return false;
@@ -2194,29 +2193,7 @@ impl Composers {
                 details.as_deref().unwrap_or(&Value::Null),
                 hub.followed.events.make_contiguous(),
             );
-            let clear = hub.composers.get(&key).is_some_and(|c| {
-                !c.sending
-                    && c.draft.attachments.is_empty()
-                    && reconciled.delivered.contains(&c.draft.text)
-                    // History carries only text, never a request id: it
-                    // never settles a held identity, which stays until
-                    // evidence carrying its id, or the user's Allow retry
-                    // (zerus-5wmh.66.4.4). A draft holding none keeps the
-                    // text match.
-                    && c.checkpoint.is_none()
-            });
-            // Applied under the lock that decided it, so a send admitted
-            // after this check is never cleared by it (zerus-5wmh.66.4.4).
-            if clear {
-                let end = End {
-                    ok: true,
-                    detail: "",
-                    uncertain: false,
-                    preserve: false,
-                };
-                self.finish_in(hub, &key, None, end);
-            }
-            (reconciled.removed > 0, clear)
+            reconciled.removed > 0
         };
         #[cfg(test)]
         AFTER_RECONCILE.with(|hook| {
@@ -2224,10 +2201,6 @@ impl Composers {
                 hook();
             }
         });
-        if cleared {
-            self.reconcile();
-            self.changed();
-        }
         removed
     }
 
@@ -6745,11 +6718,13 @@ pub(crate) mod tests {
             0,
             0,
         );
-        until(&c, |v| !v.sending && v.local.len() == 1);
+        let original = until(&c, |v| !v.sending && v.local.len() == 1).local[0].id.clone();
         let mut batch = state(ready());
         batch.activity.push(ActivityOut {
             computer: ComputerId::from("studio"), key: "run:run-1".into(), kind: "events".into(),
-            payload: json!({"events": [{"seq": 9, "type": "UserPromptSubmit", "detail": "shown in history", "at": 1_793_000_100.0}], "cursor": 9}),
+            payload: json!({"events": [{"seq":9,"type":"UserPromptSubmit","source":"hgs_delivery",
+                "message_id":original,"run_id":"run-1","conversation_id":ready()["conversation_id"],
+                "detail":"shown in history","at":1_793_000_100.0}], "cursor":9}),
         });
         c.observe(&batch);
         until(&c, |v| v.local.is_empty());
@@ -7461,10 +7436,7 @@ pub(crate) mod tests {
     fn inspected_events_reconcile_rows_too() {
         let root = dir("send-inspected");
         let (c, fake) = send_hub(&root);
-        let mut details = ready();
-        // Seen by the inspect that the send's end starts (3.5 s on).
-        details["events"] = json!([{"seq": 3, "type": "UserPromptSubmit", "detail": "seen by inspect", "at": 1_793_000_103.5}]);
-        *lock(&fake.inspected) = Some(details);
+        *lock(&fake.inspected) = Some(ready());
         c.open(Some(session()));
         until(&c, |v| v.loaded);
         *lock(&fake.now) += 3.5;
@@ -7488,6 +7460,13 @@ pub(crate) mod tests {
             0,
             0,
         );
+        let original = until(&c, |v| !v.sending && v.local.len() == 1).local[0].id.clone();
+        let mut details = ready();
+        details["events"] = json!([{"seq":3,"type":"UserPromptSubmit","source":"hgs_delivery",
+            "message_id":original,"run_id":"run-1","conversation_id":ready()["conversation_id"],
+            "detail":"seen by inspect","at":1_793_000_103.5}]);
+        *lock(&fake.inspected) = Some(details);
+        c.refresh_details();
         until(&c, |v| !v.sending && v.local.is_empty());
         assert_eq!(sent(&fake).len(), 1);
     }

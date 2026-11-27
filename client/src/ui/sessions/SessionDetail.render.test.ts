@@ -527,15 +527,61 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
     error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: "zerus_outbox", voice: null,
   };
   const firstId = waitingRows()[0].id;
+  const firstNode = waitingRows()[0];
+  const originalNode = () => host.querySelector<HTMLElement>(`#${firstId}`);
+  const firstRow = firstNode.closest(".act-virtual-row");
+  const file = firstNode.querySelector(".att-card");
+  expect(file).not.toBeNull();
+  const scroller = firstNode.closest<HTMLElement>(".act-scroll")!;
+  Object.defineProperties(scroller, { clientHeight: { value: 400 }, scrollHeight: { value: 1000 } });
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -30, bubbles: true }));
+  scroller.scrollTop = 180;
+  scroller.dispatchEvent(new Event("scroll"));
+  const currentOriginal = () => {
+    expect(host.querySelectorAll(`#${firstId}`)).toHaveLength(1);
+    expect(originalNode()).toBe(firstNode);
+    expect(originalNode()?.closest(".act-virtual-row")).toBe(firstRow);
+    expect(originalNode()?.querySelector(".att-card")).toBe(file);
+    expect(scroller.scrollTop).toBe(180);
+  };
+  const firstRemoved: MutationRecord[] = [];
+  const watcher = new MutationObserver(records => firstRemoved.push(...records.filter(record =>
+    [...record.removedNodes].some(node => node === firstNode || node === firstRow || node === file))));
+  watcher.observe(scroller, { childList: true, subtree: true });
+  onTestFinished(() => watcher.disconnect());
   const staged = { ...initial, text_epoch: 4, waiting_in_zerus: localQueue.slice(1), local: [confirmed] };
+  // The desktop composer can retire its queue entry against a receipt before
+  // the independent Activity follow publishes the corresponding native event.
+  receive({ ...emptyBatch(), composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
   receive({ ...emptyBatch(), composer: staged });
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  currentOriginal();
   const sent = [...host.querySelectorAll(".act-scroll article")].filter(item => item.id === firstId);
   expect(sent).toHaveLength(1);
+  expect(sent[0]).toBe(firstNode);
   expect(sent[0].classList.contains("act-outbox")).toBe(false);
   expect(sent[0].textContent).toContain("queue-fixture.txt");
   expect(editor().value).toBe("fourth draft still editable");
   expect(editor().readOnly).toBe(false);
+
+  const activityKey = `run:${row.run_id}`;
+  const scope = { run_id: row.run_id, conversation_id: row.conversation_id };
+  const echo = { ...scope, seq: 103, type: "UserPromptSubmit", source: "opencode_native",
+    request_id: confirmed.id, message_id: "msg_Output", detail: "same", at: confirmed.submitted_at };
+  const interleaved = { ...scope, seq: 101, type: "AgentMessage", detail: "Unrelated activity", at: confirmed.submitted_at - 1 };
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [interleaved], cursor: 101 } }],
+    composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [echo], cursor: 103 } }] });
+  await vi.waitFor(() => expect(originalNode()?.querySelector(".act-receipt")?.textContent?.trim()).toBe(lang === "ru" ? "Отправлено" : "Sent"));
+  currentOriginal();
+  expect([...scroller.querySelectorAll("article.k-user")].slice(0, 3).map(item => item.id)).toEqual(
+    localQueue.map(item => `item-local-${item.request_id}`));
+  expect(firstRemoved).toHaveLength(0);
+  watcher.disconnect();
 
   const held = { ...staged, waiting_in_zerus: [
     { ...localQueue[1], state: "unknown" as const, can_check_terminal: true }, localQueue[2],
