@@ -1885,6 +1885,16 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
                 .into(),
         );
     }
+    if command == "send" {
+        let queue = args.iter().find(|arg| matches!(arg.as_str(), "--opencode-queue" | "--deepseek-queue"));
+        if let Some(queue) = queue {
+            return match (args.first(), queue.as_str()) {
+                (Some(name), "--opencode-queue") if name.starts_with("opencode/") => opencode::send_when_idle(args),
+                (Some(name), "--deepseek-queue") if name.starts_with("dsh/") => dsh::send_when_idle(args),
+                _ => Err("Native queue admission requires the exact provider session name".into()),
+            };
+        }
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
         return agy::dispatch(command, name, rest);

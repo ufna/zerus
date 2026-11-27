@@ -392,7 +392,11 @@ impl Context {
     }
 
     pub(super) fn ordinary_input_held(&self, hub: &Hub) -> bool {
-        self.earlier_input_hold(hub).is_some() || self.previous_message_pending() == Some(true)
+        self.exact_earlier_input_hold(hub) || self.previous_message_pending() == Some(true)
+    }
+
+    pub(super) fn exact_earlier_input_hold(&self, hub: &Hub) -> bool {
+        self.earlier_input_hold(hub).is_some()
     }
 
     fn live_row(&self) -> bool {

@@ -1,13 +1,19 @@
-//! Explicit ready-only offers from the desktop outbox and exact native file evidence.
+//! Guarded offers from the desktop outbox and exact native file evidence.
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct Guard<'a> {
+    pub(super) input_sha256: &'a str,
+    pub(super) native_queue: bool,
+}
+
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
-    let [name, guard, format] = args else {
-        return Err("Use hgs send <OpenCode session> --when-idle --json".into());
+    let (name, native_queue) = match args {
+        [name, guard, format] if guard == "--when-idle" && format == "--json" => (name, false),
+        [name, guard, queue, format]
+            if guard == "--when-idle" && queue == "--opencode-queue" && format == "--json" => (name, true),
+        _ => return Err("Use hgs send <OpenCode session> --when-idle [--opencode-queue] --json".into()),
     };
-    if guard != "--when-idle" || format != "--json" {
-        return Err("Use hgs send <OpenCode session> --when-idle --json".into());
-    }
     let input = read_request_bytes()?;
     let request = parse_request(&input)?;
     const FIELDS: &[&str] = &[
@@ -41,7 +47,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     {
         return Err("The exact OpenCode session changed".into());
     }
-    println!("{}", send(&record, &request, Some(&hash(&input)))?);
+    let input_sha256 = hash(&input);
+    println!("{}", send(&record, &request, Some(Guard { input_sha256: &input_sha256, native_queue }))?);
     Ok(0)
 }
 
@@ -119,21 +126,21 @@ pub(super) fn status(name: &str) -> Result<i32> {
             "name": receipt["name"], "run_id": receipt["run_id"],
             "conversation_id": receipt["conversation_id"], "input_sha256": input_hash,
             "native_message_id": receipt["native_message_id"], "submitted_at": receipt["submitted_at"],
+            "queued": receipt["queued"] == true,
         })
     );
     Ok(0)
 }
 
-/// At idle, a native inbox may still hold messages left parked by Stop.
-/// A queue-only offer restarts that inbox in its existing order.
+/// Questions and permissions remain manual, including during native work.
 pub(super) fn wait_receipt(
     native: &dyn Native,
     record: &Value,
     request: &Value,
-    input_sha256: &str,
+    guard: Guard<'_>,
 ) -> Result<Option<Value>> {
     if waiting_for_user(native, record)?
-        || active_sessions(native)?
+        || !guard.native_queue && active_sessions(native)?
             .get(string(record, "conversation_id"))
             .is_some()
     {
@@ -141,7 +148,7 @@ pub(super) fn wait_receipt(
             "schema": 1, "status": "waiting_for_idle", "proof": "native_opencode_queue",
             "request_id": request["request_id"], "name": record["name"],
             "run_id": record["run_id"], "conversation_id": record["conversation_id"],
-            "input_sha256": input_sha256,
+            "input_sha256": guard.input_sha256,
         })));
     }
     Ok(None)

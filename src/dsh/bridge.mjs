@@ -704,17 +704,20 @@ export function apply(ctx, config) {
       return own.some(event => event.type === 'step/start') ? 'missing' : 'unstarted';
     } finally { observation[Symbol.dispose](); }
   }
-  function outboxReady(agent, sessionId) {
+  function outboxReady(agent, sessionId, nativeQueue = false) {
     if (!agent || agent.session.id !== sessionId) return false;
     try { if (topLevel(agent) !== agent) return false; } catch { return false; }
-    return agent.status === 'idle' && agent.inbox.nextStep.length === 0 && agent.inbox.nextTurn.length === 0
+    const accepts = nativeQueue ? ['idle', 'running'].includes(agent.status) && Array.isArray(agent.inbox.nextTurn)
+      : agent.status === 'idle' && agent.inbox.nextStep.length === 0 && agent.inbox.nextTurn.length === 0;
+    return accepts
       && publicQuestions(sessionId).length === 0
       && compactionPublic(sessionId)?.status !== 'compacting';
   }
   function outboxState(sessionId) {
     if (typeof sessionId !== 'string' || !NATIVE_SESSION.test(sessionId)) throw new Error('Invalid DeepSeek outbox conversation');
-    return { sessionId, generation,
-      ready: outboxReady(ctx.agents.get(sessionId), sessionId), fileAttachments: fileCapabilities() };
+    const agent = ctx.agents.get(sessionId);
+    return { sessionId, generation, ready: outboxReady(agent, sessionId),
+      queueReady: outboxReady(agent, sessionId, true), fileAttachments: fileCapabilities() };
   }
   const outboxAdmission = new AsyncLocalStorage();
   const followupGuards = new WeakMap();
@@ -726,7 +729,7 @@ export function apply(ctx, config) {
   // calling followup. Keep that controller, its file receipts and deduplication.
   // Check this RPC at the synchronous insertion seam. Other clients keep the
   // original method, including calls while this one awaits native preparation.
-  async function outboxPrompt(agent, p) {
+  async function outboxPrompt(agent, p, nativeQueue) {
     let entry = followupGuards.get(agent);
     if (!entry) {
       const old = Object.getOwnPropertyDescriptor(agent, 'followup');
@@ -738,7 +741,7 @@ export function apply(ctx, config) {
         if (scope?.agent === this && scope.active) {
           scope.active = false;
           if (rpcIdOf(message) !== scope.requestId) throw new Error('DeepSeek outbox request identity changed');
-          if (ctx.agents.get(scope.sessionId) !== this || !outboxReady(this, scope.sessionId)) {
+          if (ctx.agents.get(scope.sessionId) !== this || !outboxReady(this, scope.sessionId, scope.nativeQueue)) {
             scope.waiting = true;
             throw new Error('DeepSeek became busy before the outbox offer');
           }
@@ -755,7 +758,7 @@ export function apply(ctx, config) {
     }
     if (agent.followup !== entry.guarded) throw new Error('DeepSeek native outbox admission changed');
     entry.users++;
-    const scope = { agent, sessionId: p.sessionId, requestId: p.requestId, active: true, waiting: false };
+    const scope = { agent, sessionId: p.sessionId, requestId: p.requestId, nativeQueue, active: true, waiting: false };
     try {
       return await outboxAdmission.run(scope, () => api.prompt(p, new AbortController().signal));
     } catch (error) {
@@ -798,6 +801,7 @@ export function apply(ctx, config) {
     const jobs = ctx.get('jobs');
     return { generation, baseline, page, fileAttachments: fileCapabilities(),
       outboxReady: !agentId && !needsSignIn(selection, status) && outboxReady(parentLive, sessionId),
+      outboxQueueReady: !agentId && !needsSignIn(selection, status) && outboxReady(parentLive, sessionId, true),
       lifecycleActions: agentId ? [] : ["rename", ...(!parentLive ? ["resume", "forget"] : owned.get(sessionId)?.agent === parentLive ? [...(lifecycleIdle ? ["pause"] : []), "forget"] : [])],
       jobs: jobs && request.includeProcesses !== false ? jobOwners.flatMap(owner => jobs.list(owner).filter(job => job.kind === 'bash' && job.owner === owner)
         .map(job => ({ ...job, callId:jobCalls.get(job.id)?.callId, controllable: owned.has(sessionId) && Boolean(ctx.agents.get(owner)) }))) : undefined,
@@ -932,6 +936,8 @@ export function apply(ctx, config) {
       hash.update(`${block?.type ?? ''}\0${block?.type === 'text' ? block.text ?? '' : ''}\0`);
     return hash.digest('hex');
   };
+  const witnessAttachments = content => Array.isArray(content) ? content.filter(block =>
+    block?.type === 'image' || block?.type === 'file').map(block => block.attachment?.attachmentId ?? null) : null;
   const rememberWitness = (requestId, record) => {
     witnesses.delete(requestId); witnesses.set(requestId, record);
     while (witnesses.size > WITNESS_LIMIT) witnesses.delete(witnesses.keys().next().value);
@@ -1009,8 +1015,7 @@ export function apply(ctx, config) {
       if (event.type === 'agent/inbox/spliced') events.push({ seq: event.seq, type: event.type, target: d.target, start: d.start,
         removedCount: d.removedCount ?? 0, outcome: d.outcome ?? null, inserted: d.inserted.map(m => ({ id: m.id, rpcId: rpcIdOf(m) })) });
       else if (event.type === 'user/message') events.push({ seq: event.seq, type: event.type, id: d.id, rpcId: rpcIdOf(d),
-        digest: witnessDigest(d.content), attachmentIds: Array.isArray(d.content) ? d.content.filter(block =>
-          block?.type === 'image' || block?.type === 'file').map(block => block.attachment?.attachmentId ?? null) : null });
+        digest: witnessDigest(d.content), attachmentIds: witnessAttachments(d.content) });
       else if (event.type === 'turn/end') events.push({ seq: event.seq, type: event.type, turn: d.turn, reason: d.reason?.kind ?? null });
     }
     const live = ctx.agents.get(record.sessionId);
@@ -1019,7 +1024,22 @@ export function apply(ctx, config) {
       idle: !live || live.status === 'idle', events,
       disposals: (disposals.get(session) ?? []).filter(([first, last]) => last > spliceSeq && first < end) };
   }
-  // {sessionId, requestId, generation, waitMs, fromSeq?}: see witnessFacts.
+  function queuedInput(record, requestId) {
+    const agent = ctx.agents.get(record.sessionId);
+    if (agent?.session !== record.session) return null;
+    const [event] = record.session.snapshotEvents(record.spliceSeq, record.spliceSeq + 1);
+    if (event?.type !== 'agent/inbox/spliced' || event.seq !== record.spliceSeq
+      || event.data.target !== 'next-turn' || (event.data.removedCount ?? 0) !== 0 || event.data.inserted.length !== 1) return null;
+    const [message] = event.data.inserted;
+    if (message.id !== record.messageId || rpcIdOf(message) !== requestId || !Array.isArray(message.content)) return null;
+    const inbox = agent.inbox.nextTurn;
+    const pending = inbox.slice(-WITNESS_LIMIT).find(item => item.id === message.id && rpcIdOf(item) === requestId);
+    const digest = witnessDigest(message.content), attachmentIds = witnessAttachments(message.content);
+    if (!pending || witnessDigest(pending.content) !== digest
+      || JSON.stringify(witnessAttachments(pending.content)) !== JSON.stringify(attachmentIds)) return null;
+    return { seq: event.seq, id: message.id, rpcId: requestId, digest, attachmentIds };
+  }
+  // {sessionId, requestId, generation, waitMs, fromSeq?, queue?}: see witnessFacts.
   async function inputWitness(p) {
     if (p.generation !== generation) return { generation, state: 'host_gone' };
     const record = witnesses.get(p.requestId);
@@ -1031,7 +1051,9 @@ export function apply(ctx, config) {
     }
     // Wait, bounded, until the message is delivered or can no longer be.
     const deadline = Date.now() + Math.min(Math.max(Number(p.waitMs) || 0, 0), WITNESS_WAIT);
+    let queued = null;
     for (;;) {
+      if (p.queue === true && (queued = queuedInput(record, p.requestId))) break;
       const facts = witnessFacts(record, record.session.seq);
       const delivered = facts.events.some(e => e.type === 'user/message' && e.id === record.messageId);
       if (delivered || (!facts.pending && facts.idle) || Date.now() >= deadline) break;
@@ -1042,6 +1064,8 @@ export function apply(ctx, config) {
     const through = record.session.seq;
     let durable = false;
     try { durable = Boolean(await ctx.get('sessions')?.flush(record.session)); } catch {}
+    if (durable && queued) return { generation, state: 'tracked', durable,
+      messageId: record.messageId, spliceSeq: record.spliceSeq, queued };
     return { generation, state: 'tracked', durable, ...witnessFacts(record, through, p.fromSeq) };
   }
   // zerus-yj7ef: every list row carries `listJobs`, a bounded summary of the
@@ -1077,7 +1101,7 @@ export function apply(ctx, config) {
         const environment = callEnvironmentInstalled();
         return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
           fileAttachments: fileCapabilities(),
-          inputWitness: true, outboxSend: true, listJobs: true, teamLifecycle: true,
+          inputWitness: true, outboxSend: true, outboxQueueSend: true, listJobs: true, teamLifecycle: true,
           shellIdentity: environment, callTokens: environment,
           nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       }
@@ -1306,9 +1330,11 @@ export function apply(ctx, config) {
           throw new Error('This child is not continuable with the addressed parent');
         return ctx.subagents.prompt(p, signal);
       }
+      case 'outbox-queue-send':
       case 'outbox-send':
       case 'send': return witnessedSend(p, async () => {
-        const outbox = request.method === 'outbox-send';
+        const nativeQueue = request.method === 'outbox-queue-send';
+        const outbox = nativeQueue || request.method === 'outbox-send';
         if (outbox && (p.generation !== generation || !RESUME_REQUEST.test(p.requestId)
           || !NATIVE_SESSION.test(p.sessionId) || p.mode !== 'queue'))
           throw new Error('DeepSeek outbox target changed');
@@ -1342,8 +1368,8 @@ export function apply(ctx, config) {
         if (files.length && ctx.agents.get(p.sessionId) !== agent)
           throw new Error('DeepSeek session changed after file preparation');
         if (outbox) {
-          if (ctx.agents.get(p.sessionId) !== agent || !outboxReady(agent, p.sessionId)) return outboxWait(p);
-          return outboxPrompt(agent, p);
+          if (ctx.agents.get(p.sessionId) !== agent || !outboxReady(agent, p.sessionId, nativeQueue)) return outboxWait(p);
+          return outboxPrompt(agent, p, nativeQueue);
         }
         return api.prompt(p, new AbortController().signal);
       });

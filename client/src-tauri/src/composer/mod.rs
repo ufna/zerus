@@ -363,6 +363,7 @@ pub struct ComposerView {
     pub waiting_in_zerus: Vec<outbox::EntryView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
+    pub offers_native_queue: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ordinary_send_block: Option<String>,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
@@ -2009,12 +2010,14 @@ impl Composers {
                 && !locked
                 && !composer.uncertain
                 && !composer.outbox_blocks_send()
-                && session.previous_message_pending != Some(true)
+                && (session.previous_message_pending != Some(true)
+                    || matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)))
                 && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
             waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
-            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait)),
+            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait | outbox::ManualSend::TryNativeQueue)),
+            offers_native_queue: matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)),
             ordinary_send_block: match manual_send {
                 Some(outbox::ManualSend::Blocked(reason)) => Some(reason),
                 _ => None,

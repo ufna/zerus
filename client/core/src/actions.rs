@@ -47,6 +47,12 @@ pub enum Action {
         text: String,
         attachments: Vec<Attachment>,
     },
+    /// Offer an accepted outbox entry to an explicitly supported native queue.
+    #[serde(skip_deserializing)]
+    SendToNativeQueue {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// Qt's guarded `hgs settings NAME --json`, including pending applies.
     Settings {
         model: String,
@@ -567,15 +573,29 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
-        Action::SendWhenIdle { text, attachments } => {
+        Action::SendWhenIdle { text, attachments } | Action::SendToNativeQueue { text, attachments } => {
             if target.conversation_id.is_empty() {
                 return Err("Queued input needs an exact conversation.".into());
             }
             let mut input = send_value(target, text, attachments, None, None, request_id)?;
+            // Keep the frozen outbox envelope byte-for-byte compatible. The
+            // extra argv flag selects the new guarded provider admission.
             input["only_when_idle"] = json!(true);
             let input = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
+            let mut args = vec!["send".to_owned(), name, "--when-idle".to_owned()];
+            if matches!(action, Action::SendToNativeQueue { .. }) {
+                let queue = if target.name.starts_with("opencode/") {
+                    "--opencode-queue"
+                } else if target.name.starts_with("dsh/") {
+                    "--deepseek-queue"
+                } else {
+                    return Err("Native queue admission is unavailable for this provider.".into());
+                };
+                args.push(queue.into());
+            }
+            args.push("--json".into());
             (
-                vec!["send".to_owned(), name, "--when-idle".to_owned(), "--json".to_owned()],
+                args,
                 Some(input),
                 30,
                 45,
@@ -1299,7 +1319,7 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
-        Action::SendWhenIdle { .. } => classify_idle_send(target, invocation, exit),
+        Action::SendWhenIdle { .. } | Action::SendToNativeQueue { .. } => classify_idle_send(target, invocation, exit),
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
         Action::SendNow { queue_id } => classify_send_now(target, invocation, queue_id, exit),
         Action::RemoveQueued { .. } => classify_remove_queued(target, invocation, exit),
@@ -1864,7 +1884,11 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit) -> O
         }
         if opencode
             && (receipt["transport"] != "native_opencode"
-                || !receipt["native_message_id"].as_str().is_some_and(native_message_id))
+                || !receipt["native_message_id"].as_str().is_some_and(native_message_id)
+                || invocation.args.iter().any(|arg| arg == "--opencode-queue")
+                    && !(receipt["outbox_guarded"] == true && invocation.stdin.as_deref().is_some_and(|input| {
+                        receipt["outbox_input_sha256"] == format!("{:x}", Sha256::digest(input))
+                    })))
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
@@ -1895,7 +1919,7 @@ pub fn outbox_status(
     use sha2::{Digest, Sha256};
 
     if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
-        || !matches!(action, Action::SendWhenIdle { .. })
+        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToNativeQueue { .. })
     {
         return Err("Expected an original outbox request.".into());
     }
