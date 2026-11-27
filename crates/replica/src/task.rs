@@ -741,6 +741,7 @@ impl TaskDoc {
                     reviews: string(&entry, "reviews"),
                     of: string(&entry, "of"),
                     quick_review: decode(&entry, "quick_review").ok(),
+                    technical_review: decode(&entry, "technical_review").ok(),
                     person_request: string(&entry, "person_request")
                         .and_then(|raw| serde_json::from_str(&raw).ok()),
                 },
@@ -905,7 +906,7 @@ impl TaskDoc {
         Ok((view, ids))
     }
 
-    fn log(
+    pub(crate) fn log(
         &self,
         kind: &str,
         actor: &Actor,
@@ -1210,6 +1211,31 @@ impl TaskDoc {
         self.log("stage", actor, now, to.as_str(), None)?;
         self.commit()?;
         Ok(())
+    }
+
+    pub(crate) fn record_technical_review(
+        &mut self,
+        audit: &crate::technical_review::Audit,
+        reviewer: &SessionKey,
+        message: &str,
+        done: bool,
+        now: i64,
+    ) -> Result<()> {
+        self.writable()?;
+        if self.stage()? != Stage::Review {
+            return Err(Error::new("The technical report is no longer in review."));
+        }
+        // The actor is the evidence reviewer. The typed audit distinguishes
+        // an original verdict from policy actions that cite a saved verdict.
+        let actor = Actor::Agent(reviewer.clone());
+        let entry = self.log("technical_review", &actor, now, message, None)?;
+        entry.insert("technical_review", serde_json::to_string(audit)?)?;
+        if done {
+            self.fields().insert("stage", Stage::Done.as_str())?;
+            self.fields().insert("stage_at", now)?;
+            self.log("stage", &actor, now, "done", None)?;
+        }
+        self.commit()
     }
 
     fn review_assignment(&self) -> Option<ReviewAssignment> {

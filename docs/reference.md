@@ -5605,6 +5605,52 @@ when invoked by the person or the task's exact verified executor. A different
 report, stale revision, or non-ready disposition refuses. Replies echo `op`,
 `report_id`, `project_uuid`, `task_uuid` and the resulting `task`.
 
+### Verified technical completion
+
+Automatic completion is opt-in for one project on its owning computer. An
+enrolled local Codex reviewer must be independent of the exact reporter.
+A bare report, a technical review label or the ordinary Ready outcome grants
+no automatic acceptance. Person and Team reviews, historical or ambiguous
+reports, conflicting or unknown execution and parked or rework outcomes retain
+their existing routes.
+
+After an enrolled project's ordinary technical agent report settles, the
+desktop background worker places it in Review Check with an exact reviewer and
+the existing criterion. The worker sends one guarded idle-only notice to that
+reviewer. Review history shows assignment, unavailable reviewer, submitted
+notice, refusal or unknown outcome. A refusal or unknown leaves the assigned
+Check visible. Restart reads the original reservation and receipt and never
+repeats its native offer. The reviewer opens the original request and exact
+report, verifies the requested result using a retained test, installed witness
+or comparable evidence for the same scope, and records its observation and
+reproducible reference.
+
+The assigned reviewer uses the existing `hgs task quick-review REF --json`
+writer with `op: "verify"`, the current `history_revision`, exact
+`report_id`, `observation` and `evidence_reference`. The verified session
+must match the current assignment. The writer records the exact reviewed
+evidence and the automatic Done transition together. The ordinary `set` and
+`accept` requests retain their existing behavior.
+
+The person enrolls reviewers once through their own terminal or a verified
+person request addressed to an agent. In that context run
+`hgs task technical-review-policy --project PROJECT --json` with
+`{"op":"enable","reviewers":["launch_id:UUID"]}`. Use one to four exact
+local reviewer session IDs. The response records the local project, computer,
+reviewers, policy generation and authorization. Use `{"op":"status"}` for
+readback and `{"op":"disable"}` to revoke. An ordinary relayed or unrelated
+agent command cannot enroll a reviewer. A task never asks the person to run
+this command as part of ordinary completion.
+
+Enrollment may also give up to eight preexisting exact Ready decisions in
+`legacy`, with `task_uuid`, `history_revision`, `report_id`, `decision_id`
+and `reviewer_session_id` per entry. Copy IDs from ordinary paged task history
+and only include independently reviewed technical evidence produced by an
+enrolled reviewer. Enrollment validates the exact saved decision and actor.
+The admitted desktop worker rechecks the full guard at start and completes it
+with a separate legacy audit. If the report, decision or scope changed, the
+old enrollment entry cannot accept its replacement.
+
 To send a decided rework to its original executor, use `hgs task
 message-reviewed REF --mode reopen` with the usual message content,
 `--request-id`, `--expect-dispatch`, plus `--expect-history-revision` and
