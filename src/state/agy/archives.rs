@@ -322,3 +322,43 @@ fn finish(current: &Value, archived: &Value, scope: Option<&session_action::Scop
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_worker_requires_proven_exit_before_the_native_spawn_fence() {
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pin = process_pin(child.id());
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        let exited = pin.unwrap();
+        let live = process_pin(std::process::id()).unwrap();
+        let mut record = json!({
+            "state":"starting", "agy_restore_launcher":exited,
+            "agy_worker":exited, "agy_socket":"/tmp/example/control", "agy_provider":null
+        });
+        assert!(abandoned_start(&record));
+        for provider in [
+            json!({"spawn_unconfirmed":true}),
+            exited.clone(),
+            live.clone(),
+        ] {
+            record["agy_provider"] = provider;
+            assert!(!abandoned_start(&record));
+        }
+        record.as_object_mut().unwrap().remove("agy_provider");
+        assert!(!abandoned_start(&record));
+        record["agy_provider"] = Value::Null;
+        record["agy_worker"] = live.clone();
+        assert!(!abandoned_start(&record));
+        record["agy_worker"] = exited;
+        record["agy_restore_launcher"] = live;
+        assert!(!abandoned_start(&record));
+    }
+}
