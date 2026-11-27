@@ -673,6 +673,10 @@ mod tests {
         // inside the shared submitter. The ordinary body retains its seal.
         for addition in [
             "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
+            r#"    if mode == SendMode::DesktopNativeAccept && prior_refusal {
+        receipt["terminal_native_after_refusal"] = json!(true);
+    }
+"#,
             "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
             "        witness.idle_refusal |= native_wait;\n",
             r#"    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
@@ -697,6 +701,12 @@ mod tests {
             assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
             original = original.replacen(addition, "", 1);
         }
+        let retained_admission = r#"    let (existing, prior_refusal) =
+        refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);
+    match existing {"#;
+        assert_eq!(original.matches(retained_admission).count(), 1);
+        original = original.replacen(retained_admission,
+            "    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {", 1);
         assert_eq!(original.matches("mode.check_send_gate(").count(), 3);
         original = original.replace("mode.check_send_gate(", "checked_send_gate(");
         for (new, prior) in [

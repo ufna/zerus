@@ -44,7 +44,7 @@ pub(super) fn admit(
     id: &str,
     request: &Request,
     public: bool,
-) -> Existing {
+) -> (Existing, bool) {
     let previous = super::existing(path, digest, name);
     if public && matches!(previous, Existing::Unknown(_)) {
         let exact = (|| -> Result<bool> {
@@ -60,10 +60,10 @@ pub(super) fn admit(
             ))
         })();
         if exact == Ok(true) {
-            return Existing::Absent;
+            return (Existing::Absent, true);
         }
     }
-    previous
+    (previous, false)
 }
 
 /// Pending settings precede the message's ordinary input marker. Retire an
@@ -280,7 +280,7 @@ mod tests {
                 &w.request_id,
                 &request(&w),
                 public,
-            )
+            ).0
         };
         assert!(matches!(inspect(true), Existing::Absent));
         assert!(
@@ -384,7 +384,7 @@ mod tests {
                 &w.request_id,
                 &request(&w),
                 true
-            ),
+            ).0,
             Existing::Unknown(_)
         ));
         assert!(

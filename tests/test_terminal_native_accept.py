@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import sqlite3
 import subprocess
 import threading
 import unittest
@@ -67,6 +68,17 @@ class NativeClaudeNext(Original, claude.NativeClaudeOutbox):
         wait = self.offer(self.name, raw)
         self.assertEqual(wait['status'], 'waiting_for_idle', wait)
         self.assertEqual(self.original(self.name, raw), wait)
+        def indexed_before_input():
+            self.call('inspect', self.name)
+            path = self.state / 'delivery-receipts-v1.sqlite3'
+            try:
+                with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.05) as catalog:
+                    return catalog.execute(
+                        "SELECT at, files FROM receipt_rows WHERE source='terminal' AND request=?",
+                        (wait['request_id'],)).fetchone() == (0, 0)
+            except sqlite3.OperationalError:
+                return False
+        self.wait_for(indexed_before_input)
         self.assertIn(DRAFT, self.screen())
         self.assertEqual(self.enqueued(FOLLOWUP), [])
         self.tmux('send-keys', '-t', self.pane, 'C-u')
@@ -80,6 +92,7 @@ class NativeClaudeNext(Original, claude.NativeClaudeOutbox):
         duplicate = self.offer(self.name, raw)
         submitted = duplicate['submitted_text']
         self.assertEqual(duplicate['request_id'], receipt['request_id'])
+        self.assertTrue(duplicate['terminal_native_after_refusal'])
         def attachment_banner():
             detail = self.call('inspect', self.name)
             return next((event for event in detail.get('attachment_messages', [])

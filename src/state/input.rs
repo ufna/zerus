@@ -2434,7 +2434,9 @@ fn submit_core(
             return Err(Failure::TerminalRefusal(value));
         }
     }
-    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {
+    let (existing, prior_refusal) =
+        refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);
+    match existing {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
         Existing::Unknown(error) => return Err(unknown(error)),
@@ -2665,6 +2667,9 @@ fn submit_core(
     if mode == SendMode::CodexQueue { receipt["codex_outbox"] = json!(true); }
     if agent == "claude" && request.only_when_idle {
         receipt["claude_outbox"] = json!(true);
+    }
+    if mode == SendMode::DesktopNativeAccept && prior_refusal {
+        receipt["terminal_native_after_refusal"] = json!(true);
     }
     if let Some(floor) = kimi_turn_floor {
         receipt["kimi_outbox"] = json!(true);
