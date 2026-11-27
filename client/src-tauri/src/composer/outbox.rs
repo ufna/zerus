@@ -162,6 +162,12 @@ fn terminal_native_supported(agent: &str, details: &Value) -> bool {
     terminal_native_agent(agent) && details["terminal_native_accept_supported"] == true
 }
 
+// Ready Kimi sessions retain the existing route even if their native history
+// is too old or incomplete to establish the ordered working-turn floor.
+fn terminal_native_route(agent: &str, details: &Value) -> bool {
+    terminal_native_supported(agent, details) && (agent != "kimi" || details["activity"] == "busy")
+}
+
 fn guarded_action(entry: &Entry, native: bool) -> Action {
     let text = entry.text.clone();
     let attachments = entry.attachments.clone();
@@ -646,7 +652,7 @@ impl Composers {
             ) == Some(false))
             // The new hosts check their native queue against the current
             // composer frame while admitting the offer.
-            && (native || details["input_queue"].is_null())
+            && (terminal_native_route(&row.agent, details) || details["input_queue"].is_null())
             && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
             && details["pending_questions_complete"] != false
             && details["pending_questions"]
@@ -749,7 +755,7 @@ impl Composers {
             {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
             } else {
-                guarded_action(&entry, terminal_native_supported(&row.agent, details))
+                guarded_action(&entry, terminal_native_route(&row.agent, details))
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)

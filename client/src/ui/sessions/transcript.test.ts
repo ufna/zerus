@@ -33,7 +33,7 @@ it("keeps Claude's queued file receipt across reload without matching equal nati
   expect(mergeAttachmentMessages([same], { ...summary, attachment_messages: [receipt, receipt] })).toEqual([same]);
 
   const projection = createTranscriptProjection();
-  const pending = { request_id: request, run_id: receipt.run_id, conversation_id: receipt.conversation_id,
+  const pending = { request_id: request, run_id: summary.run_id, conversation_id: summary.conversation_id,
     handle: 4, preview: receipt.detail!, state: "unknown" } as const;
   for (const state of ["waiting", "reserved", "unknown"] as const) {
     const items = projection.build([same], summary, [], [], [{ ...pending, state }]) as ActivityItem[];

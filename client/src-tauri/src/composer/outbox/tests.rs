@@ -116,6 +116,9 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
         let mut inspect = details(&target, agent, true, Some(false));
         inspect["terminal_native_accept_supported"] = json!(true);
         inspect["input_queue"] = json!({"id":"native-earlier"});
+        let mut idle = inspect.clone();
+        idle["activity"] = json!("idle");
+        assert_eq!(terminal_native_route(agent, &idle), agent == "claude");
         c.observe(&state(inspect.clone()));
         *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
             detail: "The original acknowledgement was lost".into(),
