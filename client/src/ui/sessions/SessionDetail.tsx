@@ -23,14 +23,13 @@ import { activity, subagentActivity } from "../../store/session";
 import { activityReadOnly, type ActivitySource } from "../../store/activitySource";
 import { archiveActivity } from "../../store/archiveActivity";
 import { catalog, computerOffline } from "../../store/catalog";
-import { copyIdentity, detailsFor, followedFor, updating } from "../../store/actions";
+import { copyIdentity, detailsFor, followedFor } from "../../store/actions";
 import { headerClearSlot, sessionIdentity } from "./actions-ui";
 import { actionEntries, copyEntries, freshActionEntry } from "./ActionDialogs";
 import { snapshotOf } from "./actions-ui";
 import { markEntry } from "./mark-entries";
 import { followViewedReplies } from "./viewed-reply";
 import { Composer } from "./Composer";
-import { AntigravitySettings } from "./AntigravitySettings";
 import { QueuePanel } from "./QueuePanel";
 import { PendingZerusSubmission } from "./PendingZerusSubmission";
 import { HeldMessage } from "./HeldMessage";
@@ -344,16 +343,6 @@ export function SessionDetail() {
                   </button>
                 )}</For>
                 <span class="grow" />
-                <Show when={detailTab() === "activity" && !subagentOpen() && selected()?.cmd === "agy" && selected()}>{(row) =>
-                  <AntigravitySettings row={row()} online={!computerOffline(row().computer)}
-                    followed={activity.target()?.id === row().key && !activity.error() && !activity.ended() ? activity.currentSummary() : undefined}
-                    busy={updating(row().computer, row().name) || !!composer.view()?.sending || !!composer.view()?.waiting}
-                    apply={bridge.runAction} refresh={(target) => {
-                      const followed = activity.target();
-                      return followed?.name === target.name && followed.computer === target.computer
-                        && activity.refresh(followed, target.run_id, target.conversation_id);
-                    }} />
-                }</Show>
                 <Show when={!inspectorOpen()}><button class="icon-btn small" data-cmd="show-side-panel" aria-label={tr("Show side panel")} data-tip={inspectorHint(tr("Show tasks, plan, agents, details and worktrees"))} data-tip-pos="left" onClick={() => setInspectorOpen(true)}><Icon name="panel-right" size={15} /></button></Show>
               </div>
               <div class="tab-body">
