@@ -195,8 +195,12 @@ impl<'a> ReopenGuard<'a> {
     }
 
     pub(super) fn check(self, task: &TaskDoc, project: &str) -> Result<()> {
+        self.check_revision(task, project, self.revision)
+    }
+
+    pub(super) fn check_revision(self, task: &TaskDoc, project: &str, revision: &str) -> Result<()> {
         let raw = raw_report(task, project, self.report)?;
-        let (view, _) = task.check_quick_review(self.revision, raw).map_err(fail)?;
+        let (view, _) = task.check_quick_review(revision, raw).map_err(fail)?;
         if view.quick_review_status != Some(Status::Rework) {
             return Err(fail("The current report does not request rework."));
         }

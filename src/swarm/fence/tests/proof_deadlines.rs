@@ -71,8 +71,8 @@ fn the_expected_mode_load_cannot_reserve_after_the_original_deadline() {
             "p",
             &uuid,
             deadline,
-            Some(start_mode::Mode::Managed),
-            send(FIRST, &runs),
+            AttemptKind::Start(start_mode::Mode::Managed),
+            |admitted, task, _| send(FIRST, &runs)(admitted, task),
         )
     });
     assert!(steps > before_run && Instant::now() >= deadline);

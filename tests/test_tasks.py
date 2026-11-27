@@ -1184,6 +1184,89 @@ class TaskDelivery(DeliveryFixture):
         log = self.hgs("get", task["ref"])["task"]["log"]
         return [e for e in log if e["kind"] == "message" and e.get("request_id") == identity]
 
+    def direct_review_for_reopen(self):
+        started = json.loads(self.as_agent("add", "--project", "orchard", "--start", "--json",
+                                           text="Direct work with a missing example"))["task"]
+        self.assertTrue(started["execution"]["current"]["legacy"])
+        self.as_agent("report", started["ref"], "--ready", text="First result")
+        return self.set_rework(started)
+
+    def set_rework(self, task):
+        current = self.hgs("get", task["ref"])["task"]
+        self.hgs("quick-review", task["ref"], text=json.dumps(dict(
+            op="set", history_revision=current["history_revision"], report_id=current["review_report_id"],
+            disposition=dict(kind="rework", defect="Include the missing example."))))
+        return self.hgs("get", task["ref"])["task"]
+
+    def reviewed_reopen_args(self, task, identity, report=None):
+        return ("message-reviewed", task["ref"], "--mode", "reopen", "--request-id", identity,
+                "--expect-dispatch", task["dispatch_id"],
+                "--expect-history-revision", task["history_revision"],
+                "--expect-report-id", report or task["review_report_id"])
+
+    def task_replica_files(self, task):
+        directory = self.state / "replica" / hashlib.sha256(b"project-1").hexdigest() / "tasks"
+        return {path.suffix: path.read_bytes() for path in directory.glob(task["uuid"] + ".*")}
+
+    def test_first_reviewed_reopen_of_sealed_direct_start_sends_once(self):
+        task = self.direct_review_for_reopen()
+        self.assertIn(".cutover", self.task_replica_files(task))
+        self.assertNotIn(".managed", self.task_replica_files(task))
+        identity = str(uuid.uuid4())
+        args = self.reviewed_reopen_args(task, identity)
+        first = self.hgs(*args, text="Include the missing example.")
+        self.assertEqual(first["task"]["stage"], "active")
+        self.assertEqual(first["task"]["session"], task["session"])
+        self.assertEqual(first["attempt"]["id"], identity)
+        self.wait_received("Include the missing example.")
+        self.confirm()
+        repeated = self.hgs(*args, text="Include the missing example.")
+        self.assertEqual(repeated["attempt"]["id"], identity)
+        self.assertEqual(len(self.notes(task, identity)), 1)
+        self.assertEqual(self.received().count("Include the missing example."), 1)
+        self.assertEqual(self.received().count("\r"), 1)
+
+    def test_reviewed_reopen_with_replaced_report_writes_nothing(self):
+        task = self.direct_review_for_reopen()
+        first_id = str(uuid.uuid4())
+        # Settle a real next report using ordinary managed reopen.
+        self.hgs("message", task["ref"], "--mode", "reopen", "--request-id", first_id,
+                 "--expect-dispatch", task["dispatch_id"], text="Return a new result.")
+        self.wait_received("Return a new result.")
+        self.confirm()
+        self.as_agent("report-attempt", task["ref"], "--attempt", first_id, text="Second result")
+        current = self.set_rework(task)
+        self.assertNotEqual(current["review_report_id"], task["review_report_id"])
+        before = self.task_replica_files(task)
+        received = self.received()
+        identity = str(uuid.uuid4())
+        args = self.reviewed_reopen_args(current, identity, task["review_report_id"])
+        self.assertIn("exact settled", self.hgs(*args, text="Include the missing example.", ok=False))
+        self.assertEqual(self.task_replica_files(task), before)
+        self.assertEqual(self.hgs("get", task["ref"])["task"], current)
+        self.assertEqual(self.notes(task, identity), [])
+        self.assertEqual(self.received(), received)
+
+    def test_reviewed_reopen_does_not_floor_a_concurrently_edited_direct_start(self):
+        task = self.direct_review_for_reopen()
+        identity = str(uuid.uuid4())
+        release = self.held(*self.reviewed_reopen_args(task, identity),
+                            text="Include the missing example.")
+        self.hgs("rename", task["ref"], text="A different task title")
+        current = self.hgs("get", task["ref"])["task"]
+        self.assertNotEqual(current["history_revision"], task["history_revision"])
+        self.assertEqual(current["review_report_id"], task["review_report_id"])
+        self.assertEqual(current["dispatch_id"], task["dispatch_id"])
+        before = self.task_replica_files(task)
+        received = self.received()
+        code, _, err = release()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Refresh", err)
+        self.assertEqual(self.task_replica_files(task), before)
+        self.assertEqual(self.hgs("get", task["ref"])["task"], current)
+        self.assertEqual(self.notes(task, identity), [])
+        self.assertEqual(self.received(), received)
+
     def test_a_managed_reopen_is_an_attempt_with_its_note(self):
         # desktop-u's (b): the person's text is a note bound to the reopen's
         # ID, saved with the reopen attempt in one admission; the receipt
