@@ -38,12 +38,12 @@ it("keeps Claude's queued file receipt across reload without matching equal nati
   for (const state of ["waiting", "reserved", "unknown"] as const) {
     const items = projection.build([same], summary, [], [], [{ ...pending, state }]) as ActivityItem[];
     expect(items.map(item => item.id)).toEqual(["s4", `local-${request}`]);
-    expect(items[1]).toMatchObject({ outbox: { state } });
+    expect(items[1]).toMatchObject({ receipt: "Submitted to terminal" });
   }
   const settled = projection.build([same], summary) as ActivityItem[];
   expect(settled.filter(item => item.attachments?.length)).toHaveLength(1);
-  expect(settled[0]).toMatchObject({ id: `local-${request}`, receipt: "Submitted to terminal" });
-  expect(settled[0].outbox).toBeUndefined();
+  expect(settled[1]).toMatchObject({ id: `local-${request}`, receipt: "Submitted to terminal" });
+  expect(settled[1].outbox).toBeUndefined();
 });
 
 it("displays a typed child policy advisory as a system notice", () => {
@@ -111,7 +111,9 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
     expect(projection.build([event], summary, [])).toMatchObject([{ id: "local-request-1", receipt: "Queued" }]);
     projection.reset();
     projection.build([], summary, [pending]);
-    expect(projection.build([event], summary, [])).toHaveLength(1);
+    expect(projection.build([event], summary, [])).toMatchObject([
+      { id: "p:opencode:msg_1" }, { id: "local-request-1" },
+    ]);
   });
 
   it("preserves equal text, contradictory claims and distinct failed or uncertain attempts", () => {
@@ -129,19 +131,15 @@ describe("OpenCode inbox messages (ActivityView.cpp:1036-1038, 1072-1087; zerus-
     ]);
   });
 
-  it("retires the pending alias when an early exact OpenCode echo is followed by an uncertain acknowledgement", () => {
+  it("keeps the exact native OpenCode echo when the transport acknowledgement is lost", () => {
     const pending = local("sending", false, { id: "original", source: "opencode_native" });
     const echo = { ...row("", "msg_original"), delivery_state: undefined, request_id: pending.id,
       run_id: pending.run_id, conversation_id: pending.conversation_id, detail: pending.text };
     const projection = createTranscriptProjection();
     expect(projection.build([echo], summary, [pending])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
     const uncertain = { ...pending, status: "error" as const, uncertain: true };
-    const view = projection.build([echo], summary, [uncertain]);
-    expect(view).toMatchObject([
-      { id: "p:opencode:msg_original", receipt: "Sent" },
-      { id: "local-original", local: { stamp: "Delivery not confirmed" } },
-    ]);
-    expect(projection.build([echo], summary, [])).toMatchObject([{ id: "p:opencode:msg_original", receipt: "Sent" }]);
+    expect(projection.build([echo], summary, [uncertain])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
+    expect(projection.build([echo], summary, [])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
   });
 });
 
@@ -263,11 +261,13 @@ describe("local message rows (ActivityView.cpp:665-720, 1053-1068)", () => {
 
 describe("local-to-recorded display identity", () => {
   const event = (seq: number, detail = "hello", at = 1_793_000_001): ActivityEvent => ({seq,type:"UserPromptSubmit",detail,at});
+  const exact = (prompt: ActivityEvent, id: string) => ({ ...prompt, source: "hgs_delivery", message_id: id,
+    run_id: "r", conversation_id: "c" });
   it("keeps one key and body before acknowledgement, at acknowledgement and after local receipt removal", () => {
     const projection=createTranscriptProjection(), row=local("sending",false,{id:"request-one",text:"**hello**\n\n- one\n- two"});
     const initial=projection.build([],{},[row]);
-    const acknowledged=projection.build([event(4,row.text)],{},[{...row,status:"sent"}]);
-    const recorded=projection.build([event(4,row.text)],{},[]);
+    const acknowledged=projection.build([exact(event(4,row.text),row.id)],{},[{...row,status:"sent"}]);
+    const recorded=projection.build([exact(event(4,row.text),row.id)],{},[]);
     expect(initial).toHaveLength(1);expect(acknowledged).toHaveLength(1);expect(recorded).toHaveLength(1);
     expect([initial[0].id,acknowledged[0].id,recorded[0].id]).toEqual(Array(3).fill("local-request-one"));
     expect([(initial[0] as ActivityItem).body,(acknowledged[0] as ActivityItem).body,(recorded[0] as ActivityItem).body]).toEqual(Array(3).fill(row.text));
@@ -275,7 +275,7 @@ describe("local-to-recorded display identity", () => {
   it("binds when Rust drops a sending receipt before the journal batch arrives, without a blank handoff frame", () => {
     const projection=createTranscriptProjection(),row=local("sending");projection.build([],{},[row]);
     expect(projection.build([],{},[]).map(item=>item.id)).toEqual([`local-${row.id}`]);
-    expect(projection.build([event(8)],{},[]).map(item=>item.id)).toEqual([`local-${row.id}`]);
+    expect(projection.build([exact(event(8),row.id)],{},[]).map(item=>item.id)).toEqual([`local-${row.id}`]);
     projection.reset();expect(projection.build([event(8)],{},[]).map(item=>item.id)).toEqual(["s8"]);
   });
   describe("across a child visit (zerus-isrzi)", () => {
@@ -292,7 +292,7 @@ describe("local-to-recorded display identity", () => {
       const build = inHandoff();
       expect(build(true, "parent/child", [], {}, [])).toEqual([]);
       expect(ids(build(false, "parent", [], {}, []))).toEqual(["local-sent-one"]);
-      expect(ids(build(false, "parent", [event(8)], {}, []))).toEqual(["local-sent-one"]);
+      expect(ids(build(false, "parent", [exact(event(8),row.id)], {}, []))).toEqual(["local-sent-one"]);
     });
     it("keeps it through several children", () => {
       const build = inHandoff();
@@ -333,10 +333,11 @@ describe("local-to-recorded display identity", () => {
   });
   it("never makes two distinct equal-text sends adopt one event or swap already bound keys", () => {
     const projection=createTranscriptProjection(),one=local("sent",false,{id:"one"}),two=local("sent",false,{id:"two",submitted_at:1_793_000_002});
-    const first=projection.build([event(1)],{},[one]);expect(first.map(item=>item.id)).toEqual(["local-one"]);
-    const both=projection.build([event(1),event(2,"hello",1_793_000_002)],{},[one,two]);
+    const original = exact(event(1), one.id), later = exact(event(2,"hello",1_793_000_002), two.id);
+    const first=projection.build([original],{},[one]);expect(first.map(item=>item.id)).toEqual(["local-one"]);
+    const both=projection.build([original,later],{},[one,two]);
     expect(both.map(item=>item.id)).toEqual(["local-one","local-two"]);
-    expect(projection.build([event(1),event(2,"hello",1_793_000_002)],{},[]).map(item=>item.id)).toEqual(["local-one","local-two"]);
+    expect(projection.build([original,later],{},[]).map(item=>item.id)).toEqual(["local-one","local-two"]);
     expect(mergeLocal([event(1)],[one,two])).toHaveLength(2);
   });
   it("preserves exact attachment receipts while keeping the local display key", () => {
@@ -344,7 +345,7 @@ describe("local-to-recorded display identity", () => {
     const file={name:"notes.txt",mime:"text/plain",bytes:12,reference:"[File #1]",request_id:"request",index:0};
     const row=local("sending",false,{id:"request",text:"Read [File #1]",attachments:[{...file,request_id:""}]});
     projection.build([],{},[row]);
-    const items=projection.build([{...event(3,row.text),source:"hgs_delivery",message_id:"request",attachments:[file]}],{},[]) as ActivityItem[];
+    const items=projection.build([{...event(3,row.text),source:"hgs_delivery",message_id:"request",run_id:"r",conversation_id:"c",attachments:[file]}],{},[]) as ActivityItem[];
     expect(items).toHaveLength(1);expect(items[0].id).toBe("local-request");expect(items[0].attachments?.[0]).toMatchObject({request_id:"request",index:0});
   });
   it("does not resurrect a deleted failed local row or bind it to another prompt", () => {
@@ -360,13 +361,14 @@ describe('real image receipt races',()=>{
   const text='Above\n'+files.map(f=>f.reference).join('\n')+'\nBelow';
   const row=local('sending',false,{id:'request',text,attachments:files});
   const raw=text.replace(/\[Image #(\d+)\]/g,(_,n)=>`[Image #${n}] (Inspect the attached image at "/home/example/.local/state/hgs/sessions/attachments/message-test/${String(n).padStart(2,'0')}-image${Number(n)-1}.png")`);
-  const event={seq:4,type:'UserPromptSubmit',at:row.submitted_at+.2,detail:raw};
+  const event={seq:4,type:'UserPromptSubmit',source:'hgs_delivery',message_id:row.id,
+    run_id:row.run_id,conversation_id:row.conversation_id,at:row.submitted_at+.2,detail:text};
   const metadata=files.map((f,index)=>{const {image_size,preview_path,...base}=f;void image_size;void preview_path;return {...base,request_id:'request',index};});
   const receipt={source:'hgs_delivery',type:'UserPromptSubmit',message_id:'request',detail:text,submitted_text:raw,attachments:metadata};
   const projection=createTranscriptProjection();const first=projection.build([],{},[row]) as ActivityItem[];
   const echo=projection.build([event],{},[row]) as ActivityItem[];
   // Rust may reconcile away the local row without publishing its Sent state.
-  const recorded=projection.build([event],{attachment_messages:[receipt]},[]) as ActivityItem[];
+  const recorded=projection.build([event],{run_id:row.run_id,conversation_id:row.conversation_id,attachment_messages:[receipt]},[]) as ActivityItem[];
   for(const items of [first,echo,recorded]){
    expect(items).toHaveLength(1);expect(items[0].id).toBe('local-request');expect(items[0].body).toBe(text);
    expect(items[0].attachments?.map(f=>[f.image_size,f.preview_path])).toEqual(files.map(f=>[f.image_size,f.preview_path]));
@@ -383,11 +385,12 @@ it('keeps equal-text image sends distinct when their separate receipts arrive',(
  const image={name:'x.png',mime:'image/png',bytes:1,reference:'[Image #1]',image_size:{width:20,height:30},preview_path:`cache/${'a'.repeat(64)}/x.png`};
  const one=local('sending',false,{id:'one',text:'See [Image #1]',attachments:[image]}),two={...one,id:'two',submitted_at:one.submitted_at+1};
  const raw=(name:string)=>`See [Image #1] (Inspect the attached image at "/home/example/.local/state/hgs/sessions/attachments/message-${name}/01-x.png")`;
- const events=[{seq:1,type:'UserPromptSubmit',at:one.submitted_at+.2,detail:raw('one')},{seq:2,type:'UserPromptSubmit',at:two.submitted_at+.2,detail:raw('two')}];
+ const events=[one,two].map((row,index)=>({seq:index+1,type:'UserPromptSubmit',source:'hgs_delivery',
+   message_id:row.id,run_id:row.run_id,conversation_id:row.conversation_id,at:row.submitted_at+.2,detail:row.text}));
  const projection=createTranscriptProjection();projection.build([],{},[one,two]);
  expect(projection.build(events,{},[one,two]).map(r=>r.id)).toEqual(['local-one','local-two']);
  const receipts=[one,two].map(r=>({source:'hgs_delivery',message_id:r.id,detail:r.text,submitted_text:raw(r.id),attachments:[{name:image.name,mime:image.mime,bytes:1,reference:image.reference,request_id:r.id,index:0}]}));
- const final=projection.build(events,{attachment_messages:receipts},[]) as ActivityItem[];
+ const final=projection.build(events,{run_id:one.run_id,conversation_id:one.conversation_id,attachment_messages:receipts},[]) as ActivityItem[];
  expect(final.map(r=>r.id)).toEqual(['local-one','local-two']);expect(final.map(r=>r.attachments?.[0].request_id)).toEqual(['one','two']);
 });
 
@@ -707,13 +710,14 @@ describe("tool rows (ActivityView.cpp:1105-1140, zerus-5wmh.13.8.1)", () => {
 
 it("keeps equal queued texts distinct and hands one exact receipt to the same Activity key", () => {
   const rows = createTranscriptProjection();
-  const one = { request_id: "queue-one", handle: 4, preview: "same text", state: "unknown", queued_at: 200 } as const;
+  const one = { request_id: "queue-one", handle: 4, preview: "same text", state: "unknown", queued_at: 200,
+    run_id: "r", conversation_id: "c" } as const;
   const two = { ...one, request_id: "queue-two", state: "waiting", queued_at: 199 } as const;
   const ordinary = { type: "UserPromptSubmit", detail: "same text", seq: 1, at: 150 };
-  const receipt = { ...ordinary, seq: 2, at: 205, source: "hgs_delivery", message_id: one.request_id };
+  const receipt = { ...ordinary, seq: 2, at: 205, source: "hgs_delivery", message_id: one.request_id, run_id: one.run_id, conversation_id: one.conversation_id };
   const now = rows.build([ordinary, receipt], undefined, [], [], [one, two]);
   expect(now.map(item => item.id)).toEqual(["s1", "local-queue-one", "local-queue-two"]);
-  expect(now[1]).toMatchObject({ outbox: { state: "unknown" } });
+  expect(now[1]).toMatchObject({ receipt: "Sent" });
   const settled = rows.build([ordinary, receipt], undefined, [], [], [two]);
   expect(settled.map(item => item.id)).toEqual(now.map(item => item.id));
   expect(settled[1]).toMatchObject({ kind: "user", body: "same text", receipt: "Sent" });
@@ -734,7 +738,7 @@ it("does not give an earlier equal-text native prompt the later FIFO request's i
   expect(ids(projection.build([earlier], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
   const late = { ...earlier, seq: 42, at: 5002 };
   expect(ids(projection.build([earlier, late], undefined, [submitted]))).toEqual(["s41", "local-request-b", "s42"]);
-  const exact = { ...late, source: "hgs_delivery", message_id: submitted.id };
+  const exact = { ...late, source: "hgs_delivery", message_id: submitted.id, run_id: submitted.run_id, conversation_id: submitted.conversation_id };
   expect(ids(projection.build([earlier, exact], undefined, [submitted]))).toEqual(["s41", "local-request-b"]);
 });
 
@@ -836,5 +840,121 @@ it("matches a DeepSeek outbox file only by its native receipt in the same conver
     message_id: event.dsh_message_id, run_id: event.run_id, conversation_id: event.conversation_id });
   const projection = createTranscriptProjection();
   expect(projection.build([event, wrong], undefined, [row]).map(item => item.id)).toEqual(["local-original", "s2"]);
-  expect(projection.build([wrong], undefined, [row]).map(item => item.id)).toEqual(["s2", "local-original"]);
+  expect(projection.build([wrong], undefined, [row]).map(item => item.id)).toEqual(["local-original", "s2"]);
+});
+
+it("holds the original unknown when multiple native messages claim the same request", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "original", handle: 1, preview: "same", state: "unknown" } as const;
+  const first = { ...scope, type: "UserPromptSubmit", source: "opencode_native", detail: "same",
+    request_id: outbox.request_id, message_id: "msg_First" };
+  const second = { ...first, message_id: "msg_Second" };
+  projection.build([], scope, [], [], [outbox]);
+  expect(projection.build([first], scope, [], [], [outbox])).toMatchObject([{ id: "local-original", receipt: "Sent" }]);
+  const rows = projection.build([first, second], scope, [], [], [outbox]) as ActivityItem[];
+  expect(rows.map(item => item.id)).toEqual(["local-original", "p:opencode:msg_First", "p:opencode:msg_Second"]);
+  expect(rows[0]).toMatchObject({ outbox: { state: "unknown" } });
+});
+
+it("binds an ordered Kimi turn by host-stamped request and conversation only", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "original", handle: 1, preview: "same", state: "unknown" } as const;
+  const previous = { ...scope, seq: 1, type: "TurnStarted", turn_origin: "user", detail: "same",
+    kimi_turn_id: 1, kimi_conversation_id: scope.conversation_id, kimi_request_id: "previous" };
+  const submitted = { ...previous, seq: 3, kimi_turn_id: 2, kimi_request_id: outbox.request_id };
+  projection.build([previous], scope, [], [], [outbox]);
+  const foreign = projection.build([previous, { ...submitted, kimi_conversation_id: "wrong" }], scope, [], [], [outbox]) as ActivityItem[];
+  expect(foreign.map(item => item.id)).toEqual(["s1", "local-original", "s3"]);
+  expect(foreign[1]).toMatchObject({ outbox: { state: "unknown" } });
+  expect(projection.build([previous, submitted], scope, [], [], [outbox])).toMatchObject([
+    { id: "s1", receipt: "Sent" }, { id: "local-original", receipt: "Sent" },
+  ]);
+});
+
+it("puts older late-loaded native history ahead of the existing original and retires only exact transport-only rows", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const original = { ...scope, request_id: "original", handle: 1, preview: "same", state: "waiting", queued_at: 200 } as const;
+  const later = { ...original, request_id: "later", queued_at: 210 };
+  const older = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "same", at: 150 };
+  const newer = { ...scope, type: "AgentMessage", seq: 4, detail: "Unrelated reply", at: 225 };
+  expect(projection.build([], scope, [], [], [original, later]).map(row => row.id)).toEqual(["local-original", "local-later"]);
+  expect(projection.build([older, newer], scope, [], [], [original, later]).map(row => row.id))
+    .toEqual(["s1", "local-original", "local-later", "s4"]);
+  const transportOnly = { ...older, seq: 2, at: 205 };
+  expect(projection.build([older, transportOnly, newer], scope, [], [], [later], { removed: [original.request_id] }).map(row => row.id))
+    .toEqual(["s1", "s2", "local-later", "s4"]);
+});
+
+it("retires only the native message whose removal returned a confirmed receipt", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "remove", handle: 1, preview: "same", state: "waiting", queued_at: 100 } as const;
+  const event = { ...scope, source: "opencode_native", type: "UserPromptSubmit", detail: "same", at: 100,
+    request_id: outbox.request_id, message_id: "msg_Removable", delivery_state: "not_delivered" };
+  projection.build([], scope, [], [], [outbox]);
+  expect(projection.build([event], scope, [], [], [])).toMatchObject([{ id: "local-remove", receipt: "Not delivered" }]);
+  expect(projection.build([event], scope, [], [], [], { removed: ["remove"], removedNative: ["msg_Removable"] })).toEqual([]);
+});
+
+it.each(["newer reply", "recorded context"] as const)("inserts the restored queue before later traffic starting with %s", start => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation", ...(start === "recorded context" ? { prompt: "Recorded" } : {}) };
+  const original = { ...scope, request_id: "original", handle: 1, preview: "same", state: "waiting", queued_at: 200 } as const;
+  const later = { ...original, request_id: "later", queued_at: 230 };
+  const older = { type: "UserPromptSubmit", seq: 1, detail: "Older input", at: 150 };
+  const newer = { type: "AgentMessage", seq: 2, detail: "Newer reply", at: 225 };
+  projection.build(start === "newer reply" ? [newer] : [], scope, [], [], [original, later]);
+  expect(projection.build([older, newer], scope, [], [], [original, later]).map(row => row.id))
+    .toEqual(["s1", "local-original", "s2", "local-later"]);
+});
+
+it("preserves an original with transport-only acknowledgement and leaves unrelated native input visible", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const outbox = { ...scope, request_id: "first", handle: 1, preview: "same", state: "reserved", queued_at: 200 } as const;
+  const before = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "same", at: 150 };
+  const unbound = { ...scope, type: "UserPromptSubmit", seq: 2, detail: "same", at: 210 };
+  expect(projection.build([before], scope, [], [], [outbox]).map(item => item.id)).toEqual(["s1", "local-first"]);
+  const accepted = { terminalOnly: [{ ...outbox, attachments: [] }] };
+  expect(projection.build([before], scope, [], [], [], accepted)[1]).toMatchObject({ id: "local-first", receipt: "Submitted to terminal" });
+  expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
+  ]);
+  projection.reset();
+  expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", body: "same", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
+  ]);
+  const proved = { ...unbound, source: "hgs_delivery", message_id: outbox.request_id };
+  expect(projection.build([before, proved], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Sent" },
+  ]);
+});
+
+it("keeps the full bounded page of hydrated transport acknowledgements eligible for exact binding", () => {
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const terminalOnly = Array.from({ length: 64 }, (_, index) => ({
+    ...scope, request_id: `receipt-${index}`, preview: "equal", queued_at: 200 + index, attachments: [],
+  }));
+  const exact = { ...scope, type: "UserPromptSubmit", source: "hgs_delivery", message_id: "receipt-0",
+    seq: 42, detail: "equal", at: 201 };
+  const rows = createTranscriptProjection().build([exact], scope, [], [], [], { terminalOnly });
+  expect(rows).toHaveLength(64);
+  expect(rows[0]).toMatchObject({ id: "local-receipt-0", receipt: "Sent" });
+  expect(rows[1]).toMatchObject({ id: "local-receipt-1", receipt: "Submitted to terminal" });
+});
+
+it("uses only native articles for a composer-only acknowledgement and independent equal input", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const terminalOnly = [{ ...scope, request_id: "original", preview: "equal", queued_at: 200,
+    attachments: [{ name: "report.txt" }], delivery_in_composer: true }];
+  const native = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "equal", at: 201 };
+  expect(projection.build([], scope, [], [], [], { terminalOnly })).toEqual([]);
+  expect(projection.build([native], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }]);
+  const manual = { ...native, seq: 2, at: 204 };
+  projection.reset();
+  expect(projection.build([native, manual], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }, { id: "s2" }]);
 });

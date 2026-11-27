@@ -957,7 +957,18 @@ export interface WaitingMessage {
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
   can_check_terminal?: boolean;
+  delivery_in_composer?: boolean;
 }
+export interface TerminalOutboxReceipt {
+  request_id: string;
+  run_id: string;
+  conversation_id: string;
+  queued_at?: number | null;
+  preview: string;
+  attachments: EventAttachment[];
+  delivery_in_composer?: boolean;
+}
+
 export interface ComposerView {
   handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
@@ -974,6 +985,7 @@ export interface ComposerView {
   offers_native_queue?: boolean;
   ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
+  terminal_only_outbox?: TerminalOutboxReceipt[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;

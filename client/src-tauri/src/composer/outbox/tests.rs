@@ -333,9 +333,22 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
     let session = target_session("codex");
     present(&c, &fake, &session, "codex");
-    let original = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
-    let second = enqueue(&c, "first").waiting_in_zerus[1].request_id.clone();
+    let mut observed = details(&session, "codex", true, Some(true));
+    observed["codex_manual_turn_send"] = json!(false);
+    observed["codex_busy_outbox_supported"] = json!(true);
+    observed["codex_idle_outbox_supported"] = json!(true);
+    c.observe(&state(observed));
+    let offered = enqueue(&c, "first");
+    assert!(!offered.waiting_in_zerus[0].delivery_in_composer);
+    let original = offered.waiting_in_zerus[0].request_id.clone();
+    let offered = enqueue(&c, "first");
+    assert!(!offered.waiting_in_zerus[1].delivery_in_composer);
+    let second = offered.waiting_in_zerus[1].request_id.clone();
     c.open(None);
+    lock(&fake.row).phase = Some("idle".into());
+    settle_next(&c, &fake, &store, details(&session, "codex", false, Some(false)));
+    assert!(lock(&fake.calls).is_empty(), "a peer missing the queue route must not fall back to Terminal");
+    lock(&fake.row).phase = Some("tool".into());
     assert!(c.current().is_none());
     let mut busy = details(&session, "codex", true, Some(false));
     busy["codex_busy_outbox_supported"] = json!(true);
@@ -1022,7 +1035,7 @@ fn a_definite_refusal_or_unmatched_receipt_keeps_the_original_and_later_draft() 
 }
 
 #[test]
-fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_metadata() {
+fn terminal_delivery_status_follows_the_queue_write_and_keeps_file_metadata() {
     use crate::composer::send::tests::{held_spawn, next_job};
 
     let root = dir("outbox-activity-settlement");
@@ -1066,12 +1079,18 @@ fn submitted_outbox_row_takes_over_only_after_the_queue_write_and_keeps_file_met
     store.flush();
     let sent = c.current().unwrap();
     assert!(sent.waiting_in_zerus.is_empty());
-    assert_eq!(sent.local.len(), 1);
-    assert_eq!(sent.local[0].id, original.request_id);
-    assert_eq!(sent.local[0].attachments[0]["name"], "fixture.txt");
-    assert_eq!(sent.local[0].attachments[0]["request_id"], original.request_id);
-    assert!(sent.local[0].attachments[0].get("local_path").is_none());
-    assert_eq!(sent.local[0].submitted_at, 1_793_000_104.5);
+    assert!(sent.local.is_empty());
+    let [receipt] = sent.terminal_only_outbox.as_slice() else { panic!("expected the original terminal delivery status") };
+    assert_eq!(receipt.request_id, original.request_id);
+    assert_eq!(receipt.run_id, original.run_id);
+    assert_eq!(receipt.conversation_id, original.conversation_id);
+    assert_eq!(receipt.queued_at, original.queued_at);
+    assert!(receipt.delivery_in_composer);
+    assert_eq!(receipt.attachments[0].name, "fixture.txt");
+    let projected = serde_json::to_value(receipt).unwrap();
+    assert_eq!(projected["attachments"][0]["bytes"], 11);
+    assert!(projected["attachments"][0].get("path").is_none());
+    assert!(projected["attachments"][0].get("data_base64").is_none());
 }
 
 #[test]
@@ -1107,6 +1126,7 @@ fn a_submitted_text_only_outbox_row_waits_for_exact_history_identity() {
     exact["run_id"] = json!("unrelated-run");
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, std::slice::from_ref(&exact)).removed, 0);
     exact["run_id"] = json!("run-1");
+    exact["conversation_id"] = json!("conv-1");
     assert_eq!(hub.local.reconcile(&sent.key, &session_details, &[exact]).removed, 1);
 }
 
@@ -1127,7 +1147,10 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
     let session = target_session(agent);
     present(&c, &fake, &session, agent);
-    enqueue(&c, "Synthetic native prompt");
+    let offered = enqueue(&c, "Synthetic native prompt");
+    let entry = &offered.waiting_in_zerus[0];
+    assert_eq!(entry.delivery_in_composer, agent == "codex");
+    let original = entry.request_id.clone();
     let name = session.name.clone();
     *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
         receipt: json!({"status":"submitted", "transport":transport, "request_id":request,
@@ -1138,6 +1161,15 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     settle_next(&c, &fake, &store, details(&session, agent, false, Some(false)));
     let view = until(&c, |view| view.waiting_in_zerus.is_empty());
     assert_eq!(view.local.len(), usize::from(!terminal_status));
+    if terminal_status {
+        let [receipt] = view.terminal_only_outbox.as_slice() else { panic!("expected one transport-only receipt") };
+        assert_eq!((&receipt.request_id, receipt.run_id.as_str(), receipt.conversation_id.as_str()), (&original, "run-1", "conv-1"));
+        assert_eq!(receipt.preview, "Synthetic native prompt");
+        assert!(receipt.delivery_in_composer);
+        assert!(receipt.queued_at.is_some());
+    } else {
+        assert!(view.terminal_only_outbox.is_empty());
+    }
     assert_eq!(view.status == "Submitted to terminal", terminal_status);
     assert!(!view.status_error);
     assert_eq!(lock(&fake.calls).len(), 1);

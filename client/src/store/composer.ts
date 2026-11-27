@@ -189,6 +189,7 @@ function handleSet() {
 export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>) => Promise<SendReply | undefined>;
 export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}, delayClear?: ClearDriver) {
   const [view, setView] = createSignal<ComposerView | undefined>();
+  const [removedWaiting, setRemovedWaiting] = createSignal<{ key: string; ids: readonly string[] }>();
   const [text, setText] = createSignal("");
   /** `start` is the anchor and `end` the cursor position (Qt's anchor and position); start may follow end. */
   const [selection, setSelection] = createSignal({ start: 0, end: 0 });
@@ -447,10 +448,17 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   async function removeWaiting(h: number, requestId: string) {
     if (h !== handle() || operationLocked()) return;
+    const key = view()?.key;
     calling.add(h);
     try {
       const next = await port.removeWaiting(h, requestId);
-      if (h === handle() && opening() === 0) apply(next);
+      if (h === handle() && opening() === 0 && key === next.key && h === next.handle) batch(() => {
+        if (!next.waiting_in_zerus?.some(row => row.request_id === requestId)) {
+          const prior = removedWaiting();
+          setRemovedWaiting({ key: next.key, ids: [...(prior?.key === next.key ? prior.ids : []), requestId].slice(-64) });
+        }
+        apply(next);
+      });
     } catch (e) {
       notices("error", coreText(e instanceof Error ? e.message : String(e)), true);
     } finally {
@@ -504,7 +512,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   return {
     view, text, selection, dialog, locked, operationLocked, ordinaryInputHeld, sendEnabled, pushEnabled, queue, held: heldNow, hint,
-    waitingMessages, removeWaiting,
+    waitingMessages, removeWaiting, removedWaiting,
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),
     apply, receive,

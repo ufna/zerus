@@ -527,15 +527,61 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
     error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: "zerus_outbox", voice: null,
   };
   const firstId = waitingRows()[0].id;
+  const firstNode = waitingRows()[0];
+  const originalNode = () => host.querySelector<HTMLElement>(`#${firstId}`);
+  const firstRow = firstNode.closest(".act-virtual-row");
+  const file = firstNode.querySelector(".att-card");
+  expect(file).not.toBeNull();
+  const scroller = firstNode.closest<HTMLElement>(".act-scroll")!;
+  Object.defineProperties(scroller, { clientHeight: { value: 400 }, scrollHeight: { value: 1000 } });
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -30, bubbles: true }));
+  scroller.scrollTop = 180;
+  scroller.dispatchEvent(new Event("scroll"));
+  const currentOriginal = () => {
+    expect(host.querySelectorAll(`#${firstId}`)).toHaveLength(1);
+    expect(originalNode()).toBe(firstNode);
+    expect(originalNode()?.closest(".act-virtual-row")).toBe(firstRow);
+    expect(originalNode()?.querySelector(".att-card")).toBe(file);
+    expect(scroller.scrollTop).toBe(180);
+  };
+  const firstRemoved: MutationRecord[] = [];
+  const watcher = new MutationObserver(records => firstRemoved.push(...records.filter(record =>
+    [...record.removedNodes].some(node => node === firstNode || node === firstRow || node === file))));
+  watcher.observe(scroller, { childList: true, subtree: true });
+  onTestFinished(() => watcher.disconnect());
   const staged = { ...initial, text_epoch: 4, waiting_in_zerus: localQueue.slice(1), local: [confirmed] };
+  // The desktop composer can retire its queue entry against a receipt before
+  // the independent Activity follow publishes the corresponding native event.
+  receive({ ...emptyBatch(), composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
   receive({ ...emptyBatch(), composer: staged });
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  currentOriginal();
   const sent = [...host.querySelectorAll(".act-scroll article")].filter(item => item.id === firstId);
   expect(sent).toHaveLength(1);
+  expect(sent[0]).toBe(firstNode);
   expect(sent[0].classList.contains("act-outbox")).toBe(false);
   expect(sent[0].textContent).toContain("queue-fixture.txt");
   expect(editor().value).toBe("fourth draft still editable");
   expect(editor().readOnly).toBe(false);
+
+  const activityKey = `run:${row.run_id}`;
+  const scope = { run_id: row.run_id, conversation_id: row.conversation_id };
+  const echo = { ...scope, seq: 103, type: "UserPromptSubmit", source: "opencode_native",
+    request_id: confirmed.id, message_id: "msg_Output", detail: "same", at: confirmed.submitted_at };
+  const interleaved = { ...scope, seq: 101, type: "AgentMessage", detail: "Unrelated activity", at: confirmed.submitted_at - 1 };
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [interleaved], cursor: 101 } }],
+    composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [echo], cursor: 103 } }] });
+  await vi.waitFor(() => expect(originalNode()?.querySelector(".act-receipt")?.textContent?.trim()).toBe(lang === "ru" ? "Отправлено" : "Sent"));
+  currentOriginal();
+  expect([...scroller.querySelectorAll("article.k-user")].slice(0, 3).map(item => item.id)).toEqual(
+    localQueue.map(item => `item-local-${item.request_id}`));
+  expect(firstRemoved).toHaveLength(0);
+  watcher.disconnect();
 
   const held = { ...staged, waiting_in_zerus: [
     { ...localQueue[1], state: "unknown" as const, can_check_terminal: true }, localQueue[2],
@@ -550,18 +596,21 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   const other = fixtureRow("Other session");
   const otherKey = draftKey({ computer: "", key: `run:${other.run_id}`, name: other.name,
     session_id: other.session_id, archive_id: null });
-  const reopened = { ...held, handle: held.handle + 2, text: "fourth draft still editable" };
+  const reopened = { ...held, local: [], handle: held.handle + 2, text: "fourth draft still editable",
+    terminal_only_outbox: [{ ...localQueue[0], run_id: row.run_id!, conversation_id: row.conversation_id!, attachments: localQueue[0].attachments ?? [] }] };
   vi.mocked(bridge.composerOpen).mockImplementation(async (selection) =>
     selection?.key === `run:${row.run_id}` ? reopened
       : selection?.key === `run:${other.run_id}` ? { ...initial, handle: initial.handle + 1, key: otherKey } : null);
   await open(other);
   expect(waitingRows()).toHaveLength(0);
+  expect(originalNode()).toBeNull();
   expect(confirm()).toBeNull();
   staleConfirmation.click();
   expect(removals).toHaveLength(0);
 
   await open(row);
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  expect(originalNode()?.textContent).toContain("queue-fixture.txt");
   expect(confirm()).toBeNull();
   expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`));
   removeButton()!.click();
@@ -1318,4 +1367,48 @@ it.each(["en", "ru"] as const)("keeps retired Antigravity history readable witho
   const lifecycle = lang === "ru" ? ["Остановить сессию", "Повторить запуск"] : ["Stop session", "Retry start"];
   for (const label of lifecycle) expect(menuText).not.toContain(label);
   expect(writes).toEqual([]);
+});
+
+it("keeps terminal-only Send recovery beside the composer and uses guarded local actions", async () => {
+  const row: ViewRow = { ...fixtureRow("Embedded Codex"), name: "codex/example/embedded", agent: "codex" };
+  const initial = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "",
+    attachments_available: true, text: "Original user text" };
+  const request = uuid(99901);
+  const original: LocalMessage = {
+    id: request, text: initial.text, status: "sending", attachments: [{ name: "report.txt" }],
+    run_id: row.run_id!, conversation_id: row.conversation_id!, submitted_at: 1760000000,
+    error: "", uncertain: false, message_id: null, submitted_text: null, source: "zerus_terminal_status", voice: null,
+  };
+  const calls: { command: string; args?: Record<string, unknown> }[] = [];
+  vi.mocked(bridge.composerOpen).mockImplementation(async selection => selection?.name === row.name ? initial : null);
+  transport.composer = (command, args) => {
+    calls.push({ command, args });
+    if (command === "send_message") return { kind: "accepted", waiting: false,
+      view: { ...initial, text: "", rev: Number(args?.rev), text_epoch: Number(args?.epoch) + 1, local: [original] } };
+    if (command === "local_inspect") return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
+    return undefined;
+  };
+  await open(row);
+  host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!.click();
+  const present = () => host.querySelector<HTMLElement>(".cmp-delivery [role=status]");
+  await vi.waitFor(() => expect(present()?.dataset.requestId).toBe(request));
+  expect(present()?.textContent).toBe("Sending…");
+  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
+  receive({ ...emptyBatch(), composer: { ...initial, text: "Independent draft", text_epoch: 3, rev: 3, uncertain: true,
+    local: [{ ...original, status: "error", uncertain: true, error: "Delivery not confirmed" }] } });
+  await vi.waitFor(() => expect(present()?.textContent).toBe("Delivery not confirmed"));
+  expect(present()?.dataset.requestId).toBe(request);
+  const dock = host.querySelector<HTMLDetailsElement>(".cmp-delivery")!;
+  dock.open = true;
+  expect(dock.querySelector("li")?.textContent).toContain("report.txt");
+  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
+  const action = (text: string) => [...dock.querySelectorAll("button")].find(button => button.textContent === text);
+  expect(action("Retry")).toBeUndefined();
+  action("Check Terminal")!.click();
+  await vi.waitFor(() => expect(calls).toContainEqual({ command: "local_inspect", args: { handle: initial.handle, id: request } }));
+  action("Delete")!.click();
+  await flush();
+  expect(host.querySelector<HTMLDialogElement>(".activity dialog[role=alertdialog]")?.open).toBe(true);
+  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe("Independent draft");
+  expect(calls.filter(call => call.command === "send_message")).toHaveLength(1);
 });

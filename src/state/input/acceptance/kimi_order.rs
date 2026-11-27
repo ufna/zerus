@@ -183,9 +183,9 @@ fn matching_prompt(record: &Value, event: &Value) -> bool {
 
 /// Retain typed ordering only for the already complete current request, after
 /// reducer/keep-warm classification and before its durable acceptance write.
-pub(in crate::state) fn record_hook(record: &mut Value, event: &Value) {
+pub(in crate::state) fn record_hook(record: &mut Value, event: &Value) -> Option<String> {
     if string(record, "agent") != "kimi" {
-        return;
+        return None;
     }
     if let Some(fields) = record.as_object_mut() {
         fields.remove("input_native_hook_context");
@@ -196,25 +196,28 @@ pub(in crate::state) fn record_hook(record: &mut Value, event: &Value) {
         record["input_native_submit_binding"] = json!({"run_id":record["run_id"],"conversation_id":record["conversation_id"],
             "request_id":record["input_pending_request"],"pending_at":record["input_pending_at"],"seen_at":record["input_seen_at"],
             "exact":matching_prompt(record,event)});
-        return;
+        return None;
     }
     if kind != "TurnStarted" || event["origin_kind"] != "user" || !matching_prompt(record, event) {
-        return;
+        return None;
     }
     let Some(after) = pending(record) else {
-        return;
+        return None;
     };
     let Some(id) = event["turn_id"]
         .as_u64()
         .filter(|id| *id <= i64::MAX as u64)
     else {
-        return;
+        return None;
     };
     if after.is_some_and(|floor| id <= floor) {
-        return;
+        return None;
     }
     record["input_native_hook_context"] = json!({"version":1,"run_id":record["run_id"],"conversation_id":record["conversation_id"],
         "turn_id":id,"seen_at":record["input_seen_at"],"request_id":record["input_pending_request"],"pending_at":record["input_pending_at"]});
+    let request = string(record, "input_pending_request");
+    uuid::Uuid::parse_str(request).ok().filter(|id| !id.is_nil() && id.to_string() == request)
+        .map(|_| request.to_owned())
 }
 
 pub(in crate::state) fn bind(record: &mut Value, receipt: &Value) {
@@ -314,14 +317,16 @@ mod tests {
             "late callback cannot repair future ordering either"
         );
         record = initial();
-        bind(&mut record, &receipt("a", 10.0));
-        mark(&mut record, "a", 10.0);
+        let original = "204ca87d-6336-41b2-b9e7-27fd49729b22";
+        bind(&mut record, &receipt(original, 10.0));
+        mark(&mut record, original, 10.0);
         record["input_seen_at"] = json!(11.0);
         record["input_pending_text_sha256"] = json!(format!("{:x}", Sha256::digest(b"text")));
-        record_hook(
-            &mut record,
-            &json!({"hook_event_name":"TurnStarted","origin_kind":"user","turn_id":0,"prompt":"text"}),
-        );
+        let turn = json!({"hook_event_name":"TurnStarted","origin_kind":"user","turn_id":0,"prompt":"text"});
+        let mut unrelated = turn.clone();
+        unrelated["origin_kind"] = json!("scheduled");
+        assert!(record_hook(&mut record, &unrelated).is_none());
+        assert_eq!(record_hook(&mut record, &turn).as_deref(), Some(original));
         bind(&mut record, &receipt("c", 30.0));
         mark(&mut record, "c", 30.0);
         assert_eq!(pending(&record), Some(Some(0)));

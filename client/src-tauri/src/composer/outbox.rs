@@ -71,6 +71,43 @@ pub struct EntryView {
     pub state: State,
     pub target_changed: bool,
     pub can_check_terminal: bool,
+    pub delivery_in_composer: bool,
+}
+
+/// Presentation evidence from a transport acknowledgement with no native
+/// prompt binding. This view cannot be loaded as an entry or offer an input.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TerminalReceiptView {
+    pub request_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub queued_at: Option<f64>,
+    pub preview: String,
+    pub attachments: Vec<AttachmentInfo>,
+    pub delivery_in_composer: bool,
+}
+
+impl TerminalReceiptView {
+    fn from_original(entry: &Entry, submitted_at: f64) -> Self {
+        Self {
+            request_id: entry.request_id.clone(),
+            run_id: entry.target.run_id.clone(),
+            conversation_id: entry.target.conversation_id.clone(),
+            queued_at: entry.queued_at.or(Some(submitted_at)),
+            delivery_in_composer: entry.delivery_in_composer,
+            preview: preview(entry),
+            attachments: entry.attachments.iter().map(Attachment::info).collect(),
+        }
+    }
+}
+
+fn preview(entry: &Entry) -> String {
+    let mut text = entry.text.trim().chars();
+    let mut preview: String = text.by_ref().take(240).collect();
+    if text.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 pub(super) fn view(
@@ -85,14 +122,8 @@ pub(super) fn view(
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at,
-            preview: {
-                let mut text = entry.text.trim().chars();
-                let mut preview: String = text.by_ref().take(240).collect();
-                if text.next().is_some() {
-                    preview.push('…');
-                }
-                preview
-            },
+            delivery_in_composer: entry.delivery_in_composer,
+            preview: preview(entry),
             attachments: entry.attachments.iter().map(Attachment::info).collect(),
             state: entry.state,
             target_changed: entry.draft_key != key
@@ -405,7 +436,18 @@ impl Composers {
         }
         let before = c.stored();
         let mut stored = before.clone();
+        // Both busy and idle offers of this saved FIFO entry can use the
+        // exact native queue. The ordered immediate route may use Terminal,
+        // and its acknowledgement cannot change the original presentation.
+        let native_codex_fifo = ready.is_none() && ctx.details.as_deref().is_some_and(|details| {
+            details["codex_manual_turn_send"] == false
+                && details["codex_busy_outbox_supported"] == true
+                && details["codex_idle_outbox_supported"] == true
+                && !zerus_client_core::cache::expired(details, self.now())
+        });
+        let delivery_in_composer = ctx.row.agent == "codex" && !native_codex_fifo;
         let entry = Entry {
+            delivery_in_composer,
             target: target(&ctx),
             request_id: uuid::Uuid::new_v4().to_string(),
             queued_at: outbox::enqueue_time(self.now()),
@@ -622,6 +664,15 @@ impl Composers {
     }
 
     fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+        if row.agent == "codex" && !entry.delivery_in_composer
+            && !(details["codex_busy_outbox_supported"] == true
+                    && codex_work_phase(row.phase.as_deref())
+                || idle_codex_queue(entry, row, details))
+        {
+            // A known native-queue article keeps its original transport.
+            // If a peer stops advertising that route, keep this FIFO head.
+            return false;
+        }
         (self.native_queue_details(row, &entry.target, details)
             || self.guarded_send_details(row, &entry.target, details))
             && (!idle_codex_queue(entry, row, details)
@@ -850,9 +901,9 @@ impl Composers {
         }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
-            && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
+            && (entry.target.name.starts_with("codex/") && (entry.delivery_in_composer || entry.attachments.is_empty())
                 || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
-                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true)
+                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true && receipt["kimi_activity_binding"] != true)
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
@@ -917,7 +968,15 @@ impl Composers {
                     // Confirmed queue admission frees the next FIFO head immediately.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
-                    if exact && (codex_queued || notice.is_none()) {
+                    if terminal_only {
+                        c.terminal_only_outbox.push_back((
+                            entry.target.clone(),
+                            TerminalReceiptView::from_original(&entry, me.now()),
+                        ));
+                        if c.terminal_only_outbox.len() > 64 {
+                            c.terminal_only_outbox.pop_front();
+                        }
+                    } else if exact {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }

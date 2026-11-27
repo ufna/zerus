@@ -119,9 +119,6 @@
   .act-outbox { position: relative; }
   .act-outbox header { flex-wrap: wrap; row-gap: 2px; padding-inline-end: 30px; }
   .act-outbox-preview { margin: 0; overflow-wrap: anywhere; }
-  .act-outbox-files { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 4px 0 0; padding: 0; list-style: none; white-space: normal; }
-  .act-outbox-files li { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--z-color-text-2); font-size: var(--fs-xs); overflow-wrap: anywhere; }
-  .act-outbox-files svg { flex: none; }
   .act-outbox-actions { margin-top: 2px; }
   .act-outbox-actions .icon-btn { position: absolute; inset-inline-end: 9px; inset-block-start: 5px; }
   .act-outbox-confirm { margin-top: 6px; font-size: var(--fs-sm); white-space: normal; }
@@ -358,6 +355,12 @@
   .file-reference-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .file-reference-row .field { flex: 1; min-width: 0; }
   .file-reference .dlg-detail.error { color: var(--z-color-danger); }
+  .cmp-delivery { font-size: var(--fs-xs); color: var(--z-color-text-2); }
+  .cmp-delivery > summary { cursor: pointer; }
+  .cmp-delivery-list { max-height: 11rem; overflow: auto; margin: 4px 0; padding: 0; list-style: none; }
+  .cmp-delivery-list > li { padding: 6px 4px; border-top: 1px solid var(--z-color-border); }
+  .cmp-delivery-list p { margin: 4px 0; }
+
   .cmp-status { font-size: var(--fs-xs); color: var(--z-color-dim); }
   .cmp-model { gap: 4px; max-width: 330px; font-size: var(--fs-xs); }
   /* The status line's colours (MessageComposer updateControls 1224-1226): an

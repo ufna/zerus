@@ -22,8 +22,8 @@ describe("Codex queue acceptance in Activity", () => {
   it("keeps one keyed message from pending through the native acknowledgement, snapshot and restart", () => {
     const p = createTranscriptProjection();
     expect(p.build([], scope, [], [], [waiting])).toMatchObject([{ id, outbox: waiting }]);
-    // The snapshot can beat the durable removal. Keep its pending state until removal commits.
-    expect(p.build([], summary([receipt]), [], [], [waiting])).toMatchObject([{ id, outbox: waiting }]);
+    // The exact queue acknowledgement can arrive before durable outbox settlement.
+    expect(p.build([], summary([receipt]), [], [], [waiting])).toMatchObject([{ id, label: "Accepted into the Codex queue" }]);
     const accepted = [{ id, kind: "receipt", label: "Accepted into the Codex queue", body: text, attachments: [{ request_id: request, index: 0 }] }];
     expect(p.build([], scope, [local])).toMatchObject(accepted);
     expect(p.build([], summary([receipt]), [])).toMatchObject(accepted);

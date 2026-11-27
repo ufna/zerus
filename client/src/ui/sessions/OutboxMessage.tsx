@@ -1,4 +1,4 @@
-import { createContext, createEffect, createSignal, For, Show, useContext } from "solid-js";
+import { createContext, createEffect, createSignal, Show, useContext } from "solid-js";
 import { tr } from "../../i18n";
 import { composer } from "../../store/composer";
 import { setDetailTab } from "../../store/ui";
@@ -11,7 +11,7 @@ export const OutboxScope = createContext<{ rows: () => readonly OutboxItem[]; do
 const queuedDate = (at?: number) =>
   at !== undefined && at > 0 && at < 253_402_300_800 ? new Date(at * 1000) : undefined;
 
-const stamp = (item: OutboxItem) => {
+export const outboxStamp = (item: OutboxItem) => {
   switch (item.state) {
     case "waiting": return tr("Queued in Zerus");
     case "reserved": return tr("Checking delivery");
@@ -24,7 +24,7 @@ export function OutboxHeader(props: { item: OutboxItem }) {
   return <>
     <span class="act-stamp" classList={{ failed: props.item.state === "unknown" || props.item.state === "failed" }}
       title={props.item.state === "waiting" && !props.item.target_changed ? tr("Waiting for the agent to become ready") : undefined}>
-      {stamp(props.item)}
+      {outboxStamp(props.item)}
     </span>
     <Show when={queuedDate(props.item.queued_at)} fallback={<span class="act-time">{tr("Queue time unavailable")}</span>}>{(at) =>
       <time class="act-time" dateTime={at().toISOString()} title={tr("Queued in Zerus at %1", zonedTimeOf(at()))}>
@@ -34,13 +34,13 @@ export function OutboxHeader(props: { item: OutboxItem }) {
   </>;
 }
 
-export function OutboxBody(props: { item: OutboxItem }) {
+export function OutboxActions(props: { item: OutboxItem }) {
   const scope = useContext(OutboxScope);
   const [review, setReview] = createSignal<{ handle: number; requestId: string }>();
   let removeButton: HTMLButtonElement | undefined;
   const current = () => scope?.rows().find((row) =>
     row.handle === props.item.handle && row.request_id === props.item.request_id);
-  const removable = () => !!current() && !composer.operationLocked() && scope?.rows()[0]?.state !== "reserved";
+  const removable = () => !!current() && !composer.operationLocked() && composer.waitingMessages()[0]?.state !== "reserved";
   const confirming = () => {
     const action = review(), item = current();
     return action && item?.handle === action.handle && item.request_id === action.requestId ? action : undefined;
@@ -50,15 +50,7 @@ export function OutboxBody(props: { item: OutboxItem }) {
     setReview(undefined);
     removeButton?.focus();
   };
-  return <div class="act-body">
-    <p class="wrap-pre act-outbox-preview">{props.item.preview || tr("Message with files")}</p>
-    <Show when={props.item.attachments?.length}>
-      <ul class="act-outbox-files" aria-label={tr("Attachments")}>
-        <For each={props.item.attachments}>{(file) =>
-          <li><Icon name="paperclip" size={13} /><span>{file.name}</span></li>
-        }</For>
-      </ul>
-    </Show>
+  return <>
     <Show when={props.item.target_changed}>
       <p class="act-inbox-hint">{tr("The original session changed.")}</p>
     </Show>
@@ -68,7 +60,7 @@ export function OutboxBody(props: { item: OutboxItem }) {
     <Show when={props.item.state === "failed"}>
       <p class="act-error">{tr("The agent did not accept this message.")}</p>
     </Show>
-    <Show when={scope}>
+    <Show when={current()}>
       <div class="act-local-actions act-outbox-actions">
         <Show when={current()?.can_check_terminal}>
           <button type="button" class="btn small" onClick={() => {
@@ -104,5 +96,5 @@ export function OutboxBody(props: { item: OutboxItem }) {
         </div>
       </div>
     }</Show>
-  </div>;
+  </>;
 }
