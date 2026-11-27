@@ -1025,7 +1025,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     // here, before any reference hop or `@host` forwarding (zerus-ppd26.22).
     // Only a host actually found refuses: an unverifiable check, such as a
     // sandboxed agent's sender-less send, keeps working as before.
-    if matches!(routed, Some("send" | "send-now")) {
+    if matches!(routed, Some("send" | "send-now"))
+        || first.is_some_and(|value| value == "delivery") && then.is_some_and(|value| value == "outbox-offer")
+    {
         check_send_caller()?;
     }
     // zerus-ucck P1c: a session reference selects the session it names on every
@@ -1336,6 +1338,31 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
                 args.push("--dry-run".into());
             }
             state_command(command, &args)
+        }
+        "delivery" if args.first().is_some_and(|arg| arg == "outbox-offer") => {
+            if dry {
+                return Err(Error::new(1, "Native outbox offers do not support --dry-run"));
+            }
+            // This closed public route also exists on older helpers, where
+            // the unknown operation refuses before ordinary Send or a launch.
+            let options = match args {
+                [_, name, queue, format] => (name, &[][..], queue, format),
+                [_, name, selector, _, queue, format] if selector == "--session-id" =>
+                    (name, &args[2..4], queue, format),
+                _ => return Err(Error::new(1, "Choose the exact guarded native outbox target")),
+            };
+            let (name, selector, queue, format) = options;
+            if format != "--json"
+                || !matches!(queue.as_str(), "--opencode-queue" | "--deepseek-queue")
+                || name.starts_with('-') || name.starts_with('@') || name.starts_with("zerus://")
+            {
+                return Err(Error::new(1, "Choose the exact guarded native outbox target"));
+            }
+            let mut send = vec!["send".to_owned(), name.clone()];
+            send.extend_from_slice(selector);
+            send.extend(["--when-idle".into(), queue.clone(), "--json".into()]);
+            // Keep the ordinary native writer, caller guard and session-ID selector.
+            dispatch(send)
         }
         "inspect" | "processes" | "worktrees" | "git-status" | "repository" | "dirs" | "send" | "send-now" | "session-action" | "session-action-status" | "terminal" | "history" | "history-projection" | "interrupt" | "clear-context" | "compact-context" | "answer" | "effort" | "settings" | "search" | "read" | "notifications" | "keep-warm" | "question-routing"
         | "attachment" | "file-read" | "recovery" | "voice" | "schedules" | "graph" | "wait" | "parent" | "delivery" => {
@@ -1962,7 +1989,8 @@ fn hosted_forwarding_refusal(
     };
     let launch = LAUNCH_COMMANDS.contains(&verb);
     let parent = launch && names_parent(rest);
-    let send = matches!(verb, "send" | "send-now");
+    let send = matches!(verb, "send" | "send-now")
+        || verb == "delivery" && rest.first().is_some_and(|arg| arg == "outbox-offer");
     if !(send || launch && !parent || named && !parent) {
         return None;
     }

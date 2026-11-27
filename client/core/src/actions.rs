@@ -598,8 +598,7 @@ pub fn invocation(
             // extra argv flag selects the new guarded provider admission.
             input["only_when_idle"] = json!(true);
             let input = serde_json::to_vec(&input).map_err(|error| error.to_string())?;
-            let mut args = vec!["send".to_owned(), name, flag.to_owned()];
-            if matches!(action, Action::SendToNativeQueue { .. }) {
+            let args = if matches!(action, Action::SendToNativeQueue { .. }) {
                 let queue = if target.name.starts_with("opencode/") {
                     "--opencode-queue"
                 } else if target.name.starts_with("dsh/") {
@@ -607,9 +606,10 @@ pub fn invocation(
                 } else {
                     return Err("Native queue admission is unavailable for this provider.".into());
                 };
-                args.push(queue.into());
-            }
-            args.push("--json".into());
+                vec!["delivery".into(), "outbox-offer".into(), name, queue.into(), "--json".into()]
+            } else {
+                vec!["send".into(), name, flag.into(), "--json".into()]
+            };
             (
                 args,
                 Some(input),
@@ -2349,7 +2349,13 @@ mod tests {
             let offer = invocation(&target, &action, request).unwrap();
             let previous = invocation(&target, &legacy, request).unwrap();
             assert_eq!(offer.stdin, previous.stdin);
-            assert_eq!(&offer.args[2..], ["--when-idle", flag, "--json"]);
+            assert_eq!(offer.args, ["delivery", "outbox-offer", name, flag, "--json"]);
+            let peer = Target { computer: "fixture-peer".into(), ..target.clone() };
+            let id = "22222222-2222-4222-8222-222222222222";
+            let selected = crate::session_selector::selected_invocation(&peer, &action, request, Some(id)).unwrap();
+            assert_eq!(selected.args, ["@fixture-peer", "delivery", "outbox-offer", name, "--session-id", id, flag, "--json"]);
+            assert_eq!(crate::session_selector::selected_id(&peer, &selected), Some(id));
+            assert_eq!(selected.stdin, offer.stdin);
             let query = outbox_status(&target, &legacy, request).unwrap();
             let digest = format!("{:x}", Sha256::digest(offer.stdin.as_deref().unwrap()));
             let mut receipt = json!({"schema":1,"status":"submitted","transport":transport,"proof":proof,

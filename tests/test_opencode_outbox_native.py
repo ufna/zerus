@@ -34,8 +34,8 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
         conversation = target['conversation_id']
 
         def queued(request, success=True):
-            return self.hgs(['send', target['name'], '--when-idle', '--opencode-queue', '--json'],
-                            request, success=success)
+            return self.hgs(['delivery', 'outbox-offer', target['name'], '--session-id', target['session_id'],
+                             '--opencode-queue', '--json'], request, success=success)
 
         running = self.hgs(['send', target['name'], '--json'], self.payload(target, text='HOLD_NATIVE'))
         self.assertTrue(self.model.holding.wait(15))
@@ -48,6 +48,10 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
         }])
         second = self.attempt(target, 'Second quietly queued desktop input')
         queued(dict(second, expected_conversation_id=other['conversation_id']), success=False)
+        self.hgs(['delivery', 'outbox-offer', target['name'], '--session-id', other['session_id'],
+                  '--opencode-queue', '--json'], second, success=False)
+        self.hgs(['__state', 'delivery', 'outbox-offer', target['name'], '--opencode-queue', '--json'],
+                 second, success=False)
         with self.prompt_proxy(target, 'unbound') as offers:
             queued(first, success=False)
             self.status(target, first, success=False)
@@ -229,7 +233,7 @@ class OpenCodeOutbox(fixture.OpenCodeContext):
             self.assertFalse(details.get('opencode_busy_outbox_supported'))
             self.assertFalse(details['attachments_supported'])
             self.guarded(target, request, success=False)
-            self.hgs(['send', target['name'], '--when-idle', '--opencode-queue', '--json'], request, success=False)
+            self.hgs(['delivery', 'outbox-offer', target['name'], '--opencode-queue', '--json'], request, success=False)
             self.assertEqual(offered, [])
         self.assertFalse(self.receipt_path(request).exists())
         self.assertEqual(self.user_messages(target['conversation_id']), [])

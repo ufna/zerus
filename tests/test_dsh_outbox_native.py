@@ -65,7 +65,8 @@ class NativeDeepSeekOutbox(native.NativeHarness):
         second = self.payload(binding, text='Second quietly queued desktop input', only_when_idle=True)
 
         def queued(request):
-            return self.hgs('send', binding['name'], '--when-idle', '--deepseek-queue', '--json', request=request)
+            return self.hgs('delivery', 'outbox-offer', binding['name'], '--session-id', binding['session_id'],
+                            '--deepseek-queue', '--json', request=request)
 
         def pending(request_id):
             return self.rpc('outbox-proof', {'sessionId': conversation, 'requestId': request_id,
@@ -133,7 +134,7 @@ class NativeDeepSeekOutbox(native.NativeHarness):
             self.assertTrue(detail['dsh_busy_outbox_supported'])
             self.assertFalse(detail['dsh_busy_outbox_ready'])
             request = self.payload(binding, text='Another next-turn input', only_when_idle=True)
-            result = self.hgs('send', binding['name'], '--when-idle', '--deepseek-queue', '--json', request=request)
+            result = self.hgs('delivery', 'outbox-offer', binding['name'], '--deepseek-queue', '--json', request=request)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
             self.assertEqual(self.rpc('inspect', {'sessionId': conversation})['nativeRecovery']['id'], pending['id'])
