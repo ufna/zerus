@@ -233,7 +233,11 @@ fn binding_reference(directory: &str, path: &Path) -> Result<Option<Reference>> 
     if !by_id && storage::label_key(name) != stem {
         return Err("The session binding name and location disagree".into());
     }
+    let native_agy = name.starts_with("agy/") || value["agent"] == "agy" || value["backend"] == "agy";
     let valid = match directory {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        "" if native_agy => super::agy::valid_binding(&value),
+        _ if native_agy => false,
         "" | "bindings" | "sessions" => value["version"] == 1 && AGENTS.contains(&string(&value,"agent")),
         "dsh/bindings" | "dsh/sessions" => value["backend"] == "dsh" && name.starts_with("dsh/")
             && string(&value,"conversation_id").starts_with("session-") && string(&value,"conversation_id").len() <= 2048,
@@ -3802,6 +3806,9 @@ mod binding_census_tests {
         let name = "codex/example/shared";
         let folders: Vec<_> = (0..4).map(|n|root().parent().unwrap().join(format!("folder-{n}"))).collect();
         for folder in &folders { fs::create_dir_all(folder).unwrap(); }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        check_native_agy_binding(&folders[0], &folders[1]);
+
         let first = json!({"version":1,"agent":"codex","name":name,"session_id":uuid::Uuid::new_v4().to_string(),
             "run_id":"first","conversation_id":"first-conversation","cwd":folders[0]});
         let second = json!({"version":1,"agent":"codex","name":name,"session_id":uuid::Uuid::new_v4().to_string(),
@@ -3837,6 +3844,60 @@ mod binding_census_tests {
         fs::write(&second_path,&original).unwrap();
         assert_eq!(bindings().unwrap().len(),4);
         session_id::clear();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn check_native_agy_binding(cwd: &Path, launch_dir: &Path) {
+        let name = "agy/example/native";
+        let path = storage::label_record_path(name);
+        let record = json!({
+            "version": 1,
+            "agent": "agy",
+            "backend": "agy",
+            "account_id": super::super::agy::ACCOUNT,
+            "name": name,
+            "session_id": uuid::Uuid::new_v4().to_string(),
+            "run_id": uuid::Uuid::new_v4().to_string(),
+            "conversation_id": "",
+            "cwd": cwd,
+            "launch_dir": launch_dir,
+        });
+        atomic(&path, &record.to_string()).unwrap();
+        let refs = bindings().unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, name);
+        assert_eq!(refs[0].session_id, string(&record, "session_id"));
+        for folder in [cwd, launch_dir] {
+            assert!(refs[0].folders.contains(&crate::platform::canonical(folder).unwrap()));
+        }
+
+        for (key, value) in [
+            ("version", json!(2)),
+            ("agent", json!("codex")),
+            ("backend", json!("codex")),
+            ("account_id", json!("another-account")),
+            ("session_id", json!("malformed")),
+            ("run_id", json!("malformed")),
+            ("archive_id", json!(uuid::Uuid::new_v4().to_string())),
+            ("rename_shadow", json!(true)),
+            ("cwd", json!([])),
+        ] {
+            let mut bad = record.clone();
+            bad[key] = value;
+            atomic(&path, &bad.to_string()).unwrap();
+            assert!(bindings().is_err(), "accepted invalid {key}");
+        }
+        fs::remove_file(&path).unwrap();
+
+        let foreign = root().join("bindings").join(path.file_name().unwrap());
+        atomic(&foreign, &record.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted native Antigravity outside the legacy root");
+        fs::remove_file(foreign).unwrap();
+
+        let other_label = storage::label_record_path("agy/example/foreign");
+        atomic(&other_label, &record.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted a different holder's record");
+        fs::remove_file(other_label).unwrap();
     }
 }
 
