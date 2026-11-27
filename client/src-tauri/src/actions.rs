@@ -101,14 +101,20 @@ pub enum Lane {
     Recovery,
 }
 
+/// Only the native Composer outbox constructs these guarded offers.
+fn guarded_outbox_send(action: &Action) -> bool {
+    matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
+        | Action::SendToOrderedCodexTurn { .. } | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. })
+}
+
 impl Lane {
     pub fn of(action: &Action) -> Self {
         match action {
             Action::MarkRead { .. } => Self::Read,
             Action::Interrupt { .. } => Self::Interrupt,
-            Action::Send { .. } | Action::SendWhenIdle { .. }
-            | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }
-            | Action::SendWhenNativeAccepts { .. } => Self::Send,
+            Action::Send { .. } => Self::Send,
+            action if guarded_outbox_send(action) => Self::Send,
             Action::StopProcess { .. } => Self::Process,
             Action::SendNow { .. } => Self::Queue,
             Action::RemoveQueued { .. } => Self::Inbox,
@@ -1457,8 +1463,7 @@ pub(crate) async fn dispatch_outbox_as(
     if blocked() {
         return Ok(Some(failed(REPLAY_NEEDS_HGS)));
     }
-    if !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. }
-        | Action::SendWhenNativeAccepts { .. }) {
+    if !guarded_outbox_send(&action) {
         return Err("Expected a guarded Send.".into());
     }
     let probe = session_selector::probe(&target.computer);
@@ -5345,6 +5350,16 @@ mod tests {
         ] {
             assert_eq!(refused_before_claim(&target, &action), None);
         }
+    }
+
+    #[test]
+    fn ordered_codex_send_is_reserved_for_the_guarded_dispatcher_and_send_lane() {
+        let action = Action::SendToOrderedCodexTurn { text: "ordered".into(), attachments: vec![] };
+        assert!(guarded_outbox_send(&action));
+        assert_eq!(Lane::of(&action), Lane::Send);
+        assert!(!guarded_outbox_send(&Action::SendNow { queue_id: "native".into() }));
+        let encoded = serde_json::to_value(action).unwrap();
+        assert!(serde_json::from_value::<Action>(encoded).is_err());
     }
 
     #[test]
