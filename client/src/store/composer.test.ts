@@ -49,6 +49,7 @@ function fakes(reply: SendReply = { kind: "sending" }, opened: ComposerView | nu
     sendNow: async (id) => { calls.push(`send-now ${id}`); return true; },
     answer: async (token, answer) => { calls.push(`answer ${token} ${JSON.stringify(answer)}`); return answerReply; },
     remove: async (_h, index) => { calls.push(`remove ${index}`); }, undo: async () => { calls.push("undo"); },
+    dismissCompactionNotice: async () => { calls.push("dismiss compaction notice"); },
     allowRetry: async () => { calls.push("allow retry"); }, cancelSend: async () => { calls.push("cancel send"); },
     interrupted: async () => { calls.push("interrupted"); return 7; },
     interruptFailed: async (stop: number) => { calls.push(`interruptFailed ${stop}`); },

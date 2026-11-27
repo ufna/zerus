@@ -1064,6 +1064,8 @@ export async function composerPasteImage(handle: number, png: Uint8Array, start:
 export const composerRemove = (handle: number, index: number) => desktop<void>("composer_remove", { handle, index });
 export const composerUndoRemove = (handle: number) => desktop<void>("composer_undo_remove", { handle });
 export const composerAllowRetry = (handle: number) => desktop<void>("composer_allow_retry", { handle });
+export const composerDismissCompactionNotice = (handle: number, requestId: string) =>
+  desktop<void>("composer_dismiss_compaction_notice", { handle, requestId });
 // The question card (A2-1, A2-2). Every edit names the epoch its fields are based on.
 export const questionEdit = (card: string, epoch: number, edit: QuestionEdit) => desktop<void>("question_edit", { card, epoch, edit });
 export const questionPage = (card: string, page: number) => desktop<void>("question_page", { card, page });

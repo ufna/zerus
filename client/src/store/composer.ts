@@ -47,6 +47,7 @@ const QUEUE_SAVE_REFUSED = trNoop("The draft could not be queued. Its text is st
 const QUEUE_FULL = trNoop("The local message queue is full. The draft is still in the editor.");
 const COMPOSER_STATUS_SOURCES: readonly string[] = [
   DRAFTS_NOT_RECORDED,
+  trNoop("The compaction result is still unknown. Check Terminal."),
   QUEUE_SAVE_REFUSED,
   QUEUE_FULL,
   trNoop("Checking the session…"),
@@ -76,6 +77,7 @@ export interface ComposerPort {
   answer(token: number, answer: Answer): Promise<SendReply>;
   remove(handle: number, index: number): Promise<void>;
   undo(handle: number): Promise<void>;
+  dismissCompactionNotice(handle: number, requestId: string): Promise<void>;
   allowRetry(handle: number): Promise<void>;
   cancelSend(handle: number): Promise<void>;
   /** Resolves to the Stop's number (0 for none) for a later refusal. */
@@ -133,7 +135,7 @@ export type Dialog =
   | { kind: "clear"; control: ClearControl };
 
 /** The status line (Qt's updateControls 1200-1204): text and whether it is in the error colour. */
-export interface StatusLine { text: string; error: boolean; multiline?: boolean }
+export interface StatusLine { text: string; error: boolean; multiline?: boolean; compactionNoticeId?: string }
 
 /**
  * The status line from Rust's view, the composer's own error and the length
@@ -153,6 +155,10 @@ export function statusLine(v: ComposerView | undefined, own: string | undefined,
     return { text: tr("%1 %2", tr(DRAFT_KEPT), tr(v.previous_message_pending === true ? EARLIER_INPUT_PENDING : EARLIER_INPUT_UNOBSERVED)),
       error: true, multiline: true };
   }
+  if (v.compaction_notice_id) return {
+    text: tr("Compaction was not confirmed. Check Terminal; your draft was kept without sending."),
+    error: true, multiline: true, compactionNoticeId: v.compaction_notice_id,
+  };
   const definiteDraftStatus = hasDraft && v.status_error && !v.uncertain && !v.delivery_pending
     ? earlierInputDraftStatus(v.status, v.previous_message_pending) : "";
   if (definiteDraftStatus) return { text: definiteDraftStatus, error: v.previous_message_pending !== false, multiline: true };
@@ -621,6 +627,10 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       if (r.kind === "sending") return;
       reply(r, h, at, false);
     },
+    async dismissCompactionNotice(requestId: string) {
+      const v = view();
+      if (v?.compaction_notice_id === requestId) await port.dismissCompactionNotice(v.handle, requestId).catch(() => {});
+    },
     async cancelSend() { const h = handle(); if (h !== undefined) await port.cancelSend(h).catch(() => {}); },
     async allowRetry() {
       const h = handle();
@@ -707,6 +717,7 @@ export type ComposerStore = ReturnType<typeof createComposer>;
 export const composer = createRoot(() => createComposer({
   open: bridge.composerOpen, edit: bridge.composerEdit, pick: bridge.composerPick, attach: (h, paths, start, end) => bridge.composerAttach(h, paths, start, end), pasteImage: bridge.composerPasteImage,
   send: bridge.sendMessage, removeWaiting: bridge.composerRemoveWaiting, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
+  dismissCompactionNotice: bridge.composerDismissCompactionNotice,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, interruptFailed: bridge.sendInterruptFailed, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
   inboxRemove: bridge.inboxRemove,
