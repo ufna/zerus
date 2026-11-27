@@ -1228,6 +1228,11 @@ pub(crate) fn submit_task_reply(name: &str, request: &Value) -> Result<Value> {
 pub(crate) fn submit_task_reply_witnessed(name: &str, request: &Value) -> input::Submission {
     input::submit_witnessed(name, request.to_string().as_bytes())
 }
+pub(crate) fn technical_review_notice(
+    name: &str, request: &Value, admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> input::Submission {
+    input::technical_review_notice(name, request.to_string().as_bytes(), admit)
+}
 pub(crate) fn task_reply_receipt_bound(
     name: &str,
     request_id: &str,

@@ -47,7 +47,7 @@ impl Disposition {
         }
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         let text = self.text();
         if text.trim().is_empty()
             || text.len() > 1024
@@ -121,7 +121,7 @@ impl Status {
     }
 }
 
-fn eligible_report(view: &TaskView) -> Option<usize> {
+pub(crate) fn eligible_report(view: &TaskView) -> Option<usize> {
     let report = view.review_report()?;
     // A legacy delivery receipt may remain unsettled without a managed
     // execution. It cannot authorize a new decision or a second offer.
@@ -136,7 +136,7 @@ fn eligible_report(view: &TaskView) -> Option<usize> {
     (!unfinished).then_some(report)
 }
 
-fn heads<'a>(view: &'a TaskView, ids: &'a [String], report: &str) -> Vec<(&'a str, &'a Decision)> {
+pub(crate) fn heads<'a>(view: &'a TaskView, ids: &'a [String], report: &str) -> Vec<(&'a str, &'a Decision)> {
     let mut candidates = Vec::new();
     let mut superseded = HashSet::new();
     for (entry, id) in view.log.iter().zip(ids) {

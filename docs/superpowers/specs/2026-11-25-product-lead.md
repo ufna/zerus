@@ -21,6 +21,8 @@ Use quick acceptance by default. Compare the original request with the current f
 | A defect is demonstrated | Return the task to its author with the failing example and the expected result. |
 | Available evidence is exhausted | Park the report outside the actionable queue. Record what is unknown and which new evidence would reopen it. |
 
+An enrolled project routes new settled technical agent reports to its verified independent reviewer. A positive exact verdict records the evidence and completes the report automatically. The person authorizes enrollment. Other reports use their existing acceptance authority.
+
 Apply each finding to the exact report reviewed. A later report needs a fresh decision. A parked historical delivery keeps its recorded outcome. A fresh send cannot establish that earlier delivery. Keep personal decisions and Team acceptance with their existing owners.
 
 ## Spend and staffing

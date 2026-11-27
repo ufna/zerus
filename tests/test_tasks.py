@@ -667,12 +667,15 @@ class DeliveryFixture(Fixture):
 
     def as_agent(self, *args, text=None, ok=True):
         """`hgs task ARGS` run by the scripted agent of `self.name`, as its shell would."""
+        return self.run_as_agent(self.root, self.name, self.run_id, args, text, ok)
+
+    def run_as_agent(self, folder, name, run, args, text, ok):
         job = str(uuid.uuid4())
-        env = dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id)
-        request = self.root / "commands" / (job + ".tmp")
+        env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=run)
+        request = folder / "commands" / (job + ".tmp")
         request.write_text(json.dumps(dict(argv=[str(HGS), "task", *args], stdin=text or "", env=env)))
-        request.rename(self.root / "commands" / (job + ".json"))
-        result = self.root / "results" / (job + ".json")
+        request.rename(folder / "commands" / (job + ".json"))
+        result = folder / "results" / (job + ".json")
         for _ in range(1500):
             if result.exists():
                 done = json.loads(result.read_text())
@@ -709,6 +712,165 @@ class DeliveryFixture(Fixture):
         settings = self.hgs("settings", "--project", "orchard")["settings"]
         settings.update(changes)
         self.hgs("settings", "--project", "orchard", "--set", text=json.dumps(settings))
+
+
+class TechnicalReviewDelivery(DeliveryFixture):
+    """Use the ordinary report, owned desktop service and native reviewer CLI."""
+    reporter = "codex/technical-reporter"
+
+    def setUp(self):
+        super().setUp()
+        self.reporter_root = self.root / "reporter"
+        self.reporter_root.mkdir()
+        (self.reporter_root / "commands").mkdir()
+        (self.reporter_root / "results").mkdir()
+        self.reporter_run = str(uuid.uuid4())
+        self.tmux("new-session", "-d", "-s", self.reporter, "-x", "100", "-y", "30", "-e",
+                  "TASK_FIXTURE=" + str(self.reporter_root), "python3", str(self.root / "agent.py"))
+        pid_file = self.reporter_root / "agent-pid"
+        pid = self.eventually(lambda: int(pid_file.read_text()) if pid_file.is_file() and pid_file.stat().st_size else None)
+        pane = self.tmux("display-message", "-p", "-t", "=" + self.reporter + ":", "#{pane_id}").strip()
+        self.tmux("set-option", "-t", "=" + self.reporter + ":", "@hgs_run", self.reporter_run)
+        agent_record(self.state, self.env, self.reporter, self.reporter_run, pid=pid, pane=pane)
+
+    def as_reporter(self, *args, text=None, ok=True):
+        return self.run_as_agent(self.reporter_root, self.reporter, self.reporter_run, args, text, ok)
+
+    def stop_service(self, service):
+        if service.poll() is None:
+            service.terminate()
+        _, stderr = service.communicate(timeout=12)
+        self.assertEqual(service.returncode, 0, stderr)
+
+    def start_service(self, **overrides):
+        env = dict(self.env, **overrides)
+        env.update(DBUS_SESSION_BUS_ADDRESS="unix:path=" + str(self.root / "missing-bus"),
+                   XDG_RUNTIME_DIR=str(self.root), XDG_SESSION_TYPE="wayland",
+                   WAYLAND_DISPLAY="missing-wayland")
+        service = subprocess.Popen([str(HGS), "desktop", "serve", "--background"], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.stop_service, service)
+        def ready():
+            if service.poll() is not None:
+                self.fail(service.communicate()[1])
+            status = subprocess.run([str(HGS), "desktop", "status", "--json"], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            return status.returncode == 0 and json.loads(status.stdout).get("writers_enabled")
+        self.eventually(ready)
+        return service
+
+    def eventually(self, check):
+        until = time.monotonic() + 18
+        while time.monotonic() < until:
+            if value := check():
+                return value
+            time.sleep(0.08)
+        self.fail("The ordinary technical review operation did not settle.")
+
+    def detail(self, task):
+        return self.hgs("get", task["ref"], "--history-limit", "30", "--attachments", "metadata")["task"]
+
+    def enrollment(self, *legacy):
+        return json.dumps(dict(op="enable", reviewers=["run_id:" + self.run_id], legacy=legacy))
+
+    def enroll(self, *legacy):
+        return self.hgs("technical-review-policy", "--project", "orchard", "--json",
+                        text=self.enrollment(*legacy))
+
+    def submit_report(self, lane):
+        task = json.loads(self.as_reporter("add", "--project", "orchard", "--json",
+                                          text="Verify the requested behavior"))["task"]
+        self.hgs("review-owner", task["ref"], lane, text="The private native check sees the requested result.")
+        self.as_reporter("start", task["ref"], "--json")
+        report = json.loads(self.as_reporter("report", task["ref"], "--ready", "--json",
+                           text="The exact request passed its native check."))
+        self.assertTrue(report["moved_to_review"])
+        return self.detail(task)
+
+    def audits(self, task):
+        return [entry["technical_review"] for entry in self.detail(task)["log"] if "technical_review" in entry]
+
+    def wait_action(self, task, action):
+        return self.eventually(lambda: next((a for a in self.audits(task) if a["action"] == action), None))
+
+    def test_report_notifies_enrolled_reviewer_then_verifies_once_after_restart(self):
+        legacy = self.submit_report("technical")
+        proof = dict(op="set", history_revision=legacy["history_revision"], report_id=legacy["review_report_id"],
+                     disposition=dict(kind="ready", evidence="Verified the previous exact trace."))
+        self.as_agent("quick-review", legacy["ref"], "--json", text=json.dumps(proof))
+        legacy = self.detail(legacy)
+        decision = next(e for e in legacy["log"] if e["kind"] == "quick_review")
+        grant = dict(task_uuid=legacy["uuid"], history_revision=legacy["history_revision"],
+                     report_id=legacy["review_report_id"], decision_id=decision["id"],
+                     reviewer_session_id="run_id:" + self.run_id)
+        self.assertIn("Only the person", self.as_reporter("technical-review-policy", "--project", "orchard",
+                      "--json", text=self.enrollment(grant), ok=False))
+        self.enroll(grant)
+        service = self.start_service()
+        settled_legacy = self.wait_action(legacy, "legacy_verified")
+        self.assertEqual(settled_legacy["report_id"], grant["report_id"])
+        self.assertEqual(settled_legacy["decision_id"], grant["decision_id"])
+        self.assertEqual(self.detail(legacy)["stage"], "done")
+
+        task = self.submit_report("technical")
+        personal = self.submit_report("person")
+        self.assertEqual(task["stage"], "review")
+        notice = self.wait_action(task, "notified")
+        self.assertEqual(notice["report_id"], task["review_report_id"])
+        self.assertEqual(self.received().count("[Zerus technical review "), 1)
+        self.assertEqual(self.detail(personal)["quick_review_status"], "unclassified")
+        self.stop_service(service)
+        self.start_service()
+
+        exact = self.detail(task)
+        verdict = dict(op="verify", history_revision=exact["history_revision"], report_id=exact["review_report_id"],
+                       observation="I observed the original request pass in the isolated terminal.",
+                       evidence_reference="Immutable capture of the exact fixture.")
+        self.assertIn("not an enrolled", self.as_reporter("quick-review", exact["ref"], "--json",
+                      text=json.dumps(verdict), ok=False))
+        self.assertEqual(json.loads(self.as_agent("quick-review", exact["ref"], "--json",
+                         text=json.dumps(verdict)))["task"]["stage"], "done")
+        self.as_agent("quick-review", exact["ref"], "--json", text=json.dumps(verdict), ok=False)
+        self.assertEqual([a["action"] for a in self.audits(task)].count("verified"), 1)
+        self.assertEqual([a["action"] for a in self.audits(legacy)].count("legacy_verified"), 1)
+        self.assertEqual(self.received().count("[Zerus technical review "), 1)
+
+    def test_unavailable_reviewer_is_visible_and_plain_ready_does_not_complete(self):
+        pending = self.submit_report("technical")
+        self.as_reporter("quick-review", pending["ref"], "--json", text=json.dumps(dict(
+            op="set", history_revision=pending["history_revision"], report_id=pending["review_report_id"],
+            disposition=dict(kind="ready", evidence="The reporter wrote Ready, without independent review."))))
+        self.enroll()
+        self.tmux("kill-session", "-t", "=" + self.name)
+        self.start_service()
+        next_task = self.submit_report("technical")
+        audit = self.wait_action(next_task, "reviewer_unavailable")
+        self.assertEqual(audit["report_id"], next_task["review_report_id"])
+        self.assertEqual(self.detail(next_task)["quick_review_status"], "check")
+        self.assertEqual(self.detail(pending)["quick_review_status"], "ready")
+        self.assertEqual(self.detail(pending)["stage"], "review")
+        self.assertNotIn("reserved", [entry["action"] for entry in self.audits(next_task)])
+
+    def test_replaced_check_cannot_deliver_its_reserved_notice(self):
+        self.enroll()
+        barrier = self.root / "notice-barrier"
+        barrier.mkdir()
+        self.start_service(HGS_TEST_ATTEMPT_PAUSE=str(barrier),
+                           HGS_TEST_ATTEMPT_PAUSE_AT="technical_review_notice")
+        self.addCleanup(lambda: (barrier / "release").touch())
+        task = self.submit_report("technical")
+        self.eventually(lambda: (barrier / "ready").is_file())
+        self.assertEqual((barrier / "ready").read_text(), task["uuid"])
+        check = self.detail(task)
+        self.assertEqual(check["quick_review_status"], "check")
+        self.hgs("review-owner", task["ref"], "person", "--expect-revision", check["history_revision"],
+                 text="Wait for the actual personal decision.")
+        (barrier / "release").touch()
+        self.eventually(lambda: self.detail(task)["review_lane"] == "person")
+        time.sleep(1)
+        self.assertNotIn("[Zerus technical review ", self.received())
+        self.assertEqual(self.detail(task)["stage"], "review")
+        self.assertNotIn("notified", [a["action"] for a in self.audits(task)])
 
 class TaskDelivery(DeliveryFixture):
     def test_quick_review_pages_and_guarded_original_executor_reopen(self):

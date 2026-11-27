@@ -28,6 +28,7 @@ pub(super) struct Runtime {
     delivery: delivery::Runtime,
     details: details::Adapter,
     maintenance: maintenance::Runtime,
+    technical_review: crate::tasks::technical_review::Worker,
     cache: super::cache_maintenance::Runtime,
     attention: attention::Runtime,
     activations: activation::Router,
@@ -127,6 +128,7 @@ impl Runtime {
                 delivery,
                 details: details::Adapter::new(epoch),
                 maintenance,
+                technical_review: crate::tasks::technical_review::Worker::new(config),
                 cache: super::cache_maintenance::Runtime::new(&location, epoch, owner.clone()),
                 attention: attention::Runtime::new(epoch),
                 activations: activation::Router::new(&location.configuration, epoch),
@@ -186,6 +188,7 @@ impl Runtime {
         }
         #[cfg(windows)]
         self.swarm.poll();
+        self.technical_review.poll();
         let fleet = &self.fleet;
         self.details.tick(
             &mut |computer, generation, controls| fleet.controls(computer, generation, controls),
@@ -752,7 +755,9 @@ impl Runtime {
             Some(Ok(false)) => false,
             Some(Err(error)) => return Err(error),
         };
+        let technical_review_done = self.technical_review.stop();
         self.drained = self.input_acknowledgment.poll()
+            && technical_review_done
             && fleet_done
             && presence_done
             && self.delivery.drained()

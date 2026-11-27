@@ -150,6 +150,8 @@ pub struct LogEntry {
     pub person_request: Option<PersonRequestRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quick_review: Option<crate::quick_review::Decision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_review: Option<crate::technical_review::Audit>,
 }
 
 /// A task message's durable outbox reservation. Submission is not consumption.
