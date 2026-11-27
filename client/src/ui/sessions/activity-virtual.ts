@@ -96,7 +96,7 @@ export function activityText(items: TranscriptItem[], expanded: Record<string, b
     ]);
     const body = item.replies?.length
       ? item.replies.map((reply) => lines([tr("Question"), reply.question, tr("Your answer"), reply.answer])).join("\n")
-      : item.kind === "user" ? item.body : item.body ? markdownText(item.body) : undefined;
+      : item.kind === "user" || item.kind === "receipt" ? item.body : item.body ? markdownText(item.body) : undefined;
     return lines([
       item.label ?? (item.kind === "user" ? tr("You") : item.kind === "agent" ? tr("Agent") : item.sender ?? "Zerus"),
       item.local?.stamp ?? item.at, item.receipt, body, item.local?.error, item.code,

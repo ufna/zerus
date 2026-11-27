@@ -210,6 +210,39 @@ fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
 }
 
 #[test]
+fn manual_send_to_a_working_codex_uses_ordinary_send_and_keeps_file_identity() {
+    let root = dir("manual-codex-turn");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_on(&store);
+    let session = target_session("codex");
+    let view = present(&c, &fake, &session, "codex");
+    let path = root.join("fixture.txt");
+    std::fs::write(&path, b"current turn file").unwrap();
+    c.attach_paths(view.handle, vec![path], Default::default());
+    until(&c, |v| v.attachments.len() == 1);
+    let mut busy = details(&session, "codex", true, Some(false));
+    busy["codex_busy_outbox_supported"] = json!(true);
+    busy["codex_manual_turn_send"] = json!(true);
+    busy["pending_questions_complete"] = json!(true);
+    busy["pending_questions"] = json!([]);
+    c.observe(&state(busy));
+    let view = until(&c, |v| !v.offers_outbox && v.can_send);
+    c.send_message(view.handle, view.rev + 1, view.text_epoch, "manual turn".into(), 0, 0);
+    crate::composer::send::tests::eventually(|| !lock(&fake.calls).is_empty());
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    let (target, Action::Send {text, attachments, ..}, request) = &calls[0] else {
+        panic!("ordinary manual input must enter the active Codex turn");
+    };
+    assert_eq!(text, "manual turn");
+    assert_eq!(attachments[0].bytes.as_ref(), b"current turn file");
+    assert_eq!(target.run_id, "run-1");
+    assert_eq!(target.conversation_id, "conv-1");
+    assert!(uuid::Uuid::parse_str(request).is_ok());
+    assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+}
+
+#[test]
 fn interrupted_codex_queues_require_exact_positive_native_readiness() {
     let root = dir("interrupted-codex-queued-input");
     let store = drafts(&root);
@@ -271,9 +304,11 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
         assert!(lock(&fake.calls).is_empty(), "{field}");
     }
     let name = session.name.clone();
+    let first_request = original.clone();
+    let native_ids = ["00000001-2222-4444-8888-000000000001", "00000002-2222-4444-8888-000000000002"];
     *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
         receipt: json!({"status":"submitted","transport":"codex_queue","codex_outbox":true,"request_id":id,"name":name,
-            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":"11111111-1111-4111-8111-111111111111"}),
+            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":native_ids[usize::from(id != first_request)]}),
         cleanup: None,
     });
     // The catalog and inspect may observe different substates of the same turn.
@@ -285,12 +320,18 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
     assert!(c.current().is_none());
     let calls = lock(&fake.calls);
     assert!(calls.iter().all(|call| matches!(&call.1, Action::SendToCodexQueue { .. })));
-    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original, second]);
+    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original.clone(), second.clone()]);
     drop(calls);
     c.open(Some(session));
     c.observe(&state(busy));
     let view = until(&c, |v| v.status == "Queued in Codex");
-    assert!(view.local.is_empty());
+    assert_eq!(view.local.len(), 2);
+    for ((row, id), native) in view.local.iter().zip([original, second]).zip(native_ids) {
+        assert_eq!(row.source.as_deref(), Some("zerus_codex_queue"));
+        assert_eq!(row.id, id);
+        assert_eq!(row.message_id.as_deref(), Some(native));
+        assert_eq!(row.text, "first");
+    }
 }
 
 #[test]
@@ -1521,11 +1562,7 @@ fn cold_start_prefers_the_native_codex_queue_on_a_capable_idle_host() {
 
 fn cold_start_idle_fifo(native: bool) {
     use zerus_client_core::drafts::read_draft;
-    let root = dir(if native {
-        "outbox-background-restart-native"
-    } else {
-        "outbox-background-restart-terminal"
-    });
+    let root = dir(if native { "outbox-native-restart" } else { "outbox-background-restart" });
     let store = drafts(&root);
     let (first, fake) = send_hub_on(&store);
     let session = target_session("codex");

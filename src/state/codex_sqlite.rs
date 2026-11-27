@@ -190,9 +190,29 @@ mod snapshot {
         }
     }
 
-    fn hot_journal(home: &Path, until: Instant) -> SnapshotResult<Option<Version>> {
+    #[derive(Clone, Copy)]
+    enum Catalog<'a> {
+        Threads,
+        Queue { thread: &'a str },
+    }
+
+    impl Catalog<'_> {
+        fn file(self, home: &Path, suffix: &str) -> PathBuf {
+            let name = match self {
+                Self::Threads => "state_5.sqlite",
+                Self::Queue { .. } => "queue_1.sqlite",
+            };
+            home.join(format!("{name}{suffix}"))
+        }
+    }
+
+    fn hot_journal(
+        catalog: Catalog,
+        home: &Path,
+        until: Instant,
+    ) -> SnapshotResult<Option<Version>> {
         live(until)?;
-        match open_source(&home.join("state_5.sqlite-journal")) {
+        match open_source(&catalog.file(home, "-journal")) {
             Ok(file) => Ok(Some(version(&file)?)),
             Err(SnapshotError::Missing) => Ok(None),
             Err(error) => Err(error),
@@ -354,6 +374,7 @@ mod snapshot {
     }
 
     fn query_copy(
+        catalog: Catalog,
         main: &Source,
         wal: Option<&[u8]>,
         ids: &[String],
@@ -372,10 +393,10 @@ mod snapshot {
                 hook(directory.path());
             }
         });
-        let main_path = directory.path().join("state_5.sqlite");
+        let main_path = catalog.file(directory.path(), "");
         write_copy(&main_path, &main.bytes, until)?;
         if let Some(wal) = wal {
-            write_copy(&directory.path().join("state_5.sqlite-wal"), wal, until)?;
+            write_copy(&catalog.file(directory.path(), "-wal"), wal, until)?;
         }
         let db = Connection::open_with_flags(
             &main_path,
@@ -409,6 +430,20 @@ mod snapshot {
         }
         let mut paths = BTreeMap::new();
         for id in ids {
+            if let Catalog::Queue { thread } = catalog {
+                // Exact native PK and thread bind the two distinct identities.
+                // Missing after consumption is unknown, never proof of delivery.
+                let client: Option<String> = tx.query_row(
+                    "SELECT json_extract(payload_json,'$.UserInput.client_id') FROM queued_items
+                     WHERE id=?1 AND thread_id=?2", [id.as_str(), thread], |row| row.get(0),
+                ).optional().map_err(failed)?.flatten();
+                if let Some(client) = client
+                    .filter(|c| session_id::canonical(c) && c != &uuid::Uuid::nil().to_string())
+                {
+                    paths.insert(id.clone(), client);
+                }
+                continue;
+            }
             let path: Option<String> = tx
                 .query_row(
                     "SELECT rollout_path FROM threads WHERE id=?1",
@@ -440,34 +475,41 @@ mod snapshot {
         Ok(paths)
     }
 
-    fn unchanged(main: &Source, wal: &Option<Source>, home: &Path, until: Instant) -> bool {
-        let current_main = read_source(&home.join("state_5.sqlite"), until);
-        let current_wal = read_wal(&home.join("state_5.sqlite-wal"), until);
+    fn unchanged(
+        catalog: Catalog,
+        main: &Source,
+        wal: &Option<Source>,
+        home: &Path,
+        until: Instant,
+    ) -> bool {
+        let current_main = read_source(&catalog.file(home, ""), until);
+        let current_wal = read_wal(&catalog.file(home, "-wal"), until);
         matches!(current_main, Ok(current) if current == *main)
             && matches!(current_wal, Ok(current) if current == *wal)
     }
 
     fn attempt(
+        catalog: Catalog,
         home: &Path,
         ids: &[String],
         until: Instant,
     ) -> SnapshotResult<BTreeMap<String, String>> {
-        if hot_journal(home, until)?.is_some() {
+        if hot_journal(catalog, home, until)?.is_some() {
             return Err(failed("Codex rollback journal is present"));
         }
-        let main = read_source(&home.join("state_5.sqlite"), until)?;
+        let main = read_source(&catalog.file(home, ""), until)?;
         let size = page_size(&main)?;
-        let wal = read_wal(&home.join("state_5.sqlite-wal"), until)?;
+        let wal = read_wal(&catalog.file(home, "-wal"), until)?;
         // The copy holds only the WAL's committed content (`validate_wal`).
         let committed = match &wal {
             Some(source) => Some(&source.bytes[..validate_wal(source, size, until)?]),
             None => None,
         };
-        let paths = query_copy(&main, committed, ids, until)?;
-        if !unchanged(&main, &wal, home, until) {
+        let paths = query_copy(catalog, &main, committed, ids, until)?;
+        if !unchanged(catalog, &main, &wal, home, until) {
             return Err(SnapshotError::Changed);
         }
-        if hot_journal(home, until)?.is_some() {
+        if hot_journal(catalog, home, until)?.is_some() {
             return Err(failed("Codex rollback journal appeared during its read"));
         }
         live(until)?;
@@ -479,7 +521,32 @@ mod snapshot {
         ids: &[String],
         until: Instant,
     ) -> Result<BTreeMap<String, String>> {
-        if ids.len() > MAX_CHILDREN || ids.iter().any(|id| !session_id::canonical(id)) {
+        read_catalog(Catalog::Threads, home, ids, until)
+    }
+
+    pub(in crate::state) fn queued_clients(
+        home: &Path,
+        thread: &str,
+        ids: &[String],
+        until: Instant,
+    ) -> Result<BTreeMap<String, String>> {
+        if !session_id::canonical(thread) {
+            return Err("Invalid native queue thread".into());
+        }
+        read_catalog(Catalog::Queue { thread }, home, ids, until)
+    }
+
+    fn read_catalog(
+        catalog: Catalog,
+        home: &Path,
+        ids: &[String],
+        until: Instant,
+    ) -> Result<BTreeMap<String, String>> {
+        let limit = match catalog {
+            Catalog::Threads => MAX_CHILDREN,
+            Catalog::Queue { .. } => receipt_index::PAGE_LIMIT,
+        };
+        if ids.len() > limit || ids.iter().any(|id| !session_id::canonical(id)) {
             return Err("Codex child identities exceed their bound".into());
         }
         // No native connection or lock can coexist with this snapshot's raw fds.
@@ -497,7 +564,7 @@ mod snapshot {
         for _ in 0..ATTEMPTS {
             live(until).map_err(|error| error.to_string())?;
             let main =
-                read_source(&home.join("state_5.sqlite"), until).map_err(|error| match error {
+                read_source(&catalog.file(home, ""), until).map_err(|error| match error {
                     SnapshotError::Changed => "Codex catalog changed during its read".to_owned(),
                     SnapshotError::Missing => "Codex catalog is missing".to_owned(),
                     SnapshotError::Failed(error) => error,
@@ -512,7 +579,7 @@ mod snapshot {
             if original.get_or_insert(file) != &file {
                 return Err("Codex catalog was replaced during its read".into());
             }
-            match attempt(home, ids, until) {
+            match attempt(catalog, home, ids, until) {
                 Ok(paths) => return Ok(paths),
                 Err(SnapshotError::Changed) => (),
                 Err(SnapshotError::Missing) => {
@@ -526,7 +593,7 @@ mod snapshot {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) use snapshot::rollout_paths;
+pub(super) use snapshot::{queued_clients, rollout_paths};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(in crate::state) use snapshot::{
     AFTER_DIRECTORY, AFTER_READ, MAX_SOURCE, RAW_OPENS, WAL_PROGRESS,

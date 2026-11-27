@@ -248,6 +248,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        session-keep-warm-v1
        antigravity-native-login-v1
        delivery-receipt-v1
+       receipt-index-codex-queue-page-v1
        native-send-outcome-v2
        session-question-routing-v1
        session-question-routing-v2

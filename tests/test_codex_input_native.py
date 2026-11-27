@@ -241,6 +241,81 @@ class NativeCodexInput(unittest.TestCase):
         self.assertNotIn(draft, messages)
         self.assertNotIn(refused, messages)
 
+    def test_ordinary_busy_send_enters_the_same_turn_after_a_running_tool_and_preserves_a_draft(self):
+        import base64
+        # Hold the first actual tool call until the regular guarded Send finishes.
+        # Its next Responses request identifies whether Enter steered this turn.
+        marker = self.root / 'tool-started'
+        release_tool = self.root / 'tool-release'
+        hold = 'Hold a private tool for the manual Send.'
+        calls = []
+        fallback = self.server.RequestHandlerClass.do_POST
+        def respond(handler):
+            raw = handler.rfile.read(int(handler.headers['Content-Length']))
+            wire = json.loads(raw)
+            items = wire.get('input', [])
+            texts = [part.get('text', '') for row in items if row.get('role') == 'user'
+                     for part in row.get('content', []) if isinstance(part, dict)]
+            if hold not in texts or calls:
+                if any(row.get('call_id') == 'manual_wait' and row.get('type') == 'function_call_output' for row in items):
+                    calls.append(texts)
+                handler.rfile = io.BytesIO(raw)
+                return fallback(handler)
+            calls.append(texts)
+            shell = f'touch "{marker}"; for i in $(seq 1 160); do test -f "{release_tool}" && break; sleep .05; done; pwd'
+            item = dict(type='function_call', id='fc_manual', call_id='manual_wait', namespace='functions',
+                        name='exec_command', arguments=json.dumps(dict(cmd=shell, yield_time_ms=10000)), status='completed')
+            response = dict(id='resp_manual', object='response', status='completed', output=[item],
+                            usage=dict(input_tokens=1, output_tokens=1, total_tokens=2))
+            handler.send_response(200)
+            handler.send_header('Content-Type', 'text/event-stream')
+            handler.end_headers()
+            handler.emit('response.created', response=dict(response, status='in_progress', output=[]))
+            handler.emit('response.output_item.added', output_index=0, item=dict(item, status='in_progress'))
+            handler.emit('response.output_item.done', output_index=0, item=item)
+            handler.emit('response.completed', response=response)
+        self.server.RequestHandlerClass.do_POST = respond
+        self.tmux('send-keys', '-l', '-t', self.pane, hold)
+        self.wait_for(lambda: hold in self.screen())
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.wait_for(marker.exists)
+        self.record.update(activity='busy', phase='tool')
+        self.write_record()
+        typed = 'Keep my unsent native draft'
+        self.tmux('send-keys', '-l', '-t', self.pane, typed)
+        self.wait_for(lambda: typed in self.screen())
+        blocked = self.payload(text='Never offer this item.')
+        self.assertIn('draft', self.send(blocked, success=False))
+        self.assertIn(typed, self.screen())
+        # The fixture user removes only their own draft and issues a fresh Send.
+        self.tmux('send-keys', '-t', self.pane, 'C-a', 'C-k')
+        self.wait_for(lambda: typed not in self.screen())
+        content = b'private same-turn attachment'
+        request = self.payload(text='Read the same-turn file', attachments=[dict(name='turn.txt', mime='text/plain',
+                                    data_base64=base64.b64encode(content).decode())])
+        receipt = self.send(request)
+        self.assertEqual((receipt['status'], receipt['transport'], receipt['request_id']),
+                         ('submitted', 'terminal', request['request_id']))
+        self.assertEqual(receipt['conversation_id'], self.conversation_id)
+        self.assertEqual(Path(receipt['attachments'][0]['path']).read_bytes(), content)
+        self.assertEqual(self.send(request), receipt)
+        release_tool.touch()
+        self.wait_for(lambda: len(calls) >= 2)
+        self.assertIn(receipt['submitted_text'], calls[1])
+        turns = {}
+        turn = None
+        for line in Path(self.record['transcript']).read_text().splitlines():
+            row = json.loads(line)
+            event = row.get('payload', {})
+            if row.get('type') == 'event_msg' and event.get('type') == 'task_started':
+                turn = event['turn_id']
+            if row.get('type') == 'event_msg' and event.get('type') == 'user_message':
+                turns.setdefault(event['message'], []).append(turn)
+        self.assertEqual(len(turns[hold]), 1)
+        self.assertEqual(turns[receipt['submitted_text']], turns[hold])
+        self.assertNotIn(blocked['text'], turns)
+        self.assertNotIn(typed, turns)
+
     def test_busy_native_queue_admits_equal_requests_and_file_without_steering(self):
         self.busy_native_queue("working")
 
@@ -357,6 +432,30 @@ class NativeCodexInput(unittest.TestCase):
             self.assertTrue(receipt['codex_outbox'])
         ids = [r['native_queued_message_id'] for r in receipts]
         self.assertEqual(len(set(ids)), 3)
+        queued = self.inspect_native_queue()
+        expected_by_id = {r['request_id']: (r['native_queued_message_id'], r['text']) for r in receipts}
+        self.assertEqual({r['request_id']: (r['native_queued_message_id'], r['detail']) for r in queued}, expected_by_id)
+        self.assertTrue(all(r['native_queue_state'] == 'queued' for r in queued))
+        clients = {r['codex_client_id'] for r in queued}
+        self.assertEqual(len(clients), 3)
+        self.assertTrue(clients.isdisjoint(ids))
+        files = next(r['attachments'] for r in queued if r['request_id'] == file['request_id'])
+        self.assertEqual([f['name'] for f in files], ['sample.txt'])
+        self.assertNotIn('path', files[0])
+        page_request = dict(expected_run_id=self.run_id, expected_conversation_id=self.conversation_id,
+                            projection='codex_queue', limit=1)
+        seen = []
+        while True:
+            result = invoke(['__state', 'receipt-index-page', self.name, '--json'], page_request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            page = json.loads(result.stdout)
+            seen.extend(r['request_id'] for r in page['codex_queued_messages'])
+            meta = page['codex_queue_projection']
+            if not meta['has_more']:
+                break
+            page_request['cursor'] = meta['next_cursor']
+            self.assertLessEqual(len(seen), 3)
+        self.assertCountEqual(seen, expected_by_id)
         # A lost HGS reply reads exactly the durable original, without a new native offer.
         query = dict(request_id=file['request_id'], expected_run_id=self.run_id,
                      expected_conversation_id=self.conversation_id,
@@ -380,6 +479,17 @@ class NativeCodexInput(unittest.TestCase):
         self.wait_for(lambda: native_texts()[-3:] == expected)
         self.assertEqual(native_texts().count(text), 2)
         self.wait_for(lambda: any(req['texts'][-1:] == expected[-1:] for req in self.server.requests))
+        consumed = self.inspect_native_queue()
+        self.assertEqual({r['request_id']: r['native_queue_state'] for r in consumed},
+                         {r['request_id']: 'consumed' for r in receipts})
+        self.assertEqual({r['codex_client_id'] for r in consumed}, clients)
+
+
+    def inspect_native_queue(self):
+        result = subprocess.run([str(test_input.HGS), 'inspect', self.name], env=self.env,
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)['codex_queued_messages']
 
     def test_native_refusal_has_an_opted_in_terminal_outcome(self):
         import native_send_outcome

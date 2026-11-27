@@ -287,6 +287,16 @@ impl Composers {
         let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
         let target = target(ctx);
         let exact = ctx.exact_outbox_details(details);
+        // A person's Send to the current working Codex turn uses its normal
+        // guarded composer and Enter. A saved FIFO head keeps its own route.
+        if supported && exact && c.outbox.is_empty()
+            && ctx.row.agent == "codex" && codex_work_phase(ctx.row.phase.as_deref())
+            && details["codex_manual_turn_send"] == true
+            && !ctx.ordinary_input_held(hub)
+            && self.idle_or_codex_details(&ctx.row, &target, details)
+        {
+            return ManualSend::Direct;
+        }
         let native_queue = exact && supported && self.native_queue_details(&ctx.row, &target, details);
         if waiting {
             if let Some(reason) = ctx.reason() {
@@ -871,7 +881,7 @@ impl Composers {
                     // Confirmed queue admission frees the next FIFO head immediately.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     c.last_submission = notice.map(|text| (entry.target.clone(), text));
-                    if exact && notice.is_none() {
+                    if exact && (codex_queued || notice.is_none()) {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }

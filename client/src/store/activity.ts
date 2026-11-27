@@ -29,6 +29,7 @@ export interface FollowRequest {
 }
 
 export interface ActivityPort {
+  receiptPage?(target: FollowTarget, cursor: string): Promise<Record<string, unknown>>;
   follow(request: FollowRequest): Promise<void>;
   unfollow(computer: ComputerId, key: string): Promise<void>;
 }
@@ -105,6 +106,50 @@ export function createActivity(port: ActivityPort) {
   const [currentSummary, setCurrentSummary] = createSignal<Record<string, unknown> | undefined>();
   const [transcriptSummary, setTranscriptSummary] = createSignal<Record<string, unknown> | undefined>();
   const [displayKey, setDisplayKey] = createSignal<string | undefined>();
+  // Keep at most one earlier receipt page beside the current one.
+  const [receiptPage, setReceiptPage] = createSignal<Record<string, unknown>>();
+  const [receiptLoading, setReceiptLoading] = createSignal(false);
+  const [receiptError, setReceiptError] = createSignal<string>();
+  let receiptGeneration = 0;
+  function nextReceiptCursor() {
+    const t = target(), current = currentSummary();
+    if (!t?.runId || !t.conversationId || current?.run_id !== t.runId
+        || current?.conversation_id !== t.conversationId || !port.receiptPage) return;
+    const meta = (receiptPage() ?? current).codex_queue_projection as Record<string, unknown> | undefined;
+    return meta?.has_more === true && typeof meta.next_cursor === "string" ? meta.next_cursor : undefined;
+  }
+  function resetReceiptPage() {
+    receiptGeneration++;
+    setReceiptPage(undefined);
+    setReceiptError(undefined);
+    setReceiptLoading(false);
+  }
+  async function loadEarlierReceipts() {
+    const t = target(), cursor = nextReceiptCursor();
+    if (!t || !cursor || !port.receiptPage || receiptLoading()) return;
+    const generation = ++receiptGeneration;
+    setReceiptLoading(true);
+    setReceiptError(undefined);
+    try {
+      const page = await port.receiptPage(t, cursor);
+      if (receiptGeneration !== generation) return;
+      if (page.run_id !== t.runId || page.conversation_id !== t.conversationId
+          || !Array.isArray(page.codex_queued_messages)) throw new Error("Invalid message history page");
+      setReceiptPage(page);
+    } catch {
+      if (receiptGeneration === generation) setReceiptError(tr("Could not load earlier sent messages."));
+    } finally {
+      if (receiptGeneration === generation) setReceiptLoading(false);
+    }
+  }
+  function displayedTranscript() {
+    const current = transcriptSummary(), page = receiptPage();
+    if (!page || !current || current.run_id !== page.run_id || current.conversation_id !== page.conversation_id) return current;
+    const first = current.codex_queued_messages, older = page.codex_queued_messages;
+    if (!Array.isArray(first) || !Array.isArray(older)) return current;
+    const ids = new Set(first.map(row => row.request_id));
+    return { ...current, codex_queued_messages: [...first, ...older.filter(row => !ids.has(row.request_id))] };
+  }
   const [ended, setEnded] = createSignal(false);
   const [loaded, setLoaded] = createSignal(false);
   const [loadingOlder, setLoadingOlder] = createSignal(false);
@@ -188,6 +233,7 @@ export function createActivity(port: ActivityPort) {
   function follow(next: FollowTarget | undefined, opened?: Promise<void>) {
     const prev = target();
     if (prev?.id === next?.id) return;
+    resetReceiptPage();
     const conversation = summary()?.conversation_id || prev?.conversationId;
     const continuing = !!prev && !!next && prev.computer === next.computer && prev.name === next.name
       && typeof conversation === "string" && !!conversation && next.conversationId === conversation;
@@ -441,7 +487,7 @@ export function createActivity(port: ActivityPort) {
     return { computer: t.computer, name: t.name, conversation_id: conversation, archive_id: null };
   };
 
-  return { target, displayKey, events, summary, currentSummary, transcriptSummary, ended, loaded, loadingOlder, olderDone, error, stalled, retry, refresh, follow, loadOlder, applyActivity, attachmentScope };
+  return { target, displayKey, events, summary, currentSummary, transcriptSummary: displayedTranscript, nextReceiptCursor, loadEarlierReceipts, receiptLoading, receiptError, hasReceiptPage: () => !!receiptPage(), resetReceiptPage, ended, loaded, loadingOlder, olderDone, error, stalled, retry, refresh, follow, loadOlder, applyActivity, attachmentScope };
 }
 
 export type ActivityStore = ReturnType<typeof createActivity>;

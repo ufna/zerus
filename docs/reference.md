@@ -2709,7 +2709,12 @@ with `agent busy` before submission; wait or inspect Terminal rather than typing
 through that refusal.
 
 **Send** and Enter in Desktop Composer send to a ready agent immediately.
-For a busy live Codex, Claude, Kimi, supported OpenCode or supported DeepSeek
+When the owner host confirms a single live Codex conversation, an empty
+Desktop queue, and a working turn with no pending question or earlier input,
+a manual Send uses the ordinary native composer and Enter. Codex can read
+the follow-up when the current tool call completes. The owning host checks the
+terminal before input. A native draft or dialog stays intact on refusal.
+For other busy live Codex, Claude, Kimi, supported OpenCode or supported DeepSeek
 conversation, or one with earlier Zerus messages
 waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
@@ -2718,8 +2723,11 @@ its attachments. The agent receives no input during that save. The desktop
 checks the original run and sends messages in order. On a host with native
 Codex queue support, **Send** can hand a message to the exact working Codex
 conversation for its next turn. **Queued in Codex** confirms native acceptance.
-The host keeps the original request and attachment references through this
-handoff. On older hosts the desktop waits for the existing guarded input
+Activity retains the original text and files after this handoff, including
+after a restart. A native queue receipt confirms acceptance. Activity can
+match it to the native user message once the original queue item and the
+recorded turn share a verified client ID. Older accepted messages can be
+read in bounded pages from Activity. On older hosts the desktop waits for the existing guarded input
 route. After an interrupted turn, a live Codex session can receive input when
 the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
