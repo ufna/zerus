@@ -107,11 +107,11 @@ export function liveSessions(rows: readonly Session[], computers: Record<Compute
 /**
  * The Overview's Main only cards (owner 2026-11-14): hide a child whose parent
  * exists in the non-archived catalog, even when that parent is idle, limited
- * or not shown here. Keep the child's own non-quiet request, Review later,
+ * or not shown here. Keep starred sessions, the child's own non-quiet request, Review later,
  * missing/archived parents and parent loops. With sub-sessions bypasses this.
  * `parentOf` is the session list's parent lookup (`parentKeyOf`).
  */
-export function mainSessions(live: readonly Session[], catalog: readonly Session[], parentOf: (s: Session) => string | undefined): Session[] {
+export function mainSessions(live: readonly Session[], catalog: readonly Session[], parentOf: (s: Session) => string | undefined, isFavorite: (s: Session) => boolean = () => false): Session[] {
   const byKey = new Map(catalog.filter((s) => s.state !== "archived" && s.state !== "forgotten" && !s.archiveId).map((s) => [s.key, s]));
   const parent = (s: Session) => { const key = parentOf(s); return key === undefined ? undefined : byKey.get(key); };
   // Whether a row's chain of catalog parents ends at a row without one; a loop never
@@ -133,7 +133,7 @@ export function mainSessions(live: readonly Session[], catalog: readonly Session
   };
   // The person's own Review later mark counts even on a quiet child (attention.ts quietCounts).
   const ownMark = (s: Session) => !s.muted && !!s.reviewLater;
-  return live.filter((s) => !parent(s) || (attentionNeeded(s) && !quietAttention(s)) || ownMark(s) || !rooted(s));
+  return live.filter((s) => isFavorite(s) || !parent(s) || (attentionNeeded(s) && !quietAttention(s)) || ownMark(s) || !rooted(s));
 }
 
 /**
