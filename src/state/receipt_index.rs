@@ -276,7 +276,7 @@ impl CachedRow {
             && match provider {
                 Some("claude") => value["claude_outbox"] == true
                     && matches!(value["native"].as_str(), Some("queue" | "transcript")),
-                Some("kimi") => value["kimi_outbox"] == true,
+                Some("kimi") => true,
                 _ => false,
             }
             && !binding.first && !binding.conversation.is_empty() && binding.at > 0.0

@@ -673,7 +673,9 @@ mod tests {
         // inside the shared submitter. The ordinary body retains its seal.
         for addition in [
             "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
-            r#"    if mode == SendMode::DesktopNativeAccept && prior_refusal {
+            r#"    if prior_refusal && matches!(mode, SendMode::DesktopNativeAccept | SendMode::DesktopOutbox)
+        && matches!(agent, "claude" | "kimi")
+    {
         receipt["terminal_native_after_refusal"] = json!(true);
     }
 "#,

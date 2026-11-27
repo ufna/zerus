@@ -2668,7 +2668,9 @@ fn submit_core(
     if agent == "claude" && request.only_when_idle {
         receipt["claude_outbox"] = json!(true);
     }
-    if mode == SendMode::DesktopNativeAccept && prior_refusal {
+    if prior_refusal && matches!(mode, SendMode::DesktopNativeAccept | SendMode::DesktopOutbox)
+        && matches!(agent, "claude" | "kimi")
+    {
         receipt["terminal_native_after_refusal"] = json!(true);
     }
     if let Some(floor) = kimi_turn_floor {

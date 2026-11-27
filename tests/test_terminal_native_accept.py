@@ -35,6 +35,17 @@ class Original:
         query.update(changed)
         return self.call('delivery', 'outbox-status', name, '--json', raw=json.dumps(query).encode(), success=success)
 
+    def indexed_refusal(self, name, request_id):
+        self.call('inspect', name)
+        path = self.state / 'delivery-receipts-v1.sqlite3'
+        try:
+            with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.05) as catalog:
+                return catalog.execute(
+                    "SELECT at, files FROM receipt_rows WHERE source='terminal' AND request=?",
+                    (request_id,)).fetchone() == (0, 0)
+        except sqlite3.OperationalError:
+            return False
+
     def check_file(self, name, raw):
         request = json.loads(raw)
         result = self.call('attachment', name, '--request', request['request_id'], '--index', '0',
@@ -68,17 +79,7 @@ class NativeClaudeNext(Original, claude.NativeClaudeOutbox):
         wait = self.offer(self.name, raw)
         self.assertEqual(wait['status'], 'waiting_for_idle', wait)
         self.assertEqual(self.original(self.name, raw), wait)
-        def indexed_before_input():
-            self.call('inspect', self.name)
-            path = self.state / 'delivery-receipts-v1.sqlite3'
-            try:
-                with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.05) as catalog:
-                    return catalog.execute(
-                        "SELECT at, files FROM receipt_rows WHERE source='terminal' AND request=?",
-                        (wait['request_id'],)).fetchone() == (0, 0)
-            except sqlite3.OperationalError:
-                return False
-        self.wait_for(indexed_before_input)
+        self.wait_for(lambda: self.indexed_refusal(self.name, wait['request_id']))
         self.assertIn(DRAFT, self.screen())
         self.assertEqual(self.enqueued(FOLLOWUP), [])
         self.tmux('send-keys', '-t', self.pane, 'C-u')
@@ -156,6 +157,39 @@ class NativeKimiNext(Original, kimi.NativeKimi):
         self.assertEqual(self.held(DRAFT), 0)
 
 
+
+    def test_indexed_busy_refusal_keeps_original_file_after_ready_retry(self):
+        name = self.launch()
+        hold = threading.Event()
+        self.addCleanup(hold.set)
+        self.model_server.hold = hold
+        self.send(name, self.payload(name, 'Start one private busy turn.'))
+        self.until(lambda: self.inspect(name).get('activity') == 'busy' and bool(self.requests), name)
+        pane = '=' + name + ':'
+        self.t('send-keys', '-t', pane, '-l', DRAFT)
+        self.until(lambda: DRAFT in self.screen(name), name)
+        raw = self.request(self.payload(name, FOLLOWUP))
+        wait = self.offer(name, raw)
+        self.assertEqual(wait['status'], 'waiting_for_idle')
+        self.until(lambda: self.indexed_refusal(name, wait['request_id']), name)
+        hold.set()
+        self.until(lambda: self.inspect(name)['activity'] == 'idle', name)
+        self.assertIn(DRAFT, self.screen(name))
+        self.t('send-keys', '-t', pane, 'C-u')
+        self.until(lambda: DRAFT not in self.screen(name), name)
+
+        self.call('send', name, '--when-idle', '--json', raw=raw, drop=True)
+        original = self.original(name, raw)
+        self.assertEqual((original['request_id'], original['status']), (wait['request_id'], 'submitted'))
+        self.check_file(name, raw)
+        def attachment():
+            return next((event for event in self.inspect(name).get('attachment_messages', [])
+                         if event.get('message_id') == wait['request_id']), None)
+        self.assertEqual(self.until(attachment, name)['attachments'][0]['name'], 'changes.txt')
+        duplicate = self.call('send', name, '--when-idle', '--json', raw=raw)
+        self.assertTrue(duplicate['terminal_native_after_refusal'])
+        self.assertNotIn('kimi_outbox', duplicate)
+        self.until(lambda: self.held(duplicate['submitted_text']) == 1 and self.settled(name, duplicate), name)
 
     def test_equal_native_backlog_reoffers_same_request_during_next_working_turn(self):
         first_release = threading.Event()

@@ -161,6 +161,8 @@ struct Original {
     native_queued_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     kimi_outbox: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    terminal_native_after_refusal: bool,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     native: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -303,7 +305,9 @@ pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: 
                     "request_id":original.request_id,"name":name,"run_id":original.run_id,"conversation_id":original.conversation_id,
                     "input_sha256":original.digest,"submitted_at":original.submitted_at}));
             }
-            if name.starts_with("kimi/") && original.kimi_outbox && original.transport == "terminal" {
+            if name.starts_with("kimi/") && original.transport == "terminal"
+                && (original.kimi_outbox || original.terminal_native_after_refusal)
+            {
                 return Ok(json!({"schema":1,"status":"submitted","proof":"native_kimi_terminal_receipt",
                     "request_id":original.request_id,"name":name,"run_id":original.run_id,
                     "conversation_id":original.conversation_id,"input_sha256":query.input_sha256,
