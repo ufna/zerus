@@ -147,8 +147,22 @@ fn dsh_outbox(entry: &Entry) -> bool {
     entry.target.name.starts_with("dsh/")
 }
 
-fn guarded_action(entry: &Entry) -> Action {
-    Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
+fn terminal_native_agent(agent: &str) -> bool {
+    matches!(agent, "claude" | "kimi")
+}
+
+fn terminal_native_supported(agent: &str, details: &Value) -> bool {
+    terminal_native_agent(agent) && details["terminal_native_accept_supported"] == true
+}
+
+fn guarded_action(entry: &Entry, native: bool) -> Action {
+    let text = entry.text.clone();
+    let attachments = entry.attachments.clone();
+    if native {
+        Action::SendWhenNativeAccepts { text, attachments }
+    } else {
+        Action::SendWhenIdle { text, attachments }
+    }
 }
 
 pub(super) fn can_probe(entry: &Entry) -> bool {
@@ -276,6 +290,12 @@ impl Composers {
             }
             if !guarded_supported(&ctx.row.agent, details) {
                 return ManualSend::Blocked(QUEUE_OLD_HOST.into());
+            }
+            if c.outbox.is_empty() && !ctx.ordinary_input_held(hub)
+                && terminal_native_supported(&ctx.row.agent, details)
+                && self.outbox_ready(&ctx.row, &target, details)
+            {
+                return ManualSend::TryNow;
             }
             ManualSend::Wait
         } else if exact
@@ -537,11 +557,13 @@ impl Composers {
 
     fn check_outbox(&self, entry: &Entry) -> Option<serde_json::Value> {
         let row = self.outbox_row(entry)?;
-        // Inspect a working Codex even when its editor is closed. Only an
-        // updated owning host can offer the original to that thread's queue.
-        if row.phase.as_deref() != Some("idle")
-            && !(row.agent == "codex" && (row.phase.as_deref() == Some("interrupted") || codex_work_phase(row.phase.as_deref())))
-        {
+        // Inspect eligible working terminals even when the editor is closed.
+        // Every new route still requires its owning host's exact capability.
+        let phase = row.phase.as_deref();
+        let eligible = phase == Some("idle")
+            || (row.agent == "codex" && (phase == Some("interrupted") || codex_work_phase(phase)))
+            || (terminal_native_agent(&row.agent) && matches!(phase, Some("working" | "tool" | "compacting")));
+        if !eligible {
             return None;
         }
         (self.0.deps.inspect)(&entry.target, None, None).ok()
@@ -550,7 +572,8 @@ impl Composers {
     fn check_outbox_receipt(&self, entry: &Entry) -> Option<serde_json::Value> {
         self.outbox_row(entry)?;
         let status = self.0.outbox_status.get()?;
-        status(&entry.target, &guarded_action(entry), &entry.request_id)
+        // Both terminal flags serialize exactly the same original stdin.
+        status(&entry.target, &guarded_action(entry, false), &entry.request_id)
     }
 
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
@@ -573,15 +596,20 @@ impl Composers {
             && details["codex_interrupted_outbox_supported"] == true
             && details["interrupted_message_can_send"] == true
             && questions_clear;
+        let native = terminal_native_supported(&row.agent, details);
+        let working = native
+            && matches!(phase, Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["phase"].as_str(), Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["activity"].as_str(), Some("idle" | "busy"));
         guarded_supported(&row.agent, details)
             && super::send::exact_input_details(row, (&target.run_id, &target.conversation_id), details)
-            && (idle || interrupted || codex_queue)
+            && (idle || interrupted || codex_queue || working)
             && (dsh_agent(&row.agent) || super::send::previous_message_pending(
                 row,
                 (&target.run_id, &target.conversation_id),
                 details,
             ) == Some(false))
-            && details["input_queue"].is_null()
+            && (native || details["input_queue"].is_null())
             && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
             && details["pending_questions_complete"] != false
             && details["pending_questions"]
@@ -682,7 +710,7 @@ impl Composers {
             let action = if row.agent == "codex" && codex_work_phase(row.phase.as_deref()) {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
             } else {
-                guarded_action(&entry)
+                guarded_action(&entry, terminal_native_supported(&row.agent, details))
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
@@ -745,6 +773,8 @@ impl Composers {
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
             && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
+                || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
+                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true)
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
@@ -754,6 +784,9 @@ impl Composers {
         } else {
             terminal_only.then_some(TERMINAL_SUBMITTED)
         };
+        let native_accepted = exact && receipt.is_some_and(|receipt| {
+            receipt["kimi_outbox"] == true || (receipt["claude_outbox"] == true && receipt["native"] == "queue")
+        });
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle"
@@ -788,7 +821,7 @@ impl Composers {
                     .get_mut(&key)
                     .expect("queue write keeps the draft");
                 c.queue_writing = false;
-                let next_ready = native_queued && saved.is_ok()
+                let next_ready = (native_queued || native_accepted) && saved.is_ok()
                     && entries.first().is_some_and(|next| next.state == State::Waiting);
                 if let Err(error) = saved {
                     if exact {

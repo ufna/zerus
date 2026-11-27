@@ -191,13 +191,20 @@ fn checked_record_gate(
         process,
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
+    if mode == SendMode::DesktopNativeAccept && !supports_native_accept(&record) {
+        return Err("This session does not support guarded native terminal Send".into());
+    }
     if request.only_when_idle {
         if !mode.idle_input_ready(&record)
-            || (record["agent"] == "claude" && input_queue::claude_waiting(&record).unwrap_or(true))
+            || (mode != SendMode::DesktopNativeAccept && record["agent"] == "claude"
+                && input_queue::claude_waiting(&record).unwrap_or(true))
         {
             return Err(Gate::NotIdle);
         }
         if effort::pending_applies(&record) {
+            if mode == SendMode::DesktopNativeAccept {
+                return Err("Apply the pending model or effort settings before sending a queued message".into());
+            }
             return Err(Gate::Other("The agent is not idle; the team reminder was not sent.".into()));
         }
     }
@@ -214,6 +221,11 @@ enum SendMode {
     TerminalOutcome,
     DesktopOutbox,
     CodexQueue,
+    DesktopNativeAccept,
+}
+
+pub(super) fn supports_native_accept(record: &Value) -> bool {
+    matches!(string(record, "agent"), "claude" | "kimi")
 }
 
 impl SendMode {
@@ -229,6 +241,9 @@ impl SendMode {
                 && !codex_tasks::multiple(record)
                 && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
                 && input_queue::codex_waiting(record) == Ok(false);
+        }
+        if self == Self::DesktopNativeAccept {
+            return supports_native_accept(record);
         }
         if idle_reminder_ready(record) {
             return true;
@@ -732,15 +747,15 @@ fn checked_bound_record_gate(
         idle_only(&record)?;
     }
     if ordinary_typing(&record).is_some() {
-        return Err("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into());
+        return Err(Gate::PendingInput("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into()));
     }
     if input_unconfirmed(&record) {
         // zerus-iitw8.6: a busy agent may hold it in its own queue until it
         // takes it, which only then confirms it.
         if string(&record, "activity") == "busy" {
-            return Err("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into());
+            return Err(Gate::PendingInput("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into()));
         }
-        return Err("previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus".into());
+        return Err(Gate::PendingInput("previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus".into()));
     }
     if settings_unconfirmed(&record) {
         return Err(SETTINGS_UNCONFIRMED.into());
@@ -1386,19 +1401,20 @@ pub(crate) enum Gate {
         dialog: Option<Dialog>,
     },
     Other(String),
+    PendingInput(String),
     NotIdle,
 }
 impl Gate {
     pub(crate) fn reason(self) -> String {
         match self {
-            Gate::Waiting { reason, .. } | Gate::Other(reason) => reason,
+            Gate::Waiting { reason, .. } | Gate::Other(reason) | Gate::PendingInput(reason) => reason,
             Gate::NotIdle => "The agent is not idle; the team reminder was not sent.".into(),
         }
     }
     pub(crate) fn dialog(&self) -> Option<Dialog> {
         match self {
             Gate::Waiting { dialog, .. } => *dialog,
-            Gate::Other(_) | Gate::NotIdle => None,
+            Gate::Other(_) | Gate::PendingInput(_) | Gate::NotIdle => None,
         }
     }
 }
@@ -1668,6 +1684,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         [_, outcome, json] if outcome == "--delivery-outcome-v2" && json == "--json" => SendMode::TerminalOutcome,
         [_, idle, json] if idle == "--when-idle" && json == "--json" => SendMode::DesktopOutbox,
         [name, queue, json] if name.starts_with("codex/") && queue == "--codex-queue" && json == "--json" => SendMode::CodexQueue,
+        [_, native, json] if native == "--when-native-accepts" && json == "--json" => SendMode::DesktopNativeAccept,
         _ => return Err("usage: hgs send <session> --json (JSON from stdin)".into()),
     };
     dispatch_send(&args[0], mode, ProcessCheck::Legacy)
@@ -1724,17 +1741,17 @@ fn dispatch_send(
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
     }
-    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue) {
+    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue | SendMode::DesktopNativeAccept) {
         let request: Request = serde_json::from_slice(&input).map_err(|error| error.to_string())?;
         if !request.only_when_idle || request.expected_conversation_id.is_empty() {
-            return Err("Automatic Send requires an exact conversation and the idle guard".into());
+            return Err("Automatic Send requires an exact conversation and the original outbox request".into());
         }
         let receipt = match submit_core(name, &input, Origin::Person, true, mode, None, process) {
             Ok(receipt) => receipt,
             Err(Failure::NotOffered(witness)) => {
                 let status = if witness.waits_for_idle_send() {
                     "waiting_for_idle"
-                } else if name.starts_with("codex/") || name.starts_with("kimi/") {
+                } else if mode == SendMode::DesktopNativeAccept || name.starts_with("codex/") || name.starts_with("kimi/") {
                     "not_offered"
                 } else {
                     return Err(witness.reason);
@@ -2402,9 +2419,12 @@ fn submit_core(
     let gated = |typed: bool, gate: Gate| {
         let waiting = matches!(gate, Gate::Waiting { .. });
         let idle_refusal = matches!(gate, Gate::NotIdle);
+        let native_wait = mode == SendMode::DesktopNativeAccept
+            && (waiting || matches!(gate, Gate::PendingInput(_)));
         let dialog = gate.dialog().map(|d| d.name());
         let mut witness = witness(gate.reason(), waiting, dialog);
         witness.idle_refusal = idle_refusal;
+        witness.idle_refusal |= native_wait;
         remember_send_refusal(typed, witness, retain_refusal, terminal_outcome)
     };
     #[cfg(target_os = "linux")]
@@ -2590,6 +2610,9 @@ fn submit_core(
     if agent == "claude" && request.only_when_idle {
         receipt["claude_outbox"] = json!(true);
     }
+    if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        receipt["kimi_outbox"] = json!(true);
+    }
     if pre_send_compaction.is_object() {
         receipt["pre_send_compaction"] = pre_send_compaction;
     }
@@ -2693,6 +2716,9 @@ fn submit_core(
             if !process.recheck(&record) {
                 return Err("agent changed before paste".into());
             }
+        }
+        if string(&record, "agent") == "kimi" && mode == SendMode::DesktopNativeAccept {
+            checked_send_gate(&record).map_err(Gate::reason)?;
         }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;

@@ -38,6 +38,7 @@ METHODS = (
     'test_kimi_native.NativeKimi.test_exact_native_wire_repairs_a_lost_acceptance_write_without_replay',
     'test_kimi_native.NativeKimi.test_background_task_completion_settles_its_own_main_turn',
     'test_kimi_native.NativeKimi.test_busy_attachment_send_is_typed_once_and_delivered_once',
+    'test_terminal_native_accept.NativeKimiNext.test_busy_native_input_keeps_draft_and_recovers_the_original_file',
     'test_kimi_native.NativeKimi.test_clear_input_discards_a_residue_and_kimi_keeps_running',
     'test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',
     # #2195 (zerus-cdhjm.3): private cache expiry compacts before one delivery,

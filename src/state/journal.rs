@@ -1240,6 +1240,9 @@ pub(super) fn inspection_with(
         if record["agent"] == "claude" {
             output["claude_outbox_supported"] = json!(true);
         }
+        if input::supports_native_accept(&record) {
+            output["terminal_native_accept_supported"] = json!(true);
+        }
     }
     #[cfg(target_os = "linux")]
     if archive_id.is_none()

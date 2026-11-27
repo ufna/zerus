@@ -1886,7 +1886,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         );
     }
     // Queue-only input must never fall through to a provider that would send normally.
-    if command == "send" && args.iter().any(|arg| arg == "--codex-queue") {
+    if command == "send" && args.iter().any(|arg| matches!(arg.as_str(), "--codex-queue" | "--when-native-accepts")) {
         return input::dispatch(args);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]

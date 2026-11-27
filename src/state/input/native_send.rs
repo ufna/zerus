@@ -669,6 +669,17 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // The opt-in terminal route contributes only these additions
+        // inside the shared submitter. The ordinary body retains its seal.
+        for addition in [
+            "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
+            "        witness.idle_refusal |= native_wait;\n",
+            "    if agent == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n        receipt[\"kimi_outbox\"] = json!(true);\n    }\n",
+            "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            checked_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
+        ] {
+            assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
+            original = original.replacen(addition, "", 1);
+        }
         assert_eq!(original.matches("mode.check_send_gate(").count(), 3);
         original = original.replace("mode.check_send_gate(", "checked_send_gate(");
         for (new, prior) in [

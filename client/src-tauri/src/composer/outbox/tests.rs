@@ -106,6 +106,37 @@ fn ordinary_send_accepts_a_busy_draft_without_native_input() {
 }
 
 #[test]
+fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_head() {
+    for agent in ["claude", "kimi"] {
+        let root = dir("busy-native-terminal-outbox");
+        let store = drafts(&root);
+        let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+        let target = target_session(agent);
+        present(&c, &fake, &target, agent);
+        let mut inspect = details(&target, agent, true, Some(false));
+        inspect["terminal_native_accept_supported"] = json!(true);
+        inspect["input_queue"] = json!({"id":"native-earlier"});
+        c.observe(&state(inspect.clone()));
+        *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
+            detail: "The original acknowledgement was lost".into(),
+        });
+        let before = c.current().unwrap();
+        assert!(matches!(c.send_message(before.handle, before.rev + 1, before.text_epoch,
+            "Offer now".into(), 0, 0), SendReply::Accepted { waiting: false, .. }));
+        let held = until(&c, |view| view.waiting_in_zerus[0].state == State::Unknown);
+        let request = held.waiting_in_zerus[0].request_id.clone();
+        assert!(held.text.is_empty());
+        let later = enqueue(&c, "After the uncertain original");
+        assert_eq!(later.waiting_in_zerus[1].state, State::Waiting);
+        settle_next(&c, &fake, &store, inspect);
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, request);
+        assert!(matches!(&calls[0].1, Action::SendWhenNativeAccepts { text, .. } if text == "Offer now"));
+    }
+}
+
+#[test]
 fn interrupted_codex_queues_require_exact_positive_native_readiness() {
     let root = dir("interrupted-codex-queued-input");
     let store = drafts(&root);

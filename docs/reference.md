@@ -2725,8 +2725,12 @@ the host confirms an empty, usable native prompt.
 For Codex, Claude and Kimi, the host checks readiness again under its native
 input lock before offering the message. OpenCode checks the
 exact conversation and makes a queue-only offer. Any messages already parked
-in the OpenCode inbox keep their order. Claude's existing native queue also
-keeps its order while Desktop waits. DeepSeek checks the exact native
+in the OpenCode inbox keep their order. On a computer that advertises native
+terminal Send admission, Desktop can offer the next Claude Code or Kimi message
+while the agent is working. The host checks the exact native composer, preserves
+earlier input, and leaves the message waiting if the terminal holds an unsent
+draft. A native queue keeps its existing order and acceptance behavior. Older
+computers continue to use the idle guard. DeepSeek checks the exact native
 conversation and waits for its existing inbox, then uses a native queue offer
 so a new turn cannot turn the offer into steering. If the host confirms that
 the agent became busy before any input was offered, that same message waits with its original
@@ -2745,6 +2749,9 @@ For Claude, a final original receipt can settle a lost command response. Activit
 matches the original request and Claude's typed prompt ID to link the outgoing
 row and its files. A native queue hook can reuse the active prompt ID, so it
 keeps its own Activity row.
+For Kimi, the original terminal receipt proves delivery to its terminal. The
+next offer still waits for Kimi's native input acknowledgement, and Activity
+uses native history to identify the turn.
 For DeepSeek, the original request and native message ID bind the Activity row
 and files. Desktop can recover a lost acknowledgement after the same native
 host reconnects when its durable log proves the original message, including the
