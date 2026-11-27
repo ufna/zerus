@@ -136,6 +136,13 @@ fn codex_work_phase(phase: Option<&str>) -> bool {
     matches!(phase, Some("working" | "tool" | "compacting"))
 }
 
+/// A Waiting entry came from the saved FIFO. An immediate ordinary send
+/// owns a Reserved entry from the outset and keeps its existing transport.
+fn idle_codex_queue(entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+    entry.state == State::Waiting && row.agent == "codex"
+        && row.phase.as_deref() == Some("idle") && details["codex_idle_outbox_supported"] == true
+}
+
 fn dsh_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "deepseek")
 }
@@ -252,6 +259,17 @@ impl Composers {
             return ManualSend::Direct;
         }
         let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);
+        // Antigravity's Activity can confirm the end of a prompt before the
+        // Sessions row catches up. The ordinary send rechecks the exact worker.
+        if ctx.row.agent == "agy"
+            && c.outbox.is_empty()
+            && details["phase"] == "idle"
+            && details["activity"] == "idle"
+            && details["send_available"] == true
+            && ctx.exact_outbox_details(details)
+        {
+            return ManualSend::Direct;
+        }
         let busy = details["activity"] == "busy"
             || matches!(
                 ctx.row.phase.as_deref(),
@@ -574,7 +592,15 @@ impl Composers {
         let Some(row) = self.outbox_row(entry) else {
             return false;
         };
-        self.native_queue_details(&row, &entry.target, details) || self.idle_or_codex_details(&row, &entry.target, details)
+        self.entry_ready(entry, &row, details)
+    }
+
+    fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+        (self.native_queue_details(row, &entry.target, details)
+            || self.idle_or_codex_details(row, &entry.target, details))
+            && (!idle_codex_queue(entry, row, details)
+                || (details["pending_questions_complete"] == true
+                    && details["pending_questions"].as_array().is_some_and(Vec::is_empty)))
     }
 
     fn eligible_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
@@ -708,17 +734,18 @@ impl Composers {
             return;
         }
         let outcome = if let Some(row) = self.outbox_row(&entry) {
-            let native_queue = self.native_queue_details(&row, &entry.target, details);
-            if (!native_queue && !self.idle_or_codex_details(&row, &entry.target, details))
+            if !self.entry_ready(&entry, &row, details)
                 || self.lock().outbox_route_revision != route_revision
             {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = if row.agent == "codex" && codex_work_phase(row.phase.as_deref()) {
+            let action = if (row.agent == "codex" && codex_work_phase(row.phase.as_deref()))
+                || idle_codex_queue(&entry, &row, details)
+            {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
             } else {
-                guarded_action(&entry, native_queue)
+                guarded_action(&entry, self.native_queue_details(&row, &entry.target, details))
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
