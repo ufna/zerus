@@ -326,6 +326,10 @@ pub(super) fn first_input_details(row: &ViewRow, details: &Value) -> bool {
 }
 
 fn matches_input_target(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
+    text(details, "runtime_state") == "live" && matches_session_target(row, target, details)
+}
+
+fn matches_session_target(row: &ViewRow, target: (&str, &str), details: &Value) -> bool {
     let (run, conversation) = target;
     !run.is_empty()
         && text(details, "run_id") == run
@@ -336,7 +340,6 @@ fn matches_input_target(row: &ViewRow, target: (&str, &str), details: &Value) ->
         && (!row.account_binding_reported
             || (text(details, "account_id") == row.account_id
                 && text(details, "account_home") == row.account_home))
-        && text(details, "runtime_state") == "live"
 }
 
 impl Context {
@@ -898,12 +901,7 @@ pub(crate) fn session_view(composers: &Composers, hub: &Hub, composer: &Composer
         }
     });
     // A stopped main session that Send can start stays available; a child never starts its parent.
-    let can_start = subagent.is_none()
-        && reason.is_some()
-        && rules::can_start_stopped(
-            &Composers::rules_session(&ctx),
-            Composers::start_busy(hub, &ctx),
-        );
+    let can_start = Composers::can_offer_start(hub, &ctx);
     let (available, unavailable_reason) = match &reason {
         Some(_) if can_start => (true, STOPPED.to_owned()),
         Some(reason) => (false, reason.clone()),
@@ -1397,10 +1395,8 @@ impl Composers {
         // A stopped session asks how to start before its block reason
         // (`sendMessage` 4809, `startToSend` 4707), while Qt's Send is
         // enabled (`updateControls`, `MessageComposer.cpp:1185`).
-        let session = Self::rules_session(&ctx);
-        if ctx.session.subagent.is_none()
-            && rules::can_start_stopped(&session, Self::start_busy(hub, &ctx))
-        {
+        if Self::can_offer_start(hub, &ctx) {
+            let session = Self::rules_session(&ctx);
             if !self
                 .view_of(hub, &ctx.key)
                 .is_some_and(|view| view.can_send)
@@ -2541,7 +2537,23 @@ fn rules_of_row(
     row: &ViewRow,
     online: bool,
     terminating: bool,
+    details: Option<&Value>,
 ) -> Session {
+    let native_resume = matches!(row.agent.as_str(), "agy" | "dsh" | "deepseek")
+        && row.process_state == "exited"
+        && details.is_some_and(|details| {
+            let target = (
+                row.run_id.as_deref().unwrap_or(""),
+                row.conversation_id.as_deref().unwrap_or(""),
+            );
+            matches_session_target(row, target, details)
+                && row.session_id.as_deref().is_none_or(|id| text(details, "session_id") == id)
+                && details["process_state"] == "exited"
+                && details["runtime_state"] == "stopped"
+                && details["allowed_actions"]
+                    .as_array()
+                    .is_some_and(|actions| actions.iter().any(|action| action == "resume"))
+        });
     Session {
         key: key.to_owned(),
         host: session.computer.clone(),
@@ -2555,6 +2567,8 @@ fn rules_of_row(
         tracked: row.tracked,
         cmd: cmd(row),
         resumable: row.resumable,
+        process_state: row.process_state.clone(),
+        native_resume,
     }
 }
 
@@ -2721,12 +2735,13 @@ impl Composers {
             &ctx.row,
             ctx.online,
             ctx.facts.terminating,
+            (!ctx.facts.inspect_error).then_some(ctx.details.as_deref()).flatten(),
         )
     }
 
     /// A continuation's session as the catalog shows it now, open or not
     /// (Qt finds it in `m_entries` by key).
-    fn rules_of(&self, key: &str, session: &SessionRef) -> Option<Session> {
+    fn rules_of(&self, key: &str, session: &SessionRef, details: Option<&Value>) -> Option<Session> {
         let (row, online) = (self.0.deps.rows)(&session.computer, &session.key, &session.name)?;
         let write = (self.0.deps.facts)(
             &session.computer,
@@ -2739,7 +2754,13 @@ impl Composers {
             &row,
             online,
             write == Some(WriteKind::Terminate),
+            details,
         ))
+    }
+
+    pub(super) fn can_offer_start(hub: &Hub, ctx: &Context) -> bool {
+        ctx.session.subagent.is_none()
+            && rules::can_start_stopped(&Self::rules_session(ctx), Self::start_busy(hub, ctx))
     }
 
     /// `canStartStopped`'s busy part (4677-4679): an update runs, another
@@ -2777,6 +2798,9 @@ impl Composers {
         let Some(original) = prompt.rules else {
             return SendReply::Busy;
         };
+        if !Self::can_offer_start(hub, ctx) {
+            return SendReply::Notice { text: CHANGED.into(), error: true };
+        }
         let current = Self::rules_session(ctx);
         let now_mark = Self::draft_mark(hub, &prompt.key);
         let begun = StartSend::begin(
@@ -3028,7 +3052,6 @@ impl Composers {
         let step = match pending {
             None => Step::Idle,
             Some(pending) => {
-                let current = self.rules_of(key, &pending.session);
                 let open = Self::open_details(&hub, key);
                 let evidence = if hub.open_key.as_deref() == Some(key) {
                     open.clone()
@@ -3043,6 +3066,7 @@ impl Composers {
                         .map(|details| text(details, "run_id"))
                         .unwrap_or(""),
                 );
+                let current = self.rules_of(key, &pending.session, evidence.as_deref());
                 // Qt's `m_pending` (and its rename).
                 let busy = matches!(write, Some(WriteKind::Update | WriteKind::Settings));
                 if start {
@@ -9071,11 +9095,18 @@ mod continuations {
         let root = dir("start");
         let (c, fake) = send_hub(&root);
         stopped(&fake);
+        {
+            let mut row = lock(&fake.row);
+            row.state = "stopped".into();
+            row.process_state = "exited".into();
+        }
         let mut details = ready();
         details["runtime_state"] = json!("stopped");
         details["process_state"] = json!("exited");
-        details["session_usage"] = json!({"context": {"used": 85_300, "limit": 200_000}});
-        let view = opened(&c, details);
+        details["activity"] = json!("busy");
+        details["input_queue"] = json!({"id": "earlier-native", "text": "an older queued item"});
+        details["session_usage"] = json!({"context": {"used": 130_000, "limit": 200_000}});
+        let view = opened(&c, details.clone());
         assert!(view.available, "Send stays enabled to ask");
         assert_eq!(
             view.unavailable_reason,
@@ -9085,6 +9116,9 @@ mod continuations {
             view.block_reason.as_deref(),
             Some("Resume the session to send a message.")
         );
+        c.edit(view.handle, 1, view.text_epoch, "after start".into(), 11, 11);
+        let view = c.current().unwrap();
+        assert!(view.ordinary_send_block.is_none(), "retained queue is not a live send blocker: {view:?}");
         let SendReply::Start { token, question } = c.send_message(
             view.handle,
             1,
@@ -9098,7 +9132,7 @@ mod continuations {
         assert_eq!(question.title.english(), "Start the session to send?");
         let informative = question.informative.english();
         assert!(
-            informative.contains("full context (43% (85.3k/200k)).\n\n"),
+            informative.contains("full context (65% (130k/200k)).\n\n"),
             "{informative}"
         );
         assert_eq!(
@@ -9122,10 +9156,17 @@ mod continuations {
         {
             let mut row = lock(&fake.row);
             row.state = "running".into();
+            row.process_state = "running".into();
             row.run_id = Some("run-2".into());
         }
         let mut after = ready();
         after["run_id"] = json!("run-2");
+        let mut earlier = after.clone();
+        earlier["previous_message_pending"] = json!(true);
+        earlier["input_queue"] = details["input_queue"].clone();
+        c.observe(&state(earlier));
+        assert!(c.current().unwrap().waiting.is_some());
+        assert!(sends(&fake).is_empty());
         c.observe(&state(after.clone()));
         c.observe(&state(after));
         until(&c, |v| v.waiting.is_none() && !v.sending);
@@ -9134,6 +9175,40 @@ mod continuations {
         assert_eq!(sends[0].0.run_id, "run-2");
         let view = c.current().unwrap();
         assert!(view.text.is_empty() && !view.cancel_send);
+    }
+
+    #[test]
+    fn a_recovery_prompt_cancel_and_refusal_keep_the_draft_and_attachment() {
+        let root = dir("stopped-send-keep");
+        let file = root.join("recovery.txt");
+        std::fs::write(&file, "private fixture bytes").unwrap();
+        let (c, fake) = send_hub(&root);
+        stopped(&fake);
+        let view = opened(&c, ready());
+        c.edit(view.handle, 1, view.text_epoch, "saved draft".into(), 11, 11);
+        c.attach_paths(view.handle, vec![file], super::super::Selection { start: 11, end: 11 });
+        let view = until(&c, |v| v.can_send && v.attachments.len() == 1);
+        let ask = |view: ComposerView| {
+            let SendReply::Start { token, .. } = c.send_message(
+                view.handle, view.rev + 1, view.text_epoch, view.text, view.position, view.anchor,
+            ) else { panic!("expected a recovery chooser") };
+            token
+        };
+        let first = ask(view.clone());
+        assert!(lock(&fake.calls).is_empty());
+        c.answer(first, Answer::Cancel);
+        let kept = c.current().unwrap();
+        assert_eq!(kept.text, view.text);
+        assert_eq!(kept.attachments[0].name, "recovery.txt");
+        assert!(lock(&fake.calls).is_empty());
+
+        *lock(&fake.outcome) = Box::new(|_, _| Outcome::Failed { detail: "native resume refused".into() });
+        c.answer(ask(kept), Answer::Start { choice: StartChoice::Resume });
+        let refused = until(&c, |v| v.status == "native resume refused");
+        assert_eq!(refused.text, view.text);
+        assert_eq!(refused.attachments[0].name, "recovery.txt");
+        assert_eq!(lock(&fake.calls).len(), 1);
+        assert!(sends(&fake).is_empty());
     }
 
     /// zerus-77ljy: the resumed run can read ready (an inspect, or the

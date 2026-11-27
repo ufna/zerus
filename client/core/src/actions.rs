@@ -564,7 +564,7 @@ pub fn invocation(
         Action::Pause if name.starts_with("agy/") => {
             return scoped_lifecycle_invocation(target, "pause", request_id, 45, 60);
         }
-        Action::Resume if name.starts_with("agy/") => {
+        Action::Resume if name.starts_with("agy/") || name.starts_with("dsh/") => {
             return scoped_lifecycle_invocation(target, "resume", request_id, 45, 60);
         }
         Action::Pause => (vec!["pause".to_owned(), name], None, 45, 45, None),
@@ -1414,7 +1414,10 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Recovery { job_id, action } => {
             classify_recovery(target, invocation, job_id, *action, exit)
         }
-        Action::Pause | Action::Resume if target.name.starts_with("agy/") => {
+        Action::Pause if target.name.starts_with("agy/") => {
+            classify_scoped_lifecycle(target, invocation, exit, "The session change did not complete.")
+        }
+        Action::Resume if target.name.starts_with("agy/") || target.name.starts_with("dsh/") => {
             classify_scoped_lifecycle(target, invocation, exit, "The session change did not complete.")
         }
         Action::Pause if invocation.request_id.is_some() => {

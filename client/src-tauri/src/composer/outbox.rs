@@ -266,7 +266,9 @@ impl Composers {
     }
 
     pub(super) fn manual_send(&self, hub: &Hub, ctx: &Context, c: &Composer) -> ManualSend {
-        if ctx.session.subagent.is_some() || ctx.session.archived() {
+        // Recovery asks for consent before offering input. Retained Activity
+        // from the stopped run can still describe an earlier native queue.
+        if Self::can_offer_start(hub, ctx) || ctx.session.subagent.is_some() || ctx.session.archived() {
             return ManualSend::Direct;
         }
         let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);

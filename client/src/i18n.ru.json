@@ -112,6 +112,7 @@
   "%1 is now a child of %2.": "%1 теперь дочерняя сессия %2.",
   "%1 is offline.": "%1 не в сети.",
   "%1 is only on %2, so that account is chosen.": "%1 есть только в %2, поэтому выбрана эта учётная запись.",
+  "%1 is paused. How should it start before your message is sent?": "Сессия %1 приостановлена. Как запустить её перед отправкой сообщения?",
   "%1 is stopped. How should it start before your message is sent?": "Сессия %1 остановлена. Как запустить её перед отправкой сообщения?",
   "%1 limit reached. Reset time is unavailable": "Достигнут лимит %1. Время сброса недоступно",
   "%1 limit reached. Resets in %2": "Достигнут лимит %1. Сбрасывается через %2",
