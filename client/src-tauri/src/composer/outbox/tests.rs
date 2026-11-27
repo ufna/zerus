@@ -1521,7 +1521,11 @@ fn cold_start_prefers_the_native_codex_queue_on_a_capable_idle_host() {
 
 fn cold_start_idle_fifo(native: bool) {
     use zerus_client_core::drafts::read_draft;
-    let root = dir("outbox-background-restart");
+    let root = dir(if native {
+        "outbox-background-restart-native"
+    } else {
+        "outbox-background-restart-terminal"
+    });
     let store = drafts(&root);
     let (first, fake) = send_hub_on(&store);
     let session = target_session("codex");
