@@ -106,6 +106,7 @@ pub(super) fn prepare(witness: &NotOffered) -> Result<()> {
 pub(super) fn remember(witness: &NotOffered) -> Result<()> {
     let mut value = value(witness)?;
     value["outbox_waiting"] = json!(witness.waits_for_idle_send());
+    if witness.native_accept { value["terminal_native_accept"] = json!(true); }
     publish(witness, &value)
 }
 
@@ -187,6 +188,7 @@ mod tests {
             reason: reason.into(),
             waiting: true,
             idle_refusal: false,
+            native_accept: false,
             dialog: None,
         }
     }

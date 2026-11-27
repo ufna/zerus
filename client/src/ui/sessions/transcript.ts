@@ -178,7 +178,8 @@ export function receiptFiles(id: string, files: unknown): files is EventAttachme
  * Public receipt metadata supplies the request and index; an echoed host path
  * is never used to read a file. Unknown or ambiguous echoes stay untouched.
  */
-export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
+export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>,
+  pending?: ReadonlySet<string>): readonly ActivityEvent[] {
   const receipts = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
   if (!receipts.length) return given;
   const events = [...given];
@@ -210,9 +211,12 @@ export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary
     if (receipt.claude_outbox === true && receipt.claude_queued_outbox === true) {
       // A native enqueue has no typed prompt ID. Display its own durable
       // receipt and keep every native queue or transcript row independent.
-      if (!owners.length && !receipt.claude_prompt_id && receipt.run_id && receipt.conversation_id
+      if (!owners.length && !pending?.has(request) && !receipt.claude_prompt_id
+        && receipt.run_id && receipt.conversation_id && eventAt(receipt) > 0
         && receipt.run_id === summary?.run_id && receipt.conversation_id === summary?.conversation_id) {
-        events.push({ ...receipt, attachment_request_id: request, activity_display_key: `claude-queued-${request}` });
+        const next = events.findIndex(event => eventAt(event) > eventAt(receipt));
+        events.splice(next < 0 ? events.length : next, 0,
+          { ...receipt, attachment_request_id: request, activity_display_key: `claude-queued-${request}` });
         changed = true;
       }
       continue;
@@ -964,7 +968,7 @@ export function createTranscriptProjection() {
         return id ? { ...event, activity_display_key: id } : event;
       });
       trim(bindings, 1000);
-      const items = transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
+      const items = transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary, queuedIds), routes), summary, !provider.length);
       // Waiting entries appear at the live end in FIFO order. Legacy
       // entries without a timestamp keep their place as well.
       for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: "", outbox: row });

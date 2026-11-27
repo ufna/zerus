@@ -231,7 +231,19 @@ pub(super) fn supports_native_accept(record: &Value) -> bool {
 impl SendMode {
     fn check_send_gate(self, record: &Value) -> std::result::Result<(), Gate> {
         // The native queue never types into the composer's current draft or dialog.
-        if self == Self::CodexQueue { Ok(()) } else { checked_send_gate(record) }
+        if self == Self::CodexQueue {
+            return Ok(());
+        }
+        if self == Self::DesktopNativeAccept && record["agent"] == "kimi" {
+            // Kimi gives a turn ID only after dequeue. An older native queue
+            // could otherwise prove a newer equal-text input as its first turn.
+            let terminal = backend::current();
+            let until = std::time::Instant::now() + Duration::from_millis(600);
+            return terminal_gate_with_capture(record, true, true, terminal, &|pane| {
+                terminal.capture_until(pane, backend::Capture::Styled, until, 512 * 1024)
+            }, true);
+        }
+        checked_send_gate(record)
     }
 
     fn idle_input_ready(self, record: &Value) -> bool {
@@ -1343,7 +1355,7 @@ pub(super) fn checked_queue_terminal(
     if codex_tasks::multiple(record) {
         return Err("Codex has separate native tasks; this Terminal action cannot verify the selected conversation".into());
     }
-    terminal_gate_with_capture(record, true, false, backend::current(), &capture).map_err(Gate::reason)
+    terminal_gate_with_capture(record, true, false, backend::current(), &capture, false).map_err(Gate::reason)
 }
 
 /// The gate before a task input's first byte, with its typed refusal.
@@ -1504,7 +1516,7 @@ fn terminal_gate_on(
 ) -> std::result::Result<(), Gate> {
     terminal_gate_with_capture(record, empty, sending, terminal, &|pane| {
         terminal.capture(pane, backend::Capture::Styled)
-    })
+    }, false)
 }
 
 fn terminal_gate_with_capture(
@@ -1513,6 +1525,7 @@ fn terminal_gate_with_capture(
     sending: bool,
     terminal: &dyn backend::TerminalBackend,
     capture: &dyn Fn(&str) -> Result<Vec<u8>>,
+    require_empty_queue: bool,
 ) -> std::result::Result<(), Gate> {
     terminating::check_mutation(record)?;
     let pane = string(record, "pane");
@@ -1541,6 +1554,12 @@ fn terminal_gate_with_capture(
             (state, String::from_utf8_lossy(&screen).into_owned())
         };
         let screen = screen.as_str();
+        if require_empty_queue && screen.lines().map(settle::plain).any(|row| input_queue::kimi_queue_hint(&row)) {
+            return Err(Gate::Waiting {
+                reason: "Kimi has an earlier native message waiting to start".into(),
+                dialog: None,
+            });
+        }
         let cursor_y: usize = state
             .cursor_y
             .parse()
@@ -2156,6 +2175,7 @@ pub(crate) struct NotOffered {
     /// (`Gate::Waiting`; zerus-63rru.79).
     pub(crate) waiting: bool,
     idle_refusal: bool,
+    native_accept: bool,
     /// Which dialog the waiting terminal shows, when the refusal is a
     /// dialog's and a witness exists for it (zerus-63rru.83). The typed
     /// name, never read from a sentence.
@@ -2412,6 +2432,7 @@ fn submit_core(
         reason,
         waiting,
         idle_refusal: false,
+        native_accept: mode == SendMode::DesktopNativeAccept,
         dialog,
     };
     let refused = |typed: bool, reason: String| remember_send_refusal(typed, witness(reason, false, None), retain_refusal, terminal_outcome);
@@ -2721,7 +2742,7 @@ fn submit_core(
             }
         }
         if string(&record, "agent") == "kimi" && mode == SendMode::DesktopNativeAccept {
-            checked_send_gate(&record).map_err(Gate::reason)?;
+            mode.check_send_gate(&record).map_err(Gate::reason)?;
         }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
@@ -3143,6 +3164,7 @@ mod tests {
             reason: "refused".into(),
             waiting: false,
             idle_refusal: false,
+            native_accept: false,
             dialog: None,
         };
         assert!(
@@ -3174,7 +3196,7 @@ mod tests {
             let witness = || NotOffered {
                 request_id: "id".into(), name: "n".into(), run_id: "r".into(),
                 conversation_id: "c".into(), digest: "d".into(), receipts: path.clone(),
-                reason: "terminal refused".into(), waiting: dialog.is_some(), idle_refusal: false, dialog,
+                reason: "terminal refused".into(), waiting: dialog.is_some(), idle_refusal: false, native_accept: false, dialog,
             };
             fs::write(&path, original.to_string()).unwrap();
             assert!(matches!(before_input(false, witness()), Failure::NotOffered(w)

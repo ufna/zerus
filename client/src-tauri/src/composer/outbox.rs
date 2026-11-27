@@ -609,7 +609,7 @@ impl Composers {
                 (&target.run_id, &target.conversation_id),
                 details,
             ) == Some(false))
-            && (native || details["input_queue"].is_null())
+            && ((native && row.agent == "claude") || details["input_queue"].is_null())
             && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
             && details["pending_questions_complete"] != false
             && details["pending_questions"]

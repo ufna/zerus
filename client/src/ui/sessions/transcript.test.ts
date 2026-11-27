@@ -20,7 +20,7 @@ it("keeps Claude's queued file receipt across reload without matching equal nati
     attachments: [file], run_id: "run-1", conversation_id: "conversation-1", claude_outbox: true, claude_queued_outbox: true };
   const same: ActivityEvent = { type: "UserPromptSubmit", seq: 4, detail: receipt.detail, at: 11 };
   const summary = { run_id: "run-1", conversation_id: "conversation-1", attachment_messages: [receipt] };
-  const [native, original] = mergeAttachmentMessages([same], summary);
+  const [original, native] = mergeAttachmentMessages([same], summary);
   expect(native).toBe(same);
   expect(original).toMatchObject({ attachment_request_id: request, attachments: [file] });
   const reload = buildTranscript([same], summary) as ActivityItem[];
@@ -31,6 +31,19 @@ it("keeps Claude's queued file receipt across reload without matching equal nati
   expect(mergeAttachmentMessages([same, original], summary)).toHaveLength(2);
   expect(mergeAttachmentMessages([same], { ...summary, run_id: "another-run" })).toEqual([same]);
   expect(mergeAttachmentMessages([same], { ...summary, attachment_messages: [receipt, receipt] })).toEqual([same]);
+
+  const projection = createTranscriptProjection();
+  const pending = { request_id: request, run_id: receipt.run_id, conversation_id: receipt.conversation_id,
+    handle: 4, preview: receipt.detail!, state: "unknown" } as const;
+  for (const state of ["waiting", "reserved", "unknown"] as const) {
+    const items = projection.build([same], summary, [], [], [{ ...pending, state }]) as ActivityItem[];
+    expect(items.map(item => item.id)).toEqual(["s4", `local-${request}`]);
+    expect(items[1]).toMatchObject({ outbox: { state } });
+  }
+  const settled = projection.build([same], summary) as ActivityItem[];
+  expect(settled.filter(item => item.attachments?.length)).toHaveLength(1);
+  expect(settled[0]).toMatchObject({ id: `local-${request}`, receipt: "Submitted to terminal" });
+  expect(settled[0].outbox).toBeUndefined();
 });
 
 it("displays a typed child policy advisory as a system notice", () => {

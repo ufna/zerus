@@ -321,8 +321,12 @@ pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: 
     #[derive(Deserialize)]
     struct QueueGate {
         outbox_waiting: Option<bool>,
+        terminal_native_accept: Option<bool>,
     }
     let gate: QueueGate = serde_json::from_slice(&bytes).map_err(|_| "Invalid terminal refusal")?;
+    if name.starts_with("claude/") && gate.terminal_native_accept != Some(true) {
+        return Err("Original Claude delivery is unconfirmed".into());
+    }
     // Older records lack the typed gate. Recognize only the historic draft
     // and idle reasons, after verifying the complete negative and payload.
     let waiting = gate.outbox_waiting.unwrap_or_else(|| {

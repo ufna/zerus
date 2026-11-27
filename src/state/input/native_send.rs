@@ -672,11 +672,12 @@ mod tests {
         // The opt-in terminal route contributes only these additions
         // inside the shared submitter. The ordinary body retains its seal.
         for addition in [
+            "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
             "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
             "        witness.idle_refusal |= native_wait;\n",
             "    if agent == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n        receipt[\"kimi_outbox\"] = json!(true);\n    }\n",
             "    if receipt[\"kimi_outbox\"] == true {\n        record[\"input_pending_kimi_outbox\"] = json!(request_id);\n    }\n",
-            "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            checked_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
+            "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            mode.check_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
         ] {
             assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
             original = original.replacen(addition, "", 1);

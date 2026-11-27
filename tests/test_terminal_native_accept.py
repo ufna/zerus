@@ -141,6 +141,60 @@ class NativeKimiNext(Original, kimi.NativeKimi):
         self.assertEqual(self.held(DRAFT), 0)
 
 
+
+    def test_equal_native_backlog_reoffers_same_request_during_next_working_turn(self):
+        first_release = threading.Event()
+        second_started = threading.Event()
+        second_release = threading.Event()
+        self.addCleanup(first_release.set)
+        self.addCleanup(second_release.set)
+
+        class HoldSecond(kimi.Model):
+            def do_POST(model):
+                if not model.path.startswith(kimi.PLATFORM + '/') and len(model.server.requests) == 1:
+                    second_started.set()
+                    second_release.wait(20)
+                super().do_POST()
+
+        self.model_server.hold = first_release
+        self.model_server.RequestHandlerClass = HoldSecond
+        name = self.launch()
+        self.send(name, self.payload(name, 'Hold the first native turn.'))
+        self.until(lambda: self.inspect(name).get('activity') == 'busy' and bool(self.requests), name)
+        pane = '=' + name + ':'
+        text = 'Repeated equal private native prompt.'
+        self.t('send-keys', '-t', pane, '-l', text)
+        self.until(lambda: text in self.screen(name), name)
+        self.t('send-keys', '-t', pane, 'Enter')
+        earlier = self.until(lambda: self.inspect(name).get('input_queue'), name)
+        self.assertIn(text, earlier['text'])
+        raw = json.dumps(dict(self.payload(name, text), only_when_idle=True)).encode()
+        result = self.offer(name, raw)
+        self.assertEqual(result['status'], 'waiting_for_idle', result)
+        self.assertEqual(self.original(name, raw), result)
+        self.assertEqual(self.inspect(name)['input_queue']['id'], earlier['id'])
+        self.assertEqual(self.held(text), 0)
+
+        first_release.set()
+        self.assertTrue(second_started.wait(20), 'The earlier native message did not start')
+        def working_without_backlog():
+            detail = self.inspect(name)
+            return (detail['activity'] == 'busy' and not detail.get('input_queue')
+                    and detail['previous_message_pending'] is False)
+        self.until(working_without_backlog, name, seconds=10)
+        result = self.offer(name, raw)
+        self.assertEqual(result['status'], 'submitted', result)
+        self.assertEqual(self.original(name, raw)['request_id'], result['request_id'])
+        self.assertFalse(second_release.is_set())
+        self.assertEqual(self.inspect(name)['activity'], 'busy')
+        self.assertTrue(self.inspect(name)['previous_message_pending'])
+
+        second_release.set()
+        self.until(lambda: self.held(text) == 2 and self.settled(name, result)
+                   and self.inspect(name)['previous_message_pending'] is False, name)
+        self.assertEqual(self.offer(name, raw), result)
+        self.assertEqual(self.held(text), 2)
+
 # The native fixtures have independent compatibility jobs. This module owns
 # only its new exact guarded-route cases.
 for _child, _parent in ((NativeClaudeNext, claude.NativeClaudeOutbox), (NativeKimiNext, kimi.NativeKimi)):
