@@ -2153,6 +2153,7 @@ pub(super) fn submit(name: &str, input: &[u8], recovery_id: Option<&str>) -> Res
 enum Origin<'a> {
     Person,
     Answer,
+    TechnicalReview,
     Recovery(&'a str),
     KeepWarm(&'a str),
 }
@@ -2248,6 +2249,19 @@ impl NotOffered {
             && self
                 .receipts
                 .ends_with(format!("input_receipts/{request_id}.json"))
+    }
+}
+
+/// An automatic review notice only offers its own exact payload. It does
+/// not apply settings, cancel recovery or grant person-request authority.
+pub(super) fn technical_review_notice(
+    name: &str, input: &[u8], admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> Submission {
+    match submit_core(name, input, Origin::TechnicalReview, false, SendMode::Ordinary, Some(admit), ProcessCheck::Legacy) {
+        Ok(receipt) => Submission::Receipt(receipt),
+        Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
+        Err(Failure::Unknown(error)) => Submission::Unknown(error),
+        Err(Failure::TerminalRefusal(_)) => Submission::Unknown("Review notice result unavailable.".into()),
     }
 }
 
@@ -2513,6 +2527,9 @@ fn submit_core(
                 .into(),
         ));
     }
+    if matches!(origin, Origin::TechnicalReview) && effort::pending_applies(&record) {
+        return Err(refused(typed, "Review notice withheld while settings are pending.".into()));
+    }
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
         return Err(refused(
             typed,
@@ -2535,7 +2552,7 @@ fn submit_core(
     match origin {
         Origin::Recovery(id) => recovery::check_submission(&record, id).map_err(|e| refused(typed, e))?,
         Origin::KeepWarm(id) => keep_warm::check_submission(&record, id).map_err(|e| refused(typed, e))?,
-        Origin::Person | Origin::Answer => {}
+        Origin::Person | Origin::Answer | Origin::TechnicalReview => {}
     }
     mode.check_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     let attachments_root = root.join("attachments");
@@ -2668,7 +2685,7 @@ fn submit_core(
     let checked = match origin {
         Origin::Recovery(id) => read(name).and_then(|record| recovery::check_submission(&record, id)),
         Origin::KeepWarm(id) => read(name).and_then(|record| keep_warm::check_submission(&record, id)),
-        Origin::Person | Origin::Answer => Ok(()),
+        Origin::Person | Origin::Answer | Origin::TechnicalReview => Ok(()),
     };
     if let Err(error) = checked {
         cleanup();

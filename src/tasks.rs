@@ -34,6 +34,7 @@ mod sessions;
 mod messages;
 mod history;
 mod quick_review;
+pub(crate) mod technical_review;
 mod index;
 mod teams;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -799,6 +800,7 @@ fn execute(config: &Config, args: &[String]) -> Result<Value> {
             change(config, action, args)
         }
         "settings" => settings(config, args),
+        "technical-review-policy" => technical_review::configure(config, args),
         "cutover" => cutover::cutover(config, args),
         "review-copy" => copy_review::execute(config, args),
         // The phone's exchange through the relay; both take exactly --json.
@@ -1611,7 +1613,7 @@ fn change_guarded(
         let mut admitted = store.admit_until(deadline)
             .ok_or_else(|| fail("The task is currently busy. Refresh its report and try again."))?;
         let mut reported = admitted.load_complete(task.uuid()).map_err(fail)?;
-        let (op, report_id) = review.apply(&mut reported, &r.project, &who, assignee_name.as_deref())?;
+        let (op, report_id) = review.apply(config, &mut reported, &r.project, &who, assignee_name.as_deref())?;
         admitted.save(&mut reported).map_err(fail)?;
         drop(admitted);
         return Ok(json!({

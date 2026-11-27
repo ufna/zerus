@@ -10,6 +10,12 @@ pub(super) enum Request {
         report_id: String,
         disposition: Disposition,
     },
+    Verify {
+        history_revision: String,
+        report_id: String,
+        observation: String,
+        evidence_reference: String,
+    },
     Accept {
         history_revision: String,
         report_id: String,
@@ -46,7 +52,7 @@ fn validate_guard(revision: &str, report: &str) -> Result<()> {
     Ok(())
 }
 
-fn raw_report<'a>(task: &TaskDoc, project: &str, report: &'a str) -> Result<&'a str> {
+pub(super) fn raw_report<'a>(task: &TaskDoc, project: &str, report: &'a str) -> Result<&'a str> {
     report
         .strip_prefix(&history::scope(project, task.uuid()))
         .filter(|id| !id.is_empty())
@@ -64,6 +70,15 @@ pub(super) fn scope_reports(view: &mut zerus_replica::TaskView) {
         id.insert_str(0, &prefix);
     }
     for entry in &mut view.log {
+        if let Some(audit) = &mut entry.technical_review {
+            audit.report_id.insert_str(0, &prefix);
+            if let Some(decision_id) = &mut audit.decision_id {
+                decision_id.insert_str(0, &prefix);
+            }
+            // The retained transport envelope is available only to the
+            // local reconciler. History exposes the original request ID.
+            audit.notice = None;
+        }
         if let Some(decision) = &mut entry.quick_review {
             decision.report_id.insert_str(0, &prefix);
             for id in &mut decision.supersedes {
@@ -81,6 +96,7 @@ impl Request {
                 report_id,
                 ..
             }
+            | Self::Verify { history_revision, report_id, .. }
             | Self::Accept {
                 history_revision,
                 report_id,
@@ -126,6 +142,7 @@ impl Request {
 
     pub(super) fn apply(
         &self,
+        config: &Config,
         task: &mut TaskDoc,
         project: &(String, String),
         actor: &Actor,
@@ -134,6 +151,12 @@ impl Request {
         let (revision, report) = self.guard();
         let raw = raw_report(task, &project.0, report)?;
         match self {
+            Self::Verify { observation, evidence_reference, .. } => {
+                super::technical_review::verify(
+                    config, task, revision, raw, actor, observation, evidence_reference,
+                )?;
+                Ok(("verify", report))
+            }
             Self::Set { disposition, .. } => {
                 task.set_quick_review(revision, raw, disposition, assignee_name, actor, now())
                     .map_err(fail)?;

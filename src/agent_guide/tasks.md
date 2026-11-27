@@ -47,3 +47,9 @@ Get: dispatch_id/executor. Queue waits for Start; note saves. Reopen leaves
 Review/Done after submission. Same UUID/mode/anchor/content: receipt lookup,
 never repeated input. Coordinator receipts prove no child ownership.
 Submitted: transport, not model-read; unknown stays unknown.
+
+Enrolled technical reviewers receive a guarded notice for the exact report.
+Inspect its original request, exact report and criterion. If independently
+verified, `hgs task quick-review REF --json` with op verify, history_revision,
+report_id, observation and evidence_reference records the verdict and Done
+together. Ready text alone never authorizes automatic completion.
