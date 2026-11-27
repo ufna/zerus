@@ -6,6 +6,8 @@ import sqlite3
 import subprocess
 import threading
 import unittest
+from contextlib import closing
+from pathlib import Path
 
 import test_busy_input_native as busy
 import test_claude_outbox_native as claude
@@ -37,9 +39,9 @@ class Original:
 
     def indexed_refusal(self, name, request_id):
         self.call('inspect', name)
-        path = self.state / 'delivery-receipts-v1.sqlite3'
+        path = Path(self.env['HGS_STATE_DIR']) / 'delivery-receipts-v1.sqlite3'
         try:
-            with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.05) as catalog:
+            with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.05)) as catalog:
                 return catalog.execute(
                     "SELECT at, files FROM receipt_rows WHERE source='terminal' AND request=?",
                     (request_id,)).fetchone() == (0, 0)
