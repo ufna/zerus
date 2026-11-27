@@ -1554,12 +1554,6 @@ fn terminal_gate_with_capture(
             (state, String::from_utf8_lossy(&screen).into_owned())
         };
         let screen = screen.as_str();
-        if require_empty_queue && screen.lines().map(settle::plain).any(|row| input_queue::kimi_queue_hint(&row)) {
-            return Err(Gate::Waiting {
-                reason: "Kimi has an earlier native message waiting to start".into(),
-                dialog: None,
-            });
-        }
         let cursor_y: usize = state
             .cursor_y
             .parse()
@@ -1613,6 +1607,25 @@ fn terminal_gate_with_capture(
                 reason: DRAFT.into(),
                 dialog: None,
             });
+        }
+        if require_empty_queue {
+            if cursor_x != 5 && !idle_reminder_ready(record) {
+                return Err(Gate::Waiting {
+                    reason: "This Kimi terminal does not expose its busy input queue".into(),
+                    dialog: None,
+                });
+            }
+            // The boxed Kimi Code input row follows its top border. Only
+            // the hint directly above that border belongs to its queue.
+            if cursor_x == 5 && cursor_y.checked_sub(2)
+                .and_then(|index| screen.lines().nth(index))
+                .is_some_and(|row| input_queue::kimi_queue_hint(&settle::plain(row)))
+            {
+                return Err(Gate::Waiting {
+                    reason: "Kimi has an earlier native message waiting to start".into(),
+                    dialog: None,
+                });
+            }
         }
         // zerus-oz7cz: a pane too short for Claude's closing rule hides its
         // composer's rows under the prompt; no paste there can be proved.

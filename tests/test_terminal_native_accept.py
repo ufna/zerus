@@ -104,7 +104,8 @@ class NativeKimiNext(Original, kimi.NativeKimi):
         hold = threading.Event()
         self.addCleanup(hold.set)
         self.model_server.hold = hold
-        self.send(name, self.payload(name, 'Start the held native Kimi turn.'))
+        quoted_hint = '↑ to edit · ctrl-s to steer immediately'
+        self.send(name, self.payload(name, f'Start the held native Kimi turn.\n{quoted_hint}\nKeep working.'))
         self.until(lambda: self.inspect(name).get('activity') == 'busy' and bool(self.requests), name)
         pane = '=' + name + ':'
         self.t('send-keys', '-t', pane, '-l', DRAFT)
@@ -117,6 +118,7 @@ class NativeKimiNext(Original, kimi.NativeKimi):
         self.assertEqual(self.held(FOLLOWUP), 0)
         self.t('send-keys', '-t', pane, 'C-u')
         self.until(lambda: DRAFT not in self.screen(name), name)
+        self.assertIn(quoted_hint, [row.strip() for row in self.screen(name).splitlines()])
 
         self.offer(name, raw, drop=True)
         receipt = self.original(name, raw)
