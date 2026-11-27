@@ -1,11 +1,12 @@
 import { createMemo, For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { composer } from "../../store/composer";
-import { setDetailTab } from "../../store/ui";
 import type { ComposerView } from "../../types";
 import { OutboxActions, OutboxScope, outboxStamp } from "./OutboxMessage";
 import { localItem } from "./transcript";
-import type { OutboxItem } from "./types";
+import { LocalActions } from "./Activity";
+import { sendErrorText } from "./send-error";
+import type { LocalItem, OutboxItem } from "./types";
 
 interface DeliveryStatus {
   id: string;
@@ -14,9 +15,7 @@ interface DeliveryStatus {
   preview: string;
   files: string[];
   outbox?: OutboxItem;
-  failed?: boolean;
-  uncertain?: boolean;
-  error?: string;
+  local?: LocalItem;
 }
 
 export function ComposerDeliveryStatus(props: {
@@ -42,7 +41,7 @@ export function ComposerDeliveryStatus(props: {
       const info = localItem(row);
       result.set(row.id, { id: row.id, at: row.submitted_at, stamp: info.stamp, preview: row.text,
         files: row.attachments.flatMap(file => typeof file.name === "string" ? [file.name] : []),
-        failed: row.status === "error", uncertain: row.uncertain, error: info.error });
+        local: info });
     }
     for (const row of waiting()) {
       result.set(row.request_id, { id: row.request_id, at: row.queued_at ?? 0, stamp: outboxStamp(row),
@@ -64,14 +63,8 @@ export function ComposerDeliveryStatus(props: {
               <p class="wrap-pre">{row().preview || tr("Message with files")}</p>
               <For each={row().files}>{name => <div class="dim">{name}</div>}</For>
               <Show when={row().outbox}>{item => <OutboxActions item={item()} />}</Show>
-              <Show when={row().error}><p class="act-error">{row().error}</p></Show>
-              <Show when={row().failed && !row().uncertain}>
-                <button type="button" class="btn small" disabled={composer.operationLocked()}
-                  onClick={() => void composer.localRetry(id)}>{tr("Retry")}</button>
-              </Show>
-              <Show when={row().uncertain}>
-                <button type="button" class="btn small" onClick={() => setDetailTab("terminal")}>{tr("Check Terminal")}</button>
-              </Show>
+              <Show when={row().local?.error}><p class="act-error">{sendErrorText(row().local!.error)}</p></Show>
+              <Show when={row().local?.actions.length}><LocalActions local={row().local!} /></Show>
             </li>;
           }}</For>
         </ul>

@@ -1368,3 +1368,47 @@ it.each(["en", "ru"] as const)("keeps retired Antigravity history readable witho
   for (const label of lifecycle) expect(menuText).not.toContain(label);
   expect(writes).toEqual([]);
 });
+
+it("keeps terminal-only Send recovery beside the composer and uses guarded local actions", async () => {
+  const row: ViewRow = { ...fixtureRow("Embedded Codex"), name: "codex/example/embedded", agent: "codex" };
+  const initial = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "",
+    attachments_available: true, text: "Original user text" };
+  const request = uuid(99901);
+  const original: LocalMessage = {
+    id: request, text: initial.text, status: "sending", attachments: [{ name: "report.txt" }],
+    run_id: row.run_id!, conversation_id: row.conversation_id!, submitted_at: 1760000000,
+    error: "", uncertain: false, message_id: null, submitted_text: null, source: "zerus_terminal_status", voice: null,
+  };
+  const calls: { command: string; args?: Record<string, unknown> }[] = [];
+  vi.mocked(bridge.composerOpen).mockImplementation(async selection => selection?.name === row.name ? initial : null);
+  transport.composer = (command, args) => {
+    calls.push({ command, args });
+    if (command === "send_message") return { kind: "accepted", waiting: false,
+      view: { ...initial, text: "", rev: Number(args?.rev), text_epoch: Number(args?.epoch) + 1, local: [original] } };
+    if (command === "local_inspect") return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
+    return undefined;
+  };
+  await open(row);
+  host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!.click();
+  const present = () => host.querySelector<HTMLElement>(".cmp-delivery [role=status]");
+  await vi.waitFor(() => expect(present()?.dataset.requestId).toBe(request));
+  expect(present()?.textContent).toBe("Sending…");
+  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
+  receive({ ...emptyBatch(), composer: { ...initial, text: "Independent draft", text_epoch: 3, rev: 3, uncertain: true,
+    local: [{ ...original, status: "error", uncertain: true, error: "Delivery not confirmed" }] } });
+  await vi.waitFor(() => expect(present()?.textContent).toBe("Delivery not confirmed"));
+  expect(present()?.dataset.requestId).toBe(request);
+  const dock = host.querySelector<HTMLDetailsElement>(".cmp-delivery")!;
+  dock.open = true;
+  expect(dock.querySelector("li")?.textContent).toContain("report.txt");
+  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
+  const action = (text: string) => [...dock.querySelectorAll("button")].find(button => button.textContent === text);
+  expect(action("Retry")).toBeUndefined();
+  action("Check Terminal")!.click();
+  await vi.waitFor(() => expect(calls).toContainEqual({ command: "local_inspect", args: { handle: initial.handle, id: request } }));
+  action("Delete")!.click();
+  await flush();
+  expect(host.querySelector<HTMLDialogElement>(".activity dialog[role=alertdialog]")?.open).toBe(true);
+  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe("Independent draft");
+  expect(calls.filter(call => call.command === "send_message")).toHaveLength(1);
+});

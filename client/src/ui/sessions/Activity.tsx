@@ -443,16 +443,19 @@ function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }
 // (ActivityView.cpp:1059-1068, SessionsWindow.cpp messageAction 4470-4527).
 
 /** The row whose Delete waits for its confirmation, and its Delete button, which the focus returns to on Cancel. */
-const [deleting, setDeleting] = createSignal<{ id: string; from: HTMLElement }>();
+const [deleting, setDeleting] = createSignal<{ id: string; handle: number; from: HTMLElement }>();
 
-function LocalActions(props: { local: LocalItem }) {
+export function LocalActions(props: { local: LocalItem }) {
   // Retry stays focusable while off and says why (Rust refuses it while the composer is busy).
   const reason = (action: LocalItem["actions"][number]) => (action === "retry" ? retryReason(composer.view(), composer.operationLocked()) : "");
   const run = (action: LocalItem["actions"][number], from: HTMLElement) => {
     const id = props.local.id;
     if (reason(action)) return;
     if (action === "retry") void composer.localRetry(id);
-    else if (action === "delete") setDeleting({ id, from });
+    else if (action === "delete") {
+      const handle = composer.view()?.handle;
+      if (handle !== undefined) setDeleting({ id, handle, from });
+    }
     else {
       const showNativeUi = nativeRoute(selected());
       const followed = activity.target();
@@ -489,7 +492,12 @@ function LocalDeleteDialog() {
   let el: HTMLDialogElement | undefined;
   createEffect(() => {
     if (!el) return;
-    if (!deleting()) { if (el.open) el.close(); return; }
+    const original = deleting();
+    if (!original || original.handle !== composer.view()?.handle) {
+      if (original) setDeleting(undefined);
+      if (el.open) el.close();
+      return;
+    }
     if (!el.open) el.showModal();
     queueMicrotask(() => el?.querySelector<HTMLElement>("[data-initial]")?.focus());
   });
@@ -501,9 +509,9 @@ function LocalDeleteDialog() {
   };
   /** Delete: the row goes, and the focus moves to the transcript. */
   const confirm = () => {
-    const id = deleting()?.id;
+    const original = deleting();
     setDeleting(undefined);
-    if (id) void composer.localDelete(id);
+    if (original && original.handle === composer.view()?.handle) void composer.localDelete(original.id);
     focusTranscript();
   };
   return (
