@@ -182,6 +182,12 @@ hides the Clear session icon and offers
 place. **Restore session** follows the computer's restore decision, as batch
 Restore does; a computer that reports no actions keeps the earlier rule.
 
+Google Antigravity runs through the Agent Client Protocol (ACP). Use **Activity**
+to send messages and read replies. Its worker has no interactive terminal.
+After **Stop session**, choose **Archive** in the session menu to move
+the saved conversation to **Archive**. Choose **Restore session** there to use
+the original conversation again.
+
 A Claude or Codex session that exited before its first message reported a
 conversation ID but wrote no transcript. Its archive therefore does not offer
 Restore, and gives the reason "This session ended before its first message"

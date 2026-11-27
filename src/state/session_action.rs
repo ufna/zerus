@@ -321,7 +321,7 @@ fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if agy::named(name) {
-        return agy::action(name, &request.action, scope);
+        return agy::action(name, &request.action, request.archive_id.as_deref(), scope);
     }
     if request.archive_id.is_none() && opencode::exists(name) {
         scope.opencode_error();

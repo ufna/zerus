@@ -308,7 +308,7 @@ pub(crate) fn lookup(value: &Value) -> Result<Value> { lookup_scoped(value,false
 pub(crate) fn lookup_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
     let (name, id) = validate_lookup(value)?;
     let _guard = lock(None)?;
-    if !name.starts_with("dsh/") && !name.starts_with("opencode/") {
+    if native_archive_store::named(name).is_none() {
         let path = archive::path(id)?;
         if !fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_file() {
             return Err("archive record is not a regular file".into());
@@ -519,7 +519,10 @@ fn sessions_of(
             Some(taken) => journal::archive_summary(record, taken(name)),
             None => journal::summary(record, false),
         };
-        row.as_object_mut().ok_or("invalid archive summary")?.extend(json!({"name":name,"cmd":record["agent"],"project":parts.get(1),"tag":parts.get(2),"attached":0,"clients":[],"created":record["created"],"state":"archived","resumable":!string(record,"conversation_id").is_empty(),"archive_id":id,"archived_at":at}).as_object().unwrap().clone());
+        row.as_object_mut().ok_or("invalid archive summary")?.extend(json!({"name":name,"cmd":record["agent"],"project":parts.get(1),"tag":parts.get(2),"attached":0,"clients":[],"created":record["created"],"state":"archived","archive_id":id,"archived_at":at}).as_object().unwrap().clone());
+        if record["backend"] != "agy" {
+            row["resumable"] = json!(!string(record, "conversation_id").is_empty());
+        }
         if let Some(title) = record["title"].as_str() {
             row["title"] = json!(title.chars().take(1024).collect::<String>());
         }
@@ -580,10 +583,11 @@ pub(super) fn preview(marks: &Value, name_taken: Option<&dyn Fn(&str) -> bool>) 
     Ok(page)
 }
 
-fn native_stores() -> [(&'static str, native_archive_store::Store); 2] {
+fn native_stores() -> [(&'static str, native_archive_store::Store); 3] {
     [
         ("dsh_archive", dsh::native_archives::STORE),
         ("opencode_archive", opencode::archives::STORE),
+        ("agy_archive", native_archive_store::AGY),
     ]
 }
 

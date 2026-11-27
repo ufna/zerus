@@ -126,6 +126,7 @@ impl Seed {
             "agy_worker",
             "agy_provider",
             "agy_startup_refused",
+            "agy_restore_archive",
             "agy_workspace",
             "agy_account_location",
             "reply_at",

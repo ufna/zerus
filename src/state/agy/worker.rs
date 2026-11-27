@@ -371,7 +371,6 @@ impl Owner {
                 }
                 self.native.finish(until)?;
                 edit(&mut self.record, |record| {
-                    record["agy_worker"] = Value::Null;
                     record["agy_provider"] = Value::Null;
                     record["agy_socket"] = Value::Null;
                     record["state"] = json!("paused");
@@ -509,7 +508,6 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
         if matches!(proof, Reply::AuthRequired) {
             native.finish(until)?;
             edit(&mut record, |r| {
-                r["agy_worker"] = Value::Null;
                 r["agy_provider"] = Value::Null;
                 r["agy_socket"] = Value::Null;
                 r["state"] = json!("stopped");
@@ -525,6 +523,9 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
             return Err("Antigravity returned a different conversation identity".into());
         }
         edit(&mut record, |r| {
+            if !string(r, "agy_restore_archive").is_empty() {
+                r["agy_restore_confirmed"] = r["run_id"].clone();
+            }
             r["conversation_id"] = json!(next);
             r["state"] = json!("running");
             r["phase"] = json!("idle");
@@ -556,7 +557,6 @@ pub(in crate::state) fn run(args: &[String]) -> Result<i32> {
 
 fn failed(record: &mut Value, error: &str) -> Result<()> {
     edit(record, |r| {
-        r["agy_worker"] = Value::Null;
         r["agy_socket"] = Value::Null;
         r["state"] = json!("unknown");
         r["phase"] = json!("unknown");
