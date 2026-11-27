@@ -1195,6 +1195,8 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   expect(button.textContent).toContain("Fixture Flash");
   expect(dialog().textContent).toContain(label.quota);
   expect(dialog().textContent).toContain(label.context);
+  expect(dialog().querySelector(`[role="group"][aria-label^="${label.quota}"]`)).not.toBeNull();
+  expect(dialog().querySelector(`[role="group"][aria-label^="${label.context}"]`)?.getAttribute("aria-label")).toContain("180");
   expect(dialog().textContent).toContain("180");
   expect(dialog().textContent).toContain("/usage");
   await choose("#agy-model", "second");

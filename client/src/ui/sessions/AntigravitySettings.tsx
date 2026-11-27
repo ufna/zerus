@@ -162,13 +162,19 @@ export function AntigravitySettings(props: {
           <Dropdown id="agy-effort" class="field" aria-label={tr("Thinking level")} value={displayed("effort")} options={choices("effort")}
             disabled={!state().effortChange || !state().efforts.length || props.busy || pending() || choice()?.kind === "model"}
             onChange={(value) => choose("effort", value)} /></div>
-        <Show when={state().mode}>{(mode) => <div class="form-row"><span>{tr("Execution mode")}</span><span>{mode()}</span></div>}</Show>
+        <Show when={state().mode}>{(mode) => <div class="form-row" role="group" aria-label={tr("%1: %2", tr("Execution mode"), mode())}>
+          <span aria-hidden="true">{tr("Execution mode")}</span><span aria-hidden="true">{mode()}</span>
+        </div>}</Show>
         <p class="cmp-settings-hint hint" role="status">{hint()}</p>
         <Show when={state().native.reason === "legacy_worker" && state().d?.resumable === true}>
           <p class="hint">{tr("To load settings for this conversation, wait until it is idle. In Session actions, choose Stop session, then Resume session.")}</p>
         </Show>
-        <div class="form-row"><span>{tr("Context usage")}</span><span>{usage()}</span></div>
-        <div class="form-row"><span>{tr("Account quota")}</span><span>{tr("Unavailable in Activity")}</span></div>
+        <div class="form-row" role="group" aria-label={tr("%1: %2", tr("Context usage"), usage())}>
+          <span aria-hidden="true">{tr("Context usage")}</span><span aria-hidden="true">{usage()}</span>
+        </div>
+        <div class="form-row" role="group" aria-label={tr("%1: %2", tr("Account quota"), tr("Unavailable in Activity"))}>
+          <span aria-hidden="true">{tr("Account quota")}</span><span aria-hidden="true">{tr("Unavailable in Activity")}</span>
+        </div>
         <p class="hint">{tr("For Google account quota, enter /usage in the interactive Antigravity CLI on this computer.")}</p>
       </div>
       <div class="dlg-foot">
