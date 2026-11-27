@@ -276,6 +276,16 @@ impl Composers {
         let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
         let target = target(ctx);
         let exact = ctx.exact_outbox_details(details);
+        // A person's Send to the current working Codex turn uses its normal
+        // guarded composer and Enter. A saved FIFO head keeps its own route.
+        if supported && exact && c.outbox.is_empty()
+            && ctx.row.agent == "codex" && codex_work_phase(ctx.row.phase.as_deref())
+            && details["codex_manual_turn_send"] == true
+            && !ctx.ordinary_input_held(hub)
+            && self.outbox_ready(&ctx.row, &target, details)
+        {
+            return ManualSend::Direct;
+        }
         if waiting {
             if let Some(reason) = ctx.reason() {
                 return ManualSend::Blocked(reason);
