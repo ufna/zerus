@@ -1199,13 +1199,25 @@ it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exac
   expect(dialog().textContent).toContain("/usage");
   await choose("#agy-model", "second");
   expect(field("#agy-effort").disabled).toBe(true);
+  const connection = (ready: boolean) => receive({ ...emptyBatch(), activity: [{
+    computer: "", key, kind: "connection", payload: { ready },
+  }] });
+  connection(false);
+  expect(action(label.apply).disabled).toBe(true);
+  connection(true);
+  expect(activity.currentSummary()).toBeUndefined();
+  expect(action(label.apply).disabled, "Apply needs fresh provider settings after reconnect").toBe(true);
+  action(label.apply).click();
+  expect(calls).toEqual([]);
+  state(1, settings("first", "mid", before));
+  expect(action(label.apply).disabled).toBe(false);
   action(label.apply).click(); await flush();
   const target = { computer: "", name: row.name, run_id: row.run_id, conversation_id: row.conversation_id };
   const change = { kind: "antigravity_settings", model: "second", expected_session_id: row.session_id };
   expect(calls).toEqual([{ target, action: { ...change, expected_config_revision: before }, delay: undefined }]);
   expect(button.textContent).toContain("Fixture Flash");
   expect(action(label.apply).disabled).toBe(true);
-  state(4, settings("second", "mid", after));
+  state(2, settings("second", "mid", after));
   expect(button.textContent).toContain("Fixture Pro");
   await choose("#agy-effort", "max");
   action(label.apply).click(); await flush();

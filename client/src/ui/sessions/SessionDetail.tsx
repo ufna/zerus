@@ -346,7 +346,7 @@ export function SessionDetail() {
                 <span class="grow" />
                 <Show when={detailTab() === "activity" && !subagentOpen() && selected()?.cmd === "agy" && selected()}>{(row) =>
                   <AntigravitySettings row={row()} online={!computerOffline(row().computer)}
-                    followed={activity.error() || activity.ended() ? undefined : followedFor(row().key).value}
+                    followed={activity.target()?.id === row().key && !activity.error() && !activity.ended() ? activity.currentSummary() : undefined}
                     busy={updating(row().computer, row().name) || !!composer.view()?.sending || !!composer.view()?.waiting}
                     apply={bridge.runAction} refresh={(target) => {
                       const followed = activity.target();
