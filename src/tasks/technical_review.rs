@@ -112,7 +112,7 @@ fn save(config: &Config, policy: &Policy) -> Result<()> {
     let mut out = tempfile::NamedTempFile::new_in(&config.state).map_err(fail)?;
     out.write_all(&bytes).map_err(fail)?;
     out.as_file().sync_all().map_err(fail)?;
-    crate::platform::persist(out, &config.state.join(FILE)).map_err(fail)?;
+    crate::platform::persist(out, config.state.join(FILE)).map_err(fail)?;
     crate::platform::sync_dir(&config.state).map_err(fail)
 }
 
