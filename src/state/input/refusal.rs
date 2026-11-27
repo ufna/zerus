@@ -44,7 +44,7 @@ pub(super) fn admit(
     id: &str,
     request: &Request,
     public: bool,
-) -> Existing {
+) -> (Existing, bool) {
     let previous = super::existing(path, digest, name);
     if public && matches!(previous, Existing::Unknown(_)) {
         let exact = (|| -> Result<bool> {
@@ -60,10 +60,10 @@ pub(super) fn admit(
             ))
         })();
         if exact == Ok(true) {
-            return Existing::Absent;
+            return (Existing::Absent, true);
         }
     }
-    previous
+    (previous, false)
 }
 
 /// Pending settings precede the message's ordinary input marker. Retire an
@@ -106,6 +106,7 @@ pub(super) fn prepare(witness: &NotOffered) -> Result<()> {
 pub(super) fn remember(witness: &NotOffered) -> Result<()> {
     let mut value = value(witness)?;
     value["outbox_waiting"] = json!(witness.waits_for_idle_send());
+    if witness.native_accept { value["terminal_native_accept"] = json!(true); }
     publish(witness, &value)
 }
 
@@ -187,6 +188,7 @@ mod tests {
             reason: reason.into(),
             waiting: true,
             idle_refusal: false,
+            native_accept: false,
             dialog: None,
         }
     }
@@ -278,7 +280,7 @@ mod tests {
                 &w.request_id,
                 &request(&w),
                 public,
-            )
+            ).0
         };
         assert!(matches!(inspect(true), Existing::Absent));
         assert!(
@@ -382,7 +384,7 @@ mod tests {
                 &w.request_id,
                 &request(&w),
                 true
-            ),
+            ).0,
             Existing::Unknown(_)
         ));
         assert!(

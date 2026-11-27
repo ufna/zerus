@@ -159,6 +159,10 @@ struct Original {
     codex_outbox: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_queued_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    kimi_outbox: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    terminal_native_after_refusal: bool,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     native: Value,
     #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -273,12 +277,12 @@ pub(in crate::state) fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
         .filter(|id| uuid(id))
 }
 
-/// Read one legacy or current public-send refusal. The original input digest
-/// binds the attachments and the guarded-send flag as well as the message text.
-pub(in crate::state) fn terminal_outbox_refusal(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
+/// Read an exact terminal refusal or Kimi terminal submission. The original
+/// input digest binds the attachments and message for either answer.
+pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
     use zerus_client_core::desktop::deferred_send::Refusal;
     let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid terminal outbox query")?;
-    if !(name.starts_with("codex/") || name.starts_with("kimi/")) || !bounded_identity(name, 512)
+    if !(name.starts_with("codex/") || name.starts_with("kimi/") || name.starts_with("claude/")) || !bounded_identity(name, 512)
         || !uuid(&query.request_id) || !bounded_identity(&query.expected_run_id, 128)
         || query.expected_run_id.is_empty() || !bounded_identity(&query.expected_conversation_id, 512)
         || query.expected_conversation_id.is_empty() || !hex(&query.input_sha256)
@@ -286,20 +290,28 @@ pub(in crate::state) fn terminal_outbox_refusal(state: &Path, name: &str, bytes:
         return Err("Invalid terminal outbox identity".into());
     }
     let bytes = original_bytes(state, Source::Terminal, &query.request_id)
-        .map_err(|_| "Original terminal refusal is unconfirmed")?;
-    if name.starts_with("codex/") {
-        if let Ok(receipt) = decode_metadata(&bytes, Source::Terminal, &query.request_id) {
-            if receipt.codex_outbox && receipt.transport == "codex_queue" && receipt.status == "submitted"
-                && receipt.name == name && receipt.request_id == query.request_id
-                && receipt.run_id == query.expected_run_id && receipt.conversation_id == query.expected_conversation_id
-                && receipt.digest == query.input_sha256 && !receipt.first_message && receipt.agent_id.is_empty()
-                && receipt.submitted_at.is_finite() && receipt.submitted_at > 0.0
-                && receipt.native_queued_message_id.as_deref().is_some_and(uuid)
+        .map_err(|_| "Original terminal delivery is unconfirmed")?;
+    if let Ok(original) = decode_metadata(&bytes, Source::Terminal, &query.request_id) {
+        if original.status == "submitted" && original.request_id == query.request_id && original.name == name
+            && original.run_id == query.expected_run_id && original.conversation_id == query.expected_conversation_id
+            && original.digest == query.input_sha256 && !original.first_message && original.agent_id.is_empty()
+            && original.submitted_at.is_finite() && original.submitted_at > 0.0
+        {
+            if name.starts_with("codex/") && original.codex_outbox && original.transport == "codex_queue"
+                && original.native_queued_message_id.as_deref().is_some_and(uuid)
             {
                 return Ok(json!({"schema":1,"status":"submitted","proof":"native_codex_receipt","codex_outbox":true,
-                    "transport":"codex_queue","native_queued_message_id":receipt.native_queued_message_id,
-                    "request_id":receipt.request_id,"name":name,"run_id":receipt.run_id,"conversation_id":receipt.conversation_id,
-                    "input_sha256":receipt.digest,"submitted_at":receipt.submitted_at}));
+                    "transport":"codex_queue","native_queued_message_id":original.native_queued_message_id,
+                    "request_id":original.request_id,"name":name,"run_id":original.run_id,"conversation_id":original.conversation_id,
+                    "input_sha256":original.digest,"submitted_at":original.submitted_at}));
+            }
+            if name.starts_with("kimi/") && original.transport == "terminal"
+                && (original.kimi_outbox || original.terminal_native_after_refusal)
+            {
+                return Ok(json!({"schema":1,"status":"submitted","proof":"native_kimi_terminal_receipt",
+                    "request_id":original.request_id,"name":name,"run_id":original.run_id,
+                    "conversation_id":original.conversation_id,"input_sha256":query.input_sha256,
+                    "transport":"terminal","kimi_outbox":true,"submitted_at":original.submitted_at}));
             }
         }
     }
@@ -313,8 +325,12 @@ pub(in crate::state) fn terminal_outbox_refusal(state: &Path, name: &str, bytes:
     #[derive(Deserialize)]
     struct QueueGate {
         outbox_waiting: Option<bool>,
+        terminal_native_accept: Option<bool>,
     }
     let gate: QueueGate = serde_json::from_slice(&bytes).map_err(|_| "Invalid terminal refusal")?;
+    if name.starts_with("claude/") && gate.terminal_native_accept != Some(true) {
+        return Err("Original Claude delivery is unconfirmed".into());
+    }
     // Older records lack the typed gate. Recognize only the historic draft
     // and idle reasons, after verifying the complete negative and payload.
     let waiting = gate.outbox_waiting.unwrap_or_else(|| {

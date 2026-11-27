@@ -155,14 +155,22 @@ fn dsh_outbox(entry: &Entry) -> bool {
     entry.target.name.starts_with("dsh/")
 }
 
-fn guarded_action(entry: &Entry, native_queue: bool) -> Action {
-    let text = entry.text.clone();
-    let attachments = entry.attachments.clone();
-    if native_queue {
-        Action::SendToNativeQueue { text, attachments }
-    } else {
-        Action::SendWhenIdle { text, attachments }
-    }
+fn terminal_native_agent(agent: &str) -> bool {
+    matches!(agent, "claude" | "kimi")
+}
+
+fn terminal_native_supported(agent: &str, details: &Value) -> bool {
+    terminal_native_agent(agent) && details["terminal_native_accept_supported"] == true
+}
+
+// Ready Kimi sessions retain the existing route even if their native history
+// is too old or incomplete to establish the ordered working-turn floor.
+fn terminal_native_route(agent: &str, details: &Value) -> bool {
+    terminal_native_supported(agent, details) && (agent != "kimi" || details["activity"] == "busy")
+}
+
+fn receipt_action(entry: &Entry) -> Action {
+    Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
 }
 
 pub(super) fn can_probe(entry: &Entry) -> bool {
@@ -301,7 +309,7 @@ impl Composers {
             && ctx.row.agent == "codex" && codex_work_phase(ctx.row.phase.as_deref())
             && details["codex_manual_turn_send"] == true
             && !ctx.ordinary_input_held(hub)
-            && self.idle_or_codex_details(&ctx.row, &target, details)
+            && self.guarded_send_details(&ctx.row, &target, details)
         {
             if details["codex_ordered_manual_turn_send"] == true {
                 return ManualSend::TryNow;
@@ -328,7 +336,11 @@ impl Composers {
             if !guarded_supported(&ctx.row.agent, details) {
                 return ManualSend::Blocked(QUEUE_OLD_HOST.into());
             }
-            if c.outbox.is_empty() && native_queue && !ctx.exact_earlier_input_hold(hub) {
+            if c.outbox.is_empty()
+                && ((native_queue && !ctx.exact_earlier_input_hold(hub))
+                    || (terminal_native_route(&ctx.row.agent, details) && !ctx.ordinary_input_held(hub)
+                        && self.guarded_send_details(&ctx.row, &target, details)))
+            {
                 ManualSend::TryNativeQueue
             } else {
                 ManualSend::Wait
@@ -336,7 +348,7 @@ impl Composers {
         } else if exact
             && supported
             && ctx.reason().is_none()
-            && (native_queue || !dsh_agent(&ctx.row.agent) && self.idle_or_codex_details(&ctx.row, &target, details))
+            && (native_queue || !dsh_agent(&ctx.row.agent) && self.guarded_send_details(&ctx.row, &target, details))
         {
             if native_queue { ManualSend::TryNativeQueue } else { ManualSend::TryNow }
         } else {
@@ -591,12 +603,14 @@ impl Composers {
 
     fn check_outbox(&self, entry: &Entry) -> Option<serde_json::Value> {
         let row = self.outbox_row(entry)?;
-        // Inspect even on a cold restart when the native provider can take next-turn input.
+        // Inspect eligible working terminals even when the editor is closed.
+        // Every new route still requires its owning host's exact capability.
         let phase = row.phase.as_deref();
-        if phase != Some("idle")
-            && !(row.agent == "codex" && (phase == Some("interrupted") || codex_work_phase(phase)))
-            && !(provider_queue(&row.agent) && matches!(phase, Some("working" | "tool")))
-        {
+        let eligible = phase == Some("idle")
+            || (row.agent == "codex" && (phase == Some("interrupted") || codex_work_phase(phase)))
+            || (provider_queue(&row.agent) && matches!(phase, Some("working" | "tool")))
+            || (terminal_native_agent(&row.agent) && matches!(phase, Some("working" | "tool" | "compacting")));
+        if !eligible {
             return None;
         }
         (self.0.deps.inspect)(&entry.target, None, None).ok()
@@ -605,8 +619,8 @@ impl Composers {
     fn check_outbox_receipt(&self, entry: &Entry) -> Option<serde_json::Value> {
         self.outbox_row(entry)?;
         let status = self.0.outbox_status.get()?;
-        // Both guarded writes freeze identical stdin. Never dispatch here.
-        status(&entry.target, &guarded_action(entry, false), &entry.request_id)
+        // Each guarded provider route freezes the same stdin. This only reads the original receipt.
+        status(&entry.target, &receipt_action(entry), &entry.request_id)
     }
 
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
@@ -618,7 +632,7 @@ impl Composers {
 
     fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
         (self.native_queue_details(row, &entry.target, details)
-            || self.idle_or_codex_details(row, &entry.target, details))
+            || self.guarded_send_details(row, &entry.target, details))
             && (!idle_codex_queue(entry, row, details)
                 || (details["pending_questions_complete"] == true
                     && details["pending_questions"].as_array().is_some_and(Vec::is_empty)))
@@ -658,7 +672,7 @@ impl Composers {
             && self.eligible_details(row, target, details)
     }
 
-    fn idle_or_codex_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
+    fn guarded_send_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
         let phase = row.phase.as_deref();
         let idle = phase == Some("idle") && details["phase"] == "idle" && details["activity"] == "idle";
         let questions_clear = details["pending_questions_complete"] == true
@@ -671,14 +685,21 @@ impl Composers {
             && details["codex_interrupted_outbox_supported"] == true
             && details["interrupted_message_can_send"] == true
             && questions_clear;
-        (idle || interrupted || codex_queue)
+        let native = terminal_native_supported(&row.agent, details);
+        let working = native
+            && matches!(phase, Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["phase"].as_str(), Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["activity"].as_str(), Some("idle" | "busy"));
+        (idle || interrupted || codex_queue || working)
             && self.eligible_details(row, target, details)
             && (dsh_agent(&row.agent) || super::send::previous_message_pending(
                 row,
                 (&target.run_id, &target.conversation_id),
                 details,
             ) == Some(false))
-            && details["input_queue"].is_null()
+            // The new hosts check their native queue against the current
+            // composer frame while admitting the offer.
+            && (terminal_native_route(&row.agent, details) || details["input_queue"].is_null())
             && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
     }
 
@@ -769,8 +790,12 @@ impl Composers {
                 || idle_codex_queue(&entry, &row, details)
             {
                 Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if self.native_queue_details(&row, &entry.target, details) {
+                Action::SendToNativeQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if terminal_native_route(&row.agent, details) {
+                Action::SendWhenNativeAccepts { text: entry.text.clone(), attachments: entry.attachments.clone() }
             } else {
-                guarded_action(&entry, self.native_queue_details(&row, &entry.target, details))
+                receipt_action(&entry)
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
@@ -835,6 +860,8 @@ impl Composers {
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
             && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
+                || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
+                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true)
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
@@ -844,6 +871,9 @@ impl Composers {
         } else {
             terminal_only.then_some(TERMINAL_SUBMITTED)
         };
+        let native_accepted = exact && receipt.is_some_and(|receipt| {
+            receipt["kimi_outbox"] == true || (receipt["claude_outbox"] == true && receipt["native"] == "queue")
+        });
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle"
@@ -878,7 +908,7 @@ impl Composers {
                     .get_mut(&key)
                     .expect("queue write keeps the draft");
                 c.queue_writing = false;
-                let next_ready = (codex_queued || provider_queued) && saved.is_ok()
+                let next_ready = (codex_queued || provider_queued || native_accepted) && saved.is_ok()
                     && entries.first().is_some_and(|next| next.state == State::Waiting);
                 if let Err(error) = saved {
                     if exact {

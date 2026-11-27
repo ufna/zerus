@@ -57,6 +57,7 @@ pub fn selects(action: &Action) -> bool {
         | Action::SendToCodexQueue { .. }
         | Action::SendToOrderedCodexTurn { .. }
         | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. }
         | Action::SendNow { .. }
         | Action::Answer { .. }
         | Action::RemoveQueued { .. }

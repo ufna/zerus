@@ -154,6 +154,19 @@ fn kimi(record: &Value) -> Option<Source> {
     source(&path, None)
 }
 
+// The native wire also contains prompts entered directly in the terminal.
+pub(super) fn kimi_outbox_floor(record: &Value) -> Option<u64> {
+    let wire = kimi(record)?;
+    let latest = wire.rows.iter().rev().find(|row|
+        row["type"] == "turn.prompt" && row["agentId"] == "main"
+            && row["origin"]["kind"] == "user")?;
+    let at = latest["time"].as_f64()? / 1000.0;
+    if !(at > 0.0 && at <= now()) || !wire.current() {
+        return None;
+    }
+    native_turn("kimi", latest)?.as_u64()
+}
+
 fn text<'a>(parts: &'a Value, kind: &str) -> Option<&'a str> {
     let parts = parts.as_array()?;
     let [part] = parts.as_slice() else {
@@ -444,6 +457,15 @@ pub(in crate::state) fn allows_hook(record: &Value, event: &Value) -> bool {
         "UserPromptSubmit" | "UserPromptQueued" | "TurnStarted" | "TaskStarted"
     ) {
         return true;
+    }
+    // Kimi may deliver the previous prompt's callback after Terminal accepts
+    // the next paste. Only the ordered native turn can confirm this original.
+    if record["agent"] == "kimi" && input_unconfirmed(record)
+        && record["input_pending_kimi_outbox"].is_string()
+        && record["input_pending_kimi_outbox"] == record["input_pending_request"]
+        && matches!(string(event, "hook_event_name"), "UserPromptSubmit" | "UserPromptQueued")
+    {
+        return false;
     }
     if string(record, "agent") == "kimi"
         && matches!(

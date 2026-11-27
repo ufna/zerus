@@ -25,10 +25,12 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("Delivery receipt query exceeds 8 KiB".into());
     }
     if operation == "outbox-status" {
+        let state = root();
         let status = if name.starts_with("claude/") {
-            receipt_index::claude_outbox_status(&root(), name, &bytes)?
+            receipt_index::claude_outbox_status(&state, name, &bytes)
+                .or_else(|_| receipt_index::terminal_outbox_status(&state, name, &bytes))?
         } else {
-            receipt_index::terminal_outbox_refusal(&root(), name, &bytes)?
+            receipt_index::terminal_outbox_status(&state, name, &bytes)?
         };
         println!("{status}");
         return Ok(0);

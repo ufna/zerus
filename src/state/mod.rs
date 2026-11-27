@@ -1887,10 +1887,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     }
     // Queue-only input must never fall through to a provider that would send normally.
     if command == "send" {
-        let queue = args.iter().find(|arg| matches!(arg.as_str(), "--codex-queue" | "--codex-ordered-turn" | "--opencode-queue" | "--deepseek-queue"));
+        let queue = args.iter().find(|arg| matches!(arg.as_str(), "--codex-queue" | "--codex-ordered-turn" | "--when-native-accepts" | "--opencode-queue" | "--deepseek-queue"));
         if let Some(queue) = queue {
             return match (args.first(), queue.as_str()) {
-                (_, "--codex-queue" | "--codex-ordered-turn") => input::dispatch(args),
+                (_, "--codex-queue" | "--codex-ordered-turn" | "--when-native-accepts") => input::dispatch(args),
                 (Some(name), "--opencode-queue") if name.starts_with("opencode/") => opencode::send_when_idle(args),
                 (Some(name), "--deepseek-queue") if name.starts_with("dsh/") => dsh::send_when_idle(args),
                 _ => Err("Native queue admission requires the exact provider session name".into()),
