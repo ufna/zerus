@@ -352,7 +352,7 @@ export function Composer() {
             : tr("Check the terminal before sending again to avoid a duplicate message")}
             onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />{tr("Allow retry")}</button>
         </Show>
-        <Show when={!child()}><ModelSettingsButton /></Show>
+        <Show when={!child() && s()?.cmd !== "agy"}><ModelSettingsButton /></Show>
         <Show when={!child() && act().stop.shown}>
           <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>

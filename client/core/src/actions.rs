@@ -80,6 +80,12 @@ pub enum Action {
         #[serde(default)]
         without_terminal: bool,
     },
+    AntigravitySettings {
+        model: String,
+        effort: Option<String>,
+        expected_session_id: String,
+        expected_config_revision: String,
+    },
     Interrupt {
         turn_started: f64,
     },
@@ -438,6 +444,37 @@ pub fn invocation(
         target.name.clone()
     };
     let (mut args, stdin, local, peer, request) = match action {
+        Action::AntigravitySettings {
+            model,
+            effort,
+            expected_session_id,
+            expected_config_revision,
+        } => {
+            if !target.name.starts_with("agy/")
+                || !crate::creation::canonical_uuid(expected_session_id)
+                || !crate::creation::canonical_uuid(&target.run_id)
+                || !crate::creation::canonical_uuid(&target.conversation_id)
+                || !settings_token(model, 256)
+                || effort.as_deref().is_some_and(|value| !settings_token(value, 80))
+                || !crate::creation::canonical_uuid(expected_config_revision)
+            {
+                return Err("Refresh Activity before changing Antigravity settings.".into());
+            }
+            let mut input = json!({"request_id":request_id,"expected_run_id":target.run_id,
+                "expected_conversation_id":target.conversation_id,"model":model,
+                "expected_session_id":expected_session_id,
+                "expected_config_revision":expected_config_revision});
+            if let Some(effort) = effort {
+                input["effort"] = json!(effort);
+            }
+            (
+                vec!["settings".into(), name, "--json".into()],
+                Some(serde_json::to_vec(&input).map_err(|e| e.to_string())?),
+                20,
+                35,
+                Some(request_id.to_owned()),
+            )
+        }
         Action::Settings {
             model,
             effort,
@@ -1305,6 +1342,20 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         return failed(crate::termination_cleanup::STATE_CHANGED);
     }
     match action {
+        Action::AntigravitySettings {
+            model,
+            effort,
+            expected_session_id,
+            expected_config_revision,
+        } => classify_antigravity_settings(
+            target,
+            invocation,
+            model,
+            effort.as_deref(),
+            expected_session_id,
+            expected_config_revision,
+            exit,
+        ),
         Action::Settings {
             model,
             effort,
@@ -1384,6 +1435,54 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         }
         .completed(invocation, exit),
         _ => classify_write(exit, false),
+    }
+}
+
+fn settings_token(value: &str, limit: usize) -> bool {
+    !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
+}
+
+fn classify_antigravity_settings(
+    target: &Target,
+    invocation: &Invocation,
+    model: &str,
+    effort: Option<&str>,
+    expected_session_id: &str,
+    expected_revision: &str,
+    exit: Exit,
+) -> Outcome {
+    const UNKNOWN: &str = "Antigravity settings change is unconfirmed. Check Activity before trying again.";
+    let (code, receipt) = match exit {
+        Exit::StartFailed(error) => return failed(error),
+        Exit::Code { code, stdout, .. } => (code, serde_json::from_slice::<Value>(&stdout).ok()),
+        _ => return uncertain(UNKNOWN),
+    };
+    let Some(receipt) = receipt.filter(|value| {
+        invocation
+            .request_id
+            .as_deref()
+            .is_some_and(|id| value["request_id"] == id)
+            && value["name"] == target.name
+            && value["scope"] == "session"
+            && value["run_id"] == target.run_id
+            && value["conversation_id"] == target.conversation_id
+            && value["session_id"] == expected_session_id
+    }) else {
+        return uncertain(UNKNOWN);
+    };
+    match receipt["status"].as_str() {
+        Some("applied")
+            if code == 0
+                && receipt["model"] == model
+                && effort.is_none_or(|value| receipt["effort"] == value)
+                && receipt["config_revision"].as_str().is_some_and(|value| {
+                    crate::creation::canonical_uuid(value) && value != expected_revision
+                }) =>
+        {
+            done(receipt, None)
+        }
+        Some("refused") if code == 1 => failed("Antigravity refused the change. Refresh Activity."),
+        _ => uncertain(UNKNOWN),
     }
 }
 
@@ -2593,6 +2692,58 @@ mod tests {
                 .args
                 .ends_with(&["settings".into(), t.name, "--json".into()]));
         }
+    }
+
+    #[test]
+    fn antigravity_settings_require_exact_native_revision_and_one_acknowledgement() {
+        let id = "d16a12b4-5a79-4a28-9db4-4b5ba23cba11";
+        let request = "1636ce39-2c7a-4024-9f0a-d3f6b8c6aeb5";
+        let before = "da45226f-8c12-4f03-aba9-47bc4969d04a";
+        let after = "9850e2a7-24de-426e-a1fd-ea4c36c17dd2";
+        let target = Target {
+            computer: "mac".into(),
+            name: "agy/sample/settings".into(),
+            run_id: "29442f7c-fa18-46ce-a3b2-538e42e51241".into(),
+            conversation_id: "dbcd01fc-b01d-4b44-95a4-166ed4d6a89a".into(),
+        };
+        let settings = |effort: Option<&str>| Action::AntigravitySettings {
+            model: "fixture/first".into(),
+            effort: effort.map(str::to_owned),
+            expected_session_id: id.into(),
+            expected_config_revision: before.into(),
+        };
+        let action = settings(Some("high"));
+        let call = crate::session_selector::selected_invocation(&target, &action, request, Some(id)).unwrap();
+        assert_eq!(call.args, ["@mac", "settings", &target.name, "--session-id", id, "--json"]);
+        let body: Value = serde_json::from_slice(call.stdin.as_ref().unwrap()).unwrap();
+        assert_eq!(body, json!({"request_id":request,"expected_run_id":target.run_id,
+            "expected_conversation_id":target.conversation_id,"expected_config_revision":before,
+            "expected_session_id":id,
+            "model":"fixture/first","effort":"high"}));
+        let model_only = invocation(&target, &settings(None), request).unwrap();
+        let body: Value = serde_json::from_slice(model_only.stdin.as_ref().unwrap()).unwrap();
+        assert!(body.get("effort").is_none());
+
+        let receipt = json!({"status":"applied","scope":"session","request_id":request,"name":target.name,
+            "session_id":id,"run_id":target.run_id,"conversation_id":target.conversation_id,
+            "model":"fixture/first","effort":"high","config_revision":after});
+        let result = |code, receipt: &Value| classify(&target, &action, &call, exit(code, receipt.to_string().as_bytes(), ""));
+        assert!(matches!(result(0, &receipt), Outcome::Done { .. }));
+        for field in ["session_id", "name", "request_id", "run_id", "conversation_id", "model", "effort", "scope"] {
+            let mut wrong = receipt.clone();
+            wrong[field] = json!("other");
+            assert!(matches!(result(0, &wrong), Outcome::Uncertain { .. }), "{field}");
+        }
+        let mut wrong = receipt.clone();
+        wrong["config_revision"] = json!(before);
+        assert!(matches!(result(0, &wrong), Outcome::Uncertain { .. }));
+        wrong["status"] = json!("uncertain");
+        assert!(matches!(result(1, &wrong), Outcome::Uncertain { .. }));
+        wrong["status"] = json!("refused");
+        assert!(matches!(result(1, &wrong), Outcome::Failed { .. }));
+        assert!(matches!(classify(&target, &action, &call, Exit::TimedOut), Outcome::Uncertain { .. }));
+        assert!(matches!(classify(&target, &action, &call, Exit::WriteFailed), Outcome::Uncertain { .. }));
+        assert!(invocation(&Target { conversation_id: "".into(), ..target }, &action, request).is_err());
     }
 
     #[test]

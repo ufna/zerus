@@ -1138,6 +1138,96 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
   expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
 });
 
+it.each(["en", "ru"] as const)("changes Antigravity model and thinking from exact Activity in %s", async (lang) => {
+  transport.language = lang;
+  const label = lang === "ru" ? {
+    settings: "Настройки модели Antigravity", apply: "Применить", quota: "Квота аккаунта", context: "Использование контекста",
+    check: "Проверить активность", unknown: "Изменение настроек Antigravity не подтверждено",
+    old: "Этот процесс Antigravity не сообщает текущие настройки модели",
+  } : {
+    settings: "Antigravity model settings", apply: "Apply", quota: "Account quota", context: "Context usage",
+    check: "Check Activity", unknown: "Antigravity settings change is unconfirmed",
+    old: "This Antigravity worker does not report its current model settings",
+  };
+  const row: ViewRow = { ...fixtureRow(), name: "agy/example/settings", agent: "agy", run_id: uuid(801), conversation_id: uuid(802),
+    process_state: "running", model: "Stale catalog choice", terminal_supported: false };
+  const before = uuid(810), after = uuid(811), refreshed = uuid(812);
+  const key = (await open(row)).slice(1);
+  const settings = (current: string, effort: string, revision: string) => ({
+    settings_model: current, effort, agy_settings: { status: "confirmed", revision, mode: { id: "default", label: "Review changes" } },
+    settings_change_supported: true, model_change_supported: true, effort_change_supported: true, settings_apply_when: "now",
+    model_options: [
+      { id: "first", label: "Fixture Flash", ...(current === "first" ? { effort_options: ["mid", "high"], effort_labels: { mid: "Medium", high: "High" } } : {}) },
+      { id: "second", label: "Fixture Pro", ...(current === "second" ? { effort_options: ["mid", "max"], effort_labels: { mid: "Medium", max: "Maximum" } } : {}) },
+    ],
+    session_usage: { context: { used: 180, limit: 512, used_source: "agy_acp", limit_source: "agy_acp" } },
+    agy_quota: { status: "unavailable", reason: "provider_interface_unavailable" },
+  });
+  const state = (rev: number, value: Record<string, unknown>) => receive({ ...emptyBatch(), activity: [{
+    computer: "", key, kind: "state", payload: { rev, value: { name: row.name, session_id: row.session_id, run_id: row.run_id,
+      conversation_id: row.conversation_id, agent: "agy", process_state: "running", activity: "idle", phase: "idle", ...value } },
+  }] });
+  const calls: unknown[] = [], otherWrites: string[] = [];
+  transport.composer = (command, args) => {
+    if (command === "run_action") {
+      calls.push(args);
+      return calls.length === 1 ? { outcome: "done", receipt: { model: "receipt is not the displayed model" }, cleanup: null } : { outcome: "uncertain", detail: "Private fixture" };
+    }
+    if (["send_message", "local_retry", "composer_allow_retry"].includes(command)) otherWrites.push(command);
+    return undefined;
+  };
+  const button = host.querySelector<HTMLButtonElement>(`.detail-tabs [aria-label="${label.settings}"]`)!;
+  const dialog = () => host.querySelector<HTMLDialogElement>('dialog[aria-labelledby="agy-settings-title"]')!;
+  const field = (selector: string) => dialog().querySelector<HTMLButtonElement>(selector)!;
+  const action = (caption: string) => [...dialog().querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === caption)!;
+  const choose = async (selector: string, value: string) => {
+    field(selector).click(); await flush();
+    dialog().querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click();
+  };
+  state(2, { agy_settings: { status: "unavailable", reason: "legacy_worker" }, resumable: true,
+    settings_model: "stale legacy cache", settings_change_supported: true });
+  button.click(); await flush();
+  expect(dialog().textContent).toContain(label.old);
+  expect(host.querySelector(".detail-head")?.textContent).not.toContain("Stale catalog choice");
+  expect(dialog().textContent).not.toContain("stale legacy cache");
+  expect(action(label.apply).disabled).toBe(true);
+  state(3, settings("first", "mid", before));
+  expect(button.textContent).toContain("Fixture Flash");
+  expect(dialog().textContent).toContain(label.quota);
+  expect(dialog().textContent).toContain(label.context);
+  expect(dialog().textContent).toContain("180");
+  expect(dialog().textContent).toContain("/usage");
+  await choose("#agy-model", "second");
+  expect(field("#agy-effort").disabled).toBe(true);
+  action(label.apply).click(); await flush();
+  const target = { computer: "", name: row.name, run_id: row.run_id, conversation_id: row.conversation_id };
+  const change = { kind: "antigravity_settings", model: "second", expected_session_id: row.session_id };
+  expect(calls).toEqual([{ target, action: { ...change, expected_config_revision: before }, delay: undefined }]);
+  expect(button.textContent).toContain("Fixture Flash");
+  expect(action(label.apply).disabled).toBe(true);
+  state(4, settings("second", "mid", after));
+  expect(button.textContent).toContain("Fixture Pro");
+  await choose("#agy-effort", "max");
+  action(label.apply).click(); await flush();
+  expect(calls).toEqual([
+    { target, action: { ...change, expected_config_revision: before }, delay: undefined },
+    { target, action: { ...change, effort: "max", expected_config_revision: after }, delay: undefined },
+  ]);
+  expect(dialog().textContent).toContain(label.unknown);
+  expect(action(label.apply).disabled).toBe(true);
+  action(label.check).click(); await flush();
+  state(1, settings("second", "mid", after));
+  expect(field("#agy-effort").disabled).toBe(true);
+  state(2, { ...settings("first", "high", refreshed), session_id: uuid(899) });
+  expect(button.textContent).not.toContain("Fixture Flash");
+  expect(action(label.apply).disabled).toBe(true);
+  state(3, settings("second", "max", refreshed));
+  expect(button.textContent).toContain("Maximum");
+  expect(field("#agy-effort").disabled).toBe(false);
+  expect(calls).toHaveLength(2);
+  expect(otherWrites).toEqual([]);
+});
+
 it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle through the ordinary menu in %s", async (lang) => {
   transport.language = lang;
   const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);

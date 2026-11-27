@@ -216,7 +216,7 @@ pub enum WriteKind {
 impl WriteKind {
     pub fn of(action: &Action) -> Self {
         match action {
-            Action::Settings { .. } => Self::Settings,
+            Action::Settings { .. } | Action::AntigravitySettings { .. } => Self::Settings,
             Action::Terminate | Action::Kill | Action::TerminateShell { .. } => Self::Terminate,
             Action::ClearContext { .. } => Self::Clear,
             _ => Self::Update,
