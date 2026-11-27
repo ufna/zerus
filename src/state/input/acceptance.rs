@@ -515,6 +515,23 @@ fn reconcile(record: &mut Value, publish: bool) -> Result<()> {
     {
         return Ok(());
     }
+    // A native queue acknowledgement proves this exact registered input was
+    // accepted into the original thread, including its staged file references.
+    // It does not prove that the model has consumed or answered it.
+    if agent == "codex" {
+        if let Some(queued) = pending_receipt(record).filter(|original|
+            original["codex_outbox"] == true && original["transport"] == "codex_queue"
+                && original["status"] == "submitted" && original["conversation_id"] == record["conversation_id"]
+                && original["digest"] == record["input_pending_digest"])
+        {
+            let seen = now();
+            if seen > queued["submitted_at"].as_f64().unwrap_or(f64::INFINITY) {
+                record["input_seen_at"] = json!(seen);
+                if publish { write(record)?; }
+            }
+            return Ok(());
+        }
+    }
     let Some(receipt) = receipt(record) else {
         return Ok(());
     };

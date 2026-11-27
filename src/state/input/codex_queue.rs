@@ -19,6 +19,7 @@ pub(super) struct Queue {
     process: crate::platform::ProcessIdentity,
     conversation: String,
     until: Instant,
+    busy_outbox: bool,
 }
 
 fn reply(stdout: &[u8], conversation: &str) -> Option<String> {
@@ -34,8 +35,19 @@ fn reply(stdout: &[u8], conversation: &str) -> Option<String> {
     Some(id.into())
 }
 
+#[cfg(target_os = "linux")]
+fn original_image(pid: u32, expected: crate::platform::FileIdentity) -> bool {
+    crate::platform::file_identity(Path::new(&format!("/proc/{pid}/exe"))) == Some(expected)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn original_image(_: u32, _: crate::platform::FileIdentity) -> bool {
+    // These platforms retain the original matched-version and executable-path checks.
+    true
+}
+
 impl Queue {
-    pub(super) fn prepare(record: &Value, text: &str) -> Result<Self> {
+    pub(super) fn prepare(record: &Value, text: &str, busy_outbox: bool) -> Result<Self> {
         let until = Instant::now() + Duration::from_secs(10);
         let conversation = string(record, "conversation_id");
         if !uuid::Uuid::parse_str(conversation)
@@ -67,6 +79,27 @@ impl Queue {
         let file = crate::platform::FileIdentity::with_metadata(&held)
             .map_err(|_| "Codex executable metadata is unavailable; no message was queued")?
             .0;
+        // A rollout header records the version that CREATED the thread. A
+        // resumed TUI may run a newer binary. Linux can prove its mapped
+        // image against our held file and execute that exact object for the
+        // capability probe and the queue offer.
+        #[cfg(target_os = "linux")]
+        let pinned_image = busy_outbox;
+        #[cfg(not(target_os = "linux"))]
+        let pinned_image = false;
+        if pinned_image && !original_image(pid, file) {
+            return Err("The queue executable differs from the running Codex image".into());
+        }
+        let run = || {
+            #[cfg(target_os = "linux")]
+            if pinned_image {
+                use std::os::{fd::AsRawFd, unix::process::CommandExt};
+                let mut command = std::process::Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()));
+                command.arg0(&executable);
+                return command;
+            }
+            std::process::Command::new(&executable)
+        };
         let account = HistoryRoot::open(record)?;
         let transcript = PathBuf::from(string(record, "transcript"));
         let resolved_transcript = account.resolve_transcript(&transcript)?;
@@ -100,7 +133,7 @@ impl Queue {
             return Err("Codex native task version is unavailable".into());
         }
         account.verify()?;
-        let mut probe = std::process::Command::new(&executable);
+        let mut probe = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -110,14 +143,14 @@ impl Queue {
         let (status, stdout, _) =
             crate::platform::run_bounded(&mut probe, [1024, 4096], until, &|| false)
                 .map_err(|_| "Codex queue version is unavailable".to_owned())?;
-        if !status.success()
-            || std::str::from_utf8(&stdout).ok().map(str::trim)
-                != Some(format!("codex-cli {version}").as_str())
-        {
+        let runtime = std::str::from_utf8(&stdout).ok().and_then(|line| line.trim().strip_prefix("codex-cli "));
+        let valid = runtime.is_some_and(|v| !v.is_empty() && v.len() <= 32 && v.as_bytes()[0].is_ascii_digit()
+            && v.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'+')));
+        if !status.success() || !valid || (!pinned_image && runtime != Some(version)) {
             return Err("The native queue version differs from the running Codex task".into());
         }
         account.verify()?;
-        let mut help = std::process::Command::new(&executable);
+        let mut help = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -143,7 +176,7 @@ impl Queue {
                     .into(),
             );
         }
-        let mut command = std::process::Command::new(&executable);
+        let mut command = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -168,6 +201,7 @@ impl Queue {
             process,
             conversation: conversation.into(),
             until,
+            busy_outbox,
         };
         queue.verify()?;
         Ok(queue)
@@ -180,6 +214,11 @@ impl Queue {
                 != Some(self.history_object)
         {
             return Err("Codex native task history changed during queue preparation".into());
+        }
+        if self.busy_outbox && (!original_image(self.pid, self.file)
+            || crate::platform::holds_open(self.pid, &self.resolved_transcript).ok() != Some(true))
+        {
+            return Err("The original Codex process no longer owns the queue image or thread".into());
         }
         if crate::platform::process_identity(self.pid).as_ref() != Some(&self.process)
             || crate::platform::file_identity(&self.executable) != Some(self.file)

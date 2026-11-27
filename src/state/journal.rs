@@ -1235,6 +1235,7 @@ pub(super) fn inspection_with(
         output["guarded_idle_send"] = json!(true);
         if record["agent"] == "codex" {
             output["codex_interrupted_outbox_supported"] = json!(true);
+            output["codex_busy_outbox_supported"] = json!(true);
         }
         if record["agent"] == "claude" {
             output["claude_outbox_supported"] = json!(true);

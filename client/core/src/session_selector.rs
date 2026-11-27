@@ -54,6 +54,7 @@ pub fn selects(action: &Action) -> bool {
     match action {
         Action::Send { .. }
         | Action::SendWhenIdle { .. }
+        | Action::SendToCodexQueue { .. }
         | Action::SendToNativeQueue { .. }
         | Action::SendNow { .. }
         | Action::Answer { .. }

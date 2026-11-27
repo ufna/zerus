@@ -14,7 +14,7 @@ use zerus_client_core::{Action, Outcome, Target, ViewRow};
 
 const CHECK_INTERVAL: f64 = 3.0;
 const BUSY: &str = "The draft could not be queued. Its text is still in the editor.";
-pub(super) const TERMINAL_SUBMITTED: &str = "Submitted to terminal";
+const TERMINAL_SUBMITTED: &str = "Submitted to terminal";
 pub(super) fn reserved(c: &Composer) -> bool {
     c.outbox
         .first()
@@ -132,6 +132,10 @@ fn supported_agent(agent: &str) -> bool {
     matches!(agent, "codex" | "kimi" | "opencode" | "claude" | "dsh" | "deepseek")
 }
 
+fn codex_work_phase(phase: Option<&str>) -> bool {
+    matches!(phase, Some("working" | "tool" | "compacting"))
+}
+
 fn dsh_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "deepseek")
 }
@@ -169,15 +173,12 @@ fn provider_queue(agent: &str) -> bool {
 }
 
 impl Context {
-    pub(super) fn terminal_submission_shown(&self, composer: &Composer) -> bool {
-        composer.outbox.is_empty()
+    pub(super) fn submission_notice(&self, composer: &Composer) -> Option<&'static str> {
+        let (submission, notice) = composer.last_submission.as_ref()?;
+        (composer.outbox.is_empty()
             && !self.awaiting_outbox_details
-            && composer.last_terminal_submission.as_ref().is_some_and(|submission| {
-                self.details
-                    .as_deref()
-                    .is_some_and(|details| self.exact_outbox_details(details))
-                    && *submission == target(self)
-            })
+            && self.details.as_deref().is_some_and(|details| self.exact_outbox_details(details))
+            && *submission == target(self)).then_some(*notice)
     }
 
     pub(super) fn outbox_candidate(&self) -> bool {
@@ -296,7 +297,7 @@ impl Composers {
         } else if exact
             && supported
             && ctx.reason().is_none()
-            && (native_queue || !dsh_agent(&ctx.row.agent) && self.idle_details(&ctx.row, &target, details))
+            && (native_queue || !dsh_agent(&ctx.row.agent) && self.idle_or_codex_details(&ctx.row, &target, details))
         {
             if native_queue { ManualSend::TryNativeQueue } else { ManualSend::TryNow }
         } else {
@@ -551,12 +552,11 @@ impl Composers {
 
     fn check_outbox(&self, entry: &Entry) -> Option<serde_json::Value> {
         let row = self.outbox_row(entry)?;
-        // Providers can accept a next-turn input while working. Inspect even
-        // on a cold restart so an older saved head can use current capability.
-        // Terminal adapters keep their existing native input/readiness gates.
-        if row.phase.as_deref() != Some("idle")
-            && !(row.agent == "codex" && row.phase.as_deref() == Some("interrupted"))
-            && !(provider_queue(&row.agent) && matches!(row.phase.as_deref(), Some("working" | "tool")))
+        // Inspect even on a cold restart when the native provider can take next-turn input.
+        let phase = row.phase.as_deref();
+        if phase != Some("idle")
+            && !(row.agent == "codex" && (phase == Some("interrupted") || codex_work_phase(phase)))
+            && !(provider_queue(&row.agent) && matches!(phase, Some("working" | "tool")))
         {
             return None;
         }
@@ -574,7 +574,7 @@ impl Composers {
         let Some(row) = self.outbox_row(entry) else {
             return false;
         };
-        self.native_queue_details(&row, &entry.target, details) || self.idle_details(&row, &entry.target, details)
+        self.native_queue_details(&row, &entry.target, details) || self.idle_or_codex_details(&row, &entry.target, details)
     }
 
     fn eligible_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
@@ -611,16 +611,20 @@ impl Composers {
             && self.eligible_details(row, target, details)
     }
 
-    fn idle_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
+    fn idle_or_codex_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
         let phase = row.phase.as_deref();
         let idle = phase == Some("idle") && details["phase"] == "idle" && details["activity"] == "idle";
+        let questions_clear = details["pending_questions_complete"] == true
+            && details["pending_questions"].as_array().is_some_and(Vec::is_empty);
+        let codex_queue = row.agent == "codex" && codex_work_phase(phase)
+            && codex_work_phase(details["phase"].as_str()) && details["activity"] == "busy"
+            && details["codex_busy_outbox_supported"] == true && questions_clear;
         let interrupted = row.agent == "codex" && phase == Some("interrupted")
             && details["phase"] == "interrupted" && details["activity"] == "unknown"
             && details["codex_interrupted_outbox_supported"] == true
             && details["interrupted_message_can_send"] == true
-            && details["pending_questions_complete"] == true
-            && details["pending_questions"].as_array().is_some_and(Vec::is_empty);
-        (idle || interrupted)
+            && questions_clear;
+        (idle || interrupted || codex_queue)
             && self.eligible_details(row, target, details)
             && (dsh_agent(&row.agent) || super::send::previous_message_pending(
                 row,
@@ -705,13 +709,17 @@ impl Composers {
         }
         let outcome = if let Some(row) = self.outbox_row(&entry) {
             let native_queue = self.native_queue_details(&row, &entry.target, details);
-            if (!native_queue && !self.idle_details(&row, &entry.target, details))
+            if (!native_queue && !self.idle_or_codex_details(&row, &entry.target, details))
                 || self.lock().outbox_route_revision != route_revision
             {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = guarded_action(&entry, native_queue);
+            let action = if row.agent == "codex" && codex_work_phase(row.phase.as_deref()) {
+                Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else {
+                guarded_action(&entry, native_queue)
+            };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
             })) {
@@ -765,7 +773,7 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
-        let native_queued = exact && receipt.is_some_and(|receipt| receipt["queued"] == true)
+        let provider_queued = exact && receipt.is_some_and(|receipt| receipt["queued"] == true)
             && (opencode_outbox(&entry) || dsh_outbox(&entry));
         let terminal_refusal = receipt.is_some_and(|receipt|
             zerus_client_core::actions::terminal_outbox_refusal(&entry.target, receipt));
@@ -778,6 +786,12 @@ impl Composers {
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
+        let codex_queued = exact && receipt.is_some_and(zerus_client_core::actions::codex_outbox_submitted);
+        let notice = if codex_queued {
+            Some(zerus_client_core::source!("Queued in Codex"))
+        } else {
+            terminal_only.then_some(TERMINAL_SUBMITTED)
+        };
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
                 receipt["status"] == "waiting_for_idle"
@@ -812,6 +826,8 @@ impl Composers {
                     .get_mut(&key)
                     .expect("queue write keeps the draft");
                 c.queue_writing = false;
+                let next_ready = (codex_queued || provider_queued) && saved.is_ok()
+                    && entries.first().is_some_and(|next| next.state == State::Waiting);
                 if let Err(error) = saved {
                     if exact {
                         // The on-disk reservation is still held. A failed
@@ -825,11 +841,10 @@ impl Composers {
                     // Publish the pending-to-sent handoff together. A
                     // catalog update during the write keeps the head visible.
                     c.outbox = entries;
-                    c.queue_check_at = if native_queued { me.now() } else { me.now() + CHECK_INTERVAL };
-                    // Codex's plain terminal receipt acknowledges input
-                    // transport. Only the native history can identify a turn.
-                    c.last_terminal_submission = terminal_only.then(|| entry.target.clone());
-                    if exact && !terminal_only {
+                    // Confirmed queue admission frees the next FIFO head immediately.
+                    c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
+                    c.last_submission = notice.map(|text| (entry.target.clone(), text));
+                    if exact && notice.is_none() {
                         if let Some(outcome) = outcome.as_ref() {
                             hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
                         }
@@ -837,6 +852,10 @@ impl Composers {
                 }
                 drop(hub);
                 me.outbox_changed();
+                if next_ready {
+                    // Use the same bounded, fair scheduler and a fresh inspection.
+                    me.tick_outbox(me.now());
+                }
             }
         });
     }

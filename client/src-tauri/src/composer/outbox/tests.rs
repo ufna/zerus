@@ -159,6 +159,10 @@ fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
         let (first, fake) = send_hub_on(&store);
         let target = target_session(agent);
         let view = present(&first, &fake, &target, agent);
+        let mut legacy = details(&target, agent, true, Some(true));
+        legacy["attachments_supported"] = json!(true);
+        first.observe(&state(legacy));
+        until(&first, |view| view.attachments_available);
         let path = root.join("input.txt");
         std::fs::write(&path, b"original file before restart").unwrap();
         first.attach_paths(view.handle, vec![path.clone()], Default::default());
@@ -241,6 +245,55 @@ fn interrupted_codex_queues_require_exact_positive_native_readiness() {
     settle_next(&c, &fake, &store, ready);
     until(&c, |_| !lock(&fake.calls).is_empty());
     assert_eq!(lock(&fake.calls)[0].2, original);
+}
+
+#[test]
+fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editors_original() {
+    let root = dir("busy-codex-native-outbox");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let session = target_session("codex");
+    present(&c, &fake, &session, "codex");
+    let original = enqueue(&c, "first").waiting_in_zerus[0].request_id.clone();
+    let second = enqueue(&c, "first").waiting_in_zerus[1].request_id.clone();
+    c.open(None);
+    assert!(c.current().is_none());
+    let mut busy = details(&session, "codex", true, Some(false));
+    busy["codex_busy_outbox_supported"] = json!(true);
+    busy["pending_questions"] = json!([]);
+    busy["pending_questions_complete"] = json!(true);
+    for (field, value) in [
+        ("codex_busy_outbox_supported", Value::Null), ("pending_questions_complete", Value::Null),
+        ("pending_questions", json!([{"question_id":"question"}])), ("input_queue", json!({"id":"queued"})),
+        ("previous_message_pending", json!(true)), ("activity", json!("unknown")),
+        ("phase", json!("approval")), ("conversation_id", json!("other")), ("run_id", json!("other")),
+    ] {
+        let mut blocked = busy.clone();
+        blocked[field] = value;
+        settle_next(&c, &fake, &store, blocked);
+        assert!(lock(&fake.calls).is_empty(), "{field}");
+    }
+    let name = session.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","transport":"codex_queue","codex_outbox":true,"request_id":id,"name":name,
+            "run_id":"run-1","conversation_id":"conv-1","native_queued_message_id":"11111111-1111-4111-8111-111111111111"}),
+        cleanup: None,
+    });
+    // The catalog and inspect may observe different substates of the same turn.
+    // One tick and no artificial clock advance must suffice for both native offers.
+    lock(&fake.row).phase = Some("compacting".into());
+    busy["phase"] = json!("working");
+    settle_next(&c, &fake, &store, busy.clone());
+    crate::composer::send::tests::eventually(|| lock(&fake.calls).len() == 2);
+    assert!(c.current().is_none());
+    let calls = lock(&fake.calls);
+    assert!(calls.iter().all(|call| matches!(&call.1, Action::SendToCodexQueue { .. })));
+    assert_eq!(calls.iter().map(|call| call.2.clone()).collect::<Vec<_>>(), [original, second]);
+    drop(calls);
+    c.open(Some(session));
+    c.observe(&state(busy));
+    let view = until(&c, |v| v.status == "Queued in Codex");
+    assert!(view.local.is_empty());
 }
 
 #[test]

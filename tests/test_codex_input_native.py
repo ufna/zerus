@@ -241,6 +241,82 @@ class NativeCodexInput(unittest.TestCase):
         self.assertNotIn(draft, messages)
         self.assertNotIn(refused, messages)
 
+    def test_busy_native_queue_admits_equal_requests_and_file_without_steering(self):
+        self.busy_native_queue("working")
+
+    def test_compacting_native_queue_admits_equal_requests_and_file_without_steering(self):
+        self.busy_native_queue("compacting")
+
+    def busy_native_queue(self, phase):
+        import base64
+        import hashlib
+        # Hold this real native turn while Zerus offers the later inputs.
+        original = self.server.RequestHandlerClass.do_POST
+        started = threading.Event()
+        def held(handler):
+            started.set()
+            handler.server.release.wait(35)
+            return original(handler)
+        self.server.RequestHandlerClass.do_POST = held
+        first = '/compact' if phase == 'compacting' else 'Hold this turn for the busy queue fixture.'
+        self.tmux('send-keys', '-t', self.pane, '-l', first)
+        self.wait_for(lambda: first in self.screen())
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.assertTrue(started.wait(15))
+        if phase == "compacting":
+            self.wait_for(lambda: "Compacting context" in self.screen())
+        self.record.update(phase=phase, activity='busy')
+        self.write_record()
+        def invoke(args, request):
+            return subprocess.run([str(test_input.HGS), *args], env=self.env, text=True,
+                                  input=json.dumps(request), capture_output=True, timeout=15)
+        def send(request):
+            result = invoke(['send', self.name, '--codex-queue', '--json'], request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        text = 'Same native queued follow-up'
+        a, b, file = [self.payload(text=t, only_when_idle=True) for t in (text, text, 'Read attachment')]
+        content = b'attachment from the native queue fixture'
+        file['attachments'] = [dict(name='sample.txt', mime='text/plain',
+                                    data_base64=base64.b64encode(content).decode())]
+        def admitted(request):
+            until = time.monotonic() + 8
+            while True:
+                result = send(request)
+                if result["status"] != "waiting_for_idle" or time.monotonic() > until:
+                    return result
+                time.sleep(.1)  # New private receipt indexes are initially unknown.
+        receipts = [admitted(r) for r in (a, b, file)]
+        for receipt in receipts:
+            self.assertEqual((receipt['status'], receipt['transport']), ('submitted', 'codex_queue'), receipt)
+            self.assertEqual(receipt['conversation_id'], self.conversation_id)
+            self.assertTrue(receipt['codex_outbox'])
+        ids = [r['native_queued_message_id'] for r in receipts]
+        self.assertEqual(len(set(ids)), 3)
+        # A lost HGS reply reads exactly the durable original, without a new native offer.
+        query = dict(request_id=file['request_id'], expected_run_id=self.run_id,
+                     expected_conversation_id=self.conversation_id,
+                     input_sha256=hashlib.sha256(json.dumps(file).encode()).hexdigest())
+        status = invoke(['delivery', 'outbox-status', self.name, '--json'], query)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        proof = json.loads(status.stdout)
+        self.assertEqual((proof['proof'], proof['native_queued_message_id']), ('native_codex_receipt', ids[-1]))
+        self.assertEqual(send(file), receipts[-1])
+        self.assertNotEqual(invoke(['delivery', 'outbox-status', self.name, '--json'],
+                                   dict(query, input_sha256='0'*64)).returncode, 0)
+        self.assertEqual(Path(receipts[-1]['attachments'][0]['path']).read_bytes(), content)
+        self.assertNotIn('Queued follow-up inputs', self.screen())
+        self.assertEqual(self.server.requests, [])
+        self.server.release.set()
+        def native_texts():
+            events = [json.loads(line) for line in Path(self.record['transcript']).read_bytes().splitlines()]
+            return [e['payload'].get('message') for e in events if e.get('type') == 'event_msg'
+                    and e.get('payload', {}).get('type') == 'user_message']
+        expected = [r['submitted_text'] for r in receipts]
+        self.wait_for(lambda: native_texts()[-3:] == expected)
+        self.assertEqual(native_texts().count(text), 2)
+        self.wait_for(lambda: any(req['texts'][-1:] == expected[-1:] for req in self.server.requests))
+
     def test_native_refusal_has_an_opted_in_terminal_outcome(self):
         import native_send_outcome
         native_send_outcome.refused_draft(self, self.name, self.record, self.screen,
