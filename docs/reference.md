@@ -2781,9 +2781,15 @@ Check Activity or Terminal before deciding whether to remove an unknown message
 from the Zerus queue. A new run or a renamed session cannot inherit the earlier
 run's delivery.
 
-A successful plain-text Codex terminal submission shows **Submitted to
-terminal** in the composer. Its outgoing message appears in Activity when
-Codex records it. An equal prompt typed in Terminal is its own native message.
+When Send has a proven native request binding, Activity keeps the outgoing
+message in the same position while delivery and history arrive. For an
+existing embedded Codex terminal session that supplies no such binding,
+Zerus shows the original request's delivery status beside the composer from
+the first update. Expand it to see the message, its files and any available
+recovery actions. **Submitted to terminal** confirms the terminal submission.
+The outgoing article appears when Codex records it. A separate equal prompt
+typed in Terminal has its own article. Zerus uses this presentation when it
+cannot establish the route's native binding at Send time.
 
 Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.

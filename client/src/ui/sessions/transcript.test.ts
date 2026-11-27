@@ -932,3 +932,29 @@ it("preserves an original with transport-only acknowledgement and leaves unrelat
     { id: "s1" }, { id: "local-first", receipt: "Sent" },
   ]);
 });
+
+it("keeps the full bounded page of hydrated transport acknowledgements eligible for exact binding", () => {
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const terminalOnly = Array.from({ length: 64 }, (_, index) => ({
+    ...scope, request_id: `receipt-${index}`, preview: "equal", queued_at: 200 + index, attachments: [],
+  }));
+  const exact = { ...scope, type: "UserPromptSubmit", source: "hgs_delivery", message_id: "receipt-0",
+    seq: 42, detail: "equal", at: 201 };
+  const rows = createTranscriptProjection().build([exact], scope, [], [], [], { terminalOnly });
+  expect(rows).toHaveLength(64);
+  expect(rows[0]).toMatchObject({ id: "local-receipt-0", receipt: "Sent" });
+  expect(rows[1]).toMatchObject({ id: "local-receipt-1", receipt: "Submitted to terminal" });
+});
+
+it("uses only native articles for a composer-only acknowledgement and independent equal input", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "run", conversation_id: "conversation" };
+  const terminalOnly = [{ ...scope, request_id: "original", preview: "equal", queued_at: 200,
+    attachments: [{ name: "report.txt" }], delivery_in_composer: true }];
+  const native = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "equal", at: 201 };
+  expect(projection.build([], scope, [], [], [], { terminalOnly })).toEqual([]);
+  expect(projection.build([native], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }]);
+  const manual = { ...native, seq: 2, at: 204 };
+  projection.reset();
+  expect(projection.build([native, manual], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }, { id: "s2" }]);
+});

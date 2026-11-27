@@ -912,6 +912,7 @@ interface OriginalChanges {
   removed?: readonly string[];
   removedNative?: readonly string[];
   terminalOnly?: readonly TerminalOutboxReceipt[];
+  composerOnly?: readonly string[];
 }
 
 /** Only a bound receipt can take over a queued row's display identity. */
@@ -1098,8 +1099,9 @@ export function createTranscriptProjection() {
       for (const id of discarded) recent.delete(id);
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
       const queued = outbox.filter(row => !sent.has(row.request_id) && !discarded.has(row.request_id));
-      const terminalOnly = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
+      const terminal = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
         && !!row.run_id && !!row.conversation_id);
+      const terminalOnly = terminal.filter(row => !row.delivery_in_composer);
       for (const row of terminalOnly) outboxRequests.set(row.request_id, row);
       for (const item of outbox) if (!item.target_changed && !discarded.has(item.request_id)) {
         outboxRequests.set(item.request_id, { run_id: item.run_id, conversation_id: item.conversation_id });
@@ -1108,7 +1110,13 @@ export function createTranscriptProjection() {
         outboxRequests.set(row.id, { run_id: row.run_id, conversation_id: row.conversation_id });
       }
       for (const id of discarded) outboxRequests.delete(id);
-      trim(outboxRequests, 50);
+      const live = new Set([...outbox.map(row => row.request_id), ...local.map(row => row.id),
+        ...terminalOnly.map(row => row.request_id)]);
+      let excess = [...outboxRequests.keys()].filter(id => !live.has(id)).length - 50;
+      for (const id of outboxRequests.keys()) {
+        if (excess <= 0) break;
+        if (!live.has(id)) { outboxRequests.delete(id); excess--; }
+      }
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
       const present = new Set(local.map(row => row.id));
@@ -1121,7 +1129,7 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const exact = new Set([...outboxRequests.keys(), ...recent.keys()]);
+      const exact = new Set([...outboxRequests.keys(), ...recent.keys(), ...terminal.map(row => row.request_id), ...changes.composerOnly ?? []]);
       const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary, undefined, exact));
       const conflicts = new Set<string>();
       const keyFor = (event: ActivityEvent, key: string) =>

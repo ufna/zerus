@@ -1128,7 +1128,10 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
     let session = target_session(agent);
     present(&c, &fake, &session, agent);
-    let original = enqueue(&c, "Synthetic native prompt").waiting_in_zerus[0].request_id.clone();
+    let offered = enqueue(&c, "Synthetic native prompt");
+    let entry = &offered.waiting_in_zerus[0];
+    assert_eq!(entry.delivery_in_composer, agent == "codex");
+    let original = entry.request_id.clone();
     let name = session.name.clone();
     *lock(&fake.outcome) = Box::new(move |_, request| Outcome::Done {
         receipt: json!({"status":"submitted", "transport":transport, "request_id":request,
@@ -1143,6 +1146,7 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
         let [receipt] = view.terminal_only_outbox.as_slice() else { panic!("expected one transport-only receipt") };
         assert_eq!((&receipt.request_id, receipt.run_id.as_str(), receipt.conversation_id.as_str()), (&original, "run-1", "conv-1"));
         assert_eq!(receipt.preview, "Synthetic native prompt");
+        assert!(receipt.delivery_in_composer);
         assert!(receipt.queued_at.is_some());
     } else {
         assert!(view.terminal_only_outbox.is_empty());

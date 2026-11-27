@@ -957,6 +957,7 @@ export interface WaitingMessage {
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
   can_check_terminal?: boolean;
+  delivery_in_composer?: boolean;
 }
 export interface TerminalOutboxReceipt {
   request_id: string;
@@ -965,6 +966,7 @@ export interface TerminalOutboxReceipt {
   queued_at?: number | null;
   preview: string;
   attachments: EventAttachment[];
+  delivery_in_composer?: boolean;
 }
 
 export interface ComposerView {

@@ -19,6 +19,7 @@ pub const MAX_PER_SESSION: usize = 50;
 /// Sessions with rows. Past it, the least recently touched session without
 /// a row still sending is dropped; a sending row's outcome is still due.
 pub const MAX_SESSIONS: usize = 512;
+pub const TERMINAL_STATUS_SOURCE: &str = "zerus_terminal_status";
 pub const OPENCODE_SOURCE: &str = "opencode_native";
 const CODEX_QUEUE_SOURCE: &str = "zerus_codex_queue";
 const CLAUDE_OUTBOX_SOURCE: &str = "zerus_claude_outbox";

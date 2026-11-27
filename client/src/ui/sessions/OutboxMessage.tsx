@@ -11,7 +11,7 @@ export const OutboxScope = createContext<{ rows: () => readonly OutboxItem[]; do
 const queuedDate = (at?: number) =>
   at !== undefined && at > 0 && at < 253_402_300_800 ? new Date(at * 1000) : undefined;
 
-const stamp = (item: OutboxItem) => {
+export const outboxStamp = (item: OutboxItem) => {
   switch (item.state) {
     case "waiting": return tr("Queued in Zerus");
     case "reserved": return tr("Checking delivery");
@@ -24,7 +24,7 @@ export function OutboxHeader(props: { item: OutboxItem }) {
   return <>
     <span class="act-stamp" classList={{ failed: props.item.state === "unknown" || props.item.state === "failed" }}
       title={props.item.state === "waiting" && !props.item.target_changed ? tr("Waiting for the agent to become ready") : undefined}>
-      {stamp(props.item)}
+      {outboxStamp(props.item)}
     </span>
     <Show when={queuedDate(props.item.queued_at)} fallback={<span class="act-time">{tr("Queue time unavailable")}</span>}>{(at) =>
       <time class="act-time" dateTime={at().toISOString()} title={tr("Queued in Zerus at %1", zonedTimeOf(at()))}>
@@ -40,7 +40,7 @@ export function OutboxActions(props: { item: OutboxItem }) {
   let removeButton: HTMLButtonElement | undefined;
   const current = () => scope?.rows().find((row) =>
     row.handle === props.item.handle && row.request_id === props.item.request_id);
-  const removable = () => !!current() && !composer.operationLocked() && scope?.rows()[0]?.state !== "reserved";
+  const removable = () => !!current() && !composer.operationLocked() && composer.waitingMessages()[0]?.state !== "reserved";
   const confirming = () => {
     const action = review(), item = current();
     return action && item?.handle === action.handle && item.request_id === action.requestId ? action : undefined;

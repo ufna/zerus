@@ -116,6 +116,7 @@ mod tests {
             let entry = Entry {
                 request_id: uuid::Uuid::new_v4().to_string(),
                 queued_at: None,
+                delivery_in_composer: false,
                 catalog_key: name.clone(),
                 draft_key: key.clone(),
                 target: Target {

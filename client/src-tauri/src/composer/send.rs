@@ -1808,11 +1808,13 @@ impl Composers {
                 &delivery.run,
                 &delivery.conversation,
                 now,
-                delivery
-                    .session
-                    .name
-                    .starts_with("opencode/")
-                    .then_some(local_messages::OPENCODE_SOURCE),
+                if delivery.session.name.starts_with("opencode/") {
+                    Some(local_messages::OPENCODE_SOURCE)
+                } else if delivery.session.subagent.is_none() && delivery.session.name.starts_with("codex/") {
+                    Some(local_messages::TERMINAL_STATUS_SOURCE)
+                } else {
+                    None
+                },
             );
             hub.queue.pusher.dispatched(
                 &delivery.key,

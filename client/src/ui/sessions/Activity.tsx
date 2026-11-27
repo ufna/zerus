@@ -753,7 +753,7 @@ export function localRows(source: ActivitySource, s: Session | undefined): reado
   const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null,
     session_id: s.sessionId ?? null });
   // A held "Compact and continue" message shows as its pending entry instead (zerus-pabah).
-  return v.key === key ? withoutHeld(v.local, v.held) : [];
+  return v.key === key ? withoutHeld(v.local, v.held).filter(row => row.source !== "zerus_terminal_status") : [];
 }
 
 /** Scrolling near the top reads the previous page, unless one is loading or none is left. */
@@ -813,7 +813,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const outbox = createMemo((): readonly OutboxItem[] => {
     const view = mainComposer(), row = s();
     if (!view || !row) return [];
-    return composer.waitingMessages().map((item) => ({
+    return composer.waitingMessages().filter(item => !item.delivery_in_composer).map((item) => ({
       ...item,
       handle: view.handle,
       can_check_terminal: item.can_check_terminal === true && !!item.run_id && !!item.conversation_id
@@ -841,6 +841,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
       {
         removed: [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []), ...(removed?.requests ?? [])],
         removedNative: removed?.native,
+        composerOnly: composerView && [
+          ...composer.waitingMessages().filter(row => row.delivery_in_composer).map(row => row.request_id),
+          ...composerView.local.filter(row => row.source === "zerus_terminal_status").map(row => row.id),
+        ],
         terminalOnly: composerView?.terminal_only_outbox?.filter(receipt =>
           receipt.run_id === s()?.runId && receipt.conversation_id === s()?.conversationId),
       });

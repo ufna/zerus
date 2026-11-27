@@ -71,6 +71,7 @@ pub struct EntryView {
     pub state: State,
     pub target_changed: bool,
     pub can_check_terminal: bool,
+    pub delivery_in_composer: bool,
 }
 
 /// Presentation evidence from a transport acknowledgement with no native
@@ -83,6 +84,7 @@ pub struct TerminalReceiptView {
     pub queued_at: Option<f64>,
     pub preview: String,
     pub attachments: Vec<AttachmentInfo>,
+    pub delivery_in_composer: bool,
 }
 
 impl TerminalReceiptView {
@@ -92,6 +94,7 @@ impl TerminalReceiptView {
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at.or(Some(submitted_at)),
+            delivery_in_composer: entry.delivery_in_composer,
             preview: preview(entry),
             attachments: entry.attachments.iter().map(Attachment::info).collect(),
         }
@@ -119,6 +122,7 @@ pub(super) fn view(
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at,
+            delivery_in_composer: entry.delivery_in_composer,
             preview: preview(entry),
             attachments: entry.attachments.iter().map(Attachment::info).collect(),
             state: entry.state,
@@ -432,7 +436,18 @@ impl Composers {
         }
         let before = c.stored();
         let mut stored = before.clone();
+        // The ordered manual Codex route can steer through Terminal or use a
+        // native queue. The callback does not have a causal ID on the first
+        // route, and a later acknowledgement cannot change this choice.
+        let delivery_in_composer = ctx.row.agent == "codex"
+            && !(codex_work_phase(ctx.row.phase.as_deref())
+                && ready.as_deref().is_some_and(|details| {
+                    details["codex_manual_turn_send"] == false
+                        && details["codex_busy_outbox_supported"] == true
+                        && details["codex_ordered_manual_turn_send"] != true
+                }));
         let entry = Entry {
+            delivery_in_composer,
             target: target(&ctx),
             request_id: uuid::Uuid::new_v4().to_string(),
             queued_at: outbox::enqueue_time(self.now()),
@@ -877,7 +892,7 @@ impl Composers {
         }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
-            && (entry.target.name.starts_with("codex/") && entry.attachments.is_empty()
+            && (entry.target.name.starts_with("codex/") && (entry.delivery_in_composer || entry.attachments.is_empty())
                 || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
                     && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true && receipt["kimi_activity_binding"] != true)
                 || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
