@@ -211,7 +211,16 @@ fn older_saved_fifo_and_file_can_use_the_busy_native_route_after_restart() {
 
 #[test]
 fn manual_send_to_a_working_codex_uses_ordinary_send_and_keeps_file_identity() {
-    let root = dir("manual-codex-turn");
+    manual_turn_route(false);
+}
+
+#[test]
+fn fresh_manual_send_uses_host_ordering_after_local_fifo_settlement() {
+    manual_turn_route(true);
+}
+
+fn manual_turn_route(ordered: bool) {
+    let root = dir(if ordered { "ordered-codex-turn" } else { "manual-codex-turn" });
     let store = drafts(&root);
     let (c, fake) = send_hub_on(&store);
     let session = target_session("codex");
@@ -223,6 +232,7 @@ fn manual_send_to_a_working_codex_uses_ordinary_send_and_keeps_file_identity() {
     let mut busy = details(&session, "codex", true, Some(false));
     busy["codex_busy_outbox_supported"] = json!(true);
     busy["codex_manual_turn_send"] = json!(true);
+    busy["codex_ordered_manual_turn_send"] = json!(ordered);
     busy["pending_questions_complete"] = json!(true);
     busy["pending_questions"] = json!([]);
     c.observe(&state(busy));
@@ -231,15 +241,18 @@ fn manual_send_to_a_working_codex_uses_ordinary_send_and_keeps_file_identity() {
     crate::composer::send::tests::eventually(|| !lock(&fake.calls).is_empty());
     let calls = lock(&fake.calls);
     assert_eq!(calls.len(), 1);
-    let (target, Action::Send {text, attachments, ..}, request) = &calls[0] else {
-        panic!("ordinary manual input must enter the active Codex turn");
+    let (target, action, request) = &calls[0];
+    let (text, attachments) = match action {
+        Action::SendToOrderedCodexTurn { text, attachments } if ordered => (text, attachments),
+        Action::Send { text, attachments, .. } if !ordered => (text, attachments),
+        other => panic!("unexpected manual Send route: {other:?}"),
     };
     assert_eq!(text, "manual turn");
     assert_eq!(attachments[0].bytes.as_ref(), b"current turn file");
     assert_eq!(target.run_id, "run-1");
     assert_eq!(target.conversation_id, "conv-1");
     assert!(uuid::Uuid::parse_str(request).is_ok());
-    assert!(c.current().unwrap().waiting_in_zerus.is_empty());
+    if !ordered { assert!(c.current().unwrap().waiting_in_zerus.is_empty()); }
 }
 
 #[test]

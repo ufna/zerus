@@ -53,6 +53,12 @@ pub enum Action {
         text: String,
         attachments: Vec<Attachment>,
     },
+    /// A fresh manual Send chooses current-turn steering or ordered append on the owning host.
+    #[serde(skip_deserializing)]
+    SendToOrderedCodexTurn {
+        text: String,
+        attachments: Vec<Attachment>,
+    },
     /// A reserved FIFO head for an explicitly supported OpenCode or DeepSeek queue.
     #[serde(skip_deserializing)]
     SendToNativeQueue {
@@ -581,12 +587,13 @@ pub fn invocation(
         }
         Action::SendWhenIdle { text, attachments }
         | Action::SendToCodexQueue { text, attachments }
+        | Action::SendToOrderedCodexTurn { text, attachments }
         | Action::SendToNativeQueue { text, attachments } => {
-            let flag = if matches!(action, Action::SendToCodexQueue { .. }) {
+            let flag = if matches!(action, Action::SendToCodexQueue { .. } | Action::SendToOrderedCodexTurn { .. }) {
                 if !target.name.starts_with("codex/") {
                     return Err("The native queue needs a Codex session.".into());
                 }
-                "--codex-queue"
+                if matches!(action, Action::SendToOrderedCodexTurn { .. }) { "--codex-ordered-turn" } else { "--codex-queue" }
             } else {
                 "--when-idle"
             };
@@ -1335,7 +1342,7 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
-        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. } => {
+        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToOrderedCodexTurn { .. } | Action::SendToNativeQueue { .. } => {
             classify_idle_send(target, invocation, exit, matches!(action, Action::SendToCodexQueue { .. }))
         }
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
@@ -1874,6 +1881,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, code
     let opencode = target.name.starts_with("opencode/");
     let claude = target.name.starts_with("claude/");
     let dsh = target.name.starts_with("dsh/");
+    let ordered = invocation.args.iter().any(|arg| arg == "--codex-ordered-turn");
     if let Exit::Code { code: 0, stdout, .. } = &exit {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         let exact_pre_offer = receipt["schema"] == 1
@@ -1892,7 +1900,7 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, code
                 receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
             });
         if exact_pre_offer && receipt["status"] == "waiting_for_idle"
-            && (!codex_queue || terminal_outbox_refusal(target, &receipt))
+            && (!(codex_queue || ordered) || terminal_outbox_refusal(target, &receipt))
         {
             return done(receipt, None);
         }
@@ -1912,7 +1920,12 @@ fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, code
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
-        if codex_queue && !(codex_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
+        if ordered && (!matches!(receipt["transport"].as_str(), Some("terminal" | "codex_queue"))
+            || !invocation.stdin.as_deref().is_some_and(|input|
+                receipt["digest"] == format!("{:x}", Sha256::digest(input)))) {
+            return uncertain("The ordered Codex Send receipt is unconfirmed.");
+        }
+        if (codex_queue || ordered && receipt["transport"] == "codex_queue") && !(codex_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
             receipt["digest"] == format!("{:x}", Sha256::digest(input))
         })) {
             return uncertain("The original Codex queue submission is unconfirmed.");
@@ -1944,7 +1957,7 @@ pub fn outbox_status(
     use sha2::{Digest, Sha256};
 
     if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
-        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToNativeQueue { .. })
+        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. } | Action::SendToOrderedCodexTurn { .. } | Action::SendToNativeQueue { .. })
     {
         return Err("Expected an original outbox request.".into());
     }
@@ -2311,6 +2324,19 @@ mod tests {
         let accepted = |value: &Value| matches!(classify(&target, &action, &inv, reply(value)), Outcome::Done { .. });
         let recovered = |value: &Value| outbox_receipt(&target, &query, reply(value)).is_some();
         assert!(accepted(&receipt) && recovered(&receipt));
+        let ordered = Action::SendToOrderedCodexTurn { text:"queued text".into(), attachments:vec![] };
+        let ordered_inv = invocation(&target, &ordered, request).unwrap();
+        assert!(ordered_inv.args.iter().any(|arg| arg == "--codex-ordered-turn"));
+        assert_eq!(ordered_inv.stdin, inv.stdin);
+        let ordered_accepts = |value: &Value| matches!(classify(&target,&ordered,&ordered_inv,reply(value)),Outcome::Done{..});
+        assert!(ordered_accepts(&receipt));
+        let mut terminal = receipt.clone();
+        terminal["transport"] = json!("terminal");
+        terminal.as_object_mut().unwrap().remove("codex_outbox");
+        terminal.as_object_mut().unwrap().remove("native_queued_message_id");
+        assert!(ordered_accepts(&terminal));
+        terminal["digest"] = json!("0".repeat(64));
+        assert!(!ordered_accepts(&terminal));
         for (field, value) in [
             ("native_queued_message_id", Value::Null), ("transport", json!("terminal")), ("codex_outbox", Value::Null),
             ("native_queued_message_id", json!("00000000-0000-0000-0000-000000000000")),
@@ -2324,7 +2350,7 @@ mod tests {
         let mut held = receipt.clone();
         held["proof"] = json!("native_input_lock");
         held["status"] = json!("waiting_for_idle");
-        assert!(!accepted(&held) && !recovered(&held));
+        assert!(!accepted(&held) && !recovered(&held) && !ordered_accepts(&held));
         held["transport"] = json!("terminal");
         assert!(accepted(&held) && recovered(&held));
         let mut wrong = receipt;

@@ -975,3 +975,32 @@ fn large_wal_progress_deadline() {
     println!("wal_frames_checked_before_refusal={checked}");
     assert_eq!(checked, 1, "WAL validation continued after its deadline");
 }
+
+#[test]
+fn manual_send_distinguishes_empty_pending_and_unreadable_queue_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path();
+    let db = home.join("queue_1.sqlite");
+    let wal = home.join("queue_1.sqlite-wal");
+    let read = || has_queued_input(home, CHILD_ID, until());
+    assert_eq!(read(), Ok(false));
+    std::fs::write(&wal, b"orphan").unwrap();
+    assert!(read().is_err());
+    std::fs::remove_file(wal).unwrap();
+    std::fs::write(&db, b"broken").unwrap();
+    assert!(read().is_err());
+    std::fs::remove_file(&db).unwrap();
+    let writer = Connection::open(&db).unwrap();
+    writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE unrelated (id TEXT)").unwrap();
+    drop(writer);
+    assert!(read().is_err());
+    let writer = Connection::open(&db).unwrap();
+    writer.execute_batch("CREATE TABLE queued_items(id TEXT PRIMARY KEY,thread_id TEXT,queue_order INTEGER)").unwrap();
+    writer.execute("INSERT INTO queued_items VALUES(?1,?2,0)", [OTHER_ID,OTHER_ID]).unwrap();
+    drop(writer);
+    assert_eq!(read(), Ok(false));
+    let writer = Connection::open(&db).unwrap();
+    writer.execute("INSERT INTO queued_items VALUES(?1,?2,0)", [CHILD_ID,CHILD_ID]).unwrap();
+    drop(writer);
+    assert_eq!(read(), Ok(true));
+}

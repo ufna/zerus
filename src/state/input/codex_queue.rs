@@ -46,6 +46,31 @@ fn original_image(_: u32, _: crate::platform::FileIdentity) -> bool {
     true
 }
 
+/// Read the exact native thread's queue before selecting whether a fresh
+/// Desktop Send may steer. The input writer serializes this choice with
+/// previous Desktop admissions, including a head whose ACK has settled.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn has_earlier(record: &Value) -> Result<bool> {
+    let account = HistoryRoot::open(record)?;
+    let transcript = account.resolve_transcript(Path::new(string(record,"transcript")))?;
+    let pid = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok()).ok_or("Codex process identity unavailable")?;
+    if !process_alive(record) || !crate::platform::holds_open(pid, &transcript).unwrap_or(false) {
+        return Err("Could not verify the account of this Codex session".into());
+    }
+    let mut file = crate::platform::no_follow(OpenOptions::new().read(true)).open(&transcript)
+        .map_err(|_| "The Codex thread transcript is unavailable")?;
+    provider_messages::first_line(&mut file, "codex", string(record, "conversation_id"))?;
+    let earlier = codex_sqlite::has_queued_input(account.path(), string(record,"conversation_id"),
+        Instant::now() + Duration::from_millis(350))?;
+    account.verify()?;
+    Ok(earlier)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn has_earlier(_: &Value) -> Result<bool> {
+    Err("Ordered Codex Send is unavailable on this host".into())
+}
+
 impl Queue {
     pub(super) fn prepare(record: &Value, text: &str, busy_outbox: bool) -> Result<Self> {
         let until = Instant::now() + Duration::from_secs(10);

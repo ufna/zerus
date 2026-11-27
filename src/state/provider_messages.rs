@@ -40,7 +40,7 @@ fn own(message: &Value, since: f64) -> bool {
 
 /// The first line of a transcript, at most 256 KiB; a Codex transcript must
 /// name the conversation in its `session_meta`.
-fn first_line(file: &mut File, agent: &str, id: &str) -> Result<Vec<u8>> {
+pub(super) fn first_line(file: &mut File, agent: &str, id: &str) -> Result<Vec<u8>> {
     let mut first = Vec::new();
     BufReader::new(file.take(256 * 1024)).read_until(b'\n', &mut first).map_err(|e| e.to_string())?;
     if agent == "codex" {
