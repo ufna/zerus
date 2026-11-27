@@ -136,6 +136,8 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
         *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
             detail: "The original acknowledgement was lost".into(),
         });
+        let editor = c.current().unwrap();
+        c.edit(editor.handle, editor.rev + 1, editor.text_epoch, "Offer now".into(), 9, 9);
         let before = until(&c, |view| view.offers_native_queue && view.can_send);
         assert!(matches!(c.send_message(before.handle, before.rev + 1, before.text_epoch,
             "Offer now".into(), 0, 0), SendReply::Accepted { waiting: false, .. }));
