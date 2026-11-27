@@ -436,16 +436,16 @@ impl Composers {
         }
         let before = c.stored();
         let mut stored = before.clone();
-        // The ordered manual Codex route can steer through Terminal or use a
-        // native queue. The callback does not have a causal ID on the first
-        // route, and a later acknowledgement cannot change this choice.
-        let delivery_in_composer = ctx.row.agent == "codex"
-            && !(codex_work_phase(ctx.row.phase.as_deref())
-                && ready.as_deref().is_some_and(|details| {
-                    details["codex_manual_turn_send"] == false
-                        && details["codex_busy_outbox_supported"] == true
-                        && details["codex_ordered_manual_turn_send"] != true
-                }));
+        // Both busy and idle offers of this saved FIFO entry can use the
+        // exact native queue. The ordered immediate route may use Terminal,
+        // and its acknowledgement cannot change the original presentation.
+        let native_codex_fifo = ready.is_none() && ctx.details.as_deref().is_some_and(|details| {
+            details["codex_manual_turn_send"] == false
+                && details["codex_busy_outbox_supported"] == true
+                && details["codex_idle_outbox_supported"] == true
+                && !zerus_client_core::cache::expired(details, self.now())
+        });
+        let delivery_in_composer = ctx.row.agent == "codex" && !native_codex_fifo;
         let entry = Entry {
             delivery_in_composer,
             target: target(&ctx),
@@ -664,6 +664,15 @@ impl Composers {
     }
 
     fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+        if row.agent == "codex" && !entry.delivery_in_composer
+            && !(details["codex_busy_outbox_supported"] == true
+                    && codex_work_phase(row.phase.as_deref())
+                || idle_codex_queue(entry, row, details))
+        {
+            // A known native-queue article keeps its original transport.
+            // If a peer stops advertising that route, keep this FIFO head.
+            return false;
+        }
         (self.native_queue_details(row, &entry.target, details)
             || self.guarded_send_details(row, &entry.target, details))
             && (!idle_codex_queue(entry, row, details)
