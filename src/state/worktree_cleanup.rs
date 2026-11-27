@@ -236,7 +236,16 @@ fn binding_reference(directory: &str, path: &Path) -> Result<Option<Reference>> 
     let native_agy = name.starts_with("agy/") || value["agent"] == "agy" || value["backend"] == "agy";
     let valid = match directory {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        "" if native_agy => super::agy::valid_binding(&value),
+        "" if native_agy => {
+            // The native producer records both absolute folders. A damaged
+            // holder must not disappear when reference() projects its paths.
+            super::agy::valid_binding(&value)
+                && ["cwd", "launch_dir"]
+                    .into_iter()
+                    .all(|key| Path::new(string(&value, key)).is_absolute())
+                && value.get("archive_id").is_none_or(|id| id.as_str() == Some(""))
+                && value.get("rename_shadow").is_none_or(|shadow| shadow.as_bool() == Some(false))
+        }
         _ if native_agy => false,
         "" | "bindings" | "sessions" => value["version"] == 1 && AGENTS.contains(&string(&value,"agent")),
         "dsh/bindings" | "dsh/sessions" => value["backend"] == "dsh" && name.starts_with("dsh/")
@@ -3870,6 +3879,11 @@ mod binding_census_tests {
         for folder in [cwd, launch_dir] {
             assert!(refs[0].folders.contains(&crate::platform::canonical(folder).unwrap()));
         }
+        let mut empty_flags = record.clone();
+        empty_flags["archive_id"] = json!("");
+        empty_flags["rename_shadow"] = json!(false);
+        atomic(&path, &empty_flags.to_string()).unwrap();
+        assert_eq!(bindings().unwrap().len(), 1);
 
         for (key, value) in [
             ("version", json!(2)),
@@ -3879,14 +3893,34 @@ mod binding_census_tests {
             ("session_id", json!("malformed")),
             ("run_id", json!("malformed")),
             ("archive_id", json!(uuid::Uuid::new_v4().to_string())),
+            ("archive_id", json!([])),
+            ("archive_id", Value::Null),
             ("rename_shadow", json!(true)),
-            ("cwd", json!([])),
+            ("rename_shadow", json!("true")),
+            ("rename_shadow", Value::Null),
         ] {
             let mut bad = record.clone();
             bad[key] = value;
             atomic(&path, &bad.to_string()).unwrap();
             assert!(bindings().is_err(), "accepted invalid {key}");
         }
+        for key in ["cwd", "launch_dir"] {
+            for value in [Value::Null, json!(""), json!("relative"), json!([])] {
+                let mut bad = record.clone();
+                bad[key] = value.clone();
+                atomic(&path, &bad.to_string()).unwrap();
+                assert!(bindings().is_err(), "accepted {key}={value}");
+            }
+            let mut missing = record.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            atomic(&path, &missing.to_string()).unwrap();
+            assert!(bindings().is_err(), "accepted missing {key}");
+        }
+        let mut no_folders = record.clone();
+        no_folders["cwd"] = json!("relative");
+        no_folders["launch_dir"] = Value::Null;
+        atomic(&path, &no_folders.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted a holder with no usable folder");
         fs::remove_file(&path).unwrap();
 
         let foreign = root().join("bindings").join(path.file_name().unwrap());
