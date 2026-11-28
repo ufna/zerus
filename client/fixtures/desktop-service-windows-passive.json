@@ -43,6 +43,7 @@
   "epoch": "00000000-0000-4000-8000-000000000001",
   "executable_upgrade": null,
   "generation": 1,
+  "verified_send_supported": false,
   "notification_ownership": {
     "activation": {
       "active": false,
