@@ -218,6 +218,53 @@ class SessionSettings(test_effort.EffortTransport):
         self.assertIn('not safe to retry',self.settings(retry,False))
         self.assertEqual(self.received(),b'')
 
+    def test_send_retires_only_its_spent_pending_settings_after_terminal_is_ready(self):
+        self.record.update(activity='busy', phase='working')
+        self.write_record()
+        pending = self.payload('low')
+        self.assertEqual(self.settings(pending)['status'], 'scheduled')
+        self.record = json.loads(self.record_path.read_text())
+        self.record.update(activity='idle', phase='idle', settings_unconfirmed_at=1, last_event_at=2)
+        self.write_record()
+        receipt = self.state / 'settings_receipts' / f"{pending['request_id']}.json"
+        original = json.loads(receipt.read_text())
+        original['status'] = 'in_progress'
+
+        def send():
+            message = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                           expected_conversation_id=self.conversation_id, text='new input')
+            return subprocess.run([str(test_input.HGS), 'send', self.name, '--json'], env=self.env,
+                                  input=json.dumps(message), text=True, capture_output=True, timeout=10)
+
+        receipt.unlink()
+        self.assertNotEqual(send().returncode, 0)
+        foreign = receipt.with_name('foreign.json')
+        foreign.write_text(json.dumps(original))
+        receipt.symlink_to(foreign)
+        self.assertNotEqual(send().returncode, 0)
+        receipt.unlink()
+        for mismatch in ({'model': 'gpt-6-sol'}, {'effort': 'high'}, {'scope': 'global'},
+                         {'request_id': str(uuid.uuid4())}, {'conversation_id': 'another'}):
+            receipt.write_text(json.dumps(original | mismatch))
+            self.assertNotEqual(send().returncode, 0, mismatch)
+            self.assertEqual(self.received(), b'')
+            self.assertEqual(self.inspect()['pending_settings_id'], pending['request_id'])
+        receipt.write_text(json.dumps(original))
+        before = receipt.read_bytes()
+        self.record['settings_unconfirmed_at'] = 3
+        self.write_record()
+        self.assertIn('did not react', send().stderr)
+        self.assertEqual(self.received(), b'')
+        self.assertEqual(self.inspect()['pending_settings_id'], pending['request_id'])
+        self.record['settings_unconfirmed_at'] = 1
+        self.write_record()
+        result = send()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~new input\x1b[201~\r')
+        self.assertFalse(self.inspect()['pending_settings_id'])
+        self.assertEqual(receipt.read_bytes(), before)
+
     def test_pending_settings_survive_multiple_renames(self):
         import hashlib
         self.record.update(activity='busy',phase='working');self.write_record()

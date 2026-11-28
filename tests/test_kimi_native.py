@@ -502,7 +502,7 @@ class MacProcess:
 
 class Model(http.server.BaseHTTPRequestHandler):
     """An OpenAI-compatible chat completion stream that finishes every turn,
-    and Kimi's platform, which has no banner or client config to offer."""
+    and an optional fixture-only effort confirmation rule on Kimi's platform."""
 
     def log_message(self, *args):
         pass
@@ -511,7 +511,17 @@ class Model(http.server.BaseHTTPRequestHandler):
         observed = dict(method=self.command, path=self.path[len(PLATFORM):],
                         name=body.get('name') if isinstance(body, dict) else None)
         self.server.platform.append(observed)
-        self.send_error(404)
+        rule = getattr(self.server, 'effort_confirmation', None)
+        if observed['name'] == 'effort_switch_confirm' and rule is not None:
+            data = json.dumps(dict(name=observed['name'], config=dict(
+                confirm=dict(enable=True, rules=[rule])))).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_error(404)
         self.wfile.flush()
         # The request log alone does not prove that its response was written.
         self.server.platform_completed.append(dict(observed))
@@ -917,6 +927,106 @@ class NativeKimi(lifecycle.Harness):
         self.assertEqual(len(self.requests), requests + 1)
         self.assertEqual(config.read_bytes(), before)
         self.assertNotIn('Select a model', self.screen(name))
+
+    def pending_effort_chooser(self, *, cancel, moved, auto_apply=False):
+        config = self.home / 'config.toml'
+        source = config.read_text().replace('[models.fixture]\n', '[models.fixture]\n'
+            'capabilities = ["thinking", "always_thinking"]\n'
+            'support_efforts = ["low", "high", "max"]\n'
+            'default_effort = "max"\n')
+        # The official client enables this platform rule for its managed model.
+        # Its platform and OpenAI paths both still point at our loopback server.
+        source = source.replace('[providers.fixture]', '[providers."managed:kimi-code"]')
+        source = source.replace('provider = "fixture"', 'provider = "managed:kimi-code"')
+        config.write_text(source)
+        self.model_server.effort_confirmation = {'from': 'max', 'to': 'high', 'session_type': 'all'}
+
+        name = self.launch()
+        self.until(lambda: 'thinking: max' in self.screen(name), name)
+        defaults = config.read_bytes()
+        if moved:
+            import native_effort_id as identity
+            identity.moved_record(self, name, self.binding(name), existing_machine=True)
+        hold = threading.Event()
+        self.model_server.hold = hold
+        self.addCleanup(hold.set)
+        first_text = 'Hold this private turn while scheduling effort.'
+        first = self.send(name, self.payload(name, first_text))
+
+        def held_turn():
+            live = self.inspect(name)
+            if self.held(first_text) and live.get('conversation_id') and live['activity'] == 'busy':
+                return live
+
+        live = self.until(held_turn, name)
+
+        def request(command, body):
+            return subprocess.run([str(lifecycle.HGS), command, name, '--json'],
+                                  env=self.env, input=json.dumps(body), text=True,
+                                  capture_output=True, timeout=30)
+
+        def change(level):
+            return dict(request_id=str(uuid.uuid4()), expected_run_id=live['run_id'],
+                        expected_conversation_id=live['conversation_id'], model='fixture', effort=level)
+
+        pending = change('high')
+        scheduled = request('settings', pending)
+        self.assertEqual(scheduled.returncode, 0, scheduled.stderr)
+        self.assertEqual(json.loads(scheduled.stdout)['status'], 'scheduled')
+        hold.set()
+        self.until(lambda: settled_recorded_turn(self.inspect(name), first, first_text), name)
+
+        rejected = self.payload(name, 'The send interrupted by the chooser must never be entered.')
+        if auto_apply:
+            failure = request('settings', change('high') | {'expected_pending_id': pending['request_id']})
+        else:
+            failure = request('send', rejected)
+        self.assertNotEqual(failure.returncode, 0)
+        self.assertIn('settings change not confirmed', failure.stderr)
+        self.assertIn('Switch effort from max to high?', self.screen(name))
+        receipt = Path(self.env['HGS_STATE_DIR']) / 'settings_receipts' / (pending['request_id'] + '.json')
+        original = receipt.read_bytes()
+        self.assertEqual(json.loads(original)['status'], 'in_progress')
+
+        blocked = self.payload(name, 'Leave this visible chooser to the person.')
+        self.assertNotEqual(request('send', blocked).returncode, 0)
+        self.assertIn('❯ Confirm switch', self.screen(name))
+        self.assertEqual(len(self.requests), 1, 'the second send answered the chooser')
+        if cancel:
+            self.t('send-keys', '-t', '=' + name + ':', 'Down')
+        self.t('send-keys', '-t', '=' + name + ':', 'Enter')
+        effort = 'max' if cancel else 'high'
+        self.until(lambda: 'Switch effort from' not in self.screen(name) and
+                   'thinking: ' + effort in self.screen(name), name)
+
+        followup = self.payload(name, 'Deliver this new private input once.')
+        sent = request('send', followup)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        submitted = json.loads(sent.stdout)
+        repeated = request('send', followup)
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(json.loads(repeated.stdout), submitted)
+        self.until(lambda: settled_recorded_turn(self.inspect(name), submitted, followup['text']), name)
+        self.assertEqual(self.held(followup['text']), 1)
+        self.assertEqual(self.held(rejected['text']), 0)
+        self.assertEqual(self.held(blocked['text']), 0)
+        fresh = request('settings', change('low'))
+        self.assertEqual(fresh.returncode, 0, fresh.stderr)
+        self.assertEqual(json.loads(fresh.stdout)['status'], 'applied')
+        self.assertIn('thinking: low', self.screen(name))
+        self.assertNotEqual(request('settings', pending).returncode, 0)
+        self.assertEqual(receipt.read_bytes(), original)
+        self.assertFalse(self.inspect(name).get('pending_settings_id'))
+        self.assertEqual(config.read_bytes(), defaults, 'the session chooser changed shared defaults')
+
+    def test_pending_effort_chooser_confirm_allows_a_new_send(self):
+        self.pending_effort_chooser(cancel=False, moved=False)
+
+    def test_id_pending_effort_chooser_cancel_allows_a_new_send(self):
+        self.pending_effort_chooser(cancel=True, moved=True)
+
+    def test_id_auto_apply_effort_chooser_confirm_allows_a_new_send(self):
+        self.pending_effort_chooser(cancel=False, moved=True, auto_apply=True)
 
     def test_id_effort_preserves_raw_request_identity_and_shared_defaults(self):
         import native_effort_id as contract

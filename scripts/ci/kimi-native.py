@@ -67,6 +67,9 @@ METHODS = (
     'test_kimi_questions_native.NativeKimiQuestions.test_short_question_foreign_other_is_preserved_without_submission',
     'test_kimi_native.NativeKimi.test_id_settings_before_first_message_preserves_empty_conversation_and_defaults',
     'test_kimi_native.NativeKimi.test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults',
+    'test_kimi_native.NativeKimi.test_pending_effort_chooser_confirm_allows_a_new_send',
+    'test_kimi_native.NativeKimi.test_id_pending_effort_chooser_cancel_allows_a_new_send',
+    'test_kimi_native.NativeKimi.test_id_auto_apply_effort_chooser_confirm_allows_a_new_send',
     'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults',
 )
 # The Agent Teams class (package 15) runs as its own child with its own bound, selected
@@ -334,7 +337,8 @@ def checked_teams_methods():
 def checked_methods():
     found = []
     for filename, classes in (('test_kimi_native', ('NativeKimi',)),
-                              ('test_kimi_questions_native', ('NativeKimiTrust', 'NativeKimiQuestions'))):
+                              ('test_kimi_questions_native', ('NativeKimiTrust', 'NativeKimiQuestions')),
+                              ('test_terminal_native_accept', ('NativeKimiNext',))):
         tree = ast.parse((ROOT / 'tests' / (filename + '.py')).read_text())
         for name in classes:
             node = next(item for item in tree.body if isinstance(item, ast.ClassDef) and item.name == name)

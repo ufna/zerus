@@ -997,10 +997,17 @@ thread_local! {
     /// Whether this settings attempt sent keys, and whether the agent has yet to
     /// visibly react to the last of them; a reaction proves it read the earlier ones.
     static ATTEMPT_KEYS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// Set only by this attempt's verified Kimi picker after its session-only key.
+    static KIMI_EFFORT_HANDOFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn start_attempt() {
     ATTEMPT_KEYS.with(|keys| keys.set((false, false)));
+    KIMI_EFFORT_HANDOFF.with(|handoff| handoff.set(false));
+}
+
+fn take_kimi_effort_handoff() -> bool {
+    KIMI_EFFORT_HANDOFF.with(|handoff| handoff.replace(false))
 }
 
 fn sent_keys() {
@@ -1174,6 +1181,24 @@ fn kimi_command_ready(record: &Value) -> Result<bool> {
         && row.chars().skip(12).collect::<String>().trim() == "│")
 }
 
+fn kimi_effort_confirmation(screen: &str, from: &str, to: &str) -> bool {
+    let title = format!("Switch effort from {from} to {to}?");
+    let lines: Vec<_> = screen.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    // Match the last bordered panel, including its continuation controls. The
+    // same text may also be present in scrollback or in a previous response.
+    let border = |line: &str| !line.is_empty() && line.chars().all(|ch| ch == '─');
+    let Some(end) = lines.iter().rposition(|line| border(line)) else {
+        return false;
+    };
+    matches!(lines[..=end].last_chunk::<6>(),
+        Some([top, heading, "↑↓ navigate · Enter select · Esc cancel", confirm, cancel, bottom])
+        if top == bottom && *heading == title
+            && matches!(*confirm, "❯ Confirm switch" | "Confirm switch")
+            && (confirm.starts_with('❯') != cancel.starts_with('❯'))
+            && cancel.strip_prefix('❯').unwrap_or(cancel).split_whitespace()
+                .eq(["Cancel", "Stay", "on", "the", "current", "effort"]))
+}
+
 fn kimi_change(name: &str, request: &Request, current: &Settings) -> Result<()> {
     let record = checked(name, request, true)?;
     if visible_effort(&record, &current.model, &capture(&record)?).as_deref()
@@ -1221,6 +1246,10 @@ fn kimi_change(name: &str, request: &Request, current: &Settings) -> Result<()> 
     wait_until(|| {
         let record = checked(name, request, false)?;
         let screen = capture(&record)?;
+        if kimi_effort_confirmation(&screen, &current.effort, &request.effort) {
+            KIMI_EFFORT_HANDOFF.with(|handoff| handoff.set(true));
+            return Err("Kimi is waiting for your effort choice in Terminal".into());
+        }
         Ok((kimi_picker(&screen).is_none()
             && visible_effort(&record, &current.model, &screen).as_deref()
                 == Some(request.effort.as_str()))
@@ -2273,7 +2302,14 @@ fn apply_settings(
         }
     };
     if let Err(error) = result {
-        mark_unconfirmed(&mut record);
+        if take_kimi_effort_handoff()
+            && string(&record["pending_settings"], "request_id") == request.request_id
+        {
+            retire_pending_settings(&mut record);
+            write(&mut record)?;
+        } else {
+            mark_unconfirmed(&mut record);
+        }
         return Err(format!("settings change not confirmed: {error}"));
     }
     let latest = history(&record);
@@ -2398,7 +2434,7 @@ pub(super) fn dispatch_settings(args: &[String]) -> Result<i32> {
         if immediate {
             receipt["status"] = json!("in_progress");
             atomic(&receipt_path, &receipt.to_string())?;
-            apply_pending(name, record)?;
+            apply_pending_settings(name, record, false)?;
             receipt["status"] = json!("applied");
         } else {
             receipt["pending_settings_id"] = json!(pending_id);
@@ -2469,6 +2505,22 @@ pub(super) fn pending_applies(record: &Value) -> bool {
 }
 
 pub(super) fn apply_pending(name: &str, record: Value) -> Result<Value> {
+    apply_pending_settings(name, record, true)
+}
+
+fn retire_pending_settings(record: &mut Value) {
+    let pending = &record["pending_settings"];
+    let resume_matches = record["resume_settings"]
+        == json!({"model":pending["model"],"effort":pending["effort"]});
+    if let Some(object) = record.as_object_mut() {
+        object.remove("pending_settings");
+        if resume_matches {
+            object.remove("resume_settings");
+        }
+    }
+}
+
+fn apply_pending_settings(name: &str, record: Value, new_send: bool) -> Result<Value> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if picker_entered() {
         return picker_refuse("Legacy pending application is forbidden in the original picker keeper".into());
@@ -2491,29 +2543,68 @@ pub(super) fn apply_pending(name: &str, record: Value) -> Result<Value> {
         effort: Some(string(pending, "effort").into()),
         expected_pending_id: None,
     };
-    let (model, effort) = requested_model(&record, &request)?;
     let id = uuid::Uuid::parse_str(&request.request_id)
         .map_err(|_| "invalid pending settings ID")?
         .to_string();
     let path = absolute_root()?
         .join("settings_receipts")
         .join(format!("{id}.json"));
-    let mut receipt: Value =
-        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    if string(&receipt, "status") != "scheduled"
-        || string(&receipt, "name") != string(pending, "receipt_name")
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let original = guarded_recovery::Original::read_existing(&path, 16 * 1024)?
+        .ok_or("Original settings receipt is missing")?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let bytes = original.bytes();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let contents = fs::read(&path).map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let bytes = contents.as_slice();
+    let mut receipt: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if string(&receipt, "name") != string(pending, "receipt_name")
         || string(&receipt, "run_id") != string(pending, "receipt_run_id")
         || string(&receipt, "conversation_id") != request.expected_conversation_id
     {
         return Err("pending settings are not safe to retry; inspect Terminal".into());
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if new_send
+        && matches!(string(&record, "agent"), "codex" | "kimi")
+        && receipt["status"] == "in_progress"
+        && receipt["scope"] == "session"
+        && receipt["request_id"] == id
+        && pending["request_id"] == id
+        && receipt["model"] == pending["model"]
+        && receipt["effort"] == pending["effort"]
+        && safe_model(string(&receipt, "model"))
+        && receipt["effort"].is_string()
+        && !string(&receipt, "name").is_empty()
+        && !string(&receipt, "run_id").is_empty()
+        && input::native_send::cid_matches(&receipt["conversation_id"], &request.expected_conversation_id)
+        && input::native_send::cid_matches(&pending["conversation_id"], &request.expected_conversation_id)
+    {
+        // A separate Send can retire the old attempt after the ordinary input
+        // floor proves a ready composer. The spent Settings receipt is retained
+        // verbatim, including when a native event settled its unread-key marker.
+        input::checked_terminal(&record, true)?;
+        original.verify()?;
+        let mut record = record;
+        retire_pending_settings(&mut record);
+        write(&mut record)?;
+        return Ok(record);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = new_send;
+    if receipt["status"] != "scheduled" {
+        return Err("pending settings are not safe to retry; inspect Terminal".into());
+    }
+    let (model, effort) = requested_model(&record, &request)?;
     let native = Request {
         request_id: id,
         expected_run_id: request.expected_run_id,
         expected_conversation_id: request.expected_conversation_id,
         effort,
     };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    original.verify()?;
     apply_settings(name, &native, &model, &path, &mut receipt)
 }
 
