@@ -57,6 +57,23 @@ class TerminalDeliveryReviewTest {
         stale.forEach { assertSame(state, MessageChanges.dismissOutgoing(state, it)) }
     }
 
+    @Test fun terminalScopeGuardRejectsAStaleCallbackAfterNavigation() {
+        val targetA = target
+        val targetB = target.copy(session = "session-b", run = "run-b", conversation = "conversation-b")
+        // Open Terminal for A: the captured callback references A's exact blocker.
+        assertTrue(TerminalBlocker.matches(original, targetA, terminalVisible = true, outgoing = listOf(original)))
+        // Navigate to B: the same captured callback must be a no-op (no check/dismiss for A).
+        assertFalse(TerminalBlocker.matches(original, targetB, terminalVisible = true, outgoing = listOf(original)))
+        // Closing the Terminal also invalidates the captured callback.
+        assertFalse(TerminalBlocker.matches(original, targetA, terminalVisible = false, outgoing = listOf(original)))
+        // A different outgoing that is now the blocker invalidates the captured request id.
+        val next = original.copy(requestId = "22222222-2222-4222-8222-222222222222")
+        assertFalse(TerminalBlocker.matches(original, targetA, terminalVisible = true, outgoing = listOf(next)))
+        // A changed connection/machine/session/run/conversation never matches.
+        val moved = original.copy(target = target.copy(computerId = "other-computer"))
+        assertFalse(TerminalBlocker.matches(moved, targetA, terminalVisible = true, outgoing = listOf(moved)))
+    }
+
     @Test fun checkDeliverySettlesTheExactOriginalAndNeverEnqueuesANewSend() {
         for (v in vectors()) {
             val w = v.getJSONObject("send").getJSONObject("payload")

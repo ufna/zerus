@@ -3593,7 +3593,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         } }) } catch (_: Exception) { error = "Could not save the delivery result. Check its receipt; the outgoing message remains recoverable."; return }
         if (selected?.target?.let(message::belongsTo) == true) refreshActivity()
     }
-    fun checkOutgoing(message: OutgoingMessage, automatic: Boolean = false) = viewModelScope.launch {
+    fun checkOutgoing(message: OutgoingMessage, automatic: Boolean = false, terminalScope: Boolean = false) = viewModelScope.launch {
+        if (terminalScope && !TerminalBlocker.matches(message, selected?.target, terminalVisible, outgoing)) return@launch
         val connection = connections.find { it.id == message.target.connectionId } ?: return@launch
         val flight = "outgoing:${message.requestId}"
         if (flight in receiptFlights || message.status == "sending") return@launch
@@ -3619,7 +3620,8 @@ class ZerusViewModel(application: Application) : AndroidViewModel(application) {
         catch (_: Exception) { if (!automatic) error = "Receipt unavailable. The outgoing message remains saved." }
         finally { receiptFlights -= flight; retainOutbox() }
     }
-    fun dismissOutgoing(message: OutgoingMessage) = viewModelScope.launch {
+    fun dismissOutgoing(message: OutgoingMessage, terminalScope: Boolean = false) = viewModelScope.launch {
+        if (terminalScope && !TerminalBlocker.matches(message, selected?.target, terminalVisible, outgoing)) return@launch
         val flight = "dismiss:${message.requestId}"
         if (!storageReady || flight in receiptFlights || message.requestId in deliveryFlights) return@launch
         receiptFlights += flight

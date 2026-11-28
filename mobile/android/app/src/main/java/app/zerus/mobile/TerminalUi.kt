@@ -163,7 +163,7 @@ private val TerminalForeground = Color(0xFFD4D4D4)
                     TerminalOutgoingRecovery(message,
                         checking = "outgoing:${message.requestId}" in model.receiptFlights,
                         dismissing = "dismiss:${message.requestId}" in model.receiptFlights,
-                        onCheck = { model.checkOutgoing(message) }, onDismiss = { dismissOutgoingWarning = message })
+                        onCheck = { model.checkOutgoing(message, terminalScope = true) }, onDismiss = { dismissOutgoingWarning = message })
                 }
                 TerminalInputEditor(model,target,selecting,fresh) { key ->
                     if(key in listOf("C-c","C-d")) current?.string("terminal_binding_id")?.let { dangerousKey = key to it }
@@ -198,7 +198,7 @@ private val TerminalForeground = Color(0xFFD4D4D4)
                 val preview = message.text.ifBlank { message.attachments.joinToString { it.name } }
                 if (preview.isNotBlank()) SelectionContainer { Text(preview, maxLines = 6, overflow = TextOverflow.Ellipsis) }
             } },
-            confirmButton = { TextButton(onClick = { model.dismissOutgoing(message); dismissOutgoingWarning = null },
+            confirmButton = { TextButton(onClick = { model.dismissOutgoing(message, terminalScope = true); dismissOutgoingWarning = null },
                 enabled = "dismiss:${message.requestId}" !in model.receiptFlights) { Text("Dismiss warning") } },
             dismissButton = { TextButton(onClick = { dismissOutgoingWarning = null }) { Text("Cancel") } }) }
     }
