@@ -155,6 +155,106 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
 }
 
 #[test]
+fn skipping_unknown_head_preserves_followers_without_reoffering_original() {
+    let root = dir("skip-unknown-head");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, std::sync::Arc::new(|job| job()));
+    let target = target_session("claude");
+    present(&c, &fake, &target, "claude");
+    let mut inspected = details(&target, "claude", true, Some(false));
+    inspected["terminal_native_accept_supported"] = json!(true);
+    c.observe(&state(inspected.clone()));
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain {
+        detail: "The original acknowledgement was lost".into(),
+    });
+    let editor = c.current().unwrap();
+    c.edit(editor.handle, editor.rev + 1, editor.text_epoch, "Same text".into(), 9, 9);
+    let before = until(&c, |view| view.offers_native_queue && view.can_send);
+    c.send_message(before.handle, before.rev + 1, before.text_epoch, "Same text".into(), 0, 0);
+    let held = until(&c, |view| view.waiting_in_zerus.first().is_some_and(|row| row.state == State::Unknown));
+    let original = held.waiting_in_zerus[0].request_id.clone();
+    let later = enqueue(&c, "Same text");
+    let follower = later.waiting_in_zerus[1].request_id.clone();
+    let draft = c.current().unwrap();
+    c.edit(draft.handle, draft.rev + 1, draft.text_epoch, "Editable next draft".into(), 4, 4);
+    store.flush();
+    let binding = c.skip_waiting_binding(&c.lock()).unwrap();
+    // Model an already-settled transition before the delayed confirmation reaches Rust.
+    // Use the real durable queue writer; the rejected action must perform no write.
+    let mut waiting = c.lock().composers[&held.key].outbox.clone();
+    waiting[0].state = State::Waiting;
+    let (saved, saved_rx) = oneshot::channel();
+    store.save_outbox(&held.key, waiting.clone(), move |result| { let _ = saved.send(result); });
+    saved_rx.blocking_recv().unwrap().unwrap();
+    {
+        let mut hub = c.lock();
+        let current = hub.composers.get_mut(&held.key).unwrap();
+        current.outbox = waiting.clone();
+        current.outbox_revision += 1;
+    }
+    store.flush();
+    use sha2::{Digest, Sha256};
+    let folder = format!("{:x}", Sha256::digest(held.key.as_bytes()));
+    let paths = [store.root().join(&folder).join("draft.json"),
+        store.root().join("outbox").join(&folder).join("queue.json")];
+    let snapshot = || paths.iter().map(|path| (
+        std::fs::read(path).unwrap(), std::fs::metadata(path).unwrap().modified().unwrap()
+    )).collect::<Vec<_>>();
+    let files_before = snapshot();
+    let changes_before = c.0.changes.load(std::sync::atomic::Ordering::SeqCst);
+    let check_before = c.lock().composers[&held.key].queue_check_at;
+    let revision_before = c.lock().composers[&held.key].outbox_revision;
+    let (tx, rx) = oneshot::channel();
+    c.remove_waiting_intent(held.handle, &original,
+        Some(WaitingRemovalIntent::SkipUnknown { binding }), tx);
+    assert!(rx.blocking_recv().unwrap().is_err());
+    store.flush();
+    assert_eq!(c.lock().composers[&held.key].outbox, waiting);
+    assert_eq!(snapshot(), files_before, "a refused Skip wrote queue/draft data");
+    assert_eq!(c.0.changes.load(std::sync::atomic::Ordering::SeqCst), changes_before,
+        "a refused Skip woke the changed/outbox notification path");
+    assert_eq!(c.lock().composers[&held.key].queue_check_at, check_before);
+    assert_eq!(c.lock().composers[&held.key].outbox_revision, revision_before);
+    assert_eq!(lock(&fake.calls).len(), 1);
+    assert_eq!(c.current().unwrap().text, "Editable next draft");
+
+    // A fresh explicit confirmation of the exact Unknown head uses the same save/ticker.
+    waiting[0].state = State::Unknown;
+    let (saved, saved_rx) = oneshot::channel();
+    store.save_outbox(&held.key, waiting.clone(), move |result| { let _ = saved.send(result); });
+    saved_rx.blocking_recv().unwrap().unwrap();
+    {
+        let mut hub = c.lock();
+        let current = hub.composers.get_mut(&held.key).unwrap();
+        current.outbox = waiting;
+        current.outbox_revision += 1;
+    }
+    let binding = c.skip_waiting_binding(&c.lock()).unwrap();
+    let (tx, rx) = oneshot::channel();
+    c.remove_waiting_intent(held.handle, &original,
+        Some(WaitingRemovalIntent::SkipUnknown { binding }), tx);
+    let removed = rx.blocking_recv().unwrap().unwrap();
+    assert_eq!(removed.waiting_in_zerus.len(), 1);
+    assert_eq!(removed.waiting_in_zerus[0].request_id, follower);
+    assert_eq!(removed.text, "Editable next draft");
+    assert_eq!(lock(&fake.calls).len(), 1);
+    store.flush();
+    let saved = zerus_client_core::drafts::read_draft(store.root(), &removed.key);
+    assert_eq!(saved.draft.outbox.len(), 1);
+    assert_eq!(saved.draft.outbox[0].request_id, follower);
+    let name = target.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","request_id":id,"name":name,"run_id":"run-1",
+            "conversation_id":"conv-1","queued":true}), cleanup: None,
+    });
+    settle_next(&c, &fake, &store, inspected);
+    until(&c, |view| view.waiting_in_zerus.is_empty());
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.iter().map(|call| call.2.as_str()).collect::<Vec<_>>(), vec![original.as_str(), follower.as_str()]);
+    assert_eq!(c.current().unwrap().text, "Editable next draft");
+}
+
+#[test]
 fn ordinary_send_starts_the_exact_guarded_offer_before_the_busy_native_turn_ends() {
     for agent in ["opencode", "dsh"] {
         let root = dir("native-queue-ordinary-send");

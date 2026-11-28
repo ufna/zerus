@@ -960,6 +960,17 @@ export interface WaitingMessage {
   can_check_delivery?: boolean;
   delivery_in_composer?: boolean;
 }
+/** Native snapshot for explicit Skip only; never a retry or offer permit. */
+export interface SkipWaiting {
+  handle: number;
+  key: string;
+  target: Target;
+  selection_epoch: number;
+  route_revision: number;
+  queue_revision: number;
+  queue: [string, WaitingMessage["state"]][];
+}
+export type WaitingRemovalIntent = { kind: "skip_unknown"; binding: SkipWaiting };
 export type DeliveryObservation = "accepted" | "no_input" | "unresolved";
 export interface TerminalOutboxReceipt {
   request_id: string;
@@ -987,6 +998,7 @@ export interface ComposerView {
   offers_native_queue?: boolean;
   ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
+  skip_waiting?: SkipWaiting;
   terminal_only_outbox?: TerminalOutboxReceipt[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */

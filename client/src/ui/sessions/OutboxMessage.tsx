@@ -1,7 +1,7 @@
 import { createContext, createEffect, createSignal, onCleanup, Show, useContext } from "solid-js";
 import { composerCheckDelivery } from "../../bridge";
 import { tr } from "../../i18n";
-import type { DeliveryObservation } from "../../types";
+import type { DeliveryObservation, SkipWaiting } from "../../types";
 import { composer } from "../../store/composer";
 import { setDetailTab } from "../../store/ui";
 import { askedTimeOf, zonedTimeOf } from "../lib/dates";
@@ -38,7 +38,7 @@ export function OutboxHeader(props: { item: OutboxItem }) {
 
 export function OutboxActions(props: { item: OutboxItem }) {
   const scope = useContext(OutboxScope);
-  const [review, setReview] = createSignal<{ handle: number; requestId: string }>();
+  const [review, setReview] = createSignal<{ handle: number; requestId: string; skipScope?: string; skipBinding?: SkipWaiting }>();
   const [check, setCheck] = createSignal<{ scope: string; observation?: DeliveryObservation }>();
   let removeButton: HTMLButtonElement | undefined;
   const current = () => scope?.rows().find((row) =>
@@ -67,9 +67,20 @@ export function OutboxActions(props: { item: OutboxItem }) {
     if (activeCheck() === attempt) setCheck({ ...attempt, observation: observed });
   };
   const removable = () => !!current() && !composer.operationLocked() && composer.waitingMessages()[0]?.state !== "reserved";
+  const skippable = () => {
+    const rows = scope?.rows(), item = current();
+    const binding = item && composer.skipWaitingBinding(item.handle, item.request_id);
+    return item && rows && rows.length > 1 && rows[0] === item && item.state === "unknown"
+      && !item.target_changed && item.run_id && item.conversation_id && binding
+      && binding.target.run_id === item.run_id && binding.target.conversation_id === item.conversation_id
+      && JSON.stringify(binding.queue) === JSON.stringify(rows.map((row) => [row.request_id, row.state])) ? item : undefined;
+  };
+  const removalLabel = () => skippable() ? tr("Skip and continue…") : tr("Remove from Zerus queue…");
   const confirming = () => {
     const action = review(), item = current();
-    return action && item?.handle === action.handle && item.request_id === action.requestId ? action : undefined;
+    return action && item?.handle === action.handle && item.request_id === action.requestId
+      && (!action.skipScope || (action.skipBinding && skippable() === item && deliveryScope(item) === action.skipScope
+        && JSON.stringify(composer.skipWaitingBinding(item.handle, item.request_id)) === JSON.stringify(action.skipBinding))) ? action : undefined;
   };
   createEffect(() => { if (review() && !confirming()) setReview(undefined); });
   const cancel = () => {
@@ -110,21 +121,25 @@ export function OutboxActions(props: { item: OutboxItem }) {
             if (current()?.can_check_terminal) setDetailTab("terminal");
           }}>{tr("Check Terminal")}</button>
         </Show>
-        <button type="button" class="icon-btn small" ref={removeButton} disabled={!removable()}
-          title={tr("Remove from Zerus queue…")} aria-label={tr("Remove from Zerus queue…")} onClick={() => {
+        <button type="button" class={skippable() ? "btn small" : "icon-btn small"} ref={removeButton} disabled={!removable()}
+          title={removalLabel()} aria-label={removalLabel()} onClick={() => {
             const item = current();
-            if (item && removable()) setReview({ handle: item.handle, requestId: item.request_id });
-          }}><Icon name="trash" size={14} /></button>
+            if (item && removable()) setReview({ handle: item.handle, requestId: item.request_id,
+              skipScope: skippable() === item ? deliveryScope(item) : undefined,
+              skipBinding: skippable() === item ? composer.skipWaitingBinding(item.handle, item.request_id) : undefined });
+          }}><Show when={skippable()} fallback={<Icon name="trash" size={14} />}>{tr("Skip and continue…")}</Show></button>
       </div>
     </Show>
     <Show when={confirming()}>{(action) =>
-      <div class="act-outbox-confirm" role="group" aria-label={tr("Remove queued message")} onKeyDown={(event) => {
+      <div class="act-outbox-confirm" role="group" aria-label={action().skipScope ? tr("Skip and continue") : tr("Remove queued message")} onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();
           cancel();
         }
       }}>
-        <p>{tr("Remove this message from the Zerus queue? This cannot undo delivery to the agent.")}</p>
+        <p>{action().skipScope
+          ? tr("This original will leave the Zerus queue without being sent again. It may already have reached the agent. Later queued messages can then proceed.")
+          : tr("Remove this message from the Zerus queue? This cannot undo delivery to the agent.")}</p>
         <div class="act-local-actions">
           <button type="button" class="btn small" ref={(node) => queueMicrotask(() => {
             if (node.isConnected) node.focus();
@@ -134,8 +149,13 @@ export function OutboxActions(props: { item: OutboxItem }) {
             if (!bound || bound !== action() || !removable()) return;
             setReview(undefined);
             scope?.done();
-            void composer.removeWaiting(bound.handle, bound.requestId);
-          }}>{tr("Remove queued message")}</button>
+            if (bound.skipScope) {
+              if (!bound.skipBinding) return;
+              void composer.removeWaiting(bound.handle, bound.requestId, { kind: "skip_unknown", binding: bound.skipBinding });
+            } else {
+              void composer.removeWaiting(bound.handle, bound.requestId);
+            }
+          }}>{action().skipScope ? tr("Skip and continue") : tr("Remove queued message")}</button>
         </div>
       </div>
     }</Show>
