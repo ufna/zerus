@@ -722,11 +722,13 @@ the original request bytes (at most 8 KiB) and uses the same request hash,
 `attempt`, acquires a writer or creates missing state. Returned observations
 are data, including a later recorded completion; they prove neither current
 checkout ownership nor resource drain and cannot authorize cleanup or retry.
-A future actor must check its typed original/current scope after BEGIN, retain
-it durably and perform receipt I/O off the control thread. That integration is
-not implemented by this prerequisite. Existing Terminate calls keep their
-45-second local and 60-second peer budgets; the 30-second owned-runner cap is
-unchanged, and no new Terminate dispatcher is introduced.
+The `termination_outcome_observe` desktop request checks the current scope
+and the immutable original tuple, then reads the exact receipt off the actor.
+The local reader uses the held selected state root and the peer reader uses
+the existing machine-guarded command. See
+[Original termination outcome retention](desktop-termination-outcomes.md) for
+the request and response. Existing Terminate calls keep their 45-second local
+and 60-second peer budgets.
 
 The separate dormant `creation_clone` policy covers only an explicit STATUS
 lookup for an original creation clone in `cloning` or `unknown`. Its expected

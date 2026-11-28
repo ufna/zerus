@@ -16,8 +16,8 @@ ARCHIVE = "33333333-3333-4333-8333-333333333333"
 
 
 class LifecycleReceiptStatus(unittest.TestCase):
-    def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix="hgs-receipt-")
+    def setUp(self, *, temp_dir=None):
+        temp = tempfile.TemporaryDirectory(prefix="hgs-receipt-", dir=temp_dir)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
         for folder in ("home", "config", "data", "state", "cache", "runtime", "tmp", "tmux"):

@@ -626,6 +626,11 @@ fn projection(
 enum Event {
     TaskControl(Box<task_controls::Incoming>),
     ApprovalAudit(Hello, mpsc::SyncSender<approval_audit::worker::Reply>),
+    TerminationObservation(
+        Hello,
+        mpsc::SyncSender<termination_outcome::observation::Reply>,
+        Instant,
+    ),
     ImportOwner(String, mpsc::SyncSender<import_evidence::held::Loan>),
     Command(Hello, Arc<Queue>, Option<Box<ui_authority::Authorized>>),
     #[cfg(windows)]
@@ -693,6 +698,9 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
         &location,
         &epoch,
         stopped.clone(),
+    ));
+    let termination_observation = Arc::new(termination_outcome::observation::Reader::new(
+        config, &location, &epoch, stopped.clone(),
     ));
     let mut notification_controls =
         notification_controls::Runtime::new(&store, &location.configuration, &epoch)?;
@@ -984,6 +992,13 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     if !upgrade.requested() {
                         let _ = reply.try_send(audit.admit(hello, owner.clone(), seq));
                     } // Dropping the one-shot refuses new audit admission.
+                }
+                Ok(Event::TerminationObservation(hello, reply, until)) => {
+                    if !upgrade.requested() {
+                        let _ = reply.try_send(termination_observation.admit(
+                            &store, hello, owner.clone(), seq, until,
+                        ));
+                    }
                 }
                 #[cfg(windows)]
                 Ok(Event::SwarmRestart(queue, peer)) => {
@@ -1862,6 +1877,11 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
         upgrade::actor_tests::connection_wait(replaced, &active);
         thread::sleep(Duration::from_millis(10));
     }
+    // A timed-out reply is not the end of an original receipt worker or
+    // its helper pipes. Keep the serving owner until those resources close.
+    while termination_observation.pending() {
+        thread::sleep(Duration::from_millis(10));
+    }
     if let Some(runtime) = task_runtime.as_mut() {
         runtime.drain();
     }
@@ -1963,6 +1983,10 @@ fn client(
     if approval_audit::worker::recognizes(&hello) {
         drop(reader);
         return approval_audit::worker::client(stream, hello, send);
+    }
+    if termination_outcome::observation::recognizes(&hello) {
+        drop(reader);
+        return termination_outcome::observation::client(stream, hello, send);
     }
     if hello.op == "feed" {
         return feed::client(stream, reader, hello, send, stopped, ingress);
