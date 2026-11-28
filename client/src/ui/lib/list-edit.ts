@@ -7,6 +7,7 @@ type ListEdit = { start: number; end: number; text: string };
 // List continuation is optional. Keep a native newline when the fence context
 // or the current line extends past this synchronous input budget.
 const MAX_LIST_CONTEXT = 4096;
+const inserting = new WeakSet<HTMLTextAreaElement>();
 
 /** Lex through the whole current line. Its innermost final block belongs to
  * the containing list item even when the fence begins on the marker line. */
@@ -58,19 +59,31 @@ export function listNewline(value: string, start: number, end: number): ListEdit
 export function continueList(event: InputEvent & { currentTarget: HTMLTextAreaElement }) {
   const editor = event.currentTarget;
   const document = editor.ownerDocument;
-  if (event.defaultPrevented || !event.cancelable || event.isComposing || textComposing(editor)
+  if (inserting.has(editor) || event.defaultPrevented || !event.cancelable || event.isComposing || textComposing(editor)
     || editor.readOnly || editor.disabled || document.activeElement !== editor
     || !["insertLineBreak", "insertParagraph"].includes(event.inputType) || typeof document.execCommand !== "function") return;
   const start = editor.selectionStart, end = editor.selectionEnd, direction = editor.selectionDirection;
   if (end > MAX_LIST_CONTEXT) return;
   const edit = listNewline(editor.value, start, end);
   if (!edit) return;
-  if (edit.start !== start || edit.end !== end) editor.setSelectionRange(edit.start, edit.end);
+  // A webview may emit beforeinput again while inserting a multiline string.
+  // Let the native command finish its newline without expanding another marker.
+  inserting.add(editor);
   let accepted = false;
   try {
+    // Moving the caret closes WebKit's open typing group so undo removes the
+    // list break without also undoing the text typed just before Shift+Enter.
+    if (start === end && edit.start === start && edit.end === end) {
+      editor.setSelectionRange(start - 1, start - 1);
+      editor.setSelectionRange(start, end);
+    } else if (edit.start !== start || edit.end !== end) {
+      editor.setSelectionRange(edit.start, edit.end);
+    }
     accepted = edit.text ? document.execCommand("insertText", false, edit.text) : document.execCommand("delete");
   } catch {
     // A webview that rejects the command can still perform its own newline.
+  } finally {
+    inserting.delete(editor);
   }
   if (accepted) event.preventDefault();
   else editor.setSelectionRange(start, end, direction);

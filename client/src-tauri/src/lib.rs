@@ -614,6 +614,12 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
         Some(claimed) => (Some(claimed.listening), Some(claimed.activations)),
         None => (None, None),
     };
+    // Only the elected desktop instance resumes sends without a selection.
+    // A second preview using the same data directory must not join the pump.
+    #[cfg(all(feature = "live", any(target_os = "linux", target_os = "macos", windows)))]
+    let owns_outboxes = listening.is_some();
+    #[cfg(all(feature = "live", not(any(target_os = "linux", target_os = "macos", windows))))]
+    let owns_outboxes = false;
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         // Opened from Rust only (the composer's `composer_pick` and New
@@ -1032,6 +1038,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                         &actions, target, action, id, admission,
                     ))
                 }));
+                composers.set_outbox_status(std::sync::Arc::new(actions::check_outbox_receipt));
                 #[cfg(target_os = "linux")]
                 if desktop_service::mode() {
                     let (checking, sending) = (app.handle().clone(), app.handle().clone());
@@ -1161,7 +1168,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                 }
                 // The composer's session part once a second (the cache chip)
                 // and the inspect fallback; it sleeps while no composer is open.
-                composers.start_ticker();
+                composers.start_ticker(allowed && owns_outboxes);
                 app.manage(processes_hub(app.handle(), allowed));
                 // Activity attachments share the composers' cache: one root,
                 // one set of pins and one prune lane, which keeps Retry's files.
@@ -1692,6 +1699,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         renderer::renderer_frame,
         renderer::renderer_diagnostics,
         window_theme::window_theme,
+        commands::codex_receipt_page,
         content_search::content_search,
         content_search::cancel_content_search,
         native_ui::runtime::native_ui_open,
@@ -1812,6 +1820,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         task_details::task_reference,
         task_details::task_page,
         task_details::task_classify_review,
+            task_details::task_quick_review,
         task_details::task_attachment_read,
         task_details::task_assign,
         task_details::task_board_action,
@@ -1976,6 +1985,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::composer_remove,
         composer::composer_undo_remove,
         composer::composer_allow_retry,
+        composer::composer_dismiss_compaction_notice,
         composer::composer_refresh,
         composer::composer_clear_control,
         composer::composer_tab,
@@ -2025,6 +2035,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::saved::draft_capture_retry,
         composer::send::send_message,
         composer::outbox::composer_remove_waiting,
+        composer::outbox::composer_check_delivery,
         composer::queue::queue_send_now,
         composer::queue::send_push,
         composer::send::send_answer,

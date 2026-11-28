@@ -1656,8 +1656,10 @@ no such message remains (a cleared or fully expired transcript), Activity goes
 to Latest and follows the end.
 
 The synthetic `scripts/activity-position-smoke.html` fixture exercises this with
-the real virtualizer and Markdown; serve it with Vite and run it through
-`scripts/menu-smoke.py --title "Zerus Activity reading position regression" --url
+the real virtualizer and Markdown, including painted cold/warm switches of short
+and long histories; serve it with Vite and run it through
+`scripts/menu-smoke.py --title "Zerus Activity reading position regression"
+--paint-column 100 --url
 http://127.0.0.1:<port>/scripts/activity-position-smoke.html` on its private Xvfb.
 
 While the window is hidden or minimised the pump asks for nothing and schedules

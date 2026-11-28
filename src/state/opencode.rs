@@ -14,10 +14,18 @@ mod service;
 mod compact;
 mod context;
 mod context_hint;
+pub(super) mod archives;
 pub(crate) use context_hint::lookup as hint_context;
 pub(super) fn note_hint(record: &Value) { context_hint::note(record); }
 pub(super) fn forget_hint(record: &Value) { context_hint::forget(record); }
 mod terminal;
+mod outbox;
+pub(super) fn send_when_idle(args: &[String]) -> Result<i32> {
+    outbox::dispatch(args)
+}
+pub(super) fn outbox_status(name: &str) -> Result<i32> {
+    outbox::status(name)
+}
 pub(crate) use terminal::attach;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod shortlist;
@@ -615,8 +623,15 @@ struct Observed {
     native_questions: std::collections::HashMap<String, Value>,
     /// The Zerus request that sent each of the newest user messages, from the
     /// receipt index (message ID to request ID).
-    requests: std::collections::HashMap<String, String>,
+    requests: std::collections::HashMap<String, SentRequest>,
 }
+
+#[derive(Debug, PartialEq)]
+struct SentRequest {
+    id: String,
+    files: Vec<Value>,
+}
+
 /// The status of one binding; `None` when the service could not be read,
 /// which keeps native state unknown rather than stopped.
 fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
@@ -681,6 +696,9 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
     } else {
         vec!["forget"]
     };
+    if observed.is_some_and(|observation| archives::offers(record, observation)) {
+        allowed.push("archive");
+    }
     if !active
         && queued
             .iter()
@@ -711,7 +729,12 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
     if let Some(observed) = observed {
         for row in events.iter_mut().filter(|e| e["type"] == "UserPromptSubmit") {
             if let Some(request) = observed.requests.get(string(row, "message_id")) {
-                row["request_id"] = json!(request);
+                row["request_id"] = json!(request.id);
+                row["run_id"] = record["run_id"].clone();
+                row["conversation_id"] = record["conversation_id"].clone();
+                if !request.files.is_empty() {
+                    row["attachments"] = json!(request.files);
+                }
             }
         }
     }
@@ -736,7 +759,7 @@ fn normalize(record: &Value, observed: Option<&Observed>) -> Value {
         "clear_context_supported":false,"clear_context_reason":"OpenCode cannot reset this conversation. Start a new session to begin with empty context.",
         "compact_context_supported":false,"compact_context_reason":"Manual compaction is unavailable on this OpenCode service.",
         "allowed_actions":allowed,"action_reasons":{"pause":"OpenCode sessions have no separate process to pause","resume":"OpenCode sessions have no separate process to pause",
-            "archive":"OpenCode archives are not supported","restore":"OpenCode archives are not supported","fork":"OpenCode fork arrives in a later update","terminate":"Use Stop for this OpenCode session"},
+            "archive":archives::NOT_IDLE,"fork":"OpenCode fork arrives in a later update","terminate":"Use Stop for this OpenCode session"},
         "pending_questions":pending,"events":events,"replace_events":true,"cursor":0,"history_truncated":observed.is_some_and(|o| o.page.truncated)});
     for (key, item) in controls.as_object().into_iter().flatten() {
         value[key] = item.clone();
@@ -876,36 +899,49 @@ fn sent_requests(
     record: &Value,
     messages: &[Value],
     inbox: &Value,
-) -> std::collections::HashMap<String, String> {
+) -> std::collections::HashMap<String, SentRequest> {
     // A message delivered between the inbox and history reads is judged by
     // its delivered copy only.
     let delivered: std::collections::HashSet<&str> =
         messages.iter().map(|m| string(m, "id")).collect();
-    let queued = inbox["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    let inbox = inbox["data"].as_array().map_or(&[][..], Vec::as_slice);
+    let queued = inbox.iter()
         .filter(|item| !delivered.contains(string(item, "id")))
-        .map(|item| (item, &item["payload"]["text"]));
+        .map(|item| (item, &item["payload"], false));
     queued
-        .chain(messages.iter().rev().map(|message| (message, &message["text"])))
-        .filter(|(m, _)| m["type"] == "user")
-        .map(|(m, text)| (string(m, "id"), text))
-        .filter(|(id, _)| native_id(id, "msg_"))
+        .chain(messages.iter().rev().map(|message| (message, message, true)))
+        .filter(|(message, _, _)| message["type"] == "user" && native_id(string(message, "id"), "msg_"))
         .take(SENT_LOOKUPS)
-        .filter_map(|(id, text)| {
+        .filter_map(|(message, payload, history)| {
+            let id = string(message, "id");
             let index = ledger.indexed(id)?;
             if index["conversation_id"] != record["conversation_id"] {
                 return None;
             }
             let request = string(&index, "request_id");
             let receipt = ledger.sent(request)?;
+            let guarded = receipt["outbox_guarded"] == true;
             (receipt["native_message_id"] == id
+                && receipt["request_id"] == request
                 && receipt["conversation_id"] == record["conversation_id"]
                 && receipt["run_id"] == record["run_id"]
-                && text.is_string()
-                && receipt["text"] == *text)
-                .then(|| (id.to_owned(), request.to_owned()))
+                && outbox::matches_payload(payload, &receipt, history)
+                && (!guarded || (
+                    receipt["name"] == record["name"]
+                    && matches!(receipt["status"].as_str(), Some("pending" | "submitted"))
+                    && (history || message["sessionID"] == record["conversation_id"]
+                        && message["delivery"] == "queue"
+                        && inbox.iter().filter(|item| item["id"] == id).take(2).count() == 1
+                        && matches!(ledger.removal(record, id), Ok(None)))
+                )))
+                .then(|| (id.to_owned(), SentRequest {
+                    id: request.to_owned(),
+                    files: if receipt["status"] == "submitted" {
+                        attachments::public_files(&receipt)
+                    } else {
+                        Vec::new()
+                    },
+                }))
         })
         .collect()
 }
@@ -915,6 +951,8 @@ enum Detail {
     Listing,
     /// The session's own state for an action.
     Own,
+    /// A delayed action needs exact admission metadata without transcript reads.
+    Metadata,
     /// `hgs inspect`: also the model options for its folder.
     Full,
 }
@@ -931,7 +969,13 @@ fn parent_view(
         service,
         record,
         active,
-        || history::fetch(service, record),
+        || {
+            if detail == Detail::Metadata {
+                Ok(history::Page { messages: Vec::new(), truncated: false })
+            } else {
+                history::fetch(service, record)
+            }
+        },
         detail == Detail::Full,
     )?;
     let (attempt, boundary) = if detail == Detail::Full {
@@ -955,6 +999,15 @@ fn parent_view(
         (Value::Null, None)
     };
     let mut result = normalize(record, Some(&observed));
+    if service.desktop_outbox() {
+        result["guarded_idle_send"] = json!(true);
+        result["opencode_busy_outbox_supported"] = json!(true);
+        result["attachments_supported"] = json!(true);
+        result["previous_message_pending"] = json!(observed.active);
+    }
+    if detail == Detail::Metadata {
+        return Ok(result);
+    }
     if detail == Detail::Full {
         history::decorate_live_shell(
             service,
@@ -963,7 +1016,7 @@ fn parent_view(
             &mut result["events"],
         );
     }
-    if detail != Detail::Listing {
+    if matches!(detail, Detail::Own | Detail::Full) {
         attachments::decorate(record, "", &mut result);
         result["voice_messages"] =
             conversation_history::inspected_voice_messages(record, &result, None);
@@ -1015,6 +1068,10 @@ struct Bounded<'a> {
 impl Native for Bounded<'_> {
     fn manual_compact(&self) -> bool {
         self.service.manual_compact
+    }
+
+    fn desktop_outbox(&self) -> bool {
+        self.service.desktop_outbox
     }
 
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response> {
@@ -1100,6 +1157,7 @@ struct Inspector {
     /// Named only when a reason needs it.
     computer: Option<String>,
     active: Option<Result<Value>>,
+    archive_ancestors: Option<Result<std::collections::HashSet<String>>>,
     migration: Option<Reply>,
     verdicts: Option<Vec<String>>,
     verdicts_changed: bool,
@@ -1115,6 +1173,7 @@ impl Inspector {
             service: service::connect(),
             computer: None,
             active: None,
+            archive_ancestors: None,
             migration: None,
             verdicts: None,
             verdicts_changed: false,
@@ -1135,6 +1194,7 @@ impl Inspector {
             service: Err(service::Unavailable::NotRunning),
             computer: None,
             active: None,
+            archive_ancestors: None,
             migration: None,
             verdicts: None,
             verdicts_changed: false,
@@ -1213,7 +1273,13 @@ impl Inspector {
             Ok(active) => active,
             Err(reason) => return failed(reason.clone()),
         };
-        parent_view(native, &current, active, detail).unwrap_or_else(failed)
+        let mut row = parent_view(native, &current, active, detail).unwrap_or_else(failed);
+        let archive_native = Bounded {
+            service,
+            deadline: bounded.deadline.min(Instant::now() + Duration::from_secs(3)),
+        };
+        archives::decorate(&mut row, &current, &archive_native, active, &mut self.archive_ancestors);
+        row
     }
     fn finish(self) {
         if self.verdicts_changed {
@@ -1333,6 +1399,9 @@ fn checked_request(record: &Value) -> Result<Value> {
     Ok(request)
 }
 fn read_request() -> Result<Value> {
+    parse_request(&read_request_bytes()?)
+}
+fn read_request_bytes() -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     io::stdin()
         .take(30 * 1024 * 1024 + 1)
@@ -1341,7 +1410,10 @@ fn read_request() -> Result<Value> {
     if bytes.len() > 30 * 1024 * 1024 {
         return Err("Native request exceeds bounds".into());
     }
-    let request: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+fn parse_request(bytes: &[u8]) -> Result<Value> {
+    let request: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     let id =
         uuid::Uuid::parse_str(string(&request, "request_id")).map_err(|_| "Invalid request ID")?;
     if id.is_nil() || id.to_string() != string(&request, "request_id") {
@@ -1360,6 +1432,7 @@ fn check_request_identity(record: &Value, request: &Value) -> Result<()> {
 /// The native OpenCode 2 operations that delivery needs.
 trait Native {
     fn manual_compact(&self) -> bool { false }
+    fn desktop_outbox(&self) -> bool { false }
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response>;
     /// The same request, ending no later than `deadline`.
     fn raw_until(
@@ -1374,6 +1447,7 @@ trait Native {
 }
 impl Native for service::Service {
     fn manual_compact(&self) -> bool { self.manual_compact }
+    fn desktop_outbox(&self) -> bool { self.desktop_outbox }
     fn raw(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Response> {
         service::Service::raw(self, method, path, body)
     }
@@ -1576,12 +1650,23 @@ fn apply_removal(ledger: &Ledger, record: &Value, receipt: &mut Value, path: &Pa
 /// again: OpenCode 2.0.32 forgets an ID once its queued message is removed,
 /// so a repost could deliver a message the user removed. A message in
 /// neither history nor the inbox stays uncertain.
+#[cfg(test)]
 fn reconcile(
     native: &dyn Native,
     ledger: &Ledger,
     record: &Value,
     message_id: &str,
     text: &str,
+) -> Result<Delivery> {
+    reconcile_payload(native, ledger, record, message_id, &json!({"text": text}))
+}
+
+fn reconcile_payload(
+    native: &dyn Native,
+    ledger: &Ledger,
+    record: &Value,
+    message_id: &str,
+    receipt: &Value,
 ) -> Result<Delivery> {
     let removal = ledger.removal(record, message_id)?;
     if removal == Some(Removal::Removed) {
@@ -1595,7 +1680,9 @@ fn reconcile(
     match found.status {
         200 => {
             let data = &found.body["data"];
-            if data["type"] == "user" && data["id"] == message_id && data["text"] == text {
+            if data["type"] == "user" && data["id"] == message_id
+                && outbox::matches_payload(data, receipt, false)
+            {
                 return Ok(Delivery::Delivered);
             }
             return Err(UNCERTAIN.into());
@@ -1611,16 +1698,18 @@ fn reconcile(
     if inbox.status != 200 {
         return Err(UNCERTAIN_STATE.into());
     }
-    match inbox.body["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|item| item["id"] == message_id)
-    {
-        Some(item) if item["payload"]["text"] == text => Ok(Delivery::Queued),
-        Some(_) => Err(UNCERTAIN.into()),
-        None => Err(UNCERTAIN_STATE.into()),
+    let mut matches = inbox.body["data"].as_array().into_iter().flatten()
+        .filter(|item| item["id"] == message_id);
+    let item = matches.next().ok_or(UNCERTAIN_STATE)?;
+    if matches.next().is_some() || !outbox::matches_payload(&item["payload"], receipt, false) {
+        return Err(UNCERTAIN.into());
     }
+    if receipt["outbox_guarded"] == true && (item["type"] != "user"
+        || item["sessionID"] != record["conversation_id"] || item["delivery"] != "queue")
+    {
+        return Err(UNCERTAIN.into());
+    }
+    Ok(Delivery::Queued)
 }
 fn running_service() -> Result<service::Service> {
     // Sending is explicit, but phase 1 does not start the service for it.
@@ -1642,13 +1731,17 @@ fn settle(
     record: &Value,
     receipt: &mut Value,
     path: &Path,
+    deadline: Option<Instant>,
 ) -> Result<Delivery> {
     check_receipt_identity(record, receipt)?;
     let id = string(receipt, "native_message_id").to_owned();
-    let text = string(receipt, "text").to_owned();
-    let outcome = reconcile(native, ledger, record, &id, &text)?;
+    let outcome = reconcile_payload(native, ledger, record, &id, receipt)?;
     // A removal recorded since the inbox was read wins over that read.
-    let _guard = ledger.lock()?;
+    let _guard = if let Some(deadline) = deadline {
+        lock_until(&ledger.0.join("receipts.lock"), deadline)?.ok_or(UNCERTAIN_STATE)?
+    } else {
+        ledger.lock()?
+    };
     let outcome = match (outcome, ledger.removal(record, &id)?) {
         (Delivery::Queued, Some(Removal::Intended)) => return Err(UNCERTAIN_STATE.into()),
         (Delivery::Queued, Some(Removal::Removed)) => Delivery::Refused(REMOVED.into()),
@@ -1684,7 +1777,7 @@ fn reconcile_receipt_with<N: Native>(
     }
     let native = connect()?;
     verify_session(&native, record)?;
-    match settle(&native, ledger, record, receipt, &path)? {
+    match settle(&native, ledger, record, receipt, &path, None)? {
         Delivery::Refused(reason) => Err(refused(&reason)),
         _ => Ok(true),
     }
@@ -1709,7 +1802,7 @@ fn session_active(native: &dyn Native, record: &Value) -> bool {
         .filter(|r| r.status == 200)
         .is_some_and(|r| r.body["data"].get(string(record, "conversation_id")).is_some())
 }
-fn send(record: &Value, request: &Value) -> Result<Value> {
+fn send(record: &Value, request: &Value, guard: Option<outbox::Guard<'_>>) -> Result<Value> {
     if !string(request, "agent_id").is_empty() {
         return Err("OpenCode child delivery is not supported".into());
     }
@@ -1717,18 +1810,11 @@ fn send(record: &Value, request: &Value) -> Result<Value> {
     if text.len() > 65536 {
         return Err("Message exceeds64KiB".into());
     }
-    // A first version cannot silently downgrade attachments or compaction
-    // continuation into plain text.
-    if request["attachments"]
-        .as_array()
-        .is_some_and(|v| !v.is_empty())
-    {
-        return Err("OpenCode attachments are not yet supported by this adapter".into());
-    }
     if !string(request, "expected_compaction_id").is_empty() {
         return Err("OpenCode compaction continuation is not supported".into());
     }
-    if text.trim().is_empty() {
+    let has_files = request["attachments"].as_array().is_some_and(|v| !v.is_empty());
+    if text.trim().is_empty() && !has_files {
         return Err("Message is empty".into());
     }
     let digest = format!(
@@ -1736,16 +1822,18 @@ fn send(record: &Value, request: &Value) -> Result<Value> {
         Sha256::digest(json!([record["name"], request]).to_string().as_bytes())
     );
     let service = running_service()?;
-    deliver(
+    deliver_offer(
         &service,
         &Ledger::current(),
         record,
         request,
         digest,
         session_graph::target_receipt(record),
+        guard,
     )
 }
-/// Core of `send`: everything after validation, against any native service.
+/// The ordinary legacy fixture calls the same native producer.
+#[cfg(test)]
 fn deliver(
     native: &dyn Native,
     ledger: &Ledger,
@@ -1754,11 +1842,23 @@ fn deliver(
     digest: String,
     graph_target: Option<Value>,
 ) -> Result<Value> {
+    deliver_offer(native, ledger, record, request, digest, graph_target, None)
+}
+
+fn deliver_offer(
+    native: &dyn Native,
+    ledger: &Ledger,
+    record: &Value,
+    request: &Value,
+    digest: String,
+    graph_target: Option<Value>,
+    guard: Option<outbox::Guard<'_>>,
+) -> Result<Value> {
     let text = string(request, "text");
     let path = &ledger.receipt(string(request, "request_id"));
-    if path.exists() {
-        let mut prior: Value = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    if path.try_exists().map_err(|_| UNCERTAIN_REPLAY)? {
+        let mut prior = ledger.sent(string(request, "request_id"))
+            .ok_or("The original OpenCode delivery receipt is unavailable; delivery uncertain")?;
         if prior["digest"] != digest {
             return Err("This request ID was already used for another message".into());
         }
@@ -1769,25 +1869,59 @@ fn deliver(
             _ => {}
         }
         verify_native(native, record)?;
-        return match settle(native, ledger, record, &mut prior, path) {
+        return match settle(native, ledger, record, &mut prior, path, None) {
             Ok(Delivery::Refused(reason)) => Err(refused(&reason)),
             Ok(_) => Ok(prior),
             Err(_) => Err(UNCERTAIN_REPLAY.into()),
         };
     }
     verify_native(native, record)?;
-    if waiting_for_user(native, record)? {
+    let has_files = !request["attachments"].is_null()
+        && request["attachments"].as_array().is_none_or(|files| !files.is_empty());
+    if (guard.is_some() || has_files) && !native.desktop_outbox() {
+        return Err("This OpenCode service does not support guarded Send and attachments".into());
+    }
+    if let Some(guard) = guard {
+        if let Some(wait) = outbox::wait_receipt(native, record, request, guard)? {
+            return Ok(wait);
+        }
+    } else if waiting_for_user(native, record)? {
         return Err(
             "OpenCode is waiting for an exact question or permission; no message was sent".into(),
         );
     }
-    let message_id = new_id("msg_");
+    let mut offer = json!({"id":new_id("msg_"),"text":text,"delivery":"queue"});
+    let message_id = string(&offer, "id").to_owned();
     let mut receipt = json!({"request_id":request["request_id"],"name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"],"digest":digest,"native_message_id":message_id,"text":text,"submitted_text":text,"submitted_at":now(),"at":now(),"status":"pending","attachments":[],"transport":"native_opencode"});
     if let Some(target) = graph_target {
         delivery::bind(&mut receipt, record, &target);
         receipt["graph_target"] = target;
     }
-    let queued = session_active(native, record);
+    if let Some(guard) = guard {
+        receipt["outbox_guarded"] = json!(true);
+        receipt["outbox_input_sha256"] = json!(guard.input_sha256);
+        receipt["outbox_session_id"] = record["session_id"].clone();
+        receipt["outbox_id_layout"] = json!(storage::in_id_layout(record));
+    }
+    let staged = if has_files {
+        let stage = attachments::prepare_native(request)?;
+        let files = outbox::Files::from_request(request)?;
+        offer["files"] = json!(files.wire);
+        receipt["attachments"] = stage.files().clone();
+        receipt["attachment_digests"] = json!(files.digests);
+        Some(stage)
+    } else {
+        None
+    };
+    if let (Some(guard), Some(_)) = (guard, &staged) {
+        if let Some(wait) = outbox::wait_receipt(native, record, request, guard)? {
+            return Ok(wait);
+        }
+    }
+    let queued = guard.is_none_or(|guard| guard.native_queue) && session_active(native, record);
+    if queued {
+        receipt["queued"] = json!(true);
+    }
     // The index first: a receipt is never written without it, so a removal
     // can find the receipt of the message it removes.
     atomic(
@@ -1796,22 +1930,22 @@ fn deliver(
             .to_string(),
     )?;
     receipt_index::persist(path, &receipt)?;
-    let posted = native.raw(
-        "POST",
-        &session_path(record, "/prompt"),
-        Some(&json!({"id":message_id,"text":text,"delivery":"queue"})),
-    );
+    if let Some(stage) = staged {
+        stage.keep();
+    }
+    let posted = native.raw("POST", &session_path(record, "/prompt"), Some(&offer));
     match posted {
         Ok(answer) if (200..300).contains(&answer.status) => {
             let data = &answer.body["data"];
             if data["id"] != message_id
                 || data["sessionID"] != record["conversation_id"]
-                || data["payload"]["text"] != text
+                || !outbox::matches_payload(&data["payload"], &receipt, false)
+                || guard.is_some() && (data["delivery"] != "queue" || data["type"] != "user")
             {
                 return Err(MISMATCH.into());
             }
         }
-        Ok(answer) if (400..500).contains(&answer.status) => {
+        Ok(answer) if guard.is_none() && !has_files && (400..500).contains(&answer.status) => {
             let reason = refusal_reason(&answer);
             receipt["status"] = json!("refused");
             // Keep the detailed first refusal local; a durable delivery
@@ -1821,16 +1955,13 @@ fn deliver(
             return Err(refused(&reason));
         }
         // A transport error or a 5xx leaves the admission unknown.
-        _ => match settle(native, ledger, record, &mut receipt, path) {
+        _ => match settle(native, ledger, record, &mut receipt, path, None) {
             Ok(Delivery::Refused(reason)) => return Err(refused(&reason)),
             Ok(_) => {}
             Err(_) => return Err(UNCERTAIN_REPLAY.into()),
         },
     }
     receipt["status"] = json!("submitted");
-    if queued {
-        receipt["queued"] = json!(true);
-    }
     receipt_index::persist(path, &receipt)?;
     Ok(receipt)
 }
@@ -2258,6 +2389,9 @@ fn action_in<N: Native>(
     if let Some(scope) = scope {
         scope.check(record)?;
     }
+    if archives::pending_restore(record) || archives::STORE.has_original(record)? {
+        return Err("Finish the original OpenCode Archive or Restore before changing this binding".into());
+    }
     let current = own_state(string(record, "name"))?;
     if !current["allowed_actions"]
         .as_array()
@@ -2345,6 +2479,12 @@ pub(super) fn session_action(
 }
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     let name = args.first().ok_or("Choose an OpenCode session")?;
+    if command == "archive" {
+        if args.len() != 1 && !(args.len() == 2 && args[1] == "--dry-run") {
+            return Err("usage: hgs archive <OpenCode session> [--dry-run]".into());
+        }
+        return archives::archive(name, args.len() == 2, None);
+    }
     let mut guard = if command != "inspect" && command != "exists" {
         let renames = dispatch_renames_owner(command, name, args)?;
         Some(lock_action(
@@ -2370,7 +2510,13 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 ),
                 None => None,
             };
-            let mut value = inspect(name, agent)?;
+            let metadata = args.windows(2).any(|pair| pair[0] == "--after" && pair[1] == "9223372036854775807");
+            let mut value = if metadata && agent.is_none() {
+                let mut inspector = Inspector::listing(Instant::now() + Duration::from_secs(3));
+                inspector.row(&record, Detail::Metadata)
+            } else {
+                inspect(name, agent)?
+            };
             // Only a main inspection names what a read mark may acknowledge.
             if agent.is_none() && args.iter().any(|v| v == "--current-read") {
                 if let Some(current) = current_read_of(name, &value) {
@@ -2381,7 +2527,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
         }
         "send" => {
             let request = checked_request(&record)?;
-            println!("{}", send(&record, &request)?);
+            println!("{}", send(&record, &request, None)?);
         }
         "answer" => {
             let request = read_request()?;
@@ -2477,6 +2623,7 @@ mod tests {
         });
         let service = |port| service::Service {
             manual_compact: false,
+            desktop_outbox: false,
             reg: service::Registration {
                 id: String::new(),
                 version: String::new(),
@@ -4101,7 +4248,7 @@ mod tests {
             ("msg_gVmstesSuU81H2vTHdmxp65tNI", "request-queued"),
             ("msg_14bb2d63e001NhfRTKy4frROM8", "request-not-a-prompt"),
         ]
-        .map(|(id, request)| (id.to_owned(), request.to_owned()))
+        .map(|(id, request)| (id.to_owned(), SentRequest { id: request.to_owned(), files: Vec::new() }))
         .into();
         let value = normalize(&status_record("ses_A"), Some(&observed));
         let named: Vec<(&str, &str, &str)> = value["events"]
@@ -4154,9 +4301,9 @@ mod tests {
         messages.push(json!({"id": "msg_otherSession00000000000000", "type": "user"}));
         messages.push(json!({"id": "msg_notARequest000000000000000", "type": "user"}));
         let found = sent_requests(&ledger, &status_record("ses_A"), &messages, &observed.inbox);
-        let expected: std::collections::HashMap<String, String> = [
-            ("msg_6kezDqwZEklnh8eFGVy3UbP6iX".to_owned(), a.to_owned()),
-            ("msg_gVmstesSuU81H2vTHdmxp65tNI".to_owned(), b.to_owned()),
+        let expected: std::collections::HashMap<String, SentRequest> = [
+            ("msg_6kezDqwZEklnh8eFGVy3UbP6iX".to_owned(), SentRequest { id: a.to_owned(), files: Vec::new() }),
+            ("msg_gVmstesSuU81H2vTHdmxp65tNI".to_owned(), SentRequest { id: b.to_owned(), files: Vec::new() }),
         ]
         .into();
         assert_eq!(found, expected);
@@ -4225,8 +4372,8 @@ mod tests {
         sent("msg_gVmstesSuU81H2vTHdmxp65tNI", b, "queued later");
         let observed = observed("messages", true, opencode2("inbox_busy"));
         let found = sent_requests(&ledger, &status_record("ses_A"), &observed.page.messages, &observed.inbox);
-        let expected: std::collections::HashMap<String, String> =
-            [("msg_gVmstesSuU81H2vTHdmxp65tNI".to_owned(), b.to_owned())].into();
+        let expected: std::collections::HashMap<String, SentRequest> =
+            [("msg_gVmstesSuU81H2vTHdmxp65tNI".to_owned(), SentRequest { id: b.to_owned(), files: Vec::new() })].into();
         assert_eq!(found, expected);
         // A message in both reads is judged by its delivered copy: an edited
         // delivered body is not attributed even though the queued copy matched.
@@ -4997,6 +5144,7 @@ mod tests {
             service,
             computer: Some("build-01".into()),
             active,
+            archive_ancestors: None,
             migration,
             verdicts: Some(Vec::new()),
             verdicts_changed: false,
@@ -5009,6 +5157,7 @@ mod tests {
     fn refusing() -> service::Service {
         service::Service {
             manual_compact: false,
+            desktop_outbox: false,
             reg: service::Registration {
                 id: "a".into(),
                 version: "2.0.32".into(),

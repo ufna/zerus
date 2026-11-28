@@ -25,7 +25,6 @@ import { AttachmentsChip } from "./Attachments";
 import { RecoveryChip } from "./RecoveryChip";
 import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
 import { allowRetryShown, moveFocusOff } from "./composer-ui";
-import { AGY_DELIVERY_UNCONFIRMED } from "./send-error";
 import { focusTranscript, following, jumpToLatest, shownSearchPreview, unseen } from "./Activity";
 import { jumpButton } from "./search-hit";
 import { OwnMessageNavigation } from "./OwnMessageNavigation";
@@ -267,7 +266,11 @@ export function Composer() {
     onCleanup(stop);
   });
 
-  const status = () => composer.status();
+  const status = () => {
+    const current = composer.status();
+    return s()?.cmd === "agy" && !current.text
+      ? { ...current, text: tr("Antigravity integration has been retired from Zerus.") } : current;
+  };
   const statusDetail = () => {
     const text = status().text, session = v()?.session_status ?? "";
     return session && session !== text ? `${text}\n${session}` : text;
@@ -326,7 +329,15 @@ export function Composer() {
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <DeliveryHistoryHint view={v()} text={composer.text()} shown={input()} />
       <Show when={input() && status().multiline}>
-        <div class="cmp-draft-status" classList={{ error: status().error }} role="status">{status().text}</div>
+        <div class="cmp-draft-status" classList={{ error: status().error, dismissible: !!status().compactionNoticeId }}>
+          <span role="status">{status().text}</span>
+          <Show when={status().compactionNoticeId} keyed>{(requestId) =>
+            <button type="button" class="btn ghost" aria-label={tr("Dismiss compaction notice")} onClick={(event) => {
+              if (document.activeElement === event.currentTarget) editor.focus();
+              void composer.dismissCompactionNotice(requestId);
+            }}>{tr("Dismiss")}</button>
+          }</Show>
+        </div>
       </Show>
       <div class="cmp-actions" hidden={!input()}>
         <span class="cmp-files">
@@ -347,12 +358,11 @@ export function Composer() {
           <button type="button" class="icon-btn cmp-attach" aria-label={tr("Refresh this session")} title={`${tr("Refresh this session")}\n${v()!.session_status}`}
             disabled={composer.operationLocked()} onClick={() => { void composer.refresh(); }}><Icon name="refresh-cw" size={17} /></button>
         </Show>
-        <Show when={allowRetryShown(v(), composer.operationLocked())}>
-          <button type="button" class="btn ghost" title={s()?.agent === "agy" ? tr(AGY_DELIVERY_UNCONFIRMED)
-            : tr("Check the terminal before sending again to avoid a duplicate message")}
+        <Show when={s()?.cmd !== "agy" && allowRetryShown(v(), composer.operationLocked())}>
+          <button type="button" class="btn ghost" title={tr("Check the terminal before sending again to avoid a duplicate message")}
             onClick={() => { void composer.allowRetry(); editor.focus(); }}><Icon name="refresh-cw" size={13} />{tr("Allow retry")}</button>
         </Show>
-        <Show when={!child()}><ModelSettingsButton /></Show>
+        <Show when={!child() && s()?.cmd !== "agy"}><ModelSettingsButton /></Show>
         <Show when={!child() && act().stop.shown}>
           <button type="button" class="btn" aria-label={tr("Stop current turn")} title={act().stop.hint ?? USUAL_STOP()} disabled={act().stop.disabled}
             onClick={() => { stopTurn(); }}><Icon name="square" size={12} />{tr("Stop")}</button>

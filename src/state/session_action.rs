@@ -132,6 +132,9 @@ pub(super) fn summary(
     archive_name_taken: Option<bool>,
 ) -> Value {
     let archived = !string(record, "archive_id").is_empty();
+    if archived && record["backend"] == "opencode" {
+        return opencode::archives::capabilities(record, archive_name_taken);
+    }
     let terminating = terminating::pending(record);
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
     let confirmed = !string(record, "conversation_id").is_empty();
@@ -306,6 +309,9 @@ fn validate(request: &Request, name: &str) -> Result<()> {
 }
 
 fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
+    if retired_agy::named(name) {
+        return Err(retired_agy::RETIRED.into());
+    }
     if request.action == "terminate_shell" {
         return untracked_shell::terminate(
             name,
@@ -316,12 +322,11 @@ fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
             scope,
         );
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if agy::named(name) {
-        return agy::action(name, &request.action, scope);
-    }
-    if opencode::exists(name) {
+    if request.archive_id.is_none() && opencode::exists(name) {
         scope.opencode_error();
+        if request.action == "archive" {
+            return opencode::archives::archive(name, false, Some(scope)).map(|_| ());
+        }
         return opencode::session_action(name, &request.action, request.new_name.as_deref(), request.message_id.as_deref(), scope);
     }
     if request.action == "remove_queued" {
@@ -416,7 +421,7 @@ where
     }
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label, before anything is claimed.
-    if request.archive_id.is_some() && name.starts_with("dsh/") {
+    if request.archive_id.is_some() && (name.starts_with("dsh/") || name.starts_with("opencode/")) {
         let _ = session_id::take_deferred(name);
     } else {
         expect(name, &request.expected_run_id, &request.expected_conversation_id)?;

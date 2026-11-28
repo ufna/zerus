@@ -1,4 +1,5 @@
-import { OutboxBody, OutboxHeader, OutboxScope } from "./OutboxMessage";
+import { createQueuedOriginalNavigation } from "./queued-original-navigation";
+import { OutboxActions, OutboxHeader, OutboxScope } from "./OutboxMessage";
 import { earlierInputRefusal, EARLIER_INPUT_PENDING, sendErrorText } from "./send-error";
 import { OwnMessageBody } from "./OwnMessageBody";
 import { nativeRoute } from "./native-entry";
@@ -404,31 +405,47 @@ const openAttachment = createOpen({
 function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }) {
   const target = createMemo(() => cardTarget(props.file, props.scope), undefined, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
   // An image's thumbnail reads its file while the card shows (ActivityView.cpp:2126-2131).
-  createEffect(on(target, (now) => {
-    if (!now || !props.file.image) return;
+  const isImage = () => props.file.image;
+  createEffect(on([target, isImage], ([now, image]) => {
+    if (!now || !image) return;
     previews.show(now.computer, now.ref);
     onCleanup(() => previews.hide(now.computer, now.ref));
   }));
   const handoff = createImageHandoff(async (url) => {
     const image = new Image(); image.src = url; await image.decode();
   });
-  const localPath = () => props.file.preview_path;
+  const localPath = () => isImage() ? props.file.preview_path : undefined;
   createEffect(on(localPath, (path) => {
-    if (!path) return;
-    // Retain the immutable local copy while this row is visible, including
-    // after its native local-message record has reconciled away.
+    if (!path) { void handoff.local(undefined); return; }
+    // Retain the immutable local copy while this row shows it.
     attachmentPin(path);
-    handoff.local(convertFileSrc(path, "zerus-file"));
+    void handoff.local(convertFileSrc(path, "zerus-file"));
     onCleanup(() => attachmentUnpin(path));
   }));
-  const remote = () => { const now=target(); return now && props.file.image ? previews.state(now.computer,now.ref) : undefined; };
-  createEffect(() => { const state=remote(); if(state?.kind === "ready") void handoff.remote(state.url); });
-  const size = () => props.file.image_size ?? (remote()?.kind === "ready" ? (remote() as Extract<ReturnType<typeof previews.state>,{kind:"ready"}>).fetched.image_size ?? undefined : undefined);
+  const remote = () => {
+    const now = target();
+    return now && isImage() ? previews.state(now.computer, now.ref) : undefined;
+  };
+  createEffect(on([target, remote], ([now, state]) => {
+    void handoff.remote(state?.kind === "ready" ? state.url : undefined, () => {
+      if (now && target() === now && remote() === state) previews.failed(now.computer, now.ref);
+    });
+  }));
+  const size = () => {
+    const state = remote();
+    return props.file.image_size ?? (state?.kind === "ready" ? state.fetched.image_size ?? undefined : undefined);
+  };
+  const thumbnailError = (url: string, image: HTMLImageElement) => {
+    if (!handoff.broken(url, () => image.isConnected)) return;
+    const now = target(), state = remote();
+    if (now && state?.kind === "ready" && state.url === url) previews.failed(now.computer, now.ref);
+  };
   return <button type="button" class="att-card" aria-disabled={!target()} tabindex={target() ? 0 : -1}
     title={target() ? props.file.caption : tr("Attachment: %1", props.file.name)} onClick={() => { const now=target(); if(now) void openAttachment(now.computer,now.ref); }}>
     <Show when={props.file.image}>
-      <span class="att-thumb"><img src={handoff.url()} style={fittedImage(size())} alt=""
-        onError={() => { const now=target(); if(now)previews.failed(now.computer,now.ref); }} /></span>
+      <span class="att-thumb"><Show when={handoff.url()} keyed>{(url) =>
+        <img src={url} style={fittedImage(size())} alt="" onError={(event) => thumbnailError(url, event.currentTarget)} />
+      }</Show></span>
     </Show>
     <span class="att-caption">{props.file.caption}</span>
     <span class="dim">{props.file.meta}</span>
@@ -443,20 +460,34 @@ function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }
 // (ActivityView.cpp:1059-1068, SessionsWindow.cpp messageAction 4470-4527).
 
 /** The row whose Delete waits for its confirmation, and its Delete button, which the focus returns to on Cancel. */
-const [deleting, setDeleting] = createSignal<{ id: string; from: HTMLElement }>();
+const [deleting, setDeleting] = createSignal<{ local: LocalItem; handle: number; from: HTMLElement }>();
+
+function localActionCurrent(local: LocalItem, handle: number | undefined) {
+  const view = composer.view(), target = local.terminalTarget;
+  if (handle === undefined || view?.handle !== handle) return false;
+  if (!target) return true;
+  const row = selected();
+  return !!row && !!target.run && activity.target()?.id === row.key && !subagentOpen()
+    && row.runId === target.run && (row.conversationId ?? "") === target.conversation
+    && localRows(activity, row).some(message => message.id === local.id
+      && message.source === "zerus_terminal_status" && message.status === "error");
+}
 
 function LocalActions(props: { local: LocalItem }) {
   // Retry stays focusable while off and says why (Rust refuses it while the composer is busy).
   const reason = (action: LocalItem["actions"][number]) => (action === "retry" ? retryReason(composer.view(), composer.operationLocked()) : "");
+  const handle = composer.view()?.handle;
+  const current = () => localActionCurrent(props.local, handle);
   const run = (action: LocalItem["actions"][number], from: HTMLElement) => {
-    const id = props.local.id;
-    if (reason(action)) return;
-    if (action === "retry") void composer.localRetry(id);
-    else if (action === "delete") setDeleting({ id, from });
+    const local = props.local;
+    if (handle === undefined || !current() || reason(action)) return;
+    if (action === "retry") void composer.localRetry(local.id);
+    else if (action === "delete") setDeleting({ local, handle, from });
     else {
       const showNativeUi = nativeRoute(selected());
       const followed = activity.target();
-      void composer.localInspect(id).then((routed) => {
+      void composer.localInspect(local.id).then((routed) => {
+        if (!localActionCurrent(local, handle)) return;
         if (routed?.kind === "activity") {
           if (activity.refresh(followed, routed.run_id, routed.conversation_id)) {
             notify("info", tr("Refreshing Activity. Check the recorded messages before retrying."));
@@ -475,12 +506,14 @@ function LocalActions(props: { local: LocalItem }) {
     ? (earlierInputRefusal(props.local.error) ? tr("Retry this message") : tr("Retry"))
     : action === "delete" ? tr("Delete") : props.local.inspectLabel);
   return (
-    <div class="act-local-actions">
-      <For each={props.local.actions}>{(action) => (
-        <button type="button" class="btn small" aria-disabled={reason(action) ? "true" : undefined} title={reason(action) || undefined}
-          onClick={(e) => run(action, e.currentTarget)}>{label(action)}</button>
-      )}</For>
-    </div>
+    <Show when={current()}>
+      <div class="act-local-actions">
+        <For each={props.local.actions}>{(action) => (
+          <button type="button" class="btn small" aria-disabled={reason(action) ? "true" : undefined} title={reason(action) || undefined}
+            onClick={(e) => run(action, e.currentTarget)}>{label(action)}</button>
+        )}</For>
+      </div>
+    </Show>
   );
 }
 
@@ -489,7 +522,12 @@ function LocalDeleteDialog() {
   let el: HTMLDialogElement | undefined;
   createEffect(() => {
     if (!el) return;
-    if (!deleting()) { if (el.open) el.close(); return; }
+    const original = deleting();
+    if (!original || !localActionCurrent(original.local, original.handle)) {
+      if (original) setDeleting(undefined);
+      if (el.open) el.close();
+      return;
+    }
     if (!el.open) el.showModal();
     queueMicrotask(() => el?.querySelector<HTMLElement>("[data-initial]")?.focus());
   });
@@ -501,9 +539,9 @@ function LocalDeleteDialog() {
   };
   /** Delete: the row goes, and the focus moves to the transcript. */
   const confirm = () => {
-    const id = deleting()?.id;
+    const original = deleting();
     setDeleting(undefined);
-    if (id) void composer.localDelete(id);
+    if (original && localActionCurrent(original.local, original.handle)) void composer.localDelete(original.local.id);
     focusTranscript();
   };
   return (
@@ -542,16 +580,18 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
   const inboxScope = useContext(InboxScope);
   return (
     <div class="act-body">
-      <Show when={it().kind === "user"} fallback={<Body text={it().body ?? ""} />}>
-        {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
-        <Show when={it().replies?.length} fallback={<OwnMessageBody text={it().body ?? ""} truncated={it().bodyTruncated} />}>
-          <For each={it().replies}>{(r) => (
-            <div class="act-reply">
-              <div class="act-reply-q">{tr("Question")}</div>
-              <p class="wrap-pre">{r.question}</p>
-              <div class="act-reply-a"><b>{tr("Your answer")}</b><p class="wrap-pre">{r.answer}</p></div>
-            </div>
-          )}</For>
+      <Show when={!it().outbox} fallback={<p class="wrap-pre act-outbox-preview">{it().body || tr("Message with files")}</p>}>
+        <Show when={it().kind === "user" || it().kind === "receipt"} fallback={<Body text={it().body ?? ""} />}>
+          {/* A Codex question reply reads as Question and Your answer blocks (ActivityView.cpp:347-363). */}
+          <Show when={it().replies?.length} fallback={<OwnMessageBody text={it().body ?? ""} truncated={it().bodyTruncated} />}>
+            <For each={it().replies}>{(r) => (
+              <div class="act-reply">
+                <div class="act-reply-q">{tr("Question")}</div>
+                <p class="wrap-pre">{r.question}</p>
+                <div class="act-reply-a"><b>{tr("Your answer")}</b><p class="wrap-pre">{r.answer}</p></div>
+              </div>
+            )}</For>
+          </Show>
         </Show>
       </Show>
       <Show when={it().local?.error}><p class="act-error">{
@@ -562,7 +602,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
       }</p></Show>
       <Show when={it().code}><pre class="act-code mono">{it().code}</pre></Show>
       <Show when={it().attachments}>
-        <div class="act-attachments">
+        <div class="act-attachments" classList={{ "act-outbox-files": !!it().outbox }}>
           <For each={it().attachments?.map((_, index) => index)}>{(index) => (
             // Reserve the same card geometry before its delivery receipt arrives.
             // A missing request remains read-only; it never authorizes a file read.
@@ -570,6 +610,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
           )}</For>
         </div>
       </Show>
+      <Show when={it().outbox}>{(queued) => <OutboxActions item={queued()} />}</Show>
       <Show when={it().local?.actions.length}><LocalActions local={it().local!} /></Show>
       {/* Not delivered is not a refusal: OpenCode keeps the message and runs it first; Zerus never resends it. */}
       <Show when={it().inbox?.state === "not_delivered"}><p class="act-inbox-hint">{tr(NOT_DELIVERED_HINT)}</p></Show>
@@ -661,7 +702,8 @@ function Item(props: {
       <ToolRow item={it} open={open()} onToggle={toggleOpen} shown={(index) => props.shown?.(index)}
         onMore={(index) => props.onMore?.(index)} process={props.process} />
     }>
-      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} classList={{ inherited: !!it.inherited, "act-outbox": !!it.outbox }}>
+      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} data-blocked-by-request={it.outbox?.blockedBy?.requestId}
+        classList={{ inherited: !!it.inherited, "act-outbox": !!it.outbox }}>
         <header>
           <b>{it.label ?? (it.kind === "user" ? tr("You") : it.kind === "agent" ? tr("Agent") : it.sender ?? "Zerus")}</b>
           <Show when={it.outbox} fallback={
@@ -674,9 +716,7 @@ function Item(props: {
           <Show when={it.kind === "agent" && !it.excerpt}><button class="icon-btn small act-copy" title={tr("Copy as Markdown")} onClick={() => copyText(it.body ?? "", tr("The reply is on the clipboard"))}><Icon name="copy" size={12} /></button></Show>
         </header>
         {/* A fork's inherited row belongs to its source: never this session's attachments. */}
-        <Show when={it.outbox} fallback={<EchoBody item={it} scope={rowScope(it, props.scope)} />}>
-          {(queued) => <OutboxBody item={queued()} />}
-        </Show>
+        <EchoBody item={it} scope={rowScope(it, props.scope)} />
       </article>
     </Show>
   );
@@ -752,7 +792,9 @@ export function localRows(source: ActivitySource, s: Session | undefined): reado
   const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null,
     session_id: s.sessionId ?? null });
   // A held "Compact and continue" message shows as its pending entry instead (zerus-pabah).
-  return v.key === key ? withoutHeld(v.local, v.held) : [];
+  return v.key === key ? withoutHeld(v.local, v.held).filter(row => row.source !== "zerus_terminal_status"
+    || (v.loaded && !composer.opening() && !v.subagent && s.state !== "archived" && source.target()?.id === s.key
+      && row.run_id === s.runId && row.conversation_id === (s.conversationId ?? ""))) : [];
 }
 
 /** Scrolling near the top reads the previous page, unless one is loading or none is left. */
@@ -802,17 +844,29 @@ export function ActivityView(props: { source?: ActivitySource }) {
   // Items keep their identity while events append, including across the virtual window.
   const [view, setView] = createStore<{ items: TranscriptItem[]; expired: boolean; loaded: boolean; pane: ReturnType<typeof paneStates>; tool: string }>({ items: [], expired: false, loaded: false, pane: paneStates(source(), s()), tool: "" });
   const local = createMemo(() => localRows(source(), s()), undefined, { equals: (a, b) => a === b || (a.length === 0 && b.length === 0) });
-  const outbox = createMemo((): readonly OutboxItem[] => {
+  const mainComposer = createMemo(() => {
     const row = s(), view = composer.view();
-    if (!row || !view?.loaded || source().readOnly || row.state === "archived" || subagentOpen()
-      || view.subagent || source().target()?.id !== row.key) return [];
+    if (!row || !view?.loaded || composer.opening() || source().readOnly || row.state === "archived" || subagentOpen()
+      || view.subagent || source().target()?.id !== row.key) return undefined;
     const key = draftKey({ computer: row.computer, key: row.catalogKey, name: row.name, session_id: row.sessionId ?? null, archive_id: null });
-    if (view.key !== key) return [];
-    return composer.waitingMessages().map((item) => ({
+    return view.key === key ? view : undefined;
+  });
+  const outbox = createMemo((): readonly OutboxItem[] => {
+    const view = mainComposer(), row = s();
+    if (!view || !row) return [];
+    const queue = composer.waitingMessages();
+    const head = queue[0];
+    return queue.map((item, index) => ({
       ...item,
       handle: view.handle,
-      can_check_terminal: item.can_check_terminal === true && !!item.run_id && !!item.conversation_id
+      can_check_delivery: index === 0 && row.cmd === "claude" && !row.parent
+        && item.state === "unknown" && item.can_check_delivery === true
+        && !item.target_changed && !!item.run_id && !!item.conversation_id
         && item.run_id === row.runId && item.conversation_id === row.conversationId,
+      can_check_terminal: item.can_check_terminal === true && !item.target_changed && !!item.run_id && !!item.conversation_id
+        && item.run_id === row.runId && item.conversation_id === row.conversationId,
+      blockedBy: index > 0 && item.state === "waiting" && head?.state === "unknown"
+        ? { requestId: head.request_id, preview: head.preview } : undefined,
     }));
   });
   const project = createActivityProjections();
@@ -826,9 +880,21 @@ export function ActivityView(props: { source?: ActivitySource }) {
     createEffect(() => { source().events(); refreshRouteActivity(routeSession(), !!s()?.parent); });
     onCleanup(() => refreshRouteActivity(undefined));
   }
-  const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
-    subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
-      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox()));
+  const [removedInbox, setRemovedInbox] = createSignal<{ target?: string; native: string[]; requests: string[] }>();
+  const built = createMemo(() => {
+    const composerView = mainComposer(), queueRemoval = composer.removedWaiting(), inboxRemoval = removedInbox();
+    const removed = inboxRemoval?.target === displayTarget() ? inboxRemoval : undefined;
+    return project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
+      subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
+        : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession())), outbox(),
+      {
+        removed: [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []), ...(removed?.requests ?? [])],
+        removedNative: removed?.native,
+        terminalScope: { run_id: s()?.runId, conversation_id: s()?.conversationId ?? "" },
+        terminalOnly: composerView?.terminal_only_outbox?.filter(receipt =>
+          receipt.run_id === s()?.runId && receipt.conversation_id === s()?.conversationId),
+      });
+  });
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;
@@ -872,7 +938,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     open: (process) => { if (processes.reveal(process, processView())) setDetailTab("processes"); },
   } : undefined;
   /** The guidance an empty Activity shows (ActivityView.cpp:1145-1150). */
-  const empty = createMemo(() => emptyActivity(source().summary(), !!s()?.tracked, s()?.cmd));
+  const empty = createMemo(() => emptyActivity(source().summary(), !!s()?.tracked));
   let olderQueued = false;
   // Keep a named row and its offset while the end pin is released.
   const selectionInside = () => {
@@ -1020,7 +1086,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     reading.reset(); end.pin();
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
   };
-  const [ownReveal, setOwnReveal] = createSignal<{ id: string; target: string | undefined }>();
+  const [ownReveal, setOwnReveal] = createSignal<{ id: string; target: string | undefined; current?: () => boolean }>();
   const [ownPivot, setOwnPivot] = createSignal<string>();
   const ownNavigation = createOwnMessageNavigation({
     source, items: () => view.items,
@@ -1038,9 +1104,9 @@ export function ActivityView(props: { source?: ActivitySource }) {
   // corrects it when the row mounts and receives its actual height.
   createEffect(() => {
     const request = ownReveal();
-    if (!request || request.target !== source().target()?.id || measuring().length || !markdownReady() || motion.active() || selectionInside()) return;
+    if (!request || request.current?.() === false || request.target !== source().target()?.id || measuring().length || !markdownReady() || motion.active() || selectionInside()) return;
     const frame = requestAnimationFrame(() => {
-      if (request.target !== source().target()?.id || request !== ownReveal()) return;
+      if (request.current?.() === false || request.target !== source().target()?.id || request !== ownReveal()) return;
       const key = `item-${request.id}`, offset = measuredOffset(key);
       if (offset === undefined) return;
       scroller.scrollTo({ top: scroller.scrollTop + offset, behavior: "instant" });
@@ -1050,6 +1116,25 @@ export function ActivityView(props: { source?: ActivitySource }) {
       setOwnReveal(undefined);
     });
     onCleanup(() => cancelAnimationFrame(frame));
+  });
+  createQueuedOriginalNavigation({
+    selection: () => {
+      const row = s(), view = mainComposer();
+      return row && view && row.runId && row.conversationId ? {
+        sessionKey: row.key, draftKey: view.key, handle: view.handle,
+        runId: row.runId, conversationId: row.conversationId,
+      } : undefined;
+    },
+    originals: outbox,
+    ready: () => placed() && !preview() && !restoring() && !layoutHeld()
+      && !motion.active() && !selectionInside() && !measuring().length && markdownReady(),
+    reveal: (id, current) => {
+      const request = { id, target: source().target()?.id, current };
+      ownNavigation.reset(); setRestoring(undefined);
+      end.release(); setFollowing(false); reading.remember();
+      setOwnReveal(request);
+      return () => { if (ownReveal() === request) setOwnReveal(undefined); };
+    },
   });
   const showsReply = (key: string, reply: string) => {
     const shown = source();
@@ -1244,7 +1329,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
     });
     onCleanup(() => cancelAnimationFrame(frame));
   });
-  createEffect(on([local, outbox], ([rows, queued]) => {
+  createEffect(on([local, outbox, mainComposer], ([rows, queued, primary]) => {
+    // An opening main composer has no queue snapshot yet. Its first loaded
+    // snapshot is a baseline, not a new send that can dismiss a search hit.
+    if (!subagentOpen() && !primary) { sendIds = undefined; return; }
     const sends = newLocalSends(sendIds, [...rows.map((row) => row.id), ...queued.map((row) => row.request_id)]);
     sendIds = sends.baseline;
     if (sends.added.length) jumpToLatest();
@@ -1278,13 +1366,30 @@ export function ActivityView(props: { source?: ActivitySource }) {
     return orderedRows().find((row) => row.key === id);
   };
   // This Activity's Remove review: retired with it (zerus-5i2e5).
-  const inboxScope = createInboxRemoveScope(inboxPorts);
+  const inboxScope = createInboxRemoveScope({
+    ...inboxPorts,
+    async remove(handle, run, conversation, message) {
+      const target = displayTarget();
+      const row = view.items.find(item => item.kind === "user" && item.inbox?.messageId === message
+        && item.inbox?.run === run && item.inbox?.conversation === conversation);
+      const reply = await inboxPorts.remove(handle, run, conversation, message);
+      if (reply.outcome === "removed" && target === displayTarget()) {
+        const previous = removedInbox();
+        const prior = previous?.target === target ? previous : undefined;
+        const requests = row?.id.startsWith("local-") ? [row.id.slice("local-".length)] : [];
+        setRemovedInbox({ target, native: [...(prior?.native ?? []), message].slice(-64),
+          requests: [...(prior?.requests ?? []), ...requests].slice(-64) });
+      }
+      return reply;
+    },
+  });
   return (
     <InboxScope.Provider value={inboxScope}>
     <OutboxScope.Provider value={{ rows: outbox, done: () => { focusTranscript(); } }}>
     <ActivitySession.Provider value={fileSession}>
     <ActivityLayoutHeld.Provider value={layoutHeld}>
     <div class="activity" style={{ position: "relative" }}>
+      <span class="sr-only" role="status">{mainComposer() && composer.queuedAnnouncement() ? tr("Queued in Zerus") : ""}</span>
       <Show when={!placed()}>
         <div class="act-col" style={{ position: "absolute", inset: "0", "min-height": "0", "pointer-events": "none", "z-index": "1" }} role="status">
           <div class="act-label eyebrow">{tr("Recorded activity — messages and tool excerpts")}</div>
@@ -1351,6 +1456,13 @@ export function ActivityView(props: { source?: ActivitySource }) {
             <span style={{ visibility: source().loadingOlder() ? "hidden" : "inherit" }}>{tr("Recorded activity — messages and tool excerpts")}</span>
             <span class="act-older hint" style={{ position: "absolute", inset: "0", padding: "0", display: "flex", "align-items": "center", "justify-content": "center", "text-transform": "none", "letter-spacing": "normal", "font-weight": "normal", visibility: source().loadingOlder() ? "inherit" : "hidden" }} aria-hidden={!source().loadingOlder()}>{tr("Reading earlier activity…")}</span>
           </div>
+          <Show when={source().receiptError?.()}>{reason => <span role="status">{reason()}</span>}</Show>
+          <Show when={source().nextReceiptCursor?.()}>
+            <button type="button" class="btn small ghost" disabled={source().receiptLoading?.()} onClick={() => void source().loadEarlierReceipts?.()}>{tr("Earlier sent messages")}</button>
+          </Show>
+          <Show when={source().hasReceiptPage?.()}>
+            <button type="button" class="btn small ghost" onClick={() => source().resetReceiptPage?.()}>{tr("Latest sent messages")}</button>
+          </Show>
           <Show when={!source().olderDone() && source().events().length > 0}>
             <button type="button" class="btn small ghost act-read-older" disabled={source().loadingOlder()} onClick={() => source().loadOlder()}>{tr("Read earlier activity")}</button>
           </Show>

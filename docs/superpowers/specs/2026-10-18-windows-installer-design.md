@@ -1,5 +1,8 @@
 # Windows code signing, per-user installer and self-update
 
+The winget publication references in this design describe the original rollout.
+Zerus no longer submits updates to winget; see [current distribution](../../public-distribution.md#winget).
+
 ## Intent
 
 Windows ships as an unsigned portable zip (stable releases after 0.42.2 and

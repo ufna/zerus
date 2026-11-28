@@ -895,8 +895,8 @@ pub(crate) fn catch_up_writer(
         }
     };
     if needs_floor {
-        match prepare_floor(config, net, project, uuid, deadline, None)? {
-            Floor::Managed | Floor::Written => (),
+        match prepare_floor(config, net, project, uuid, deadline, AttemptKind::Ordinary)? {
+            Floor::Managed | Floor::Written | Floor::ReviewedReopenWritten(_) => (),
             Floor::Legacy(closed) | Floor::Refused(closed) => anyhow::bail!(
                 "the task's first-floor migration is pending ({})",
                 closed.reason
@@ -1541,8 +1541,27 @@ enum Floor {
     Managed,
     /// Its first floor was written and saved now.
     Written,
+    /// The exact revision produced by this reviewed reopen's own birth floor,
+    /// from its original client revision under the same admission.
+    ReviewedReopenWritten(String),
     Legacy(Closed),
     Refused(Closed),
+}
+
+#[derive(Clone, Copy)]
+enum AttemptKind<'a> {
+    Ordinary,
+    Start(start_mode::Mode),
+    ReviewedReopen(&'a str),
+}
+
+impl AttemptKind<'_> {
+    fn start_mode(self) -> Option<start_mode::Mode> {
+        match self {
+            Self::Start(mode) => Some(mode),
+            _ => None,
+        }
+    }
 }
 
 /// The task's first floor, decided and saved in ONE critical section within
@@ -1637,7 +1656,7 @@ fn prepare_floor(
     project: &str,
     uuid: &str,
     deadline: Instant,
-    expected: Option<start_mode::Mode>,
+    kind: AttemptKind<'_>,
 ) -> Result<Floor> {
     let mut initial = local(config, project, uuid, deadline)?;
     if initial.as_ref().is_ok_and(|task| {
@@ -1676,15 +1695,15 @@ fn prepare_floor(
     if initial.as_ref().is_ok_and(|task| {
         task.floor_record().is_none() && task.cutover_seal().ok().flatten().is_some()
     }) {
-        reachable::floor_born(config, project, uuid, deadline)?;
+        return reachable::floor_born(config, project, uuid, deadline, kind);
     }
     let needs_historical_mode_check = initial
         .as_ref()
         .is_ok_and(|task| task.cutover_seal().ok().flatten().is_none());
     if !needs_historical_mode_check {
         Ok(Floor::Managed)
-    } else if expected.is_some() {
-        floor_matching(config, project, uuid, deadline, SCAN_ENTRIES, expected)
+    } else if let Some(mode) = kind.start_mode() {
+        floor_matching(config, project, uuid, deadline, SCAN_ENTRIES, Some(mode))
     } else {
         floor_within(config, project, uuid, deadline)
     }
@@ -1717,7 +1736,27 @@ pub(crate) fn admit_attempt<R>(
     deadline: Instant,
     reserve: impl FnOnce(&mut Admitted<'_>, &mut TaskDoc) -> Result<std::result::Result<R, Closed>>,
 ) -> Result<Admission<R>> {
-    admit_matching(config, net, project, uuid, deadline, None, reserve)
+    admit_matching(config, net, project, uuid, deadline, AttemptKind::Ordinary, |admitted, task, _| {
+        reserve(admitted, task)
+    })
+}
+
+/// Only an exact reviewed reopen can carry its own birth floor's revision
+/// into the final locked check. The caller still verifies the report and
+/// decision along with the revision supplied to its reservation.
+pub(crate) fn admit_reviewed_reopen<R>(
+    config: &Config,
+    net: &dyn Net,
+    project: &str,
+    uuid: &str,
+    deadline: Instant,
+    revision: &str,
+    reserve: impl FnOnce(&mut Admitted<'_>, &mut TaskDoc, &str) -> Result<std::result::Result<R, Closed>>,
+) -> Result<Admission<R>> {
+    admit_matching(
+        config, net, project, uuid, deadline, AttemptKind::ReviewedReopen(revision),
+        |admitted, task, floor_revision| reserve(admitted, task, floor_revision.unwrap_or(revision)),
+    )
 }
 
 /// Preserve protocol-only validation for an already sealed writer. An
@@ -1763,14 +1802,15 @@ fn admit_matching<R>(
     project: &str,
     uuid: &str,
     deadline: Instant,
-    expected: Option<start_mode::Mode>,
-    reserve: impl FnOnce(&mut Admitted<'_>, &mut TaskDoc) -> Result<std::result::Result<R, Closed>>,
+    kind: AttemptKind<'_>,
+    reserve: impl FnOnce(&mut Admitted<'_>, &mut TaskDoc, Option<&str>) -> Result<std::result::Result<R, Closed>>,
 ) -> Result<Admission<R>> {
+    let expected = kind.start_mode();
     let reserved = WithLocalReserve::new(net, deadline);
     let net: &dyn Net = &reserved;
     let entered = std::cell::Cell::new(false);
     let mut reserve = Some(reserve);
-    let mut run = |admitted: &mut Admitted<'_>, task: &mut TaskDoc| {
+    let mut run = |admitted: &mut Admitted<'_>, task: &mut TaskDoc, floor_revision: Option<&str>| {
         if expected.is_some() && admitted.load_complete(uuid).is_err() {
             return Ok(Err(Closed {
                 node: None,
@@ -1785,7 +1825,7 @@ fn admit_matching<R>(
             return closed(None, "deadline");
         }
         entered.set(true);
-        (reserve.take().expect("reserved at most once"))(admitted, task)
+        (reserve.take().expect("reserved at most once"))(admitted, task, floor_revision)
     };
     // An error once `reserve` was entered leaves its save unknown.
     let uncertain = |error: anyhow::Error| Admission::Uncertain(format!("{error:#}"));
@@ -1793,7 +1833,7 @@ fn admit_matching<R>(
         "the original task admission deadline elapsed after reservation; \
          the original result is uncertain and must not be replayed"
     ));
-    match admit_certified(config, project, uuid, deadline, &mut run) {
+    match admit_certified(config, project, uuid, deadline, |admitted, task| run(admitted, task, None)) {
         Ok(Ok(Ok(_))) if left(deadline).is_zero() => return Ok(expired()),
         Ok(Ok(Ok(value))) => {
             return Ok(Admission::Reserved {
@@ -1809,12 +1849,13 @@ fn admit_matching<R>(
         Err(error) if entered.get() => return Ok(uncertain(error)),
         Err(error) => return Err(error),
     }
-    let floored = prepare_floor(config, net, project, uuid, deadline, expected)?;
-    match floored {
-        Floor::Managed | Floor::Written => {}
+    let floored = prepare_floor(config, net, project, uuid, deadline, kind)?;
+    let floor_revision = match floored {
+        Floor::Managed | Floor::Written => None,
+        Floor::ReviewedReopenWritten(revision) => Some(revision),
         Floor::Legacy(closed) => return Ok(Admission::Refused(closed)),
         Floor::Refused(closed) => return Ok(Admission::Refused(closed)),
-    }
+    };
     let (_, proved) = prove(config, net, project, uuid, deadline)?;
     let proof = match proved {
         Ok(proof) => proof,
@@ -1822,7 +1863,7 @@ fn admit_matching<R>(
     };
     let certificate = proof.certificate(config)?.ok().map(|(_, bytes)| bytes);
     let admitted = proof.admit_in(config, deadline, |catalog, admitted, task| {
-        let value = match run(admitted, task)? {
+        let value = match run(admitted, task, floor_revision.as_deref())? {
             Ok(value) => value,
             Err(refused) => return Ok(Ok(Admission::Refused(refused))),
         };
@@ -2293,11 +2334,13 @@ printf '{{"node_id":"{PEER}"}}'
         faults: Faults,
         /// Runs once, at the first task exchange.
         during: std::cell::RefCell<Option<Box<dyn FnOnce() + 'a>>>,
+        /// Wait for proof exchange, after any cutover preparation.
+        during_proof_only: bool,
     }
 
     impl<'a> InProcess<'a> {
         fn new(members: &'a Members, faults: Faults) -> Self {
-            Self { members, faults, during: std::cell::RefCell::new(None) }
+            Self { members, faults, during: std::cell::RefCell::new(None), during_proof_only: false }
         }
         fn node(&self, id: &str) -> &'a Config {
             let name = self.members.ids.iter().find(|(_, node)| *node == id).expect("a member").0;
@@ -2313,10 +2356,12 @@ printf '{{"node_id":"{PEER}"}}'
             match command {
                 "hello" => transport::hello(config, false),
                 "replica-task" => {
-                    if let Some(during) = self.during.borrow_mut().take() {
-                        during();
-                    }
                     let mut request = input.unwrap().clone();
+                    if !self.during_proof_only || request.get("cutover").is_none() {
+                        if let Some(during) = self.during.borrow_mut().take() {
+                            during();
+                        }
+                    }
                     if self.faults.early.contains(node) {
                         if request["cutover"]["action"] == "adopt" {
                             let req: TaskRequest = serde_json::from_value(request.clone())?;
@@ -4089,6 +4134,80 @@ printf '{{"node_id":"{PEER}"}}'
             catalog.save().unwrap();
         });
         assert_eq!(membership, ("membership_changed", false));
+    }
+
+    #[test]
+    fn a_reviewed_reopen_floor_revision_does_not_cover_an_edit_during_proof() {
+        use zerus_replica::{quick_review::Disposition, Actor, SessionKey, Stage, Target};
+
+        let members = chain_abc();
+        let config = &members.configs["a"];
+        let open = || ProjectStore::open(&config.state.join("replica"), "p").unwrap();
+        let store = open();
+        let executor = SessionKey {
+            machine: members.ids["a"].clone(),
+            session: "codex/reopen".into(),
+            session_id: "launch_id:reopen".into(),
+        };
+        let actor = Actor::Agent(executor.clone());
+        let mut task = TaskDoc::create(zerus_replica::NewTask {
+            project: "p",
+            id: &store.unused_short_id().unwrap(),
+            text: "Implement the example",
+            stage: Stage::Todo,
+            target: Target::Session(executor),
+            author: actor.clone(),
+            rank: "V",
+            now: 1,
+        })
+        .unwrap();
+        task.record_start(&actor, 2).unwrap();
+        store.save(&mut task).unwrap();
+        assert!(task.record_report("Example attached", &actor, 3).unwrap());
+        store.save(&mut task).unwrap();
+        let report = task.view().unwrap().review_report_id.unwrap();
+        task.set_quick_review(
+            &task.revision(),
+            &report,
+            &Disposition::Rework { defect: "Include the missing detail.".into() },
+            None,
+            &Actor::Person,
+            4,
+        )
+        .unwrap();
+        store.save(&mut task).unwrap();
+        assert!(task.floor_record().is_none());
+        let revision = task.revision();
+        let uuid = task.uuid();
+        drop(store);
+
+        let floor_revision = std::cell::OnceCell::new();
+        let mut net = InProcess::new(&members, Faults::default());
+        net.during_proof_only = true;
+        *net.during.borrow_mut() = Some(Box::new(|| {
+            let store = open();
+            let mut current = store.load(uuid).unwrap();
+            assert!(current.floor_record().is_some());
+            floor_revision.set(current.revision()).unwrap();
+            current.set_title("A different task title", &Actor::Person, 5).unwrap();
+            store.save(&mut current).unwrap();
+        }));
+        let outcome = admit_reviewed_reopen(
+            config, &net, "p", uuid, soon(), &revision,
+            |_, admitted, expected| {
+                assert_eq!(Some(expected), floor_revision.get().map(String::as_str));
+                assert_ne!(expected, revision);
+                assert_ne!(admitted.revision(), expected);
+                assert_eq!(admitted.view()?.review_report_id.as_deref(), Some(report.as_str()));
+                assert!(admitted.check_quick_review(expected, &report).is_err());
+                closed(None, "changed")
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, Admission::<()>::Refused(Closed { reason: "changed", .. })));
+        let current = open().load(uuid).unwrap();
+        assert!(!current.executes_attempts());
+        assert_eq!(current.title(), "A different task title");
     }
 
     /// desktop-u's condition 2: `reserve` sees the task as admitted after

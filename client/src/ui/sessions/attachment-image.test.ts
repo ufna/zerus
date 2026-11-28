@@ -13,16 +13,43 @@ describe('stable sent-image presentation',()=>{
  });
  it('keeps the local source through decoding and a failed recorded source',async()=>{
   const decoded=delayed();let dispose!:()=>void;
-  const handoff=createRoot(stop=>{dispose=stop;return createImageHandoff(()=>decoded.promise);});
-  handoff.local('local');const pending=handoff.remote('recorded');expect(handoff.url()).toBe('local');
+  const handoff=createRoot(stop=>{dispose=stop;return createImageHandoff(url => url === 'recorded' ? decoded.promise : Promise.resolve());});
+  await handoff.local('local');const pending=handoff.remote('recorded');expect(handoff.url()).toBe('local');
   decoded.resolve();await pending;expect(handoff.url()).toBe('recorded');dispose();
-  const failure=delayed();const second=createRoot(stop=>{dispose=stop;return createImageHandoff(()=>failure.promise);});
-  second.local('local');const broken=second.remote('broken');failure.reject();await broken;expect(second.url()).toBe('local');dispose();
+  const failure=delayed();const second=createRoot(stop=>{dispose=stop;return createImageHandoff(url => url === 'broken' ? failure.promise : Promise.resolve());});
+  await second.local('local');const broken=second.remote('broken');failure.reject();await broken;expect(second.url()).toBe('local');dispose();
+ });
+ it('does not publish a missing local copy and decodes the same URL after the guarded read restores it', async () => {
+  let available = false;
+  await createRoot(async (dispose) => {
+   const handoff = createImageHandoff(async () => { if (!available) throw new Error('copy is missing'); });
+   try {
+    await handoff.local('zerus-file://localhost/cache/image');
+    expect(handoff.url()).toBeUndefined();
+    available = true;
+    await handoff.remote('zerus-file://localhost/cache/image');
+    expect(handoff.url()).toBe('zerus-file://localhost/cache/image');
+   } finally { dispose(); }
+  });
+ });
+ it('ignores an earlier image mount error after a successful same-URL retry', async () => {
+  await createRoot(async (dispose) => {
+   const handoff = createImageHandoff(async () => {});
+   try {
+    await handoff.remote('zerus-file://localhost/cache/image');
+    let earlierMountConnected = true;
+    expect(handoff.broken('zerus-file://localhost/cache/image', () => earlierMountConnected)).toBe(true);
+    earlierMountConnected = false;
+    await handoff.remote('zerus-file://localhost/cache/image');
+    expect(handoff.broken('zerus-file://localhost/cache/image', () => earlierMountConnected)).toBe(false);
+    expect(handoff.url()).toBe('zerus-file://localhost/cache/image');
+   } finally { dispose(); }
+  });
  });
  it('ignores stale decodes and completion after the card unmounts',async()=>{
   const one=delayed(),two=delayed();let dispose!:()=>void;
-  const handoff=createRoot(stop=>{dispose=stop;return createImageHandoff(url=>url==='one'?one.promise:two.promise);});
-  handoff.local('local');const first=handoff.remote('one'),second=handoff.remote('two');one.resolve();await first;expect(handoff.url()).toBe('local');
+  const handoff=createRoot(stop=>{dispose=stop;return createImageHandoff(url=>url==='local'?Promise.resolve():url==='one'?one.promise:two.promise);});
+  await handoff.local('local');const first=handoff.remote('one'),second=handoff.remote('two');one.resolve();await first;expect(handoff.url()).toBe('local');
   dispose();two.resolve();await second;expect(handoff.url()).toBe('local');
  });
 });

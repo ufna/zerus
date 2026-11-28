@@ -27,3 +27,8 @@ describe("the draft store's refused-save error", () => {
     expect(statusLine(view("Could not save the draft: disk full"), undefined, false)).toEqual({ text: "Could not save the draft: disk full", error: true });
   });
 });
+
+it("shows the native Codex queue acknowledgement in Russian", () => {
+  const accepted = { ...view("Queued in Codex"), status_error: false };
+  expect(statusLine(accepted, undefined, false)).toEqual({ text: "В очереди Codex", error: false });
+});

@@ -31,7 +31,8 @@ pub(super) fn floor_born(
     project: &str,
     uuid: &str,
     deadline: Instant,
-) -> Result<()> {
+    kind: AttemptKind<'_>,
+) -> Result<Floor> {
     let _catalog = LockedStore::load_until(config, deadline)?
         .ok_or_else(|| anyhow::anyhow!("the native catalog admission is busy"))?;
     let store = open(config, project, deadline)?;
@@ -48,10 +49,27 @@ pub(super) fn floor_born(
             task.cutover_seal()?.is_some_and(|seal| seal.root.is_none()),
             "the historical execution floor is missing"
         );
-        task.floor()?;
+        let reviewed = if let AttemptKind::ReviewedReopen(revision) = kind {
+            ensure!(
+                task.revision() == revision,
+                "The task changed. Refresh its report before reviewing."
+            );
+            true
+        } else {
+            false
+        };
+        let written = task.floor()?;
+        // Take the successor before save can merge any other operations.
+        // Return it only after this floor's save succeeds.
+        let floor = if reviewed && written {
+            Floor::ReviewedReopenWritten(task.revision())
+        } else {
+            Floor::Managed
+        };
         admitted.save(&mut task)?;
+        return Ok(floor);
     }
-    Ok(())
+    Ok(Floor::Managed)
 }
 
 fn request(

@@ -521,7 +521,7 @@ pub fn decode(read: &Read, exit: Exit) -> Result<Value, ReadError> {
             .ok_or_else(|| invalid("not an hgs version"));
     }
     // One parse; the archive reads word a reply they cannot use as Qt does.
-    let value = match (read, serde_json::from_slice::<Value>(&stdout)) {
+    let mut value = match (read, serde_json::from_slice::<Value>(&stdout)) {
         (Read::ArchivedActivity { .. }, Ok(value @ Value::Object(_))) => value,
         (Read::ArchivedActivity { .. }, _) => return Err(archive_invalid(ACTIVITY_INVALID)),
         (Read::ArchivePage { .. }, Err(_)) => return Err(archive_invalid(ARCHIVE_PAGE_INVALID)),
@@ -569,6 +569,17 @@ pub fn decode(read: &Read, exit: Exit) -> Result<Value, ReadError> {
     }
     if matches!(read, Read::Analytics { .. }) && object.get("schema") != Some(&json!(1)) {
         return Err(invalid("unknown analytics schema"));
+    }
+    if *read == Read::Accounts {
+        // An older computer can still advertise a native Antigravity account.
+        for key in ["profiles", "removed_profiles"] {
+            if let Some(rows) = value.get_mut(key).and_then(Value::as_array_mut) {
+                rows.retain(|row| row["provider"] != "agy" && row["id"] != "native-agy");
+            }
+        }
+        if let Some(defaults) = value.get_mut("defaults").and_then(Value::as_object_mut) {
+            defaults.remove("agy");
+        }
     }
     Ok(value)
 }
@@ -932,6 +943,57 @@ pub fn read(hgs: &Path, computer: &ComputerId, read: &Read) -> Result<Value, Rea
     decode(read, limited(hgs, &invocation, read.limit())?)
 }
 
+/// Read an older page for one exact live Codex conversation. Peers must
+/// advertise the projection before receiving its command.
+pub fn codex_receipt_page(
+    hgs: &Path,
+    computer: &ComputerId,
+    name: &str,
+    run: &str,
+    conversation: &str,
+    cursor: &str,
+) -> Result<Value, ReadError> {
+    if computer.alias().is_some_and(|alias| !valid_alias(alias))
+        || !valid_id(name)
+        || !valid_id(run)
+        || !valid_id(conversation)
+        || cursor.is_empty()
+        || cursor.len() > 2048
+    {
+        return Err(bad("Invalid message history target"));
+    }
+    let mut call = Invocation {
+        args: arguments(computer, &["--help"]),
+        stdin: None,
+        timeout: timeout(10, 20, computer),
+        request_id: None,
+    };
+    let help = output(limited(hgs, &call, HELP_LIMIT)?)?;
+    if !String::from_utf8_lossy(&help).contains("receipt-index-codex-queue-page-v1") {
+        return Err(ReadError::Unsupported);
+    }
+    call.args = arguments(computer, &["__state", "receipt-index-page", name, "--json"]);
+    call.stdin = Some(
+        json!({"projection":"codex_queue", "expected_run_id":run,
+        "expected_conversation_id":conversation,"cursor":cursor,"limit":25})
+        .to_string()
+        .into_bytes(),
+    );
+    let bytes = output(limited(hgs, &call, READ_LIMIT)?)?;
+    let page: Value =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("invalid message history"))?;
+    if page["run_id"] != run
+        || page["conversation_id"] != conversation
+        || !page["codex_queued_messages"]
+            .as_array()
+            .is_some_and(|rows| rows.len() <= 25)
+        || !page["codex_queue_projection"].is_object()
+    {
+        return Err(invalid("unexpected message history target or page"));
+    }
+    Ok(page)
+}
+
 /// The largest attachment reply: 10 MiB as base64 plus its metadata.
 pub const ATTACHMENT_LIMIT: usize = crate::attachments::MAX_ATTACHMENT_BYTES * 4 / 3 + 8192;
 
@@ -1188,6 +1250,25 @@ pub fn path_info(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_old_peer_catalog_hides_only_the_retired_account() {
+        let catalog = json!({
+            "revision":"original",
+            "profiles":[{"id":"native-agy","provider":"agy"},
+                        {"id":"native-opencode","provider":"opencode","providers":[{"id":"google"}]}],
+            "removed_profiles":[{"id":"native-agy","provider":"agy"},{"id":"other","provider":"codex"}],
+            "defaults":{"agy":"native-agy","codex":"native-codex"}
+        });
+        let clean = decode(&Read::Accounts, code(&catalog.to_string())).unwrap();
+        assert_eq!(clean["revision"], "original");
+        assert_eq!(clean["profiles"], json!([catalog["profiles"][1].clone()]));
+        assert_eq!(
+            clean["removed_profiles"],
+            json!([catalog["removed_profiles"][1].clone()])
+        );
+        assert_eq!(clean["defaults"], json!({"codex":"native-codex"}));
+    }
+
     #[test]
     fn path_info_reads_only_schema_one_replies() {
         let decode = |text: &str| decode_path_info(text.as_bytes());

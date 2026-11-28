@@ -39,7 +39,7 @@ fn verified() -> wire::Verified {
     verified_of(&checkpoint, &compaction, &send)
 }
 /// A receipt of `verified` with its two children at `compaction` and `send`.
-pub(super) fn receipt(
+pub(crate) fn receipt(
     verified: &wire::Verified,
     compaction: wire::Step,
     send: wire::Step,

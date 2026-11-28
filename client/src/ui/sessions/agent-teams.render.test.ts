@@ -173,10 +173,10 @@ it("folds and expands bound members through the ordinary children control", () =
   const ss = sessions().reverse();
   const host = show(() => rows(ss, { value: true }, undefined, collapsed()), false, () => setCollapsed(!collapsed()));
   expect(host.querySelectorAll(".scard")).toHaveLength(4);
-  (host.querySelector("button[aria-expanded]") as HTMLButtonElement).click();
+  (host.querySelector(".sc-team[aria-expanded], .cc-team[aria-expanded]") as HTMLButtonElement).click();
   expect(host.querySelectorAll(".scard")).toHaveLength(1);
   expect(rows(ss, { value: true }, undefined, true)[0]).toMatchObject({ team: { total: 3, collapsed: true } });
-  (host.querySelector("button[aria-expanded]") as HTMLButtonElement).click();
+  (host.querySelector(".sc-team[aria-expanded], .cc-team[aria-expanded]") as HTMLButtonElement).click();
   expect(host.querySelectorAll(".scard")).toHaveLength(4);
 });
 
@@ -205,7 +205,7 @@ it.each([false, true])("opens the bound lead's Team tab from its %s compact stri
   expect(detailTab()).toBe("team");
   expect(toggle).not.toHaveBeenCalled();
   expect(host.querySelectorAll(".scard")).toHaveLength(4);
-  host.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+  host.querySelector<HTMLButtonElement>(".sc-team[aria-expanded], .cc-team[aria-expanded]")!.click();
   expect(toggle).toHaveBeenCalledOnce();
   expect(host.querySelector("[data-team-strip] [data-team-toggle]")).toBeNull();
 });

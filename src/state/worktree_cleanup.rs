@@ -233,7 +233,19 @@ fn binding_reference(directory: &str, path: &Path) -> Result<Option<Reference>> 
     if !by_id && storage::label_key(name) != stem {
         return Err("The session binding name and location disagree".into());
     }
+    let native_agy = name.starts_with("agy/") || value["agent"] == "agy" || value["backend"] == "agy";
     let valid = match directory {
+        "" if native_agy => {
+            // The native producer records both absolute folders. A damaged
+            // holder must not disappear when reference() projects its paths.
+            super::retired_agy::valid_binding(&value)
+                && ["cwd", "launch_dir"]
+                    .into_iter()
+                    .all(|key| Path::new(string(&value, key)).is_absolute())
+                && value.get("archive_id").is_none_or(|id| id.as_str() == Some(""))
+                && value.get("rename_shadow").is_none_or(|shadow| shadow.as_bool() == Some(false))
+        }
+        _ if native_agy => false,
         "" | "bindings" | "sessions" => value["version"] == 1 && AGENTS.contains(&string(&value,"agent")),
         "dsh/bindings" | "dsh/sessions" => value["backend"] == "dsh" && name.starts_with("dsh/")
             && string(&value,"conversation_id").starts_with("session-") && string(&value,"conversation_id").len() <= 2048,
@@ -668,9 +680,15 @@ fn uses(references: &[Reference], path: &Path) -> Vec<String> {
 
 /// Running processes and saved sessions that use a folder. Shared by worktree
 /// rows and partial-removal leftovers.
-fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<Value>) {
+fn occupants(
+    path: &Path,
+    processes: &ProcessReview,
+    bindings: &[Reference],
+    row: &mut Value,
+    reasons: &mut Vec<Value>,
+) {
     // Without the running processes' folders, nothing may count as unused.
-    let mut samples: Vec<_> = match &context.processes {
+    let mut samples: Vec<_> = match processes {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         ProcessReview::NativeObjects {
             path: original,
@@ -746,7 +764,7 @@ fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<
             ),
         ));
     }
-    let sessions = uses(&context.bindings, path);
+    let sessions = uses(bindings, path);
     if !sessions.is_empty() {
         reasons.push(reason(
             "sessions",
@@ -757,6 +775,30 @@ fn occupants(path: &Path, context: &Context, row: &mut Value, reasons: &mut Vec<
         ));
     }
     row["sessions"] = json!(sessions);
+}
+
+/// Look at current occupants without visiting archive or cleanup journals, or
+/// creating fingerprints from a review. The consumer receives display data.
+pub(super) fn observe_blockers(path: &Path, until: Instant) -> Value {
+    let records = bindings();
+    let processes = ProcessReview::Ordinary(crate::platform::worktree_processes(until));
+    let mut reasons = Vec::new();
+    if records.is_err() {
+        reasons.push(reason("sessions_unavailable", "Saved sessions could not be checked."));
+    }
+    let mut row = json!({});
+    occupants(path, &processes, &records.unwrap_or_default(), &mut row, &mut reasons);
+    let fields = row.as_object_mut().expect("blocker view");
+    if let Some(coverage) = fields.remove("process_coverage") {
+        if coverage["complete"] != true {
+            reasons.push(reason("program_scan_incomplete", "The program inspection was incomplete."));
+        }
+    }
+    if let Some(unreadable) = fields.remove("unreadable_processes") {
+        row["unreadable_count"] = json!(unreadable.as_array().map_or(0, Vec::len));
+    }
+    row["reasons"] = json!(reasons);
+    row
 }
 
 fn assess(tree: &Value, trees: &[Value], context: &Context, total: Instant) -> Value {
@@ -819,7 +861,7 @@ fn assess(tree: &Value, trees: &[Value], context: &Context, total: Instant) -> V
         return finish(row, reasons, notes);
     }
 
-    occupants(&path, context, &mut row, &mut reasons);
+    occupants(&path, &context.processes, &context.bindings, &mut row, &mut reasons);
     let archived = uses(&context.archives, &path).len();
     row["archived_sessions"] = json!(archived);
     if !context.archives_complete {
@@ -1314,7 +1356,7 @@ fn leftover(
             "Saved sessions could not be checked. Review again before removal.",
         ));
     }
-    occupants(&path, context, &mut row, &mut reasons);
+    occupants(&path, &context.processes, &context.bindings, &mut row, &mut reasons);
     let scan = scan_leftover(&path, step(total, WALK_TIME.as_secs()));
     #[cfg(test)]
     AFTER_LEFTOVER_SCAN.with(|hook| {
@@ -3031,7 +3073,7 @@ mod tests {
             };
             let mut row = json!({});
             let mut reasons = vec![];
-            occupants(root, &context, &mut row, &mut reasons);
+            occupants(root, &context.processes, &context.bindings, &mut row, &mut reasons);
             let projected = finish(row, reasons, vec![]);
             assert_eq!(projected["verdict"], "blocked");
             if observed == root && !expired {
@@ -3085,7 +3127,7 @@ mod tests {
                     cwd:true, executable:false, files:false, invocation_ancestor:false }], membership_complete:true })),
             bindings:vec![], bindings_complete:true, archives:vec![], archives_complete:true };
         let mut row = json!({}); let mut reasons = vec![];
-        occupants(dir.path(), &context, &mut row, &mut reasons);
+        occupants(dir.path(), &context.processes, &context.bindings, &mut row, &mut reasons);
         assert_eq!(row["process_count"], 1);
         assert_eq!(row["processes"][0]["pid"], 7);
         assert!(reasons.iter().any(|r| r["code"] == "processes"));
@@ -3772,6 +3814,9 @@ mod binding_census_tests {
         let name = "codex/example/shared";
         let folders: Vec<_> = (0..4).map(|n|root().parent().unwrap().join(format!("folder-{n}"))).collect();
         for folder in &folders { fs::create_dir_all(folder).unwrap(); }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        check_native_agy_binding(&folders[0], &folders[1]);
+
         let first = json!({"version":1,"agent":"codex","name":name,"session_id":uuid::Uuid::new_v4().to_string(),
             "run_id":"first","conversation_id":"first-conversation","cwd":folders[0]});
         let second = json!({"version":1,"agent":"codex","name":name,"session_id":uuid::Uuid::new_v4().to_string(),
@@ -3807,6 +3852,113 @@ mod binding_census_tests {
         fs::write(&second_path,&original).unwrap();
         assert_eq!(bindings().unwrap().len(),4);
         session_id::clear();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn check_native_agy_binding(cwd: &Path, launch_dir: &Path) {
+        let name = "agy/example/native";
+        let path = storage::label_record_path(name);
+        let record = json!({
+            "version": 1,
+            "agent": "agy",
+            "backend": "agy",
+            "account_id": super::super::retired_agy::ACCOUNT,
+            "name": name,
+            "session_id": uuid::Uuid::new_v4().to_string(),
+            "run_id": uuid::Uuid::new_v4().to_string(),
+            "conversation_id": "",
+            "cwd": cwd,
+            "launch_dir": launch_dir,
+        });
+        atomic(&path, &record.to_string()).unwrap();
+        let inspection = super::super::retired_agy::inspect(name).unwrap();
+        assert_eq!(inspection["session_id"], record["session_id"]);
+        assert_eq!(inspection["run_id"], record["run_id"]);
+        assert_eq!(inspection["state"], "saved");
+        assert_eq!(inspection["allowed_actions"], json!([]));
+        assert_eq!(inspection["send_supported"], false);
+
+        let mut original = record.clone();
+        original["conversation_id"] = json!(uuid::Uuid::new_v4().to_string());
+        original["agy_events"] = json!([
+            {"seq":1, "type":"UserPromptSubmit", "detail":"saved prompt"},
+            {"seq":2, "type":"AgentMessage", "detail":"saved reply"}
+        ]);
+        original["agy_seq"] = json!(2);
+        let archive_id = native_archive_store::RETIRED_AGY.publish(&original).unwrap();
+        let archived = archive::read_archive(name, &archive_id).unwrap();
+        let activity = super::super::retired_agy::row(&archived, Some(1));
+        assert_eq!(activity["archive_id"], archive_id);
+        assert_eq!(activity["conversation_id"], original["conversation_id"]);
+        assert_eq!(activity["events"], json!([original["agy_events"][1].clone()]));
+        assert_eq!(activity["resumable"], false);
+        for folder in [cwd, launch_dir] {
+            let error = archive_references::visit_related(
+                Instant::now() + Duration::from_secs(5), folder, "", |_| Ok(()),
+            ).unwrap_err();
+            assert!(error.contains("An archived Antigravity conversation still needs this folder"));
+        }
+
+        let refs = bindings().unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].name, name);
+        assert_eq!(refs[0].session_id, string(&record, "session_id"));
+        for folder in [cwd, launch_dir] {
+            assert!(refs[0].folders.contains(&crate::platform::canonical(folder).unwrap()));
+        }
+        let mut empty_flags = record.clone();
+        empty_flags["archive_id"] = json!("");
+        empty_flags["rename_shadow"] = json!(false);
+        atomic(&path, &empty_flags.to_string()).unwrap();
+        assert_eq!(bindings().unwrap().len(), 1);
+
+        for (key, value) in [
+            ("version", json!(2)),
+            ("agent", json!("codex")),
+            ("backend", json!("codex")),
+            ("account_id", json!("another-account")),
+            ("session_id", json!("malformed")),
+            ("run_id", json!("malformed")),
+            ("archive_id", json!(uuid::Uuid::new_v4().to_string())),
+            ("archive_id", json!([])),
+            ("archive_id", Value::Null),
+            ("rename_shadow", json!(true)),
+            ("rename_shadow", json!("true")),
+            ("rename_shadow", Value::Null),
+        ] {
+            let mut bad = record.clone();
+            bad[key] = value;
+            atomic(&path, &bad.to_string()).unwrap();
+            assert!(bindings().is_err(), "accepted invalid {key}");
+        }
+        for key in ["cwd", "launch_dir"] {
+            for value in [Value::Null, json!(""), json!("relative"), json!([])] {
+                let mut bad = record.clone();
+                bad[key] = value.clone();
+                atomic(&path, &bad.to_string()).unwrap();
+                assert!(bindings().is_err(), "accepted {key}={value}");
+            }
+            let mut missing = record.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            atomic(&path, &missing.to_string()).unwrap();
+            assert!(bindings().is_err(), "accepted missing {key}");
+        }
+        let mut no_folders = record.clone();
+        no_folders["cwd"] = json!("relative");
+        no_folders["launch_dir"] = Value::Null;
+        atomic(&path, &no_folders.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted a holder with no usable folder");
+        fs::remove_file(&path).unwrap();
+
+        let foreign = root().join("bindings").join(path.file_name().unwrap());
+        atomic(&foreign, &record.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted native Antigravity outside the legacy root");
+        fs::remove_file(foreign).unwrap();
+
+        let other_label = storage::label_record_path("agy/example/foreign");
+        atomic(&other_label, &record.to_string()).unwrap();
+        assert!(bindings().is_err(), "accepted a different holder's record");
+        fs::remove_file(other_label).unwrap();
     }
 }
 

@@ -527,7 +527,7 @@ impl Migration {
                             true
                         } else {
                             examined += 1;
-                            match read_original(&path) {
+                            match read_indexable_original(&path, walk.source) {
                                 Ok(value) => {
                                     if self.catalog.remember(walk.source, &path, &value).is_err() {
                                         self.catalog.error(walk.source, filename, "corrupt")?;
@@ -633,7 +633,7 @@ impl Migration {
                             if self.incremental {
                                 examined += 1;
                             }
-                            let loaded = read_original(&entry.path());
+                            let loaded = read_indexable_original(&entry.path(), walk.source);
                             match loaded {
                                 Ok(value) => {
                                     if self
@@ -711,7 +711,7 @@ impl Migration {
                 if self.incremental {
                     examined += 1;
                 }
-                match read_original(&path) {
+                match read_indexable_original(&path, walk.source) {
                     Ok(value) => {
                         if self.catalog.remember(walk.source, &path, &value).is_err() {
                             self.catalog.error(walk.source, &filename, "corrupt")?;

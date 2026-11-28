@@ -140,7 +140,7 @@ pub fn context(usage: &Value, recorded: bool) -> ContextChip {
     };
     let mut hint = Vec::new();
     if context["used_source"] == "opencode_completed_step" && used.is_some() {
-        hint.push("Context from the last completed OpenCode model step.".into());
+        hint.push(crate::source!("Context from the last completed OpenCode model step.").into());
     }
     if let Some(used) = used {
         hint.push(format!("Latest reported context: {} tokens", integer(used)));

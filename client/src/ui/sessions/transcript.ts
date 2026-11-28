@@ -1,4 +1,4 @@
-import type { ActivityEvent, LocalMessage, Reply } from "../../types";
+import type { ActivityEvent, EventAttachment, LocalMessage, TerminalOutboxReceipt, Reply } from "../../types";
 import { eventKey, opencodePromptId } from "../../store/activity";
 import type { ActivityItem, InboxItem, LocalItem, MediaMessage, OutboxItem, RouteLine, ToolEvent, TranscriptItem, VoiceState } from "./types";
 import type { RouteActivity } from "../../store/questionRouteActivity";
@@ -6,6 +6,7 @@ import { imageSize } from "./attachment-image";
 import { messageTimeOf } from "../lib/dates";
 import { tr, trNoop } from "../../i18n";
 import { ownMessageText, ownMessageTruncated, restoreOwnMessages } from "./full-own-text";
+import { CODEX_QUEUE_RECEIPT, CODEX_QUEUE_SOURCE, mergeCodexQueueReceipts, type QueueReceiptEvent } from "./codex-queue-receipts";
 import { earlierInputRefusal } from "./send-error";
 
 // A Symbol cannot arrive from a provider's JSON. Only our own local send
@@ -13,7 +14,8 @@ import { earlierInputRefusal } from "./send-error";
 const LOCAL_FILES = Symbol("local attachment presentation");
 // Likewise only the service's own route read supplies a route line, never a journal event.
 const ROUTE = Symbol("question route line");
-type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"]; [ROUTE]?: RouteLine };
+const TERMINAL_ACK = Symbol("known transport-only acknowledgement");
+type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"]; [ROUTE]?: RouteLine; [TERMINAL_ACK]?: true };
 const routeOf = (e: ActivityEvent) => (e as DisplayEvent)[ROUTE];
 
 // Journal events as the Activity items of the approved design, after the
@@ -148,34 +150,90 @@ function echoMatchesFiles(text: string, files: ActivityEvent["attachments"]): bo
   });
 }
 
+function claudePromptMatch(event: ActivityEvent, request: string, prompt: unknown, run: unknown, conversation: unknown): boolean {
+  return event.type === "UserPromptSubmit" && !event.agent_id && !event.origin && !event.inherited_from
+    && (!event.turn_origin || event.turn_origin === "user")
+    && !!request && event.claude_outbox_request_id === request
+    && typeof prompt === "string" && !!prompt && event.claude_prompt_id === prompt
+    && typeof run === "string" && !!run && event.run_id === run
+    && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
+}
+
+function dshPromptMatch(event: ActivityEvent, request: string, message: unknown, conversation: unknown): boolean {
+  return event.type === "UserPromptSubmit" && event.source === "dsh_native"
+    && !event.agent_id && !event.origin && !event.inherited_from
+    && !!request && event.dsh_request_id === request
+    && typeof message === "string" && !!message && event.dsh_message_id === message
+    && typeof conversation === "string" && !!conversation && event.conversation_id === conversation;
+}
+
+/** Files are addressed by the original request and native receipt index. */
+export function receiptFiles(id: string, files: unknown): files is EventAttachment[] {
+  return Array.isArray(files) && files.length <= 8 && files.every((file, index) =>
+    file && typeof file === "object" && file.request_id === id && file.index === index
+    && typeof file.name === "string" && typeof file.mime === "string" && typeof file.reference === "string"
+    && typeof file.bytes === "number" && Number.isFinite(file.bytes) && file.bytes >= 0);
+}
+
 /**
  * Reconciles a native numbered prompt echo with its one exact delivery receipt.
  * Public receipt metadata supplies the request and index; an echoed host path
  * is never used to read a file. Unknown or ambiguous echoes stay untouched.
  */
-export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>): readonly ActivityEvent[] {
+export function mergeAttachmentMessages(given: readonly ActivityEvent[], summary?: Record<string, unknown>,
+  pending?: ReadonlySet<string>, originals?: ReadonlySet<string>): readonly ActivityEvent[] {
   const receipts = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
   if (!receipts.length) return given;
   const events = [...given];
-  const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.attachments?.length
-    && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim() && echoMatchesFiles(receipt.submitted_text, receipt.attachments));
+  const valid = receipts.filter(receipt => receipt.source === "hgs_delivery" && receipt.codex_outbox !== true && receipt.attachments?.length
+    && typeof receipt.submitted_text === "string" && receipt.submitted_text.trim()
+    && (receipt.claude_outbox === true || receipt.dsh_outbox === true
+      || echoMatchesFiles(receipt.submitted_text, receipt.attachments)));
   const own = (event: ActivityEvent) => event.source !== "hgs_voice" && !childEvent(event) && !event.origin
     && (!event.turn_origin || event.turn_origin === "user") && !event.inherited_from && PROMPTS.has(event.type ?? "");
   const requests = (event: ActivityEvent): string[] => [...new Set([
     event.attachment_request_id, ...(event.source === "hgs_delivery" ? [event.message_id] : []),
+    ...(opencodePromptId(event) ? [event.request_id] : []),
     ...(event.attachments ?? []).map(file => file.request_id),
   ].filter((id): id is string => typeof id === "string" && !!id))];
   let changed = false;
   for (const receipt of valid) {
     const request = typeof receipt.message_id === "string" ? receipt.message_id : "";
     const submitted = String(receipt.submitted_text).trim();
-    if (!request || receipts.filter(other => other.message_id === request).length !== 1 || receipts.filter(other => typeof other.submitted_text === "string" && other.submitted_text.trim() === submitted).length !== 1) continue;
+    if (!request || receipts.filter(other => other.message_id === request).length !== 1) continue;
+    const nativeReceipt = receipt.claude_outbox === true || receipt.dsh_outbox === true;
+    if (nativeReceipt && (!receiptFiles(request, receipt.attachments)
+      || receipt.attachments.some(file => file.reference !== "" && !/^\[(Image|File) #[1-9][0-9]{0,8}\]$/.test(file.reference ?? "")))) continue;
+    if (!nativeReceipt && !originals?.has(request) && receipts.filter(other => typeof other.submitted_text === "string"
+      && other.submitted_text.trim() === submitted).length !== 1) continue;
     // Every already bound row reserves its request, including complete rows,
     // local cards and rows that are no longer eligible for body replacement.
-    const owners = events.flatMap((event, index) => requests(event).includes(request) ? [index] : []);
+    const owners = events.flatMap((event, index) => requests(event).includes(request)
+      || (originals?.has(request) && outboxReceiptId(event) === request
+        && exactOutboxScope(event, { run_id: String(summary?.run_id ?? ""),
+          conversation_id: String(summary?.conversation_id ?? "") }, summary)) ? [index] : []);
     if (owners.length > 1) continue;
-    const exact = owners.length ? owners : events.flatMap((event, index) => own(event) && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
-      && ownMessageText(event).trim() === submitted ? [index] : []);
+    if (receipt.claude_outbox === true && receipt.claude_queued_outbox === true) {
+      // A native enqueue has no typed prompt ID. Display its own durable
+      // receipt and keep every native queue or transcript row independent.
+      if (!owners.length && !pending?.has(request) && !receipt.claude_prompt_id
+        && receipt.run_id && receipt.conversation_id && eventAt(receipt) > 0
+        && receipt.run_id === summary?.run_id && receipt.conversation_id === summary?.conversation_id) {
+        const next = events.findIndex(event => eventAt(event) > eventAt(receipt));
+        events.splice(next < 0 ? events.length : next, 0,
+          { ...receipt, attachment_request_id: request, activity_display_key: `claude-queued-${request}` });
+        changed = true;
+      }
+      continue;
+    }
+    const nativeMatch = (event: ActivityEvent) => receipt.dsh_outbox === true
+      ? dshPromptMatch(event, request, receipt.dsh_message_id, receipt.conversation_id)
+      : claudePromptMatch(event, request, receipt.claude_prompt_id, receipt.run_id, receipt.conversation_id);
+    const exact = nativeReceipt
+      ? events.flatMap((event, index) => nativeMatch(event) && requests(event).every(id => id === request) ? [index] : [])
+      : owners.length || originals?.has(request) ? owners : events.flatMap((event, index) => own(event) && !opencodePromptId(event)
+        && !ownMessageTruncated(event) && !requests(event).length && !event.attachments?.length
+        && ownMessageText(event).trim() === submitted ? [index] : []);
     if (exact.length !== 1 || !own(events[exact[0]])) continue;
     const at = exact[0], event = events[at];
     events[at] = {
@@ -282,6 +340,8 @@ const PROMPTS = new Set(["UserPromptSubmit", "UserPromptQueued", "TurnStarted"])
 const OUTBOX_SOURCE = "zerus_outbox";
 const LOCAL_STAMP: Record<LocalMessage["status"], string> = { sending: trNoop("Sending…"), error: trNoop("Not sent"), sent: trNoop("Submitted to terminal") };
 const OPENCODE_SOURCE = "opencode_native";
+const CLAUDE_OUTBOX_SOURCE = "zerus_claude_outbox";
+const DSH_OUTBOX_SOURCE = "zerus_dsh_outbox";
 const OPENCODE_SUBMITTED = trNoop("Submitted to OpenCode");
 const agyOffer = (event: ActivityEvent) => event.source === "agy_acp" && event.type === "UserPromptSubmit";
 const agyRequest = (event: ActivityEvent) => typeof event.request_id === "string" && event.request_id
@@ -330,6 +390,7 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
     actions,
     inspectLabel: summary?.backend === "agy" ? tr("Check Activity")
       : summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
+    terminalTarget: row.source === "zerus_terminal_status" ? { run: row.run_id, conversation: row.conversation_id } : undefined,
     available: row.attachments.map(localFileAvailable),
   };
 }
@@ -351,12 +412,14 @@ function localEvent(row: LocalMessage): DisplayEvent {
  * nearest prompt within 10 s that starts like it. Every other row is placed by
  * its time, after the events of the same time.
  */
-export function mergeLocal(events: readonly ActivityEvent[], local: readonly LocalMessage[], bindingOnly: readonly LocalMessage[] = []): ActivityEvent[] {
+export function mergeLocal(events: readonly ActivityEvent[], local: readonly LocalMessage[], bindingOnly: readonly LocalMessage[] = [],
+  exactOnly = false): ActivityEvent[] {
   const source = events.slice();
   const appended: ActivityEvent[] = [];
   const claimed = new Set<number>();
   const candidates = [...local, ...bindingOnly];
   for (const row of candidates) {
+    if (row.source === CODEX_QUEUE_SOURCE) continue;
     const append = local.includes(row);
     if (row.source === "hgs_voice") {
       if (append && !source.some((e) => e.source === "hgs_voice" && e.message_id === row.message_id)) appended.push(localEvent(row));
@@ -394,14 +457,24 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
           && (row.message_id && row.message_id !== row.id ? row.message_id === native : e.request_id === row.id);
       });
     }
+    if (sent && row.source === CLAUDE_OUTBOX_SOURCE) {
+      const matches = source.flatMap((e, i) => eligible(e, i)
+        && claudePromptMatch(e, row.id, row.message_id, row.run_id, row.conversation_id) ? [i] : []);
+      if (matches.length === 1) match = matches[0];
+    }
+    if (sent && row.source === DSH_OUTBOX_SOURCE) {
+      const matches = source.flatMap((e, i) => eligible(e, i) && e.run_id === row.run_id
+        && dshPromptMatch(e, row.id, row.message_id, row.conversation_id) ? [i] : []);
+      if (matches.length === 1) match = matches[0];
+    }
     const ordinary = (e: ActivityEvent, i: number) => row.source !== OPENCODE_SOURCE
-      && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);
+      && row.source !== CLAUDE_OUTBOX_SOURCE && row.source !== DSH_OUTBOX_SOURCE && e.source !== OPENCODE_SOURCE && eligible(e, i) && !agyOffer(e);
     if (sent && fifo) match = source.findIndex((e, i) => ordinary(e, i)
-      && outboxReceiptId(e, row) === row.id);
+      && outboxReceiptId(e) === row.id && exactOutboxScope(e, row));
     if (sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i) && e.activity_display_key === `local-${row.id}`);
-    if (sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
+    if (!exactOnly && sent && !fifo && match < 0) match = source.findIndex((e, i) => ordinary(e, i)
       && !!(e.message_id || e.attachment_request_id) && [row.id, row.message_id].some(id => !!id && (e.message_id === id || e.attachment_request_id === id)));
-    if (sent && !fifo && match < 0 && row.attachments.length) {
+    if (!exactOnly && sent && !fifo && match < 0 && row.attachments.length) {
       source.forEach((e, i) => {
         if (ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
           && submitted && ownMessageText(e).trim() === submitted) exact.push(i);
@@ -410,7 +483,7 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
       // Qt also remembers which of several exact events a row was bound to; with one it is that one.
       if (competing === 1 && exact.length === 1) match = exact[0];
     }
-    if (sent && !fifo && match < 0 && !exact.length) {
+    if (!exactOnly && sent && !fifo && match < 0 && !exact.length) {
       const full = source.flatMap((e, i) => ordinary(e, i) && !ownMessageTruncated(e) && !e.attachments?.length
         && !e.message_id && !e.attachment_request_id && submitted && ownMessageText(e).trim() === submitted
         && Math.abs((e.at ?? NaN) - row.submitted_at) <= NEAREST ? [i] : []);
@@ -431,8 +504,10 @@ export function mergeLocal(events: readonly ActivityEvent[], local: readonly Loc
   // A native echo may precede both the CLI acknowledgement and its durable
   // receipt. Keep the client's row visible through that short gap; do not
   // invent an identity binding from text. Equal-text sends remain separate.
-  const visible = source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
-    if (row.source === OUTBOX_SOURCE || row.source === OPENCODE_SOURCE || event.source === OPENCODE_SOURCE
+  const visible = exactOnly ? source : source.filter((event, index) => claimed.has(index) || !candidates.some((row) => {
+    if (row.source === OUTBOX_SOURCE || row.source === OPENCODE_SOURCE
+      || row.source === CLAUDE_OUTBOX_SOURCE || row.source === DSH_OUTBOX_SOURCE
+      || event.source === OPENCODE_SOURCE
       || row.status === "error" || !row.attachments.length || !PROMPTS.has(event.type ?? "") || childEvent(event)
       || event.attachments?.length || Math.abs((event.at ?? NaN) - row.submitted_at) > NEAREST) return false;
     const raw = event.detail ?? "";
@@ -645,6 +720,7 @@ export function mergeRoutes(events: readonly ActivityEvent[], routes: readonly R
     const event: DisplayEvent = { type: "QuestionRoute", at: route.at, activity_display_key: `route-${route.requestId}`, [ROUTE]: line };
     const text = route.text;
     const folds = text === undefined ? [] : out.flatMap((e, i) => !routeOf(e) && e.type !== "LocalMessage" && e.source !== "hgs_voice"
+      && !String(e.activity_display_key ?? "").startsWith("local-")
       && messageRole(e) === "user" && e.detail === text ? [i] : []);
     if (folds.length) {
       line.text = text;
@@ -662,9 +738,8 @@ export function mergeRoutes(events: readonly ActivityEvent[], routes: readonly R
 
 export function buildTranscript(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [], routes: readonly RouteActivity[] = []): TranscriptItem[] {
   const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
-  if (!provider.length && !local.length && !routes.length) return recordedContext(summary);
   const events = mergeRoutes(mergeAttachmentMessages(local.length ? mergeLocal(provider, local) : provider, summary), routes);
-  return transcriptItems(events, summary, !provider.length);
+  return transcriptItems(mergeCodexQueueReceipts(events, summary, local, receiptFiles), summary, !provider.length);
 }
 
 /** The index of the Stop that ends the keep-warm ping at `from`, or -1 while it runs or a person's prompt comes first. */
@@ -699,6 +774,12 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     }
     const role = messageRole(e);
     const at = timeText(e.at);
+    if ((e as QueueReceiptEvent)[CODEX_QUEUE_RECEIPT]) {
+      const label = e.native_queue_state === "consumed" ? tr("Received by Codex")
+        : e.native_queue_state === "queued" ? tr("Queued in Codex") : tr("Accepted into the Codex queue");
+      items.push({ id, kind: "receipt", at, label, body: e.detail, attachments: attachments(e) });
+      i++; continue;
+    }
     const route = routeOf(e);
     if (route) {
       items.push({ id, kind: "receipt", at, sender: route.outcome === "not_sent" ? tr("Question not sent to %1", route.parent.split("/").at(-1) ?? route.parent) : route.outcome === "uncertain" ? tr("Question delivery to %1 uncertain", route.parent.split("/").at(-1) ?? route.parent) : route.role === "child" ? tr("Question sent to the parent session") : tr("Question from a child session"), route });
@@ -735,6 +816,12 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       i++; continue;
     }
     if (role === "notice") {
+      const child = e.child_policy_advisory?.child?.name;
+      if (e.type === "Notification" && e.source === "zerus_child_policy" && typeof child === "string" && child) {
+        items.push({ id, kind: "system", at, sender: tr("Child provider refusal"),
+          body: tr("The provider blocked a request in %1.", child) });
+        i++; continue;
+      }
       const report = typeof e.report === "string" ? e.report : "";
       if (e.origin === "subagent_report") items.push({ id, kind: "report", at, title: preview(e.detail) || tr("Subagent report"), body: report || e.detail, sender: e.sender || undefined });
       else items.push({ id, kind: "system", at, sender: e.origin === "peer_message" ? tr("Message from %1", e.sender ?? tr("another session")) : tr("Background task"), body: report || e.detail });
@@ -762,6 +849,8 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       if (role === "user" && agyOffer(e)) {
         receiptUnconfirmed = delivery !== "submitted";
         receipt = receiptUnconfirmed ? tr("Delivery not confirmed") : tr("Sent");
+      } else if (role === "user" && e.source === "hgs_delivery" && (e.claude_queued_outbox === true || (e as DisplayEvent)[TERMINAL_ACK])) {
+        receipt = tr("Submitted to terminal");
       } else if (delivery === "queued" || delivery === "not_delivered") {
         receipt = delivery === "queued" ? tr("Queued") : tr("Not delivered");
         const messageId = typeof e.message_id === "string" ? e.message_id : "";
@@ -794,7 +883,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
     // Adjacent operational events form one group; messages and attention stay boundaries.
     const group = [e];
     i++;
-    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i]) && !openCodeCompaction(events[i])
+    while (i < events.length && group.length < GROUP_LIMIT && events[i].type !== "AgentThinking" && events[i].type !== "SessionCleared" && !routeOf(events[i]) && !(events[i] as QueueReceiptEvent)[CODEX_QUEUE_RECEIPT] && !openCodeCompaction(events[i])
       && events[i].inherited_from === e.inherited_from
       && !messageRole(events[i]) && !attention(e) && !attention(events[i])) group.push(events[i++]);
     const tools: string[] = [];
@@ -820,15 +909,198 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
   return items;
 }
 
-type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id">;
+type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id"> & { terminalOnly?: "queue" | "local" };
+interface OriginalChanges {
+  removed?: readonly string[];
+  removedNative?: readonly string[];
+  terminalOnly?: readonly TerminalOutboxReceipt[];
+  /** Selected live target, independent of the history frame being painted. */
+  terminalScope?: OutboxIdentity;
+}
 
 /** Only a bound receipt can take over a queued row's display identity. */
-function outboxReceiptId(event: ActivityEvent, target?: OutboxIdentity): string | undefined {
-  if (event.inherited_from || messageRole(event) !== "user" || !PROMPTS.has(event.type ?? "")) return undefined;
-  if (target && ((event.run_id !== undefined && event.run_id !== target.run_id)
-    || (event.conversation_id !== undefined && event.conversation_id !== target.conversation_id))) return undefined;
-  const id = event.source === "hgs_delivery" ? event.message_id : event.attachment_request_id;
+function outboxReceiptId(event: ActivityEvent): string | undefined {
+  if (event.inherited_from || childEvent(event) || !ordinaryTurn(event) || messageRole(event) !== "user" || !PROMPTS.has(event.type ?? "")) return undefined;
+  const id = opencodePromptId(event) ? event.request_id
+    : event.source === "hgs_delivery" ? event.message_id
+    : event.type === "TurnStarted" && event.turn_origin === "user" && typeof event.kimi_request_id === "string"
+      && Number.isSafeInteger(event.kimi_turn_id) && event.kimi_conversation_id === event.conversation_id
+      ? event.kimi_request_id
+    : event.dsh_message_id && typeof event.dsh_request_id === "string" && dshPromptMatch(event, event.dsh_request_id, event.dsh_message_id, event.conversation_id)
+      ? event.dsh_request_id
+    : event.claude_prompt_id && typeof event.claude_outbox_request_id === "string"
+      && claudePromptMatch(event, event.claude_outbox_request_id, event.claude_prompt_id, event.run_id, event.conversation_id)
+      ? event.claude_outbox_request_id : undefined;
   return typeof id === "string" ? id : undefined;
+}
+
+function exactOutboxScope(event: ActivityEvent, target: OutboxIdentity, summary?: Record<string, unknown>): boolean {
+  return !!target.run_id && !!target.conversation_id
+    && (event.run_id ?? summary?.run_id) === target.run_id
+    && (event.conversation_id ?? summary?.conversation_id) === target.conversation_id;
+}
+
+/** Use native evidence over a transport receipt. Two different native claims
+ * for the same original cannot establish a presentation binding. */
+function bindOriginals(events: readonly ActivityEvent[], targets: ReadonlyMap<string, OutboxIdentity>,
+  summary: Record<string, unknown> | undefined, conflicts: Set<string>): ActivityEvent[] {
+  const matches = new Map<string, number[]>();
+  for (const [index, event] of events.entries()) {
+    const request = outboxReceiptId(event);
+    const target = request && targets.get(request);
+    if (!request || !target || !exactOutboxScope(event, target, summary)) continue;
+    const found = matches.get(request);
+    if (found) found.push(index); else matches.set(request, [index]);
+  }
+  const adopted = new Map<number, string>();
+  const hidden = new Set<number>();
+  const terminalCopies = new Set<number>();
+  for (const [request, indices] of matches) {
+    const native = indices.filter(i => events[i].source !== "hgs_delivery");
+    const candidates = native.length ? native : indices;
+    if (targets.get(request)?.terminalOnly) {
+      for (const index of indices) if (events[index].source === "hgs_delivery") terminalCopies.add(index);
+    }
+    if (new Set(candidates.map(i => eventKey(events[i]))).size !== 1) {
+      conflicts.add(`local-${request}`);
+      continue;
+    }
+    adopted.set(candidates[0], `local-${request}`);
+    for (const index of indices) if (index !== candidates[0]) hidden.add(index);
+  }
+  return events.flatMap((event, index) => {
+    if (hidden.has(index)) return [];
+    const id = adopted.get(index);
+    const copy: DisplayEvent = terminalCopies.has(index) ? { ...event, [TERMINAL_ACK]: true } : event;
+    return [id ? { ...copy, activity_display_key: id } : copy];
+  });
+}
+
+interface OriginalRow {
+  item: ActivityItem;
+  anchors: string[];
+  index: number;
+  at: number;
+  awaitingHistory: boolean;
+}
+
+const outgoing = (item: TranscriptItem): item is ActivityItem =>
+  item.kind === "user" || (item.kind === "receipt" && !item.route);
+
+const TERMINAL_RECEIPT = Symbol("transport-only Activity receipt");
+type TerminalReceiptItem = ActivityItem & { [TERMINAL_RECEIPT]?: true };
+const terminalReceipt = (item: ActivityItem) => (item as TerminalReceiptItem)[TERMINAL_RECEIPT] === true;
+const evidenceOrder = (item: ActivityItem) => item.outbox ? 0 : item.local || terminalReceipt(item) ? 1 : 2;
+
+/** Remember only outgoing originals visible to this Activity. The composer
+ * and journal are separate readers: neither one's absence releases a row.
+ * Use preceding journal rows as its insertion point, not a later echo's time. */
+function placeOriginals(positions: Map<string, OriginalRow>, items: readonly TranscriptItem[],
+  active: ReadonlyMap<string, number>, removed: ReadonlySet<string>, conflicts: ReadonlySet<string>,
+  times: ReadonlyMap<string, number>): TranscriptItem[] {
+  for (const request of removed) positions.delete(`local-${request}`);
+  // Keep the still-visible composer rows even as old settled positions age out.
+  let excess = positions.size - 50;
+  for (const id of positions.keys()) {
+    if (excess <= 0) break;
+    if (!active.has(id)) {
+      positions.delete(id);
+      excess--;
+    }
+  }
+  const projected = new Map<string, ActivityItem>();
+  const ordinary: TranscriptItem[] = [];
+  const insertion = new Map<string, number>();
+  const originals = new Map<string, ActivityItem>();
+  for (const item of items) {
+    if (!outgoing(item) || (!active.has(item.id) && !positions.has(item.id))) {
+      ordinary.push(item);
+    } else {
+      const previous = projected.get(item.id);
+      if (!previous || evidenceOrder(item) > evidenceOrder(previous)) projected.set(item.id, item);
+      if (!insertion.has(item.id) || item.outbox || terminalReceipt(item)) insertion.set(item.id, ordinary.length);
+      if (item.outbox || terminalReceipt(item)) originals.set(item.id, item);
+    }
+  }
+  // An undated legacy head has no wall-clock anchor. Place it with the
+  // next dated FIFO entry rather than after that entry and newer history.
+  const nextQueueTime = new Map<string, number>();
+  let nextDated = 0;
+  for (const [id, row] of [...originals].reverse()) {
+    if (!row.outbox) continue;
+    const at = active.get(id) ?? 0;
+    if (at > 0) nextDated = at;
+    else if (nextDated > 0) nextQueueTime.set(id, nextDated);
+  }
+  for (const [id, queuedAt] of active) {
+    const at = nextQueueTime.get(id) ?? queuedAt;
+    const item = projected.get(id);
+    if (item && !positions.has(id)) {
+      let index = insertion.get(id) ?? ordinary.length;
+      let awaitingHistory = !ordinary.length;
+      // A restored queue can arrive after a newer reply or a context placeholder.
+      // Use provider timestamps for placement; they never bind a receipt.
+      if (originals.has(id) && at > 0) {
+        const prior = ordinary.findLastIndex(row => {
+          const time = times.get(row.id) ?? 0;
+          return time > 0 && time <= at;
+        });
+        awaitingHistory = prior < 0;
+        index = prior + 1;
+        if (awaitingHistory && ordinary[0]?.kind === "context") index = 1;
+      }
+      const anchors = ordinary.slice(Math.max(0, index - 8), index).reverse().map(item => item.id);
+      // Seed the original time and file metadata even if the exact journal
+      // copy was already present on the first frame.
+      positions.set(id, { item: originals.get(id) ?? item, anchors, index, at, awaitingHistory });
+    }
+  }
+  const indexOf = new Map(ordinary.map((item, index) => [item.id, index]));
+  const slots = new Map<number, ActivityItem[]>();
+  for (const [id, original] of positions) {
+    let item = projected.get(id);
+    if (!item && original.item.local?.error && !active.has(id)) {
+      // Delete and Retry retire a failed local row explicitly.
+      positions.delete(id);
+      continue;
+    }
+    if (!item && conflicts.has(id)) {
+      const { id, kind, at, body, attachments } = original.item;
+      item = { id, kind, at, body, attachments, receipt: tr("Delivery not confirmed"), receiptUnconfirmed: true };
+    }
+    if (item && (conflicts.has(id) || evidenceOrder(item) >= evidenceOrder(original.item))) {
+      const old = original.item;
+      const files = item.attachments?.map((file, index) => {
+        const previous = old.attachments?.[index];
+        return previous?.name === file.name ? { ...previous, ...file } : file;
+      }) ?? old.attachments;
+      item = { ...item, at: old.at || item.at, attachments: files,
+        echoBody: old.attachments?.length ? undefined : item.echoBody };
+      original.item = item;
+    } else {
+      item = original.item;
+      if (item.outbox?.state === "waiting") item = { ...item, outbox: { ...item.outbox, state: "reserved" } };
+    }
+    const anchor = original.anchors.find(key => indexOf.has(key));
+    let index = anchor === undefined ? Math.min(original.index, ordinary.length) : indexOf.get(anchor)! + 1;
+    // The first Activity frame after a restart can contain only the composer.
+    // When older native history arrives, place the original after those rows.
+    if (original.awaitingHistory && original.at > 0) {
+      for (const [position, row] of ordinary.entries()) {
+        const at = times.get(row.id) ?? 0;
+        if (at > 0 && at <= original.at) index = position + 1;
+      }
+    }
+    const slot = slots.get(index);
+    if (slot) slot.push(item); else slots.set(index, [item]);
+  }
+  const result: TranscriptItem[] = [];
+  for (let index = 0; index <= ordinary.length; index++) {
+    const slot = slots.get(index);
+    if (slot) result.push(...slot);
+    if (index < ordinary.length) result.push(ordinary[index]);
+  }
+  return result;
 }
 
 /** One display target only. Remember at most 50 local receipts and 1000 small
@@ -836,24 +1108,44 @@ function outboxReceiptId(event: ActivityEvent, target?: OutboxIdentity): string 
  * Rust may drop its local row before the corresponding activity batch arrives. */
 export function createTranscriptProjection() {
   const recent = new Map<string, LocalMessage>(), bindings = new Map<string, string>(), outboxRequests = new Map<string, OutboxIdentity>();
+  const positions = new Map<string, OriginalRow>();
   const trim = <T>(map: Map<string, T>, limit: number) => { while (map.size > limit) map.delete(map.keys().next().value!); };
   return {
-    reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); },
+    reset() { recent.clear(); bindings.clear(); outboxRequests.clear(); positions.clear(); },
     build(given: readonly ActivityEvent[], summary?: Record<string, unknown>, local: readonly LocalMessage[] = [],
-      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = []): TranscriptItem[] {
+      routes: readonly RouteActivity[] = [], outbox: readonly OutboxItem[] = [], changes: OriginalChanges = {}): TranscriptItem[] {
+      const discarded = new Set(changes.removed);
+      const nativeDiscarded = new Set(changes.removedNative);
+      local = local.filter(row => !discarded.has(row.id));
+      given = given.filter(event => !nativeDiscarded.has(opencodePromptId(event) ?? ""));
+      const scope = changes.terminalScope;
+      if (scope) {
+        const foreign = (row: OutboxIdentity) => row.run_id !== scope.run_id || row.conversation_id !== scope.conversation_id;
+        for (const [id, row] of recent) if (row.source === "zerus_terminal_status" && foreign(row)) discarded.add(id);
+        for (const [id, row] of outboxRequests) if (row.terminalOnly && foreign(row)) discarded.add(id);
+      }
+      for (const id of discarded) recent.delete(id);
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
-      const queued = outbox.filter(row => !sent.has(row.request_id));
-      const queuedIds = new Set(queued.filter(row => !row.target_changed).map(row => row.request_id));
-      for (const item of queued) if (queuedIds.has(item.request_id)) {
+      const queued = outbox.filter(row => !sent.has(row.request_id) && !discarded.has(row.request_id));
+      const terminalOnly = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
+        && !!row.run_id && !!row.conversation_id);
+      for (const item of outbox) if (!item.target_changed && !discarded.has(item.request_id)) {
         outboxRequests.set(item.request_id, { run_id: item.run_id, conversation_id: item.conversation_id });
       }
-      trim(outboxRequests, 50);
-      const independent = new Set(local.filter(row => row.source === OPENCODE_SOURCE && row.status === "error")
-        .map(row => `local-${row.id}`));
-      // An early exact echo can share a pending row's key. A later failed or
-      // uncertain local result needs its own row, while native history stays.
-      if (independent.size) {
-        for (const [key, alias] of bindings) if (independent.has(alias)) bindings.delete(key);
+      for (const row of local) if (row.source !== "hgs_voice" && (row.status !== "error" || row.uncertain)) {
+        outboxRequests.set(row.id, { run_id: row.run_id, conversation_id: row.conversation_id,
+          terminalOnly: row.source === "zerus_terminal_status" ? "local" : undefined });
+      }
+      for (const row of terminalOnly) outboxRequests.set(row.request_id, {
+        run_id: row.run_id, conversation_id: row.conversation_id, terminalOnly: "queue",
+      });
+      for (const id of discarded) outboxRequests.delete(id);
+      const live = new Set([...outbox.map(row => row.request_id), ...local.map(row => row.id),
+        ...terminalOnly.map(row => row.request_id)]);
+      let excess = [...outboxRequests.keys()].filter(id => !live.has(id)).length - 50;
+      for (const id of outboxRequests.keys()) {
+        if (excess <= 0) break;
+        if (!live.has(id)) { outboxRequests.delete(id); excess--; }
       }
       for (const row of local) { recent.set(row.id, row); }
       trim(recent, 50);
@@ -867,36 +1159,66 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary));
-      const aliased: ActivityEvent[] = [];
-      const seenOutbox = new Set<string>();
-      for (const event of provider) {
-        const request = outboxReceiptId(event);
-        const key = eventKey(event);
-        const target = request ? outboxRequests.get(request) : undefined;
-        if (request && target && outboxReceiptId(event, target)) {
-          // The queue remains the authority for its visible state until the
-          // backing entry leaves. An echo or an early receipt never edits it.
-          if (queuedIds.has(request) || seenOutbox.has(request)) continue;
-          seenOutbox.add(request);
-          bindings.set(key, `local-${request}`);
+      const exact = new Set([...outboxRequests.keys(), ...recent.keys()]);
+      let provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary, undefined, exact));
+      // The direct terminal row can retire against an exact attachment receipt
+      // before any matching prompt event appears in the journal window.
+      const attachmentPage = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
+      if (attachmentPage.length) {
+        const recorded = new Set(provider.flatMap(event => {
+          const id = outboxReceiptId(event), target = id && outboxRequests.get(id);
+          return id && target && exactOutboxScope(event, target, summary) ? [id] : [];
+        }));
+        const copies = new Map<string, ActivityEvent | undefined>();
+        for (const event of attachmentPage) {
+          const id = outboxReceiptId(event), target = id && outboxRequests.get(id);
+          if (!id || !target || target.terminalOnly !== "local" || recorded.has(id)
+            || event.source !== "hgs_delivery" || !exactOutboxScope(event, target, summary)
+            || !event.attachments?.length || !receiptFiles(id, event.attachments)) continue;
+          copies.set(id, copies.has(id) ? undefined : event);
         }
-        const id = bindings.get(key);
-        aliased.push(id ? { ...event, activity_display_key: id } : event);
+        if (copies.size) provider = [...provider, ...[...copies.values()].filter(event => event !== undefined)];
       }
-      let events = mergeLocal(aliased, [...local, ...waiting], bindingOnly);
+      const conflicts = new Set<string>();
+      const keyFor = (event: ActivityEvent, key: string) =>
+        JSON.stringify([event.run_id ?? summary?.run_id, event.conversation_id ?? summary?.conversation_id, key]);
+      const aliased = bindOriginals(provider, outboxRequests, summary, conflicts).map(event => {
+        if (event.activity_display_key || outboxReceiptId(event)) return event;
+        const id = bindings.get(keyFor(event, eventKey(event)));
+        return id && !conflicts.has(id) ? { ...event, activity_display_key: id } : event;
+      });
+      let events = mergeLocal(aliased, [...local, ...waiting].filter(row => !conflicts.has(`local-${row.id}`)),
+        bindingOnly.filter(row => !conflicts.has(`local-${row.id}`)), true);
       events = events.map(event => {
-        const key = typeof event.activity_journal_key === "string" ? event.activity_journal_key : eventKey(event);
+        const key = keyFor(event, typeof event.activity_journal_key === "string" ? event.activity_journal_key : eventKey(event));
         if (typeof event.activity_display_key === "string") bindings.set(key, event.activity_display_key);
-        const id = bindings.get(key);
-        return id ? { ...event, activity_display_key: id } : event;
+        return event;
       });
       trim(bindings, 1000);
-      const items = transcriptItems(mergeRoutes(mergeAttachmentMessages(events, summary), routes), summary, !provider.length);
+      if (conflicts.size) events.push(...local.filter(row => conflicts.has(`local-${row.id}`)).map(localEvent));
+      const timeline = mergeRoutes(mergeAttachmentMessages(events, summary, undefined, exact), routes);
+      const verified = mergeCodexQueueReceipts(timeline, summary, [...local, ...missing], receiptFiles);
+      const items = transcriptItems(verified, summary, !provider.length);
       // Waiting entries appear at the live end in FIFO order. Legacy
       // entries without a timestamp keep their place as well.
-      for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: "", outbox: row });
-      return items;
+      for (const row of queued) items.push({ id: `local-${row.request_id}`, kind: "user", at: timeText(row.queued_at),
+        body: row.preview, attachments: attachments({ attachments: row.attachments }), outbox: row });
+      for (const row of terminalOnly) {
+        const receipt: TerminalReceiptItem = {
+          id: `local-${row.request_id}`, kind: "user", at: timeText(row.queued_at ?? undefined),
+          body: row.preview, attachments: attachments({ attachments: row.attachments }),
+          receipt: tr("Submitted to terminal"), [TERMINAL_RECEIPT]: true,
+        };
+        items.push(receipt);
+      }
+      const active = new Map([
+        ...terminalOnly.map(row => [`local-${row.request_id}`, row.queued_at ?? 0] as const),
+        ...queued.map(row => [`local-${row.request_id}`, row.queued_at ?? 0] as const),
+        ...local.filter(row => row.source !== "hgs_voice").map(row => [`local-${row.id}`, row.submitted_at] as const),
+      ]);
+      if (!active.size && !positions.size) return items;
+      const times = new Map(verified.map(event => [event.activity_display_key as string || eventKey(event), eventAt(event)]));
+      return placeOriginals(positions, items, active, discarded, conflicts, times);
     },
   };
 }

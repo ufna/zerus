@@ -1140,46 +1140,17 @@ describe("task executor admission", () => {
   });
 });
 
-it("binds Antigravity Start to the selected computer's native account advertisement", async () => {
-  const t = setup((w) => { w.flags.add("agy"); w.flags.add("agy-launch"); });
+it("omits retired Antigravity accounts and starts only a supported replacement", async () => {
+  const t = setup((w) => w.flags.add("retired-provider"));
   await t.open({ computer: "mac", agent: "agy", account: "native-agy", path: "/workspace/example" });
-  expect(t.state()).toMatchObject({ host: "mac", agent: "agy", accountId: "native-agy", form: { start_enabled: false } });
-  expect(t.state().accounts[t.state().account].summary).toBe("Sign-in is checked when Google Antigravity starts.");
+  expect(t.world.of("launchAccounts").at(-1)?.args).toEqual(["mac", false, null]);
+  expect(t.state().agent).toBe("codex");
+  expect(t.state().accounts.some((row) => row.provider === "agy")).toBe(false);
+  expect(t.state()).toMatchObject({ account: -1, accountId: "", form: { start_enabled: false } });
   await t.start();
   expect(t.world.count("creationSubmit")).toBe(0);
-  t.store.closeNewSession();
-  await t.open({ computer: "", agent: "agy", account: "native-agy", path: "/workspace/example" });
-  expect(t.state()).toMatchObject({ host: "", agent: "agy", accountId: "native-agy", form: { start_enabled: true } });
+  await t.choose("work");
   await t.start();
   expect(t.world.count("creationSubmit")).toBe(1);
-  expect(t.choices()).toMatchObject({ host: "", agent: "agy", account: "native-agy" });
-});
-
-it("withdraws Antigravity Start when the selected host catalog removes launch support", async () => {
-  const t = setup(w => { w.flags.add("agy"); w.flags.add("agy-launch"); });
-  await t.open({ computer: "", agent: "agy", account: "native-agy", path: "/workspace/example" });
-  expect(t.state().form?.start_enabled).toBe(true);
-  t.world.flags.delete("agy-launch");
-  await t.fire("");
-  await settle();
-  expect(t.world.of("launchAccountRows").at(-1)?.args).toEqual([""]);
-  const affordance = t.state().form?.start_enabled;
-  await t.start();
-  expect({ start_enabled: affordance, creationSubmits: t.world.count("creationSubmit") }).toEqual({
-    start_enabled: false, creationSubmits: 0,
-  });
-});
-
-it("blocks Antigravity creation when launch support is withdrawn during plan preparation", async () => {
-  const t = setup(w => { w.flags.add("agy"); w.flags.add("agy-launch"); });
-  await t.open({ computer: "", agent: "agy", account: "native-agy", path: "/workspace/example" });
-  t.world.hold("creation-plan");
-  const start = t.start();
-  await vi.waitFor(() => expect(t.world.count("newSessionPlan")).toBe(1));
-  t.world.flags.delete("agy-launch");
-  await t.fire("");
-  t.world.release("creation-plan");
-  await start;
-  expect(t.state().form?.start_enabled).toBe(false);
-  expect(t.world.count("creationSubmit")).toBe(0);
+  expect(t.choices()).toMatchObject({ host: "mac", agent: "codex", account: "work" });
 });

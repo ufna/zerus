@@ -669,6 +669,122 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // The opt-in terminal route contributes only these additions
+        // inside the shared submitter. The ordinary body retains its seal.
+        for addition in [
+            "        native_accept: mode == SendMode::DesktopNativeAccept,\n",
+            r#"    if prior_refusal && matches!(mode, SendMode::DesktopNativeAccept | SendMode::DesktopOutbox)
+        && matches!(agent, "claude" | "kimi")
+    {
+        receipt["terminal_native_after_refusal"] = json!(true);
+    }
+"#,
+            "        let native_wait = mode == SendMode::DesktopNativeAccept\n            && (waiting || matches!(gate, Gate::PendingInput(_)));\n",
+            "        witness.idle_refusal |= native_wait;\n",
+            r#"    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        match acceptance::kimi_outbox_floor(&record) {
+            Some(floor) => Some(floor),
+            None => {
+                cleanup();
+                return Err(gated(typed, Gate::Waiting {
+                    reason: "Kimi's earlier native turn could not be confirmed".into(),
+                    dialog: None,
+                }));
+            }
+        }
+    } else {
+        None
+    };
+"#,
+            "    if let Some(floor) = kimi_turn_floor {\n        receipt[\"kimi_outbox\"] = json!(true);\n        receipt[\"kimi_activity_binding\"] = json!(true);\n        receipt[\"kimi_turn_floor\"] = json!(floor);\n    }\n",
+            "    if receipt[\"kimi_outbox\"] == true {\n        record[\"input_pending_kimi_outbox\"] = json!(request_id);\n    }\n",
+            "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            mode.check_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
+        ] {
+            assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
+            original = original.replacen(addition, "", 1);
+        }
+        // Check the exact later admissions before projecting back to the
+        // original body. The pending-settings refusal stays before any key,
+        // and the ordered decision stays immediately before queue preparation.
+        for (current, previous) in [
+            (
+                r#"    if matches!(origin, Origin::TechnicalReview) && effort::pending_applies(&record) {
+        return Err(refused(typed, "Review notice withheld while settings are pending.".into()));
+    }
+    if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
+"#,
+                "    if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {\n",
+            ),
+            (
+                "        Origin::Person | Origin::Answer | Origin::TechnicalReview => {}\n",
+                "        Origin::Person | Origin::Answer => {}\n",
+            ),
+            (
+                "        Origin::Person | Origin::Answer | Origin::TechnicalReview => Ok(()),\n",
+                "        Origin::Person | Origin::Answer => Ok(()),\n",
+            ),
+            (
+                r#"    let terminal = backend::current();
+    // The original input lock still protects this decision from another
+    // Desktop Send. A matching duplicate returned its receipt before here.
+    let mode = if mode == SendMode::CodexOrderedTurn {
+        if codex_tasks::multiple(&record) {
+            return Err(refused(typed, "Codex task bindings changed before the ordered Send".into()));
+        }
+        match codex_queue::has_earlier(&record) {
+            Ok(true) => SendMode::CodexQueue,
+            Ok(false) => SendMode::CodexOrderedTurn,
+            Err(_) => return Err(gated(typed, Gate::NotIdle)),
+        }
+    } else { mode };
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
+"#,
+                r#"    let terminal = backend::current();
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
+"#,
+            ),
+        ] {
+            assert_eq!(original.matches(current).count(), 1, "{current}");
+            original = original.replacen(current, previous, 1);
+        }
+        let retained_admission = r#"    let (existing, prior_refusal) =
+        refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);
+    match existing {"#;
+        assert_eq!(original.matches(retained_admission).count(), 1);
+        original = original.replacen(retained_admission,
+            "    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {", 1);
+        assert_eq!(original.matches("mode.check_send_gate(").count(), 3);
+        original = original.replace("mode.check_send_gate(", "checked_send_gate(");
+        for (new, prior) in [
+            (r#"Some(codex_queue::Queue::prepare(&record, &text, mode == SendMode::CodexQueue)
+            .map_err(|e| if mode == SendMode::CodexQueue { gated(typed, Gate::NotIdle) } else { refused(typed, e) })?)"#,
+             "Some(codex_queue::Queue::prepare(&record, &text).map_err(|e| refused(typed, e))?)"),
+            ("mode == SendMode::CodexQueue || codex_tasks::multiple(&record)", "codex_tasks::multiple(&record)"),
+            ("    if mode == SendMode::CodexQueue { receipt[\"codex_outbox\"] = json!(true); }\n", ""),
+        ] {
+            assert_eq!(original.matches(new).count(), 1);
+            original = original.replace(new, prior);
+        }
+        // Codex queue receipts now also retain their exact native client ID.
+        let client_id = r#"            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
+"#;
+        assert_eq!(original.matches(client_id).count(), 1);
+        original = original.replacen(client_id, "", 1);
+        // Desktop's outbox can verify an empty interrupted Codex prompt. The
+        // ordinary and Team entry points continue to use their own idle guard.
+        for (new, prior, count) in [
+            ("    mode: SendMode,\n", "    terminal_outcome: bool,\n", 1),
+            ("    let terminal_outcome = mode == SendMode::TerminalOutcome;\n", "", 1),
+            ("checked_record_gate(name, &request, &mut process, mode)", "checked_record_gate(name, &request, &mut process)", 2),
+            ("checked_record_gate(name,&request,&mut process,mode)", "checked_record_gate(name,&request,&mut process)", 1),
+            ("!mode.idle_input_ready(&read(name)?)", "!idle_reminder_ready(&read(name)?)", 2),
+        ] {
+            assert_eq!(original.matches(new).count(), count, "interrupted outbox guard changed");
+            original = original.replace(new, prior);
+        }
         // Project away only the ordinary Linux launch proof and its extra
         // checks. The pre-existing composer, receipt and Enter seal remains.
         for (new, prior) in [
@@ -698,6 +814,19 @@ mod tests {
         ] {
             assert_eq!(original.matches(new).count(), 1, "native readiness projection changed");
             original = original.replacen(new, prior, 1);
+        }
+        // Desktop's guarded wait distinguishes a known busy refusal from
+        // other pre-input refusals. Keep the original submission seal.
+        for (guarded, prior) in [
+            ("        idle_refusal: false,\n", ""),
+            ("        let idle_refusal = matches!(gate, Gate::NotIdle);\n", ""),
+            (r#"        let mut witness = witness(gate.reason(), waiting, dialog);
+        witness.idle_refusal = idle_refusal;
+        remember_send_refusal(typed, witness, retain_refusal, terminal_outcome)
+"#, "        remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)\n"),
+        ] {
+            assert_eq!(original.matches(guarded).count(), 1, "guarded wait projection changed");
+            original = original.replacen(guarded, prior, 1);
         }
         // The public send's durable negative adds only a retention parameter
         // and routes the same two live witnesses through its publisher. Exact
@@ -882,6 +1011,12 @@ mod tests {
             assert_eq!(original.matches(witnessed).count(), 1, "{witnessed}");
             original = original.replacen(witnessed, reviewed, 1);
         }
+        let claude_outbox = r#"    if agent == "claude" && request.only_when_idle {
+        receipt["claude_outbox"] = json!(true);
+    }
+"#;
+        assert_eq!(original.matches(claude_outbox).count(), 1);
+        original = original.replacen(claude_outbox, "", 1);
         // zerus-46l1q review D2: a writer at the person's request checks it
         // under Root before anything is typed; project that addition away.
         let admit = "    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,\n";

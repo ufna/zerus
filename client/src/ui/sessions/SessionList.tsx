@@ -11,7 +11,7 @@ import { tr, trNoop } from "../../i18n";
 import { listRows, membersByGroup, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
 import { parentBadgeText,
   SessionCard, ChildCard, CompactCard, ContainerCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
-  emphasis, childStatus, captionText, refusalCaption, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
+  emphasis, childStatus, captionText, openCodeAvailabilityCaption, refusalCaption, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
 } from "./SessionCard";
 import { agentKind, catalog, computerFresh, computerOffline } from "../../store/catalog";
 import { servicePausedEmpty } from "../components/DesktopServiceStatus";
@@ -241,7 +241,7 @@ function clearEntry(s: Session, prepared?: ClearRead): MenuEntry {
 
 export function sessionMenu(s: Session, inspected?: import("../../types").Details, preparedClear?: ClearRead): MenuEntry[] {
   const details = inspected ?? (s.key === selectedKey() && !subagentOpen() ? detailsFor(s, !computerOffline(s.computer), followedFor(s.key)) : undefined);
-  const act = actionEntries(s, s.cmd === "agy" ? details : undefined, { context: true });
+  const act = actionEntries(s, undefined, { context: true });
   const cp = copyEntries(s, details);
   const mute = muteEntry(s), mark = markEntry(s), fresh = freshActionEntry(s);
   const archived = s.state === "archived";
@@ -264,7 +264,7 @@ export function sessionMenu(s: Session, inspected?: import("../../types").Detail
     moveEntry(s),
     { separator: true },
     ...(act.archive ? [act.archive] : []),
-    ...(s.cmd === "agy" ? [act.change] : [act.end]),
+    act.end,
   ];
 }
 
@@ -949,7 +949,7 @@ export function sessionRowName(row: Row | undefined): string | undefined {
     row.team ? tr(row.team.collapsed ? "%1 child sessions, collapsed" : "%1 child sessions, expanded", row.team.total) : ""].filter(Boolean).join(", ");
   const s = row.session;
   const state = s.providerRefusal === "current" ? statusCaption(s, false)
-    : computerOffline(s.computer) ? tr("Offline") : s.status === "ready" && s.draft ? tr("Draft") : captionText(s.caption);
+    : computerOffline(s.computer) ? tr("Offline") : s.status === "ready" && s.draft ? tr("Draft") : openCodeAvailabilityCaption(s) ?? captionText(s.caption);
   const refusal = refusalCaption(s);
   return [s.title, row.agentTeamName ? tr("Team: %1", row.agentTeamName) : "", row.agentTeamRole, state, refusal === state ? "" : refusal, folderOf(s) || s.project, s.machine,
     row.team ? tr(row.team.collapsed ? "%1 child sessions, collapsed" : "%1 child sessions, expanded", row.team.total) : "",

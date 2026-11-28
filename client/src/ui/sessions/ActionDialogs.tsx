@@ -2,7 +2,7 @@ import { TextInput } from "../lib/TextField";
 import { For, Show, createEffect, createMemo, createSignal, lazy, onCleanup, onMount, untrack } from "solid-js";
 import { Icon } from "../lib/icons";
 import { catalog, computerOffline } from "../../store/catalog";
-import { GONE, change, detailsFor, followedFor, copyCommand, copyFolder, copyName, copySessionId, copyReference, end, forget, interrupting, notify, perform, stillListed, pendingNotifications, toggleMute, updating } from "../../store/actions";
+import { GONE, change, copyCommand, copyFolder, copyName, copySessionId, copyReference, end, forget, interrupting, notify, perform, stillListed, pendingNotifications, toggleMute, updating } from "../../store/actions";
 import { bindBatchConfirm, endAfter, running } from "../../store/batch";
 import { childOfferFor } from "../../store/endChildren";
 import { bindResumeTerminalConfirm } from "../../store/sessionTerminal";
@@ -67,7 +67,6 @@ type Item = Extract<MenuEntry, { label: string }> & { action: () => void };
 export function actionEntries(s: Session, details?: Details, options: { context?: boolean } = {}): { change: Item; stop: Item & { shown: boolean; interrupt: () => Promise<Outcome | undefined> }; rename: Item; fork: Item; archive?: Item; end: Item } {
   const row = snapshotOf(s);
   const archived = row.state === "archived";
-  const antigravityStop = row.cmd === "agy" && row.state === "running";
   const m = menuState(row, !computerOffline(s.computer), updating(s.computer, s.name), details, {
     context: options.context, interrupting: interrupting(s.computer, s.name), batchRunning: running(),
     // Qt's archiveNameOccupied: one scan of the live rows, for an archived row only.
@@ -75,15 +74,15 @@ export function actionEntries(s: Session, details?: Details, options: { context?
   });
   const hint = (enabled: boolean, reason?: string) => (enabled || !reason ? undefined : tr(reason));
   // The Stop's interrupt, whose outcome the composer reads (zerus-5wmh.13.4).
-  const interrupt = () => details ? perform(row, { kind: "interrupt", turn_started: details.turn_started }) : Promise.resolve(undefined);
+  const interrupt = () => m.stop.enabled && details
+    ? perform(row, { kind: "interrupt", turn_started: details.turn_started }) : Promise.resolve(undefined);
   return {
     change: {
-      label: tr(m.change.label), icon: archived || row.state !== "running" ? "play" : antigravityStop ? "circle-stop" : "pause",
-      disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason), danger: antigravityStop,
+      label: tr(m.change.label), icon: archived || row.state !== "running" ? "play" : "pause",
+      disabled: !m.change.enabled, hint: hint(m.change.enabled, m.change.reason),
       action: () => {
         if (!m.change.enabled) return;
-        if (antigravityStop) send({ type: "open", kind: "stop_antigravity", row });
-        else void (archived ? restoreSession(row) : change(row));
+        void (archived ? restoreSession(row) : change(row));
       },
     },
     stop: {
@@ -120,9 +119,10 @@ export function actionEntries(s: Session, details?: Details, options: { context?
 /** Both menus share the inspected source and the one guarded Fork path. */
 export function forkEntry(s: Session, details?: Details): Item {
   const row = snapshotOf(s);
-  return { label: tr("Fork session…"), icon: "git-fork", disabled: !sessionForks.available(row, details),
+  const available = s.cmd !== "agy" && sessionForks.available(row, details);
+  return { label: tr("Fork session…"), icon: "git-fork", disabled: !available,
     hint: details ? details.fork_reason || tr(FORK_HINT) : tr(FORK_CHECKING),
-    action: () => { if (details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
+    action: () => { if (s.cmd !== "agy" && details && sessionForks.available(row, details)) send({ type: "open", kind: "fork", row, details: { ...details } }); },
   };
 }
 
@@ -422,33 +422,6 @@ function ResumeTerminalDialog(props: { row: ActionRow; answer: (confirmed: boole
   );
 }
 
-function StopAntigravityDialog(props: { row: ActionRow; close: () => void }) {
-  const confirm = () => {
-    const row = props.row;
-    props.close();
-    const live = stillListed(row);
-    const current = live && live.runId === row.runId && live.conversationId === row.conversationId && live.state === "running";
-    const online = !!current && !computerOffline(live.computer);
-    const details = live && online ? detailsFor(live, true, followedFor(live.key)) : undefined;
-    if (!live || !current || !menuState(live, online, updating(row.computer, row.name), details, { batchRunning: running() }).change.enabled) {
-      notify("info", tr(STATE_CHANGED), true);
-      return;
-    }
-    void change(row);
-  };
-  return (
-    <>
-      <div class="dlg-head"><Icon name="circle-stop" size={18} class="danger" /><h2 id="action-dlg-title">{tr("Stop session?")}</h2></div>
-      <div class="dlg-body"><div id="action-dlg-body" class="confirm-body">{tr("Stop %1 on %2? You can resume its saved conversation.", props.row.name, props.row.machine)}</div></div>
-      <div class="dlg-foot">
-        <span class="spacer" />
-        <button type="button" class="btn solid-danger" onClick={confirm}>{tr("Stop session")}</button>
-        <button type="button" class="btn primary" data-initial autofocus onClick={props.close}>{tr("Cancel")}</button>
-      </div>
-    </>
-  );
-}
-
 function FreshDialog(props: { row: ActionRow; close: () => void }) {
   const copy = freshCopy(props.row);
   const confirm = () => {
@@ -525,7 +498,6 @@ export function ActionDialogs() {
         {(p) => (p.kind === "fork" ? <ForkDialog row={p.row} details={p.details} close={closeDialog} /> : p.kind === "rename" ? <RenameDialog row={p.row} close={closeDialog} />
           : p.kind === "fresh" ? <FreshDialog row={p.row} close={closeDialog} /> : p.kind === "forget" ? <ForgetDialog row={p.row} bound={p.bound} close={closeDialog} />
           : p.kind === "batch" ? <BatchDialog copy={p.copy} answer={p.answer} close={closeDialog} /> : p.kind === "terminate" ? <TerminateDialog row={p.row} close={closeDialog} />
-          : p.kind === "stop_antigravity" ? <StopAntigravityDialog row={p.row} close={closeDialog} />
           : p.kind === "archive" ? <ArchiveDialog row={p.row} close={closeDialog} />
           : p.kind === "resume_terminal" ? <ResumeTerminalDialog row={p.row} answer={p.answer} close={closeDialog} /> : null)}
       </Show>

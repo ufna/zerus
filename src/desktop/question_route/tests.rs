@@ -96,6 +96,10 @@ mod inventory {
         ("native_user_input", NotACard),
         // Codex binding repair provenance for the original input receipt.
         ("original_native_prompt", NotACard),
+        // Context usage provenance and task notifications are not question cards.
+        ("opencode", NotACard),
+        ("opencode_native_step", NotACard),
+        ("zerus_child_policy", NotACard),
         ("process_tree", NotACard),
         ("provider_hook", NotACard),
         ("read-marks.json", NotACard),

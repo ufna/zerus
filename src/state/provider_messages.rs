@@ -40,7 +40,7 @@ fn own(message: &Value, since: f64) -> bool {
 
 /// The first line of a transcript, at most 256 KiB; a Codex transcript must
 /// name the conversation in its `session_meta`.
-fn first_line(file: &mut File, agent: &str, id: &str) -> Result<Vec<u8>> {
+pub(super) fn first_line(file: &mut File, agent: &str, id: &str) -> Result<Vec<u8>> {
     let mut first = Vec::new();
     BufReader::new(file.take(256 * 1024)).read_until(b'\n', &mut first).map_err(|e| e.to_string())?;
     if agent == "codex" {
@@ -74,6 +74,14 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
                 string(&message, "message_id"),
             );
             body["conversation_id"] = json!(id);
+            if let Some(client) = message["codex_client_id"].as_str() {
+                body["codex_client_id"] = json!(client);
+                // Native user_message often has only client_id. Give the Watch
+                // event a stable key before its legacy text/time fallback.
+                if string(&body, "message_id").is_empty() {
+                    body["message_id"] = json!(format!("codex-client:{client}"));
+                }
+            }
             messages.push(body);
         } else {
             messages.push(message);
@@ -86,6 +94,9 @@ fn line_messages(agent: &str, id: &str, line: &[u8]) -> Vec<Value> {
 /// message. Genuinely repeated later messages stay in the conversation, and
 /// Claude's thinking is never a repeat.
 fn repeated(recent: &[Value], message: &Value) -> bool {
+    if let Some(client) = message.get("codex_client_id") {
+        return recent.iter().rev().take(4).any(|row| row.get("codex_client_id") == Some(client));
+    }
     message["type"] != "AgentThinking" && recent.iter().rev().take(4).any(|m| {
         m["type"] == message["type"]
             && m["detail"] == message["detail"]

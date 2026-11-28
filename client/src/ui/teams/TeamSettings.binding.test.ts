@@ -15,13 +15,13 @@ const f = vi.hoisted(() => ({
   providers: vi.fn(), listed: vi.fn<() => typeof scope.list.teams>(),
   setBinding: (_value: TeamOfSession) => {}, setTeam: (_value: TeamView | undefined) => {}, setFailure: (_value: TeamFailure | null) => {}, setUnresolved: (_value: UnresolvedCall[]) => {},
 }));
-vi.mock("../../store/ui", async () => {
+vi.mock("../../store/ui", async (original) => {
   const { createSignal } = await import("solid-js");
   const [row, choose] = createSignal<ReturnType<typeof f.selected>>(); f.selected = row; f.choose = choose as typeof f.choose;
-  return { selected: row, page: () => "sessions", detailTab: () => "team", setPage: vi.fn(), setMenu: vi.fn(), menu: () => undefined };
+  return { ...await original<typeof import("../../store/ui")>(), selected: row, page: () => "sessions", detailTab: () => "team", setPage: vi.fn(), setMenu: vi.fn(), menu: () => undefined };
 });
 vi.mock("../../store/taskNavigation", () => ({ openTask: vi.fn() }));
-vi.mock("../../store/catalog", () => ({ agentKind: (agent: string) => agent }));
+vi.mock("../../store/catalog", () => ({ agentKind: (agent: string) => agent, catalog: { rows: {}, computers: {}, order: [] }, orderedRows: () => [], computerOffline: () => false }));
 vi.mock("../../store/machines", () => ({ machineCards: { workstation: { machine_id: "machine-1" } } }));
 vi.mock("../../store/teams", async () => {
   const { createSignal } = await import("solid-js");

@@ -110,21 +110,20 @@ describe("DeepSeek API-key balance on Accounts", () => {
   });
 });
 
-it.each(["en", "ru"] as const)("shows discovered Antigravity without guessing sign-in or offering account distribution in %s", lang => {
+it.each(["en", "ru"] as const)("omits retired Antigravity accounts in %s", lang => {
   locale.language = lang;
   const usage = usageOf({ provider: "agy", status: "unknown", auth_status: "unknown" });
   const profile = {
     key: "local\u001fnative-agy", host: "local", machine: "arch", id: "native-agy", label: "Google Antigravity", provider: "agy",
     native: true, installed: true, is_default: false, home: "", auth_revision: "", online: true,
-    state: "unknown", detail: { source: "Sign-in is checked when Google Antigravity starts." }, signed_in: false,
+    state: "unknown", detail: { source: "Historical account" }, signed_in: false,
     permission: "", permission_label: { source: "" }, permission_hint: { source: "" }, model_supported: false, model_text: { source: "" },
     usage, opencode: null,
   } as Profile;
   const host = showAccount({ key: "agy-account", label: profile.label, provider: "agy", installed: true, machines: ["arch"], members: [profile],
     usage, permission: { source: "" }, identity_lines: [], identity_note: null });
-  expect(host.querySelector(".acct-row")?.textContent).toContain("Google Antigravity");
-  const status = lang === "ru" ? "Вход проверяется при запуске Google Antigravity." : "Sign-in is checked when Google Antigravity starts.";
-  expect(host.querySelector(".acct-status")?.textContent).toContain(status);
+  expect(host.querySelector(".acct-row")).toBeNull();
+  expect(host.querySelector(".acct-detail")?.textContent).not.toContain("Google Antigravity");
   expect(host.querySelector(".acct-add")).toBeNull();
   expect(host.querySelector(".acct-status button")).toBeNull();
 });

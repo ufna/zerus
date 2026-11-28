@@ -572,7 +572,23 @@ fn read_record(file: &fs::File, id: &str, expected: &Version) -> Result<Value> {
     Metadata::from_record(id, &record)?;
     Ok(record)
 }
-/// Compact terminal references and bounded DeepSeek binding metadata, with
+fn visit_native(
+    until: Instant,
+    rows: usize,
+    bytes: usize,
+    mut visit: impl FnMut(Value) -> Result<()>,
+) -> Result<()> {
+    let (mut remaining_rows, mut remaining_bytes) = (rows, bytes);
+    for store in [dsh::native_archives::STORE, opencode::archives::STORE, native_archive_store::RETIRED_AGY] {
+        let (used_rows, used_bytes) =
+            store.visit_references(until, remaining_rows, remaining_bytes, &mut visit)?;
+        remaining_rows -= used_rows;
+        remaining_bytes -= used_bytes;
+    }
+    Ok(())
+}
+
+/// Compact terminal references and bounded native binding metadata, with
 /// complete archive coverage. No conversation journal is opened by review.
 pub(super) fn visit_metadata(
     until: Instant,
@@ -584,7 +600,7 @@ pub(super) fn visit_metadata(
         live(until)?;
         visit(metadata.value())?;
     }
-    super::dsh::native_archives::visit_references(until, remaining, BYTES - snapshot.bytes, visit)
+    visit_native(until, remaining, BYTES - snapshot.bytes, visit)
 }
 /// Select through the folder index, then verify the authoritative relevant
 /// bodies before the first callback. Caller retains repository -> state locks
@@ -618,7 +634,7 @@ pub(super) fn visit_related(
         records.push((id.clone(), expected.clone(), record));
     }
     let mut native = Vec::new();
-    super::dsh::native_archives::visit_references(
+    visit_native(
         until,
         FILES - snapshot.rows.len(),
         BYTES - bytes,
@@ -630,6 +646,12 @@ pub(super) fn visit_related(
                     folder.is_absolute() && folder.starts_with(target)
                 })
             {
+                if record["backend"] == "opencode" {
+                    return Err("An archived OpenCode conversation still needs this folder".into());
+                }
+                if record["backend"] == "agy" {
+                    return Err("An archived Antigravity conversation still needs this folder".into());
+                }
                 native.push(record);
             }
             Ok(())

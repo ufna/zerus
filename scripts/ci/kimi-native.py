@@ -38,6 +38,9 @@ METHODS = (
     'test_kimi_native.NativeKimi.test_exact_native_wire_repairs_a_lost_acceptance_write_without_replay',
     'test_kimi_native.NativeKimi.test_background_task_completion_settles_its_own_main_turn',
     'test_kimi_native.NativeKimi.test_busy_attachment_send_is_typed_once_and_delivered_once',
+    'test_terminal_native_accept.NativeKimiNext.test_busy_native_input_keeps_draft_and_recovers_the_original_file',
+    'test_terminal_native_accept.NativeKimiNext.test_equal_native_backlog_reoffers_same_request_during_next_working_turn',
+    'test_terminal_native_accept.NativeKimiNext.test_indexed_busy_refusal_keeps_original_file_after_ready_retry',
     'test_kimi_native.NativeKimi.test_clear_input_discards_a_residue_and_kimi_keeps_running',
     'test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',
     # #2195 (zerus-cdhjm.3): private cache expiry compacts before one delivery,
@@ -64,6 +67,9 @@ METHODS = (
     'test_kimi_questions_native.NativeKimiQuestions.test_short_question_foreign_other_is_preserved_without_submission',
     'test_kimi_native.NativeKimi.test_id_settings_before_first_message_preserves_empty_conversation_and_defaults',
     'test_kimi_native.NativeKimi.test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults',
+    'test_kimi_native.NativeKimi.test_pending_effort_chooser_confirm_allows_a_new_send',
+    'test_kimi_native.NativeKimi.test_id_pending_effort_chooser_cancel_allows_a_new_send',
+    'test_kimi_native.NativeKimi.test_id_auto_apply_effort_chooser_confirm_allows_a_new_send',
     'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults',
 )
 # The Agent Teams class (package 15) runs as its own child with its own bound, selected
@@ -331,7 +337,8 @@ def checked_teams_methods():
 def checked_methods():
     found = []
     for filename, classes in (('test_kimi_native', ('NativeKimi',)),
-                              ('test_kimi_questions_native', ('NativeKimiTrust', 'NativeKimiQuestions'))):
+                              ('test_kimi_questions_native', ('NativeKimiTrust', 'NativeKimiQuestions')),
+                              ('test_terminal_native_accept', ('NativeKimiNext',))):
         tree = ast.parse((ROOT / 'tests' / (filename + '.py')).read_text())
         for name in classes:
             node = next(item for item in tree.body if isinstance(item, ast.ClassDef) and item.name == name)

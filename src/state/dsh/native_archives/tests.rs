@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::params;
 use std::process::Command;
 
 const CASE: &str = "HGS_TEST_NATIVE_ARCHIVE_CENSUS";

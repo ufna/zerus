@@ -47,11 +47,13 @@ const QUEUE_SAVE_REFUSED = trNoop("The draft could not be queued. Its text is st
 const QUEUE_FULL = trNoop("The local message queue is full. The draft is still in the editor.");
 const COMPOSER_STATUS_SOURCES: readonly string[] = [
   DRAFTS_NOT_RECORDED,
+  trNoop("The compaction result is still unknown. Check Terminal."),
   QUEUE_SAVE_REFUSED,
   QUEUE_FULL,
   trNoop("Checking the session…"),
   trNoop("This session cannot queue messages in Zerus. Wait for the agent to become ready."),
   trNoop("The original session changed. The draft is still in the editor."),
+  trNoop("Queued in Codex"),
   trNoop("Submitted to OpenCode"),
   trNoop("Update hgs on this computer to queue messages. The draft stays in the editor."),
 ];
@@ -69,12 +71,13 @@ export interface ComposerPort {
   attach(handle: number, paths: string[], start: number, end: number): Promise<void>;
   pasteImage(handle: number, png: Uint8Array, start: number, end: number): Promise<void>;
   send(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
-  removeWaiting(handle: number, requestId: string): Promise<ComposerView>;
+  removeWaiting(handle: number, requestId: string, intent?: import("../types").WaitingRemovalIntent): Promise<ComposerView>;
   push(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
   sendNow(queueId: string | null): Promise<boolean>;
   answer(token: number, answer: Answer): Promise<SendReply>;
   remove(handle: number, index: number): Promise<void>;
   undo(handle: number): Promise<void>;
+  dismissCompactionNotice(handle: number, requestId: string): Promise<void>;
   allowRetry(handle: number): Promise<void>;
   cancelSend(handle: number): Promise<void>;
   /** Resolves to the Stop's number (0 for none) for a later refusal. */
@@ -132,7 +135,7 @@ export type Dialog =
   | { kind: "clear"; control: ClearControl };
 
 /** The status line (Qt's updateControls 1200-1204): text and whether it is in the error colour. */
-export interface StatusLine { text: string; error: boolean; multiline?: boolean }
+export interface StatusLine { text: string; error: boolean; multiline?: boolean; compactionNoticeId?: string }
 
 /**
  * The status line from Rust's view, the composer's own error and the length
@@ -152,12 +155,16 @@ export function statusLine(v: ComposerView | undefined, own: string | undefined,
     return { text: tr("%1 %2", tr(DRAFT_KEPT), tr(v.previous_message_pending === true ? EARLIER_INPUT_PENDING : EARLIER_INPUT_UNOBSERVED)),
       error: true, multiline: true };
   }
+  if (v.compaction_notice_id) return {
+    text: tr("Compaction was not confirmed. Check Terminal; your draft was kept without sending."),
+    error: true, multiline: true, compactionNoticeId: v.compaction_notice_id,
+  };
   const definiteDraftStatus = hasDraft && v.status_error && !v.uncertain && !v.delivery_pending
     ? earlierInputDraftStatus(v.status, v.previous_message_pending) : "";
   if (definiteDraftStatus) return { text: definiteDraftStatus, error: v.previous_message_pending !== false, multiline: true };
   if (!below) return { text: coreText(v.status), error: v.status_error };
   if (tooLong) return { text: tr(TOO_LONG), error: true };
-  if (hasDraft && v.previous_message_pending === true && !v.uncertain && !v.delivery_pending && v.available && !v.session_status) {
+  if (hasDraft && v.previous_message_pending === true && !v.offers_native_queue && !v.uncertain && !v.delivery_pending && v.available && !v.session_status) {
     return { text: tr(EARLIER_INPUT_PENDING), error: false, multiline: true };
   }
   // Rust's length check may still see older text: the next item then.
@@ -182,6 +189,7 @@ function handleSet() {
 export type ClearDriver = (session: SessionRef | undefined, control: ClearControl, execute: (reference: import("./endActionBusy").EndReference, key: string) => Promise<SendReply>) => Promise<SendReply | undefined>;
 export function createComposer(port: ComposerPort, timers: Timers = realTimers, images: Images = browserImages, notices: Notices = appNotices, sent: (key: string) => void = () => {}, delayClear?: ClearDriver) {
   const [view, setView] = createSignal<ComposerView | undefined>();
+  const [removedWaiting, setRemovedWaiting] = createSignal<{ key: string; ids: readonly string[] }>();
   const [text, setText] = createSignal("");
   /** `start` is the anchor and `end` the cursor position (Qt's anchor and position); start may follow end. */
   const [selection, setSelection] = createSignal({ start: 0, end: 0 });
@@ -204,6 +212,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const [starting, setStarting] = createSignal(false);
   /** The disabled Send's hint (Qt shows the status as a tooltip at the editor). */
   const [hint, setHint] = createSignal<string | undefined>();
+  const [queuedAnnouncement, setQueuedAnnouncement] = createSignal<number>();
   let rev = 0;
   let epoch = 0;
   let dirty = false;
@@ -214,6 +223,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   /** The draft key of the session last opened; a view of another composer is an older answer. */
   let expected: string | undefined;
   let openedSession: SessionRef | undefined;
+  const retiredSession = () => !!view() && openedSession?.name.startsWith("agy/") === true;
   let suggestionKey = "";
   let opens = 0;
   let inFlight = 0;
@@ -245,7 +255,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const waitingMessages = () => opening() > 0 ? [] : view()?.waiting_in_zerus ?? [];
   const canSubmitDraft = () => {
     const v = view();
-    if (!v || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
+    if (!v || retiredSession() || !v.loaded || !v.available || v.uncertain || v.input_visible === false || locked() || tooLong() || !hasContent()) return false;
     return !(v.attachments.length > 0 && !v.attachments_available);
   };
   const directSendEnabled = () => canSubmitDraft() && !ordinaryInputHeld() && waitingMessages().length === 0;
@@ -254,7 +264,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     ? canSubmitDraft() && waitingMessages()[0]?.state !== "reserved"
     : directSendEnabled());
   /** Qt adds the push action to this message field only (MessageComposer.cpp:841-853). */
-  const pushEnabled = () => !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
+  const pushEnabled = () => !retiredSession() && !closing() && opening() === 0 && !!view() && !view()?.subagent && view()?.input_visible !== false;
   /** The old session's queue must not remain actionable while its successor opens. */
   const queue = () => opening() > 0 ? null : view()?.queue ?? null;
   /** The message a Compact and continue holds (zerus-pabah): like the queue, the open composer's own, never a successor's while it opens. */
@@ -398,7 +408,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       case "accepted":
         if (opening() > 0 || r.view.handle !== h) break;
         if (r.view.text_epoch > epoch) apply(r.view);
-        if (r.waiting && r.view.text_epoch === epoch) showHint(tr("Queued in Zerus."));
+        if (r.waiting) setQueuedAnnouncement(h);
         break;
       case "cold": setDialog({ kind: "cold", token: r.token, prompt: r.prompt }); break;
       case "start": setDialog({ kind: "start", token: r.token, question: r.question }); break;
@@ -428,7 +438,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   /** Panel and window shortcut use this hub command; a push keeps its own handle. */
   async function sendNow(queueId?: string): Promise<boolean> {
-    if (closing() || view()?.subagent) return false;
+    if (closing() || view()?.subagent || retiredSession()) return false;
     if (opening() > 0) {
       notices("info", tr("Nothing queued can be sent now"), false);
       return false;
@@ -437,12 +447,25 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     catch (e) { notices("error", typeof e === "string" ? e : e instanceof Error ? e.message : String(e), true); return false; }
   }
 
-  async function removeWaiting(h: number, requestId: string) {
+  const skipWaitingBinding = (h: number, requestId: string) => {
+    const current = view(), binding = current?.skip_waiting;
+    return h === handle() && binding?.handle === h && opening() === 0 && binding?.key === current?.key
+      && binding?.queue[0]?.[0] === requestId ? binding : undefined;
+  };
+
+  async function removeWaiting(h: number, requestId: string, intent?: import("../types").WaitingRemovalIntent) {
     if (h !== handle() || operationLocked()) return;
+    const key = view()?.key;
     calling.add(h);
     try {
-      const next = await port.removeWaiting(h, requestId);
-      if (h === handle() && opening() === 0) apply(next);
+      const next = intent ? await port.removeWaiting(h, requestId, intent) : await port.removeWaiting(h, requestId);
+      if (h === handle() && opening() === 0 && key === next.key && h === next.handle) batch(() => {
+        if (!next.waiting_in_zerus?.some(row => row.request_id === requestId)) {
+          const prior = removedWaiting();
+          setRemovedWaiting({ key: next.key, ids: [...(prior?.key === next.key ? prior.ids : []), requestId].slice(-64) });
+        }
+        apply(next);
+      });
     } catch (e) {
       notices("error", coreText(e instanceof Error ? e.message : String(e)), true);
     } finally {
@@ -466,6 +489,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     }
     hintTimer?.();
     setHint(undefined);
+    setQueuedAnnouncement(undefined);
     // Locked before the flush awaits, so a second Enter meanwhile sends nothing.
     calling.add(h);
     let r: SendReply;
@@ -496,7 +520,8 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   return {
     view, text, selection, dialog, locked, operationLocked, ordinaryInputHeld, sendEnabled, pushEnabled, queue, held: heldNow, hint,
-    waitingMessages, removeWaiting,
+    waitingMessages, removeWaiting, skipWaitingBinding, removedWaiting, opening: () => opening() > 0,
+    queuedAnnouncement: () => queuedAnnouncement() !== undefined && queuedAnnouncement() === handle(),
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),
     apply, receive,
@@ -620,6 +645,10 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       if (r.kind === "sending") return;
       reply(r, h, at, false);
     },
+    async dismissCompactionNotice(requestId: string) {
+      const v = view();
+      if (v?.compaction_notice_id === requestId) await port.dismissCompactionNotice(v.handle, requestId).catch(() => {});
+    },
     async cancelSend() { const h = handle(); if (h !== undefined) await port.cancelSend(h).catch(() => {}); },
     async allowRetry() {
       const h = handle();
@@ -706,6 +735,7 @@ export type ComposerStore = ReturnType<typeof createComposer>;
 export const composer = createRoot(() => createComposer({
   open: bridge.composerOpen, edit: bridge.composerEdit, pick: bridge.composerPick, attach: (h, paths, start, end) => bridge.composerAttach(h, paths, start, end), pasteImage: bridge.composerPasteImage,
   send: bridge.sendMessage, removeWaiting: bridge.composerRemoveWaiting, push: (...args) => bridge.sendPush(...args), sendNow: (id) => bridge.queueSendNow(id), answer: bridge.sendAnswer, remove: bridge.composerRemove, undo: bridge.composerUndoRemove,
+  dismissCompactionNotice: bridge.composerDismissCompactionNotice,
   allowRetry: bridge.composerAllowRetry, cancelSend: bridge.sendCancel, interrupted: bridge.sendInterrupted, interruptFailed: bridge.sendInterruptFailed, clear: bridge.clearContext,
   refresh: bridge.composerRefresh, openAttachment: (path) => bridge.attachmentOpenDraft(path), localRetry: bridge.localRetry, localDelete: bridge.localDelete, localInspect: bridge.localInspect,
   inboxRemove: bridge.inboxRemove,

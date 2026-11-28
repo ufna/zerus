@@ -472,7 +472,7 @@ pub(crate) fn request_lock(request_id: &str) -> Result<RequestLock> {
 
 /// `request_lock`, waiting at most until `until`: None when another holder
 /// still has it then.
-fn request_lock_until(request_id: &str, until: Option<Instant>) -> Result<Option<RequestLock>> {
+pub(super) fn request_lock_until(request_id: &str, until: Option<Instant>) -> Result<Option<RequestLock>> {
     uuid::Uuid::parse_str(request_id).map_err(|_| "Invalid request ID".to_owned())?;
     let directory = root().join("dsh/witness-locks");
     private_dir(&directory)?;

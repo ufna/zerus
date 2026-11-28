@@ -799,6 +799,16 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
         let details = self.details(target).map_err(Failure::message)?;
         Ok(PaneInfo::new(render(&details, fields)))
     }
+    fn pane_info_until(&self, target: Target, fields: &[PaneField], until: Instant) -> Result<PaneInfo> {
+        let wait = until.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            return Err("Terminal pane information deadline passed".into());
+        }
+        let (_, response) = self.connector.call_within(Op::PaneInfo { target: target_of(target) }, wait);
+        let details = serde_json::from_value::<PaneDetails>(response.map_err(Failure::message)?)
+            .map_err(|error| format!("invalid session host answer: {error}"))?;
+        Ok(PaneInfo::new(render(&details, fields)))
+    }
     fn probe(&self, target: Target, fields: &[PaneField]) -> Option<PaneInfo> {
         self.pane_info(target, fields).ok()
     }

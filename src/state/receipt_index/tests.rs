@@ -1664,3 +1664,49 @@ fn another_sends_advisory_registration_yields_without_losing_its_original() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+fn terminal_outbox_refusal_only_recovers_the_exact_untyped_original() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let receipts = root.join(Source::Terminal.directory());
+    fs::create_dir(&receipts).unwrap();
+    crate::platform::restrict_dir(&receipts).unwrap();
+    let name = "codex/project/fixture";
+    let id = uuid::Uuid::new_v4().to_string();
+    let run = uuid::Uuid::new_v4().to_string();
+    let conversation = uuid::Uuid::new_v4().to_string();
+    let digest = "a".repeat(64);
+    let original = json!({"refusal_schema":1,"request_id":id,"name":name,"run_id":run,
+        "conversation_id":conversation,"first_message":false,"digest":digest,
+        "status":"refused_before_input","transport":"terminal","reason":input::DRAFT});
+    let path = receipts.join(format!("{id}.json"));
+    let query = json!({"request_id":id,"expected_run_id":run,
+        "expected_conversation_id":conversation,"input_sha256":digest});
+    let status = |name, query: &Value| terminal_outbox_status(&root, name, &serde_json::to_vec(query).unwrap());
+    assert!(status(name, &query).is_err());
+    persist(&path, &original).unwrap();
+    let recovered = status(name, &query).unwrap();
+    assert_eq!(recovered["status"], "waiting_for_idle");
+    assert_eq!(recovered["proof"], "native_input_lock");
+    assert_eq!(recovered["input_sha256"], digest);
+    assert!(status("codex/project/other", &query).is_err());
+    for field in ["expected_run_id", "expected_conversation_id", "input_sha256"] {
+        let mut changed = query.clone();
+        changed[field] = json!("b".repeat(64));
+        assert!(status(name, &changed).is_err(), "{field}");
+    }
+    let mut permanent = original.clone();
+    permanent["reason"] = json!("session identity changed");
+    persist(&path, &permanent).unwrap();
+    assert_eq!(status(name, &query).unwrap()["status"], "not_offered");
+    permanent["outbox_waiting"] = json!(true);
+    persist(&path, &permanent).unwrap();
+    assert_eq!(status(name, &query).unwrap()["status"], "waiting_for_idle");
+    for state in ["preparing", "pending", "submitted", "not_offered"] {
+        let mut changed = original.clone();
+        changed["status"] = json!(state);
+        persist(&path, &changed).unwrap();
+        assert!(status(name, &query).is_err(), "{state}");
+    }
+}

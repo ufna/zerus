@@ -148,6 +148,10 @@ pub struct LogEntry {
     /// The person's message an agent's entry carried out (zerus-46l1q).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person_request: Option<PersonRequestRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_review: Option<crate::quick_review::Decision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub technical_review: Option<crate::technical_review::Audit>,
 }
 
 /// A task message's durable outbox reservation. Submission is not consumption.
@@ -257,6 +261,14 @@ pub struct TaskView {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_assignment: Option<ReviewAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_report_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_review_status: Option<crate::quick_review::Status>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_review: Option<crate::quick_review::Disposition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_review_assignee_name: Option<String>,
     pub cancelled_at: Option<i64>,
     pub cancel_reason: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]

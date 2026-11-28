@@ -8,10 +8,10 @@ pub(super) fn path(id: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn read_archive(name: &str, id: &str) -> Result<Value> {
-    if name.starts_with("dsh/") {
-        return dsh::native_archives::by_id(id)
+    if let Some(store) = native_archive_store::named(name) {
+        return store.by_id(id)
             .and_then(|row| {
-                let row = row.filter(|row| row["name"] == name).ok_or("no such DeepSeek archive")?;
+                let row = row.filter(|row| row["name"] == name).ok_or("no such native archive")?;
                 session_id::verify(&row)?;
                 Ok(row)
             })
@@ -475,6 +475,9 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
         return Err(dsh::retirement::RESTORE_PENDING.into());
     }
+    if record["backend"] == "opencode" && opencode::archives::restore_source_held(&record)? {
+        return Err("Finish the original OpenCode restore before forgetting this archive".into());
+    }
     // Do not remove the only recoverable source of a not-yet-confirmed restore.
     if record_path(name).exists() && {
         let active = read(name)?;
@@ -491,6 +494,8 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if let Some(scope)=scope {scope.changing();}
     if record["backend"] == "dsh" {
         dsh::native_archives::remove(&record)?;
+    } else if record["backend"] == "opencode" {
+        opencode::archives::STORE.remove(&record)?;
     } else {
         remove_synced(&path(id)?)?;
     }

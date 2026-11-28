@@ -5,8 +5,12 @@ The mocked MCP tool returns a synthetic id and creates no task or agent.
 import http.server
 import json
 import os
+import platform
 from pathlib import Path
 import shlex
+import signal
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -54,12 +58,14 @@ class FakeNativeTaskQueue(unittest.TestCase):
     write_record = test_input.InputTransport.write_record
     tmux = test_input.InputTransport.tmux
     wait_for = test_input.InputTransport.wait_for
+    wait_until = test_input.InputTransport.wait_until
     received = test_input.InputTransport.received
     payload = test_input.InputTransport.payload
     send = test_input.InputTransport.send
     assert_refusal = test_input.InputTransport.assert_refusal
 
-    def prepare_queue(self, *, explicit=False, outside=False, missing=False, linked=False):
+    def prepare_queue(self, *, explicit=False, outside=False, missing=False, linked=False,
+                      creator_version='0.169.0'):
         root = self.root.resolve()
         configured = root / ('explicit-home' if explicit else '.codex')
         account = root / 'codex-data' if linked else configured
@@ -82,7 +88,7 @@ class FakeNativeTaskQueue(unittest.TestCase):
         rollout = directory / f'rollout-{self.conversation_id}.jsonl'
         test_input.InputTransport.resumed_unconfirmed(self, native=source, rollout=rollout)
         header = json.loads(rollout.read_text())
-        header['payload']['cli_version'] = '0.169.0'
+        header['payload']['cli_version'] = creator_version
         rollout.write_text(json.dumps(header) + '\n')
         self.record.pop('expected_id')
         self.record.update(
@@ -116,6 +122,138 @@ class FakeNativeTaskQueue(unittest.TestCase):
         self.assert_refusal(request, reason)
         self.assertFalse(self.queue_log.exists(), 'refusal must precede the first Codex invocation')
         self.assertEqual(self.received(), b'')
+
+    def busy_queue(self, *, creator_version='0.169.0'):
+        self.prepare_queue(creator_version=creator_version)
+        self.record.pop("codex_native_tasks")
+        self.record.update(activity="busy", phase="tool")
+        self.write_record()
+        return self.payload(only_when_idle=True, text="Exact message for the original private task")
+
+    def busy_send(self, request):
+        return subprocess.run([str(test_input.HGS), "send", self.name, "--codex-queue", "--json"],
+                              input=json.dumps(request), env=self.env, text=True, capture_output=True, timeout=15)
+
+    def test_lost_busy_native_reply_never_reoffers_or_uses_the_terminal(self):
+        request = self.busy_queue()
+        self.env["FIXTURE_QUEUE_ID"] = "malformed-ack"
+        until = time.monotonic() + 8
+        while True:
+            answer = self.busy_send(request)
+            if answer.returncode or time.monotonic() > until:
+                break
+            self.assertEqual(json.loads(answer.stdout)["status"], "waiting_for_idle")
+            time.sleep(.1)
+        self.assertNotEqual(answer.returncode, 0)
+        original_calls = self.queue_log.read_text()
+        self.assertEqual(sum(s.startswith("queue ") and not s.startswith("queue --help") for s in original_calls.splitlines()), 1)
+        self.env["FIXTURE_QUEUE_ID"] = self.queue_id
+        self.assertNotEqual(self.busy_send(request).returncode, 0)
+        self.assertEqual(self.queue_log.read_text(), original_calls)
+        self.assertEqual(self.received(), b"")
+
+    @unittest.skipUnless(sys.platform == 'darwin' and platform.machine() == 'arm64',
+                         'requires the Darwin signed image gate')
+    def test_resumed_busy_queue_accepts_the_older_history_once(self):
+        request = self.busy_queue(creator_version='0.168.0')
+        until = time.monotonic() + 8
+        while True:
+            answer = self.busy_send(request)
+            self.assertEqual(answer.returncode, 0, answer.stderr)
+            receipt = json.loads(answer.stdout)
+            if receipt['status'] == 'submitted':
+                break
+            self.assertEqual(receipt['status'], 'waiting_for_idle')
+            self.assertLess(time.monotonic(), until, receipt)
+            time.sleep(.1)
+        self.assertEqual(receipt['transport'], 'codex_queue')
+        self.assertEqual(receipt['request_id'], request['request_id'])
+        self.assertEqual(receipt['conversation_id'], self.conversation_id)
+        self.assertEqual(receipt['native_queued_message_id'], self.queue_id)
+        original_calls = self.queue_log.read_text()
+        offers = sum(line.startswith('queue ') and not line.startswith('queue --help')
+                     for line in original_calls.splitlines())
+        self.assertEqual(offers, 1)
+        duplicate = self.busy_send(request)
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        self.assertEqual(json.loads(duplicate.stdout), receipt)
+        self.assertEqual(self.queue_log.read_text(), original_calls)
+        self.assertEqual(self.received(), b'')
+
+    @unittest.skipUnless(sys.platform == 'darwin' and platform.machine() == 'arm64',
+                         'requires the Darwin suspended queue helper')
+    def test_writer_exit_before_the_receipt_does_not_release_the_queue_helper(self):
+        request = self.busy_queue(creator_version='0.168.0')
+        pause = self.root / 'receipt-pause'
+        pause.mkdir()
+        env = dict(self.env, HGS_TEST_RECEIPT_PAUSE=str(pause))
+        args = [str(test_input.HGS), 'send', self.name, '--codex-queue', '--json']
+        # A detached caller may ignore HUP and carry a signal mask.
+        def start_writer():
+            old_hup = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGHUP})
+            try:
+                writer = subprocess.Popen(args, env=env, text=True, stdin=subprocess.PIPE,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                          start_new_session=True)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+                signal.signal(signal.SIGHUP, old_hup)
+            writer.stdin.write(json.dumps(request))
+            writer.stdin.close()
+            writer.stdin = None
+            self.addCleanup(stop_writer, writer)
+            return writer
+
+        def stop_writer(writer):
+            if writer.poll() is None:
+                writer.kill()
+            return writer.communicate(timeout=3)
+
+        until = time.monotonic() + 8
+        while True:
+            writer = start_writer()
+            self.wait_until(lambda: (pause / 'ready').exists() or writer.poll() is not None,
+                            max(0, until - time.monotonic()))
+            if (pause / 'ready').exists():
+                break
+            output, error = stop_writer(writer)
+            self.assertEqual(writer.returncode, 0, error)
+            self.assertEqual(json.loads(output)['status'], 'waiting_for_idle', output)
+            self.assertLess(time.monotonic(), until, output)
+            time.sleep(.1)
+        try:
+            rows = subprocess.check_output(['ps', '-ax', '-o', 'ppid=,pid=,stat='],
+                                           text=True).splitlines()
+            stopped = [pid for parent, pid, status in map(str.split, rows)
+                       if parent == str(writer.pid) and status.startswith('T')]
+            self.assertEqual(len(stopped), 1)
+            stop_writer(writer)
+            self.wait_until(lambda: subprocess.run(['ps', '-p', stopped[0], '-o', 'pid='],
+                               capture_output=True).returncode != 0, 3)
+        finally:
+            stop_writer(writer)
+        calls = self.queue_log.read_text().splitlines()
+        self.assertFalse(any(line.startswith('queue ') and not line.startswith('queue --help')
+                             for line in calls), calls)
+        self.assertEqual(self.received(), b'')
+
+    @unittest.skipUnless(sys.platform.startswith('linux')
+                         or (sys.platform == 'darwin' and platform.machine() == 'arm64'),
+                         'requires a native loaded-image gate')
+    def test_replaced_busy_executable_cannot_admit_the_native_queue(self):
+        request = self.busy_queue()
+        exe = self.bin / "codex"
+        replacement = self.bin / "replacement"
+        replacement.write_text('#!/bin/sh\nprintf "%s\\n" replacement >> "$FIXTURE_QUEUE_LOG"\nexit 1\n')
+        replacement.chmod(0o755)
+        replacement.replace(exe)
+        for _ in range(3):
+            answer = self.busy_send(request)
+            self.assertEqual(answer.returncode, 0, answer.stderr)
+            self.assertEqual(json.loads(answer.stdout)["status"], "waiting_for_idle")
+        self.assertFalse(self.queue_log.exists())
+        self.assertEqual(self.received(), b"")
 
     def test_native_account_uses_default_for_every_queue_command(self):
         self.assert_queued(self.prepare_queue())

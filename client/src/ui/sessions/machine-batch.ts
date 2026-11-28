@@ -23,14 +23,14 @@ export interface MachineRow {
 
 export interface MachineCounts { live: number; saved: number; allIdle: boolean; nativeControls: boolean }
 
-/** Live and saved rows of one computer; archived rows are skipped, OpenCode and rows without bulk lifecycle only set `nativeControls`. */
+/** Live and saved rows of one computer; archived and retired Antigravity rows are skipped, OpenCode and rows without bulk lifecycle only set `nativeControls`. */
 export function machineCounts(rows: readonly MachineRow[]): MachineCounts {
   let live = 0;
   let saved = 0;
   let allIdle = true;
   let nativeControls = false;
   for (const s of rows) {
-    if (s.state === "archived") continue;
+    if (s.state === "archived" || s.cmd === "agy") continue;
     if (s.cmd === "opencode" || !s.bulkLifecycle) { nativeControls = true; continue; }
     if (s.state === "running") {
       live++;
@@ -58,9 +58,7 @@ type Entry = Extract<MenuEntry, { label: string }>;
 export function machineEntries(m: MachineInput): MenuEntry[] {
   const { live, saved, allIdle, nativeControls } = machineCounts(m.rows);
   const out: MenuEntry[] = [{ heading: m.machine }];
-  const antigravity = nativeControls && m.rows.some(row => row.cmd === "agy" && row.state !== "archived");
-  const individual = antigravity ? tr("Use individual controls for native sessions") : NATIVE_LINE;
-  if (nativeControls) out.push({ label: individual, disabled: true });
+  if (nativeControls) out.push({ label: NATIVE_LINE, disabled: true });
   const pause: Entry = {
     label: tr("Pause all (%1)", live),
     disabled: !(m.online && !m.batchRunning && live > 0 && allIdle),
@@ -74,9 +72,8 @@ export function machineEntries(m: MachineInput): MenuEntry[] {
     action: () => m.start("resume_all", saved),
   };
   if (nativeControls) {
-    const hint = antigravity ? tr("Native sessions are excluded from this batch.") : NATIVE_HINT;
-    pause.hint = hint;
-    resume.hint = hint;
+    pause.hint = NATIVE_HINT;
+    resume.hint = NATIVE_HINT;
   }
   out.push(resume);
   if (!m.online) for (const e of out) if ("label" in e) e.disabled = true;

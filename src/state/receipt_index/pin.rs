@@ -14,7 +14,7 @@ impl ProvenPin {
         requested: &Binding,
         stamp: &str,
     ) -> Option<Self> {
-        let value = read_original(path).ok()?;
+        let value = read_indexable_original(path, source).ok()?;
         let proof = Binding::parse(source, &value, path.file_name()?.to_str()?).ok()?;
         (proof.id == requested.id
             && proof.fingerprint == requested.fingerprint

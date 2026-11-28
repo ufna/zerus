@@ -654,19 +654,19 @@ client-native job.
 
 WebView2 Evergreen is a shared prerequisite. The app installer checks the
 Microsoft-documented user and machine registration and stops before changing
-Zerus files when it is missing. Winget declares `Microsoft.EdgeWebView2Runtime`
-as a dependency; portable users install it separately. Only the disposable
-Windows CI runner uses `scripts/ci/ensure-webview2.py`: it first checks for an
-existing runtime, otherwise downloads the official HTTPS bootstrapper within a
-4 MiB/time bound, verifies a valid Microsoft Authenticode signature, runs it
-with a fixed timeout and checks the registration again. It refuses owner and
-non-Windows environments and never removes the shared runtime. See Microsoft's
+Zerus files when it is missing. Portable users install it separately if needed.
+Only the disposable Windows CI runner uses `scripts/ci/ensure-webview2.py`: it
+checks for an existing runtime, otherwise downloads the official HTTPS
+bootstrapper within a 4 MiB/time bound, verifies a valid Microsoft Authenticode
+signature, runs it with a fixed timeout and checks the registration again. It
+refuses owner and non-Windows environments and never removes the shared runtime.
+See Microsoft's
 [WebView2 distribution guidance](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
 
 `scripts/package-windows.py` copies the exact tested `hgs.exe`, Tauri
 `hgs-tray.exe` and `zerus-mobile-connector.exe` into
 `zerus-windows-x86_64.zip`, preserving the top-level
-`zerus-windows-x86_64/hgs-tray.exe` path winget uses. It adds the app-local MSVC
+`zerus-windows-x86_64/hgs-tray.exe` path. It adds the app-local MSVC
 runtime from Visual Studio's default redistributable directory and the pinned
 ConPTY pair next to `hgs.exe`. No Qt runtime or plugins are deployed.
 
@@ -702,9 +702,8 @@ pending; they create no ad-hoc scheduled task or claim active background duties.
 The job uploads the zip, installer and logs in `windows-x86_64-<commit>` for seven
 days (three for schedules). Stable/nightly assembly includes the tested zip
 unchanged and its paired per-user installer; both are present in the published
-0.48.0 release. The installer stays on GitHub, outside the v1 feed and mirror
-downloads, and winget keeps the portable zip layout. Windows Dev builds remain
-absent.
+0.48.0 release. Both Windows assets stay on GitHub, outside the v1 feed and
+mirror downloads. Windows Dev builds remain absent.
 
 #### The bundled ConPTY pair
 
@@ -2136,11 +2135,7 @@ with a zip: older mirror code accepts a zip only in nightlies and fails the whol
 where the same job also runs `--dev-platform desktop`, the previous desktop Dev
 catalog too.
 
-A separate `winget` job then proposes that zip to `microsoft/winget-pkgs` as
-`ufna.Zerus` ([winget](public-distribution.md#winget)). It runs after the release
-is public, reads only published assets and never proposes a version twice, so a
-failed submission is retried with **Re-run failed jobs** without repeating the
-release, AUR or Homebrew steps.
+Zerus no longer submits this zip to [winget](public-distribution.md#winget).
 
 The VCS flavor follows `main` automatically when users rebuild. Release-time sync
 updates its recipe when dependencies/build/package logic change; pure `pkgver`
@@ -2151,8 +2146,9 @@ Publication runs are serialized across versions. Existing public assets must
 match exactly; missing or different public assets stop publication. Uploads never
 use `--clobber`, tags never move and AUR pushes never force. An interrupted draft
 can resume only with matching existing assets and the exact commit. If an AUR push
-fails after GitHub publication, **rerun Publish release with the same candidate
-run and version**. Completed recipes become no-ops; the remaining updates retry.
+fails after GitHub publication, **run Publish release from current `main` with
+the same candidate run and version**. Do not rerun a pre-retirement publisher
+execution. Completed recipes become no-ops; the remaining updates retry.
 The two services are not an atomic transaction, so inspect the failed job's output.
 Do not rebuild or replace published archives to recover a partial AUR update.
 
@@ -2173,12 +2169,9 @@ needs an explicit `pkgrel` bump and a separately reviewed recipe change.
 The dedicated AUR SSH public key is registered to **ufna** and SSH authentication
 was verified on **2026-10-08**. Its private key is configured as the GitHub
 **release environment** secret `AUR_SSH_PRIVATE_KEY`. That environment permits
-only the `main` branch. CI/candidate jobs receive no AUR key. Publication jobs use
-`actions: read` and `contents: write`; only the `winget` job needs a personal token:
-the `release` secret `WINGET_TOKEN`, a classic token with the `public_repo` scope of
-the account that owns the `microsoft/winget-pkgs` fork. Without it the job warns
-and stable publication still succeeds.
-The owner starts publication manually; environment reviewers may be added later.
+only the `main` branch. CI/candidate jobs receive no AUR key. The Stable publication
+job uses `actions: read` and `contents: write`. The owner starts publication
+manually; environment reviewers may be added later.
 
 `packaging/aur/known_hosts` pins AUR's Ed25519 host key, independently verified
 against the [official AUR homepage](https://aur.archlinux.org). SSH uses strict

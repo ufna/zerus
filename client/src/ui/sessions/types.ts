@@ -159,7 +159,7 @@ export interface Session {
   terminalReported: boolean;
   terminalAttachSupported: boolean;
   terminalAttachReported: boolean;
-  /** Pause all and Resume all include the row (false for OpenCode). */
+  /** Pause all and Resume all include the row (false for providers with individual or retired lifecycle). */
   bulkLifecycle: boolean;
   // The row as the host lists it, before this device's marks: store/marks.ts
   // derives status, caption, attention, unread, reviewLater, summary and muted
@@ -230,12 +230,17 @@ export interface LocalItem {
   /** Retry and Delete for a definite failure; Check and Delete for an uncertain one. */
   actions: ("retry" | "inspect" | "delete")[];
   inspectLabel: string;
+  /** Terminal-only local rows are actionable only on their original live target. */
+  terminalTarget?: { run: string; conversation: string };
   /** Per file: whether it can be opened (Qt's request_id or local_path rule). */
   available: boolean[];
 }
 
 /** The open composer that owns the exact queued request's actions. */
-export type OutboxItem = import("../../types").WaitingMessage & { handle: number };
+export type OutboxItem = import("../../types").WaitingMessage & {
+  handle: number;
+  blockedBy?: { requestId: string; preview: string };
+};
 
 export interface InboxItem {
   state: "queued" | "not_delivered";

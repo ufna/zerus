@@ -87,10 +87,12 @@ export const resolveTaskReference = (project: string, reference: string) => desk
 /** One further page of a board stage after a cursor (`task list --stage --limit --after`). */
 /** One session's view of a stage: its identity (`launch_id:...` or `run_id:...`) on its computer (empty: this one). */
 export type TaskScope = { host: string; sessionId: string };
-export const readTaskPage = (project: string, stage: string, limit: number, after: string | null, scope?: TaskScope, query?: string, reviewLane?: string, reviewBefore?: string) =>
-  desktop<unknown>("task_page", { project, stage, limit, after, ...(scope ? { session: scope.sessionId, host: scope.host || null } : {}), ...(query ? { query } : {}), ...(reviewLane ? { reviewLane, reviewBefore: reviewBefore || null } : {}) });
+export const readTaskPage = (project: string, stage: string, limit: number, after: string | null, scope?: TaskScope, query?: string, reviewLane?: string, reviewBefore?: string, quickReviewLane?: string) =>
+  desktop<unknown>("task_page", { project, stage, limit, after, ...(scope ? { session: scope.sessionId, host: scope.host || null } : {}), ...(query ? { query } : {}), ...(reviewLane ? { reviewLane } : {}), ...(quickReviewLane ? { quickReviewLane } : {}), ...(reviewLane || quickReviewLane ? { reviewBefore: reviewBefore || null } : {}) });
 export const classifyTaskReview = (project: string, task: string, revision: string, owner: string, criterion: string) =>
   desktop<void>("task_classify_review", { project, task, revision, owner, criterion });
+export const changeTaskQuickReview = (project: string, task: string, change: import("./ui/screens/quick-review").QuickReviewChange) =>
+  desktop<void>("task_quick_review", { project, task, change });
 export const openTaskAttachment = (path: string) => desktop<string | null>("task_attachment_open", { path });
 /** One file of a task, read when its card needs it, checked against its page and kept in the private cache. */
 export const readTaskAttachment = (project: string, task: string, source: TaskFileSource) =>
@@ -239,6 +241,9 @@ export function normalize(b: Partial<Batch>): Batch {
 
 /** The Activity port of the current source (follow and unfollow). */
 export const activityPort: ActivityPort = {
+  receiptPage: (target, cursor) => invoke<Record<string, unknown>>("codex_receipt_page", {
+    computer: target.computer, key: target.key, run_id: target.runId, conversation_id: target.conversationId, cursor,
+  }),
   follow: (request) => source?.follow(request) ?? Promise.resolve(),
   unfollow: (computer, key) => source?.unfollow(computer, key) ?? Promise.resolve(),
 };
@@ -663,7 +668,7 @@ export async function accountEditClose(handle: string): Promise<void> {
   if (inTauri()) await invoke("account_edit_close", { handle });
 }
 export type AccountSetupKind="add"|"login"|"install"|"start"|"key";
-export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean;antigravity_installed?:boolean;antigravity_sign_in?:boolean}
+export interface AccountSetupHost {key:string;machine:string;label:string;online:boolean;providers:string[];saved:{id:string;provider:string;label:string;installed:boolean}[];listed:string[];deepseek_installed:boolean}
 export interface AccountSetupView {handle:string;kind:AccountSetupKind;hosts:AccountSetupHost[];host:string;provider:string;label:string}
 export interface AccountSetupValues {host?:string;provider?:string;saved?:string;label?:string;api_key?:string}
 export interface AccountSetupResult {notices:string[];errors:string[];profile:string|null}
@@ -883,11 +888,11 @@ export function onLaunchAccountsChanged(listener: (computer: ComputerId) => void
 
 const DESKTOP_TERMINAL = "Terminal needs the desktop app.";
 
-export async function terminalConnect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (m: TerminalEvent) => void): Promise<TerminalConnected> {
+export async function terminalConnect(view: string, target: TerminalTarget, cols: number, rows: number, onEvent: (m: TerminalEvent) => void, rebindGeneration?: number): Promise<TerminalConnected> {
   if (!inTauri()) throw DESKTOP_TERMINAL;
   const channel = new Channel<TerminalEvent>();
   channel.onmessage = onEvent;
-  return invoke<TerminalConnected>("terminal_connect", { view, target, cols, rows, on_event: channel });
+  return invoke<TerminalConnected>("terminal_connect", { view, target, cols, rows, on_event: channel, rebind_generation: rebindGeneration });
 }
 export async function terminalWrite(view: string, generation: number, bytes: Uint8Array): Promise<void> {
   if (!inTauri()) return;
@@ -1059,6 +1064,8 @@ export async function composerPasteImage(handle: number, png: Uint8Array, start:
 export const composerRemove = (handle: number, index: number) => desktop<void>("composer_remove", { handle, index });
 export const composerUndoRemove = (handle: number) => desktop<void>("composer_undo_remove", { handle });
 export const composerAllowRetry = (handle: number) => desktop<void>("composer_allow_retry", { handle });
+export const composerDismissCompactionNotice = (handle: number, requestId: string) =>
+  desktop<void>("composer_dismiss_compaction_notice", { handle, requestId });
 // The question card (A2-1, A2-2). Every edit names the epoch its fields are based on.
 export const questionEdit = (card: string, epoch: number, edit: QuestionEdit) => desktop<void>("question_edit", { card, epoch, edit });
 export const questionPage = (card: string, page: number) => desktop<void>("question_page", { card, page });
@@ -1077,8 +1084,10 @@ export const composerClearControl = (session: SessionRef) =>
 export const composerTab = (tab: ComposerTab) => (inTauri() ? invoke<void>("composer_tab", { tab }) : Promise.resolve());
 export const sendMessage = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
   desktop<SendReply>("send_message", { handle, rev, epoch, text, position, anchor });
-export const composerRemoveWaiting = (handle: number, requestId: string) =>
-  desktop<ComposerView>("composer_remove_waiting", { handle, request_id: requestId });
+export const composerRemoveWaiting = (handle: number, requestId: string, intent?: import("./types").WaitingRemovalIntent) =>
+  desktop<ComposerView>("composer_remove_waiting", intent ? { handle, request_id: requestId, intent } : { handle, request_id: requestId });
+export const composerCheckDelivery = (handle: number, requestId: string) =>
+  desktop<import("./types").DeliveryObservation>("composer_check_delivery", { handle, request_id: requestId });
 export const sendPush = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
   desktop<SendReply>("send_push", { handle, rev, epoch, text, position, anchor });
 export const queueSendNow = (queueId: string | null) => desktop<boolean>("queue_send_now", { queue_id: queueId });
@@ -1195,7 +1204,7 @@ export const terminationCleanupManualConfirm = (id: string, confirmation: string
 export const terminationCleanupDismiss = (id: string, revision: number) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_dismiss", { id, revision });
 export const terminationCleanupKeep = (revision: number) => desktop<import("./store/terminationCleanup").CleanupView>("termination_cleanup_keep", { revision });
 export const terminationCleanupRestore = (source: import("./store/terminationCleanup").RestoreSource) => desktop<Outcome>("termination_cleanup_restore", { source });
-export const terminationCleanupInspect = (id: string, file = "", offset = 0) => desktop<import("./store/terminationCleanup").Inspection>("termination_cleanup_inspect", { id, file, offset });
+export const terminationCleanupInspect = (id: string, file = "", offset = 0, checkStop?: boolean) => desktop<import("./store/terminationCleanup").Inspection>("termination_cleanup_inspect", { id, file, offset, checkStop });
 export const onTerminationCleanupChanged = (changed: () => void) => inTauri() ? listen("termination-cleanup-changed", changed) : Promise.resolve(() => {});
 export const onTerminationFolderRemoved = (changed: (label: string) => void) => inTauri() ? listen<string>("termination-folder-removed", (e) => changed(e.payload)) : Promise.resolve(() => {});
 

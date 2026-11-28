@@ -1,6 +1,6 @@
 // Synthetic WebKit regression with the real Activity virtualizer and Markdown.
 // Serve with Vite, then run scripts/menu-smoke.py --title "Zerus Activity reading position regression"
-// --url http://127.0.0.1:<port>/scripts/activity-position-smoke.html on its private Xvfb.
+// --paint-column 100 --url http://127.0.0.1:<port>/scripts/activity-position-smoke.html on its private Xvfb.
 import { batch, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { ActivityView, following, jumpToLatest } from "../ui/sessions/Activity";
@@ -15,6 +15,8 @@ import "../ui/styles/detail.css";
 import "../ui/styles/client.css";
 
 const failures: string[] = [], cases: unknown[] = [];
+const switches: { label: string; at: number; through: number; marker: string }[] = [];
+const markerStyle = document.createElement("style");
 const check = (ok: unknown, message: string) => { if (!ok) failures.push(message); };
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const page = (start: number, count = 100): ActivityEvent[] => Array.from({ length: count }, (_, i) => ({
@@ -37,6 +39,7 @@ const source: ActivitySource = {
 
 async function run() {
   await loadMarkdown(); applySkin(skin());
+  document.head.append(markerStyle);
   const root = document.getElementById("root")!;
   root.style.cssText = "display:flex;width:940px;height:740px;--col:100%;--content-scale:1";
   let dispose = render(() => <ActivityView source={source} />, root);
@@ -49,11 +52,17 @@ async function run() {
     }
     await sleep(300);
   };
-  const visitRows = async (id: string, rows: ActivityEvent[]) => {
+  const visitRows = async (id: string, rows: ActivityEvent[], steady?: { label: string; key?: string }) => {
+    if (steady) markerStyle.textContent = steady.key
+      ? `#${steady.key} { background: #ff00ff !important; }`
+      : ".act-virtual-flow > .act-virtual-row:last-child > [id^='item-'] { background: #00ffff !important; }";
     batch(() => { setTarget({ id }); setEvents([]); setLoaded(false); });
+    const painted = steady ? { label: steady.label, at: Date.now(), through: 0, marker: steady.key ? "M" : "C" } : undefined;
+    if (painted) switches.push(painted);
     await sleep(60);
     batch(() => { setEvents(rows); setLoaded(true); });
     await placed();
+    if (painted) painted.through = Date.now();
   };
   const visit = (id: string, start: number, count = 100) => visitRows(id, page(start, count));
   const atLatest = () => following() && scroller().scrollHeight - scroller().scrollTop - scroller().clientHeight <= 1;
@@ -75,10 +84,10 @@ async function run() {
   const first = await read(1800);
   await visit("second", 501);
   const second = await read(3100);
-  await visit("first", 1, 110); verify("first return with new replies", first);
+  await visitRows("first", page(1, 110), { label: "warm return with new replies", key: first.key }); verify("first return with new replies", first);
   setEvents(page(1, 115)); await sleep(400); verify("streaming after return", first);
   await visit("second", 501); verify("second return", second);
-  await visit("first", 1001); verify("saved window outside tail", first);
+  await visitRows("first", page(1001), { label: "saved window outside tail", key: first.key }); verify("saved window outside tail", first);
   check(reads === 1, `Expected one saved-window read, got ${reads}`);
   dispose(); root.replaceChildren();
   dispose = render(() => <ActivityView source={source} />, root);
@@ -112,8 +121,17 @@ async function run() {
   check(reads - expiredBefore === 1, `expired saved window: expected one read, got ${reads - expiredBefore}`);
   check(atLatest(), "expired saved window did not follow Latest");
   olderRows = true;
+  await visitRows("steady-short", page(5001, 4), { label: "cold short Latest" });
+  check(atLatest(), "cold short history did not open at Latest");
+  await visitRows("steady-long", page(6001), { label: "cold long Latest" });
+  check(atLatest(), "cold long history did not open at Latest");
+  const steadyAnchor = await read(1800);
+  await visitRows("steady-short", page(5001, 4), { label: "warm short Latest" });
+  check(atLatest(), "warm short history did not return to Latest");
+  await visitRows("steady-long", page(6001), { label: "warm long reading anchor", key: steadyAnchor.key });
+  verify("warm long reading anchor", steadyAnchor);
   dispose();
-  return { failures, cases, reads };
+  return { failures, cases, reads, switches };
 }
 const report = (value: unknown) => (window as unknown as { webkit: { messageHandlers: { result: { postMessage(value: string): void } } } }).webkit.messageHandlers.result.postMessage(JSON.stringify(value));
 void run().then(report, error => report({ failures: [...failures, String(error)], cases }));

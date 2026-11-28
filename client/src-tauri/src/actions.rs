@@ -101,12 +101,20 @@ pub enum Lane {
     Recovery,
 }
 
+/// Only the native Composer outbox constructs these guarded offers.
+fn guarded_outbox_send(action: &Action) -> bool {
+    matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
+        | Action::SendToOrderedCodexTurn { .. } | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. })
+}
+
 impl Lane {
     pub fn of(action: &Action) -> Self {
         match action {
             Action::MarkRead { .. } => Self::Read,
             Action::Interrupt { .. } => Self::Interrupt,
-            Action::Send { .. } | Action::SendWhenIdle { .. } => Self::Send,
+            Action::Send { .. } => Self::Send,
+            action if guarded_outbox_send(action) => Self::Send,
             Action::StopProcess { .. } => Self::Process,
             Action::SendNow { .. } => Self::Queue,
             Action::RemoveQueued { .. } => Self::Inbox,
@@ -1455,7 +1463,7 @@ pub(crate) async fn dispatch_outbox_as(
     if blocked() {
         return Ok(Some(failed(REPLAY_NEEDS_HGS)));
     }
-    if !matches!(action, Action::SendWhenIdle { .. }) {
+    if !guarded_outbox_send(&action) {
         return Err("Expected a guarded Send.".into());
     }
     let probe = session_selector::probe(&target.computer);
@@ -1490,6 +1498,13 @@ pub(crate) async fn dispatch_outbox_as(
     )
     .await?;
     Ok((!was_unoffered.load(Ordering::Relaxed)).then_some(outcome))
+}
+
+pub(crate) fn check_outbox_receipt(target: &Target, action: &Action, id: &str) -> Option<serde_json::Value> {
+    if blocked() { return None; }
+    let query = zerus_client_core::actions::outbox_status(target, action, id).ok()?;
+    let result = run(&default_hgs(), &query);
+    zerus_client_core::actions::outbox_receipt(target, &query, result)
 }
 
 /// The image seam cannot choose an action or runner. It uses ordinary StageFiles
@@ -5335,6 +5350,16 @@ mod tests {
         ] {
             assert_eq!(refused_before_claim(&target, &action), None);
         }
+    }
+
+    #[test]
+    fn ordered_codex_send_is_reserved_for_the_guarded_dispatcher_and_send_lane() {
+        let action = Action::SendToOrderedCodexTurn { text: "ordered".into(), attachments: vec![] };
+        assert!(guarded_outbox_send(&action));
+        assert_eq!(Lane::of(&action), Lane::Send);
+        assert!(!guarded_outbox_send(&Action::SendNow { queue_id: "native".into() }));
+        let encoded = serde_json::to_value(action).unwrap();
+        assert!(serde_json::from_value::<Action>(encoded).is_err());
     }
 
     #[test]

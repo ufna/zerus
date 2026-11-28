@@ -387,9 +387,8 @@ Requirements:
 - Windows 10 version 1903 or later, or Windows 11, on x86_64. Local sessions are
   tested on Windows 11 and on the Windows Server 2025 CI runners.
 - Zerus Next packages require the [Microsoft Edge WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
-  Winget installs this dependency. For portable/manual installs, install it first
-  if absent; Microsoft Edge itself is not a substitute. Zerus does not remove
-  this shared runtime when uninstalled.
+  Install it first if absent; Microsoft Edge itself is not a substitute. Zerus
+  does not remove this shared runtime when uninstalled.
 - For remote machines, the OpenSSH client. `ssh -V` in PowerShell shows whether it
   is installed; otherwise add **OpenSSH Client** in Settings → Optional features.
 - For remote machines, at least one Linux or macOS machine with `hgs` installed at

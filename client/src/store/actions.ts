@@ -80,7 +80,6 @@ export function createActions(
       const target = `${row.name} (${row.machine})`;
       if (out.outcome === "done") notify("info", tr("Interrupt sent to %1. Waiting for the agent to stop…", target));
       else if (ALREADY_STOPPED.includes(out.detail.trim())) notify("info", tr("Stop %1: the turn already ended or is waiting for input. No action needed.", target));
-      else if (row.cmd === "agy") notify("error", tr("Stop %1 failed: %2\nRefresh the session before trying again.", target, out.detail), true);
       else notify("error", tr("Stop %1 failed: %2\nOpen Terminal to check the agent before trying again.", target, out.detail), true);
       return;
     }
@@ -95,6 +94,10 @@ export function createActions(
       notify("info", `${verb} cancelled: the session changed.`); return;
     }
     if (out.outcome === "failed") { notify("error", out.detail, true); return; }
+    if (out.outcome === "uncertain" && (action.kind === "archive" || action.kind === "restore")) {
+      notify("warn", tr(out.detail), true);
+      return;
+    }
     if (action.kind === "forget_binding") { notify("info", tr("Zerus forgot %1. The conversation stays in OpenCode.", row.name)); return; }
     if (!cleanupHandled && out.outcome === "done" && out.cleanup && ["kept", "unconfirmed"].includes(out.cleanup.status)) {
       reportCleanup(out, row); return;
@@ -428,6 +431,7 @@ export function createActions(
   async function copyCommand(row: ActionRow): Promise<Outcome> {
     const live = current(row);
     if (!live) return failed(tr(GONE));
+    if (live.cmd === "agy") return failed(tr("Antigravity integration has been retired from Zerus."));
     const archived = live.state === "archived";
     if (archived && !live.archiveId) return failed("nothing to copy");
     let command: string;

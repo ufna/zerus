@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import unittest
@@ -258,6 +259,38 @@ class NativeCodexAsyncQuestions(unittest.TestCase):
         self.wait_for(lambda: not self.cards())
         self.assertEqual(synthetic.CodexAsync.optional(self)['count'], 0)
         self.assertEqual(self.replies(), [])
+
+    def test_native_question_blocks_queue_even_if_last_hook_says_idle(self):
+        self.assertEqual(sorted(self.cards()), self.ids)
+        self.record.update(phase='idle', activity='idle')
+        self.write_record()
+        text = 'Do not interrupt the pending question'
+        request = synthetic.fixtures.InputTransport.payload(self, text=text, only_when_idle=True)
+        result = subprocess.run([str(synthetic.fixtures.HGS), 'send', self.name, '--codex-queue', '--json'],
+                                env=self.env, input=json.dumps(request), text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
+        self.assertEqual(sorted(self.cards()), self.ids)
+        self.assertFalse(any(text in r['texts'] for r in self.server.requests))
+
+    def test_queued_send_after_native_interrupt_is_consumed_once(self):
+        self.assertEqual(sorted(self.cards()), self.ids)
+        self.tmux('send-keys', '-t', self.pane, 'C-c')
+        self.wait_for(lambda: 'to answer' not in self.screen() and not self.cards())
+        # This resumed native fixture does not install live session hooks.
+        synthetic.fixtures.InputTransport.interrupted_turn(self)
+        self.wait_for(lambda: self.inspect().get('interrupted_message_can_send') is True)
+        text = 'Continue after the interrupted fixture turn'
+        request = synthetic.fixtures.InputTransport.payload(self, text=text, only_when_idle=True)
+        def send():
+            result = subprocess.run([str(synthetic.fixtures.HGS), 'send', self.name, '--when-idle', '--json'],
+                                    env=self.env, input=json.dumps(request), text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertEqual(send()['status'], 'submitted')
+        self.wait_for(lambda: any(r['texts'][-1:] == [text] for r in self.server.requests))
+        self.assertEqual(send()['status'], 'submitted')
+        self.assertEqual(sum(r['texts'][-1:] == [text] for r in self.server.requests), 1)
 
     def test_native_child_question_and_parent_answer_never_ask_the_person(self):
         self.server.release.set()

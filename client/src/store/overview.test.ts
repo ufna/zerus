@@ -72,6 +72,31 @@ describe("overview selectors", () => {
     expect(performance.now() - started).toBeLessThan(1_000);
   });
 
+  it("keeps starred live children in Main only without widening the live scope or changing order", () => {
+    const row = (n: number, fields: Record<string, unknown> = {}) => toSession("", `run:${n}`, rowOut("", n, { status: "working", ...fields }).row);
+    const parent = row(1, { updated_at: 10 });
+    const link = { machine: "workstation", session_id: "11111111-1111-4111-8111-111111111111", name: parent.name,
+      conversation_id: "22222222-2222-4222-8222-222222222222", run_id: "33333333-3333-4333-8333-333333333333", state: "live" };
+    const starred = { ...row(2, { updated_at: 30, parent: link, project: "nested-project" }), quiet: true };
+    const regular = row(3, { updated_at: 20, parent: link });
+    const ready = row(4, { status: "ready", parent: link });
+    const paused = row(5, { status: "paused", state: "paused", process_state: "exited", parent: link });
+    const offline = toSession("studio", "run:6", rowOut("studio", 6, { status: "working", parent: link }).row);
+    const catalog = [parent, starred, regular, ready, paused, offline];
+    const active = liveSessions(catalog, { "": live(""), studio: { id: "studio", status: "reconnecting", attempt: 1 } });
+    const favorites = new Set([starred.key, ready.key, paused.key, offline.key]);
+    const parentOf = (s: typeof parent) => s.parent ? parent.key : undefined;
+
+    expect(active).toEqual([starred, regular, parent]);
+    const shown = mainSessions(active, catalog, parentOf, (s) => favorites.has(s.key));
+    expect(shown).toEqual([starred, parent]);
+    expect(shown[0]).toBe(starred);
+    expect(shown[0].parent).toEqual(link);
+    expect(shown[0].project).toBe("nested-project");
+    expect(mainSessions(active, catalog, parentOf)).toEqual([parent]);
+    expect(active).toEqual([starred, regular, parent]); // With sub-sessions keeps the original live list.
+  });
+
   it("sort by Qt's session.needsAttention(), so an asking subagent does not go first (DashboardPage.cpp:453)", () => {
     const rows = [
       toSession("", "run:1", rowOut("", 1, { status: "attention", needs_action: false, needs_attention: false, child_attention: true, updated_at: 30 }).row),

@@ -12,6 +12,19 @@ Give one decision per proposal. Approve with an observable acceptance condition,
 
 Ask for the source revision, the user-visible result, a reproducible check and the remaining uncertainty. Keep detailed evidence available behind a short verdict. Inspect the evidence that could reverse the decision. State plainly when an earlier decision was wrong. Address the defect precisely and let the author challenge the premise without penalty.
 
+Use quick acceptance by default. Compare the original request with the current final report and the evidence for its stated scope. A check already performed during development or on the installed build can satisfy the criterion. Commission another check only if its outcome could change the decision.
+
+| Finding on this report | Coordinator action |
+| --- | --- |
+| Existing evidence covers the request | Mark the report ready to accept and cite the evidence. The caller with existing acceptance authority can close it. |
+| One observable question remains | Assign that question to one named executor. State the observation that will settle it. |
+| A defect is demonstrated | Return the task to its author with the failing example and the expected result. |
+| Available evidence is exhausted | Park the report outside the actionable queue. Record what is unknown and which new evidence would reopen it. |
+
+An enrolled project routes new settled technical agent reports to its verified independent reviewer. A positive exact verdict records the evidence and completes the report automatically. The person authorizes enrollment. Other reports use their existing acceptance authority.
+
+Apply each finding to the exact report reviewed. A later report needs a fresh decision. A parked historical delivery keeps its recorded outcome. A fresh send cannot establish that earlier delivery. Keep personal decisions and Team acceptance with their existing owners.
+
 ## Spend and staffing
 
 The coordinator checks current capacity and reuses sessions with relevant context. Use Codex or Kimi for open-ended work and DeepSeek for well-specified assignments. Claude is suspended until the owner revises that decision. Before expensive experiments, require a bound on time or tokens, a stopping condition and the decision the result will change. Escalate an open-ended bill to the owner.

@@ -182,7 +182,10 @@ pub(super) fn shrink_state(value: &mut Value, limit: usize) {
         let Some(object) = value.as_object_mut() else { break };
         let largest = object
             .iter()
-            .filter(|(_, value)| value.as_array().is_some_and(|items| !items.is_empty()))
+            .filter(|(key, value)| {
+                key.as_str() != "codex_queued_messages"
+                    && value.as_array().is_some_and(|items| !items.is_empty())
+            })
             .map(|(key, value)| (key.clone(), encoded_len(value)))
             .max_by_key(|(_, len)| *len);
         let Some((key, _)) = largest else { break };
@@ -196,8 +199,22 @@ pub(super) fn shrink_state(value: &mut Value, limit: usize) {
     }
     if encoded_len(value) > limit {
         let keep = |key: &str| value.get(key).cloned().unwrap_or(Value::Null);
-        *value = json!({"name":keep("name"),"run_id":keep("run_id"),"conversation_id":keep("conversation_id"),
+        let mut minimal = json!({"name":keep("name"),"run_id":keep("run_id"),"conversation_id":keep("conversation_id"),
             "tracked":keep("tracked"),"stream_truncated":true});
+        // This byte-bounded page and its signed continuation are indivisible.
+        // Dropping any row would strand it behind the continuation.
+        if let (Some(rows), Some(cursor)) =
+            (value.get("codex_queued_messages"), value.get("codex_queue_projection"))
+        {
+            minimal["codex_queued_messages"] = rows.clone();
+            minimal["codex_queue_projection"] = cursor.clone();
+            if encoded_len(&minimal) > limit {
+                let fields = minimal.as_object_mut().unwrap();
+                fields.remove("codex_queued_messages");
+                fields.remove("codex_queue_projection");
+            }
+        }
+        *value = minimal;
     } else if !cut_lists.is_empty() {
         value["stream_truncated"] = json!(cut_lists);
     }
@@ -282,6 +299,21 @@ mod tests {
         assert!(pages.len() >= 4);
         assert!(pages.iter().all(|page| page.iter().map(encoded_len).sum::<usize>() <= 1_000));
         assert_eq!(pages.concat().len(), 10);
+    }
+
+    #[test]
+    fn an_oversized_activity_keeps_every_byte_bounded_receipt_and_its_continuation() {
+        let rows = json!([{"at":2,"detail":"n".repeat(60_000)}, {"at":1,"detail":"o".repeat(60_000)}]);
+        let page = json!({"has_more":true,"next_cursor":"signed"});
+        for extra in [json!({"other":vec!["x".repeat(40_000); 23]}), json!({"prompt":"x".repeat(PAYLOAD_LIMIT)})] {
+            let mut summary = extra;
+            summary["codex_queued_messages"] = rows.clone();
+            summary["codex_queue_projection"] = page.clone();
+            shrink_state(&mut summary, PAYLOAD_LIMIT);
+            assert!(encoded_len(&summary) <= PAYLOAD_LIMIT);
+            assert_eq!(summary["codex_queued_messages"], rows);
+            assert_eq!(summary["codex_queue_projection"], page);
+        }
     }
 
     #[test]

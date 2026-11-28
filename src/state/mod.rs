@@ -4,9 +4,9 @@
 //! the original helper: an upgrade must never orphan a saved conversation.
 mod answer_channel;
 mod agent_hint;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) mod agy;
+pub(crate) mod retired_agy;
 mod archive;
+mod native_archive_store;
 mod record_source;
 pub(crate) mod archive_catalog;
 mod archive_references;
@@ -19,6 +19,8 @@ mod claude_statusline;
 mod claude_subagents;
 mod attachments;
 mod delivery;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use delivery::scoped_claude_outbox_status;
 mod receipt_index;
 mod computer_files;
 pub(crate) mod voice;
@@ -595,9 +597,8 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget(), #[cfg(target_os = "linux")] readiness_until: native_launch::catalog_deadline() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if record["backend"] == "agy" {
-            sessions.push(agy::row(&record, false));
+            sessions.push(retired_agy::row(&record, None));
             continue;
         }
         // An archive written before its binding was removed wins, as before.
@@ -949,7 +950,12 @@ pub fn fork_session(
 
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
-    if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
+    if archive.is_empty() && retired_agy::named(name) && agent.is_empty() {
+        return retired_agy::inspect(name);
+    }
+    if archive.is_empty() && opencode::exists(name) {
+        return opencode::inspect(name, if agent.is_empty() { None } else { Some(agent) });
+    }
     if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
@@ -976,7 +982,7 @@ pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference)
     local_sessions()?;
     let _guard = lock(None)?;
     let mut candidates = if reference.archive.is_empty() { records()? }
-        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else if let Some(store) = native_archive_store::named(&reference.name) { store.by_id(&reference.archive)?.into_iter().collect() }
         else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
@@ -1220,6 +1226,11 @@ pub(crate) fn submit_task_reply(name: &str, request: &Value) -> Result<Value> {
 /// a live witness that the payload was never offered, or unknown.
 pub(crate) fn submit_task_reply_witnessed(name: &str, request: &Value) -> input::Submission {
     input::submit_witnessed(name, request.to_string().as_bytes())
+}
+pub(crate) fn technical_review_notice(
+    name: &str, request: &Value, admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> input::Submission {
+    input::technical_review_notice(name, request.to_string().as_bytes(), admit)
 }
 pub(crate) fn task_reply_receipt_bound(
     name: &str,
@@ -1772,6 +1783,14 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     let Some((command, args)) = args.split_first() else {
         return Err("missing state operation".into());
     };
+    if command == "agy-worker" {
+        return Err(retired_agy::RETIRED.into());
+    }
+    if let Some((name, rest)) = args.split_first().filter(|(name, _)| retired_agy::named(name)) {
+        if crate::cli::retired_agy_session_command(command) || matches!(command.as_str(), "inspect" | "exists") {
+            return retired_agy::dispatch(command, name, rest);
+        }
+    }
     // Only this explicit flag ends a parent's live child sessions after it
     // (zerus-sa9qn.17). Before provider routing, so a DeepSeek or OpenCode
     // parent refuses with its own message and no child is touched.
@@ -1779,10 +1798,6 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         && args.iter().any(|arg| arg == end_children::FLAG)
     {
         return end_children::dispatch(command, args);
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if command == "agy-worker" {
-        return agy::run_worker(args);
     }
     if command == "worktrees" {
         return worktrees::dispatch(args);
@@ -1903,20 +1918,33 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
                 .into(),
         );
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if let Some((name, rest)) = args.split_first().filter(|(name, _)| agy::named(name)) {
-        return agy::dispatch(command, name, rest);
+    // Queue-only input must never fall through to a provider that would send normally.
+    if command == "send" {
+        let queue = args.iter().find(|arg| matches!(arg.as_str(), "--codex-queue" | "--codex-ordered-turn" | "--when-native-accepts" | "--opencode-queue" | "--deepseek-queue"));
+        if let Some(queue) = queue {
+            return match (args.first(), queue.as_str()) {
+                (_, "--codex-queue" | "--codex-ordered-turn" | "--when-native-accepts") => input::dispatch(args),
+                (Some(name), "--opencode-queue") if name.starts_with("opencode/") => opencode::send_when_idle(args),
+                (Some(name), "--deepseek-queue") if name.starts_with("dsh/") => dsh::send_when_idle(args),
+                _ => Err("Native queue admission requires the exact provider session name".into()),
+            };
+        }
     }
-    // The Composer's automatic offer must reach the terminal input lock.
-    // Provider routes that do not implement this admission cannot take it.
+    // The Composer needs its own exact pre-offer witness for either route.
     if command == "send" && args.iter().any(|arg| arg == "--when-idle") {
+        if args.first().is_some_and(|name| name.starts_with("opencode/") || opencode::exists(name)) {
+            return opencode::send_when_idle(args);
+        }
+        if args.first().is_some_and(|name| name.starts_with("dsh/") || dsh::exists(name)) {
+            return dsh::send_when_idle(args);
+        }
         return input::dispatch(args);
-    }
-    if args.first().is_some_and(|name| opencode::exists(name)) {
-        return opencode::dispatch(command, args);
     }
     let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
         && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| opencode::exists(name)) {
+        return opencode::dispatch(command, args);
+    }
     if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }

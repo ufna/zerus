@@ -10,6 +10,12 @@ const CAPTURE_BYTES: usize = 512 * 1024;
 
 #[derive(Debug)]
 struct Queue { text: String, keys: Vec<&'static str>, hint: String }
+
+pub(super) fn kimi_queue_hint(row: &str) -> bool {
+    let row = row.trim();
+    row.starts_with("↑ to edit") && (row.contains("ctrl-s to steer immediately") || row.contains("will send after"))
+}
+
 fn parse(agent: &str, screen: &str) -> Option<Queue> {
     let rows: Vec<_> = screen.lines().collect();
     if agent == "codex" {
@@ -40,7 +46,7 @@ fn parse(agent: &str, screen: &str) -> Option<Queue> {
     let end = rows.iter().rposition(|row| {
         let row = row.trim();
         if agent == "claude" { row == "ctrl+x ctrl+s to send now" }
-        else if agent == "kimi" { row.starts_with("↑ to edit") && (row.contains("ctrl-s to steer immediately") || row.contains("will send after")) }
+        else if agent == "kimi" { kimi_queue_hint(row) }
         else { false }
     })?;
     let mut start = end;
@@ -127,6 +133,20 @@ pub(super) fn inspection(record: &Value, live: bool) -> Option<Value> {
     }
     Some(data)
 }
+pub(super) fn codex_waiting(record: &Value) -> Result<bool> {
+    let screen = capture_plain(record, Instant::now() + CAPTURE_WINDOW)?;
+    Ok(parse("codex", &screen).is_some())
+}
+
+/// The queue still belongs to Claude even if a late hook says the turn is idle.
+pub(super) fn claude_waiting(record: &Value) -> Result<bool> {
+    let screen = capture_plain(record, Instant::now() + CAPTURE_WINDOW)?;
+    Ok(parse("claude", &screen).is_some() || screen.lines().rev().take(6).any(|line| {
+        line.trim().strip_prefix('❯')
+            .is_some_and(|text| text.trim() == "Press up to edit queued messages")
+    }))
+}
+
 fn capture_plain(record: &Value, until: Instant) -> Result<String> {
     let screen = backend::current().capture_until(
         string(record, "pane"), backend::Capture::Plain, until, CAPTURE_BYTES,

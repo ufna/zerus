@@ -1,10 +1,13 @@
 import { createSignal } from "solid-js";
 import { accountsView, accountFiltersView } from "../bridge";
-import { emptyAccounts, type AccountsView } from "../types";
+import { emptyAccounts, type Account, type AccountsView } from "../types";
 import { latest } from "./latest";
 
 // The Accounts screen and the Overview's account cards share one view from
 // the screens hub. The machine filter and the profile to select are UI state.
+
+/** Retired providers stay in the shared view for historical session marks, not account management. */
+export const activeAccounts = (rows: Account[]) => rows.filter((account) => account.provider !== "agy");
 
 export const [accountsPage, setAccountsPage] = createSignal<AccountsView>(emptyAccounts());
 const pull = latest(setAccountsPage);

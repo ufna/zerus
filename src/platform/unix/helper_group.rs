@@ -16,8 +16,58 @@ pub(super) fn admit() -> io::Result<()> {
     Ok(())
 }
 
+enum ChildHandle<'a> {
+    Ordinary(&'a mut Child),
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    Suspended(libc::pid_t),
+}
+
+impl ChildHandle<'_> {
+    fn id(&self) -> u32 {
+        match self {
+            Self::Ordinary(child) => child.id(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Suspended(pid) => *pid as u32,
+        }
+    }
+
+    fn kill(&mut self) -> io::Result<()> {
+        match self {
+            Self::Ordinary(child) => child.kill(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Suspended(pid) => {
+                if unsafe { libc::kill(*pid, libc::SIGKILL) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+        }
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        match self {
+            Self::Ordinary(child) => child.wait(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Self::Suspended(pid) => {
+                use std::os::unix::process::ExitStatusExt;
+                let mut status = 0;
+                loop {
+                    if unsafe { libc::waitpid(*pid, &mut status, 0) } == *pid {
+                        return Ok(ExitStatus::from_raw(status));
+                    }
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct Group<'a> {
-    child: &'a mut Child,
+    child: ChildHandle<'a>,
     lost: bool,
     reaped: bool,
     signalled: bool,
@@ -26,6 +76,15 @@ pub(super) struct Group<'a> {
 }
 impl<'a> Group<'a> {
     pub(super) fn new(child: &'a mut Child) -> Self {
+        Self::with_child(ChildHandle::Ordinary(child))
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn suspended(pid: libc::pid_t) -> Group<'static> {
+        Group::with_child(ChildHandle::Suspended(pid))
+    }
+
+    fn with_child(child: ChildHandle<'a>) -> Self {
         Self {
             child,
             lost: false,
@@ -46,6 +105,12 @@ impl<'a> Group<'a> {
         if let Err(error) = admit() {
             return Err(self.refused(error));
         }
+        let options = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let options = match self.child {
+            ChildHandle::Suspended(_) => options | libc::WSTOPPED,
+            ChildHandle::Ordinary(_) => options,
+        };
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         for _ in 0..3 {
             let result = unsafe {
@@ -53,7 +118,7 @@ impl<'a> Group<'a> {
                     libc::P_PID,
                     self.child.id() as libc::id_t,
                     &mut info,
-                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    options,
                 )
             };
             if result == 0 {
@@ -62,6 +127,13 @@ impl<'a> Group<'a> {
                     return Ok(None);
                 }
                 let status = unsafe { info.si_status() };
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                if matches!(self.child, ChildHandle::Suspended(_))
+                    && pid as u32 == self.child.id()
+                    && info.si_code == libc::CLD_STOPPED
+                {
+                    return Ok(None);
+                }
                 if pid as u32 != self.child.id()
                     || !matches!(
                         info.si_code,
@@ -87,7 +159,7 @@ impl<'a> Group<'a> {
         #[cfg(test)]
         {
             self.signals += 1;
-            if self.lost || self.reaped || !test_unreaped(self.child) {
+            if self.lost || self.reaped || !test_unreaped(self.child.id()) {
                 return Err(io::Error::other("unsafe test signal suppressed"));
             }
         }
@@ -178,18 +250,18 @@ impl<'a> Group<'a> {
 }
 
 #[cfg(test)]
-fn test_unreaped(child: &Child) -> bool {
+fn test_unreaped(child: u32) -> bool {
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     let result = unsafe {
         libc::waitid(
             libc::P_PID,
-            child.id() as libc::id_t,
+            child as libc::id_t,
             &mut info,
             libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
         )
     };
     let pid = unsafe { info.si_pid() } as u32;
-    result == 0 && (pid == 0 || pid == child.id())
+    result == 0 && (pid == 0 || pid == child)
 }
 
 #[cfg(target_os = "macos")]

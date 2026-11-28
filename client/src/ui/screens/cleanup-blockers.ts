@@ -14,14 +14,16 @@ export interface BlockerReview {
   processes?: { pid: number; command?: string; label?: string }[];
   process_count?: number;
   unreadable_processes?: unknown[];
+  unreadable_count?: number;
   untracked?: number;
   changes?: number;
 }
 
-export type BlockerRow = Pick<CleanupRow, "status" | "reason" | "sessions" | "processes" | "can_force" | "can_remove_anyway" | "ready">;
+export type BlockerRow = Pick<CleanupRow, "status" | "reason" | "sessions" | "processes" | "can_force" | "can_remove_anyway" | "ready" | "program_stop_check">;
 
 export type NextStep =
   | { kind: "unknown" }
+  | { kind: "observe_stop" }
   | { kind: "archive"; sessions: string[] }
   | { kind: "force" }
   | { kind: "close_programs" }
@@ -54,6 +56,7 @@ const count = (value: unknown) => (typeof value === "number" && Number.isSafeInt
 /** Groups one folder's blockers and picks the first next step that applies. */
 export function cleanupBlockers(rows: readonly BlockerRow[], review?: BlockerReview): Blockers {
   const unknown = rows.some((row) => row.status === "unknown");
+  const unconfirmedStop = rows.some((row) => row.program_stop_check);
   const sessions = unique(
     (review?.sessions ?? rows.flatMap((row) => row.sessions ?? [])).filter((name): name is string => typeof name === "string" && name.length > 0),
     (name) => name,
@@ -63,16 +66,18 @@ export function cleanupBlockers(rows: readonly BlockerRow[], review?: BlockerRev
     (p) => `${p.pid}\n${p.label}`,
   );
   const programCount = Math.max(count(review?.process_count), programs.length);
-  const hidden = Array.isArray(review?.unreadable_processes) ? review.unreadable_processes.length : 0;
+  const hidden = review?.unreadable_count === undefined && Array.isArray(review?.unreadable_processes)
+    ? review.unreadable_processes.length : count(review?.unreadable_count);
   const untracked = count(review?.untracked);
   const changes = count(review?.changes);
   // Without the structured review only the recorded text exists: show it
   // whole unless the recorded sessions or programs already explain it.
   const other = review?.reasons
     ? unique(review.reasons.filter((r) => !GROUPED.has(r.code) && !(r.code === "processes_unavailable" && hidden > 0)).map((r) => r.message).filter(Boolean), (m) => m)
-    : sessions.length || programs.length ? [] : unique(rows.flatMap((row) => row.reason.split("\n")).map((line) => line.trim()).filter(Boolean), (m) => m);
+    : sessions.length || programs.length ? [] : unique(rows.filter((row) => !row.program_stop_check).flatMap((row) => row.reason.split("\n")).map((line) => line.trim()).filter(Boolean), (m) => m);
   const ready = rows.some((row) => row.ready && row.status === "ready");
   const next: NextStep = unknown ? { kind: "unknown" }
+    : unconfirmedStop ? { kind: "observe_stop" }
     : sessions.length ? { kind: "archive", sessions }
     : rows.some((row) => row.can_force) ? { kind: "force" }
     : programs.length ? { kind: "close_programs" }
