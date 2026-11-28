@@ -843,6 +843,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
     return queue.map((item, index) => ({
       ...item,
       handle: view.handle,
+      can_check_delivery: index === 0 && row.cmd === "claude" && !row.parent
+        && item.state === "unknown" && item.can_check_delivery === true
+        && !item.target_changed && !!item.run_id && !!item.conversation_id
+        && item.run_id === row.runId && item.conversation_id === row.conversationId,
       can_check_terminal: item.can_check_terminal === true && !item.target_changed && !!item.run_id && !!item.conversation_id
         && item.run_id === row.runId && item.conversation_id === row.conversationId,
       blockedBy: index > 0 && item.state === "waiting" && head?.state === "unknown"

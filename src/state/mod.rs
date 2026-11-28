@@ -19,6 +19,8 @@ mod claude_statusline;
 mod claude_subagents;
 mod attachments;
 mod delivery;
+#[cfg(target_os = "linux")]
+pub(crate) use delivery::scoped_claude_outbox_status;
 mod receipt_index;
 mod computer_files;
 pub(crate) mod voice;

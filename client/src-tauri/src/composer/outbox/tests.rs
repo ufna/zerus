@@ -1582,6 +1582,120 @@ fn claude_fifo_waits_for_native_queue_and_reconciles_one_lost_acknowledgement() 
     assert_eq!(lock(&fake.calls).len(), 1);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn check_delivery_observes_only_the_exact_unknown_claude_head() {
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
+    use zerus_client_core::actions::{invocation, outbox_receipt, outbox_status};
+
+    let root = dir("claude-check-delivery");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_with(&store, Arc::new(|job| job()));
+    let session = SessionRef { computer: String::new(), ..target_session("claude") };
+    lock(&fake.row).catalog_source = Some(("original".into(), 1, 1));
+    {
+        let mut row = lock(&fake.row);
+        row.name.clone_from(&session.name);
+        row.process_state = "running".into();
+        row.phase = Some("tool".into());
+    }
+    c.open(Some(session.clone()));
+    let mut observation = state(details(&session, "claude", true, Some(true)));
+    observation.activity[0].computer = zerus_client_core::ComputerId::local();
+    c.observe(&observation);
+    let initial = until(&c, |v| v.loaded && v.offers_outbox);
+    let path = root.join("file.txt");
+    std::fs::write(&path, b"original bytes").unwrap();
+    c.attach_paths(initial.handle, vec![path.clone()], Default::default());
+    until(&c, |v| v.attachments.len() == 1);
+    let head_id = enqueue(&c, "same").waiting_in_zerus[0].request_id.clone();
+    let queued = enqueue(&c, "same");
+    let follower_id = queued.waiting_in_zerus[1].request_id.clone();
+    c.edit(queued.handle, queued.rev + 1, queued.text_epoch, "next draft".into(), 0, 0);
+    lock(&fake.row).phase = Some("idle".into());
+    *lock(&fake.outcome) = Box::new(|_, _| Outcome::Uncertain { detail: "lost reply".into() });
+    settle_next(&c, &fake, &store, details(&session, "claude", false, Some(false)));
+    let held = until(&c, |v| v.waiting_in_zerus[0].state == State::Unknown);
+    assert_eq!(held.text, "next draft");
+    assert_eq!(held.waiting_in_zerus[0].preview, held.waiting_in_zerus[1].preview);
+    assert_eq!(held.waiting_in_zerus[0].attachments.len(), 1);
+    assert!(held.waiting_in_zerus[0].can_check_delivery);
+    assert!(!held.waiting_in_zerus[1].can_check_delivery);
+    let digest = {
+        let calls = lock(&fake.calls);
+        assert_eq!(calls.len(), 1);
+        let (target, action, id) = &calls[0];
+        format!("{:x}", Sha256::digest(invocation(target, action, id).unwrap().stdin.unwrap()))
+    };
+    lock(&fake.calls).clear();
+    std::fs::remove_file(path).unwrap();
+    store.flush();
+    let before = zerus_client_core::drafts::read_draft(store.root(), &held.key).draft;
+    let schedule = || {
+        let hub = c.lock();
+        let composer = &hub.composers[&held.key];
+        (composer.queue_check_at, hub.outbox_probe, hub.outbox_route_revision,
+         composer.queue_writing, composer.queue_editing, composer.outbox.clone(), composer.draft.clone())
+    };
+    let schedule_before = schedule();
+    let response = Arc::new(Mutex::new(Value::Null));
+    let reads = Arc::new(Mutex::new(0));
+    let (reply, count) = (response.clone(), reads.clone());
+    let (exact_digest, exact_id, computer) = (digest.clone(), head_id.clone(), session.computer.clone());
+    let change_route = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (changing, observation_host) = (change_route.clone(), fake.clone());
+    c.set_outbox_status(Arc::new(|_, _, _| panic!("explicit check used the scheduler callback")));
+    let reader = move |target: &Target, action: &Action, id: &str, source: &(String, u64, u64)| {
+        assert_eq!(source, &("original".to_owned(), 1, 1));
+        *lock(&count) += 1;
+        assert_eq!(id, exact_id);
+        assert_eq!(target.computer, computer);
+        let query = outbox_status(target, action, id).unwrap();
+        assert!(query.args.windows(2).any(|args| args == ["delivery", "outbox-status"]));
+        let input: Value = serde_json::from_slice(query.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(input["input_sha256"], exact_digest);
+        if changing.load(std::sync::atomic::Ordering::Relaxed) {
+            lock(&observation_host.row).catalog_source = Some(("replacement".into(), 1, 1));
+        }
+        outbox_receipt(target, &query, zerus_client_core::Exit::Code {
+            code: 0, stdout: serde_json::to_vec(&*lock(&reply)).unwrap(), stderr: String::new(),
+        })
+    };
+    assert_eq!(c.check_delivery(held.handle, &follower_id, &reader), DeliveryObservation::Unresolved);
+    assert_eq!(c.check_delivery(held.handle + 1, &head_id, &reader), DeliveryObservation::Unresolved);
+    assert_eq!(*lock(&reads), 0);
+    let positive = json!({"schema":1,"status":"submitted","proof":"native_claude_receipt",
+        "claude_outbox":true,"transport":"terminal","native":"queue",
+        "request_id":head_id,"name":session.name,"run_id":"run-1",
+        "conversation_id":"conv-1","input_sha256":digest});
+    let mut negative = positive.clone();
+    negative["status"] = json!("not_offered");
+    negative["proof"] = json!("native_input_lock");
+    let mut wrong = positive.clone();
+    wrong["input_sha256"] = json!("wrong");
+    for (index, (receipt, expected)) in [
+        (positive.clone(), DeliveryObservation::Accepted),
+        (negative, DeliveryObservation::NoInput),
+        (wrong, DeliveryObservation::Unresolved),
+    ].into_iter().enumerate() {
+        *lock(&response) = receipt;
+        assert_eq!(c.check_delivery(held.handle, &head_id, &reader), expected);
+        assert_eq!(*lock(&reads), index + 1);
+        assert!(lock(&fake.calls).is_empty());
+        assert_eq!(schedule(), schedule_before);
+        let after = zerus_client_core::drafts::read_draft(store.root(), &held.key).draft;
+        assert_eq!(after.outbox, before.outbox);
+        assert_eq!(after.draft, before.draft);
+    }
+    *lock(&response) = positive;
+    change_route.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(c.check_delivery(held.handle, &head_id, &reader), DeliveryObservation::Unresolved);
+    assert_eq!(*lock(&reads), 4);
+    assert!(lock(&fake.calls).is_empty());
+    assert_eq!(schedule(), schedule_before);
+}
+
 #[test]
 fn codex_refused_before_input_recovers_the_original_file_and_fifo_after_restart() {
     use sha2::{Digest, Sha256};

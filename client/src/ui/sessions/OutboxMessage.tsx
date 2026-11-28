@@ -1,5 +1,7 @@
-import { createContext, createEffect, createSignal, Show, useContext } from "solid-js";
+import { createContext, createEffect, createSignal, onCleanup, Show, useContext } from "solid-js";
+import { composerCheckDelivery } from "../../bridge";
 import { tr } from "../../i18n";
+import type { DeliveryObservation } from "../../types";
 import { composer } from "../../store/composer";
 import { setDetailTab } from "../../store/ui";
 import { askedTimeOf, zonedTimeOf } from "../lib/dates";
@@ -37,9 +39,33 @@ export function OutboxHeader(props: { item: OutboxItem }) {
 export function OutboxActions(props: { item: OutboxItem }) {
   const scope = useContext(OutboxScope);
   const [review, setReview] = createSignal<{ handle: number; requestId: string }>();
+  const [check, setCheck] = createSignal<{ scope: string; observation?: DeliveryObservation }>();
   let removeButton: HTMLButtonElement | undefined;
   const current = () => scope?.rows().find((row) =>
     row.handle === props.item.handle && row.request_id === props.item.request_id);
+  const checkable = () => {
+    const row = current();
+    return row?.can_check_delivery && row.state === "unknown" ? row : undefined;
+  };
+  const deliveryScope = (row: OutboxItem) => JSON.stringify([row.handle, row.request_id, row.run_id, row.conversation_id]);
+  const activeCheck = () => {
+    const row = checkable(), attempt = check();
+    return row && attempt?.scope === deliveryScope(row) ? attempt : undefined;
+  };
+  createEffect(() => { if (check() && !activeCheck()) setCheck(undefined); });
+  onCleanup(() => setCheck(undefined));
+  const checking = () => {
+    const attempt = activeCheck();
+    return !!attempt && attempt.observation === undefined;
+  };
+  const checkDelivery = async () => {
+    const row = checkable();
+    if (!row || checking()) return;
+    const attempt = { scope: deliveryScope(row) };
+    setCheck(attempt);
+    const observed = await composerCheckDelivery(row.handle, row.request_id).catch(() => "unresolved" as const);
+    if (activeCheck() === attempt) setCheck({ ...attempt, observation: observed });
+  };
   const removable = () => !!current() && !composer.operationLocked() && composer.waitingMessages()[0]?.state !== "reserved";
   const confirming = () => {
     const action = review(), item = current();
@@ -63,8 +89,22 @@ export function OutboxActions(props: { item: OutboxItem }) {
     <Show when={props.item.state === "failed"}>
       <p class="act-error">{tr("The agent did not accept this message.")}</p>
     </Show>
+    <Show when={checkable()}>
+      <div role="status" class="act-inbox-hint">{(() => {
+        switch (activeCheck()?.observation) {
+          case "accepted": return tr("Native acceptance observed. This does not confirm the model read the message.");
+          case "no_input": return tr("Confirmed: no input was offered for this message.");
+          case "unresolved": return tr("Delivery remains unconfirmed.");
+          default: return "";
+        }
+      })()}</div>
+    </Show>
     <Show when={current()}>
       <div class="act-local-actions act-outbox-actions">
+        <Show when={checkable()}>
+          <button type="button" class="btn small" disabled={checking()}
+            onClick={() => void checkDelivery()}>{tr("Check delivery")}</button>
+        </Show>
         <Show when={current()?.can_check_terminal}>
           <button type="button" class="btn small" onClick={() => {
             if (current()?.can_check_terminal) setDetailTab("terminal");

@@ -957,8 +957,10 @@ export interface WaitingMessage {
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
   can_check_terminal?: boolean;
+  can_check_delivery?: boolean;
   delivery_in_composer?: boolean;
 }
+export type DeliveryObservation = "accepted" | "no_input" | "unresolved";
 export interface TerminalOutboxReceipt {
   request_id: string;
   run_id: string;

@@ -93,6 +93,71 @@ impl Selected {
     }
 }
 
+/// One local, exact receipt read. Reuse the sealed desktop read Context, not
+/// a Terminate selection/confirmation or any writer-registration route.
+#[cfg(target_os = "linux")]
+pub(crate) fn check_claude_delivery(
+    service: Arc<Service>,
+    target: &zerus_client_core::Target,
+    action: &zerus_client_core::Action,
+    id: &str,
+    source: &(String, u64, u64),
+) -> Option<Value> {
+    use zerus_client_core::actions::{outbox_receipt, outbox_status};
+
+    if !target.computer.is_empty() || !target.name.starts_with("claude/")
+        || !matches!(action, zerus_client_core::Action::SendWhenIdle { .. })
+    {
+        return None;
+    }
+    if service.snapshot().executable_upgrade.is_some() {
+        return None;
+    }
+    let scope = service.notification_scope("")?;
+    if (&scope.epoch, scope.incarnation, scope.generation) != (&source.0, source.1, source.2) {
+        return None;
+    }
+    let owner = || {
+        let card = service.shared.pump.live_machine(&ComputerId::local())?;
+        if card.ok != Some(true) || card.local_sessions == Some(false) {
+            return None;
+        }
+        card.machine_id.filter(|id| zerus_client_core::creation::canonical_uuid(id))
+    };
+    let machine = owner()?;
+    let current = || service.snapshot().executable_upgrade.is_none()
+        && service.notification_scope("").as_ref() == Some(&scope)
+        && owner().as_ref() == Some(&machine);
+    let context = Context::new(service.clone(), Arc::new(())).ok()?;
+    if !current() {
+        return None;
+    }
+    let help = context.rpc(vec!["--help".into()], None, None).ok()?;
+    if !std::str::from_utf8(&help).ok()?.lines().any(|line| line.trim() == "desktop-claude-outbox-status-v1")
+        || !current()
+    {
+        return None;
+    }
+    context.check_scope().ok()?;
+    if !current() {
+        return None;
+    }
+    let query = outbox_status(target, action, id).ok()?;
+    let mut input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
+    input.as_object_mut()?.insert("expected_machine_id".into(), json!(machine));
+    let closed = Invocation {
+        args: vec!["__state".into(), "delivery".into(), "claude-outbox-status".into(),
+            target.name.clone(), "--json".into()],
+        stdin: Some(serde_json::to_vec(&input).ok()?),
+        ..query.clone()
+    };
+    let reply = context.read(&closed);
+    if !current() {
+        return None;
+    }
+    outbox_receipt(target, &query, reply)
+}
+
 /// Constructed only while consuming the original native Offer/Remove choice.
 /// Neither this object nor its one-way stage has a serialized representation.
 pub(crate) struct Confirmation {

@@ -247,6 +247,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        session-notifications-v1
        session-keep-warm-v1
        delivery-receipt-v1
+       desktop-claude-outbox-status-v1
        receipt-index-codex-queue-page-v1
        native-send-outcome-v2
        session-question-routing-v1
@@ -691,6 +692,7 @@ fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
         zerus_client_core::desktop::session_resume::OBSERVE_MARKER,
+        "desktop-claude-outbox-status-v1",
     ];
     usage
         .lines()
@@ -837,6 +839,12 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     if args.first().map(String::as_str) == Some("__state")
         && args.get(1).map(String::as_str) == Some("delivery")
     {
+        if args.get(2).is_some_and(|operation| operation == "claude-outbox-status") {
+            #[cfg(target_os = "linux")]
+            return state::scoped_claude_outbox_status(&args[3..]).map_err(|e| Error::new(1, e));
+            #[cfg(not(target_os = "linux"))]
+            return Err(Error::new(1, "Claude outbox status is supported only on Linux"));
+        }
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
     if crate::desktop::launchd_command(&args) {
@@ -5054,8 +5062,16 @@ mod tests {
         let resume = zerus_client_core::desktop::session_resume::HELP_MARKER;
         let observe = zerus_client_core::desktop::session_resume::OBSERVE_MARKER;
         let clone = zerus_client_core::desktop::creation_clone::HELP_MARKER;
-        assert_eq!(advertised(usage_text(true), true), USAGE);
+        let check_delivery = "desktop-claude-outbox-status-v1";
+        let linux = advertised(usage_text(true), true);
+        assert_eq!(linux, USAGE);
+        assert!(linux.lines().any(|line| line.trim() == check_delivery));
         let mac = advertised(usage_text(true), false);
+        let windows = advertised(usage_text(false), false);
+        for usage in [&mac, &windows] {
+            assert!(!usage.lines().any(|line| line.trim() == check_delivery));
+            assert!(usage.lines().any(|line| line.trim() == "delivery-receipt-v1"));
+        }
         assert!(!mac.lines().any(|line| line.trim() == marker));
         assert!(!mac.lines().any(|line| line.trim() == message));
         assert!(!mac.lines().any(|line| line.trim() == references));
@@ -5115,14 +5131,29 @@ mod tests {
                     "       Desktop deferred session resume Codex readiness: desktop-deferred-session-resume-codex-v1\n",
                     ""
                 )
+                .replace("       desktop-claude-outbox-status-v1\n", "")
         );
         for marker in [
             marker, message, references, review, send, answer, phase, compact, resume, observe,
+            check_delivery,
         ] {
             assert_eq!(
                 help_text().lines().any(|line| line.trim() == marker),
                 cfg!(target_os = "linux")
             );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn closed_claude_outbox_status_refuses_before_reading_on_non_linux() {
+        for args in [
+            vec!["__state", "delivery", "claude-outbox-status"],
+            vec!["__state", "delivery", "claude-outbox-status", "claude/example/original", "--json"],
+        ] {
+            let error = dispatch_normal(args.into_iter().map(str::to_owned).collect()).unwrap_err();
+            assert_eq!(error.code, 1);
+            assert_eq!(error.message, "Claude outbox status is supported only on Linux");
         }
     }
 

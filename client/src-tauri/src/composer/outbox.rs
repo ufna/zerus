@@ -57,6 +57,14 @@ pub(super) enum ManualSend {
     Blocked(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryObservation {
+    Accepted,
+    NoInput,
+    Unresolved,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct EntryView {
     pub request_id: String,
@@ -70,6 +78,7 @@ pub struct EntryView {
     pub state: State,
     pub target_changed: bool,
     pub can_check_terminal: bool,
+    pub can_check_delivery: bool,
     pub delivery_in_composer: bool,
 }
 
@@ -116,7 +125,8 @@ pub(super) fn view(
 ) -> Vec<EntryView> {
     entries
         .iter()
-        .map(|entry| EntryView {
+        .enumerate()
+        .map(|(index, entry)| EntryView {
             request_id: entry.request_id.clone(),
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
@@ -132,6 +142,11 @@ pub(super) fn view(
                         && !active.conversation_id.is_empty()
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
+            can_check_delivery: cfg!(target_os = "linux") && index == 0 && context.is_some_and(|ctx| {
+                !ctx.awaiting_outbox_details && ctx.details.as_deref().is_some_and(|details| {
+                    claude_delivery_head(entry, key, &ctx.session, &ctx.row, ctx.online, details)
+                })
+            }),
             can_check_terminal: entry.state == State::Unknown
                 && !opencode_outbox(entry)
                 && !dsh_outbox(entry)
@@ -156,6 +171,39 @@ fn target(ctx: &super::send::Context) -> Target {
         run_id: ctx.run(),
         conversation_id: ctx.conversation(),
     }
+}
+
+fn claude_delivery_head(
+    entry: &Entry,
+    key: &str,
+    session: &super::SessionRef,
+    row: &ViewRow,
+    online: bool,
+    details: &Value,
+) -> bool {
+    let original = &entry.target;
+    entry.state == State::Unknown
+        && original.computer.is_empty()
+        && row.catalog_source.is_some()
+        && online
+        && !session.archived()
+        && session.subagent.is_none()
+        && row.parent.is_none()
+        && row.agent == "claude"
+        && original.name.starts_with("claude/")
+        && row.name == original.name
+        && row.state == "running"
+        && row.process_state == "running"
+        && zerus_client_core::creation::canonical_uuid(&entry.request_id)
+        && entry.draft_key == key
+        && entry.catalog_key == session.key
+        && original.computer == session.computer
+        && original.name == session.name
+        && session.session_id.as_ref().is_none_or(|id| row.session_id.as_ref() == Some(id))
+        && row.run_id.as_deref() == Some(original.run_id.as_str())
+        && row.conversation_id.as_deref() == Some(original.conversation_id.as_str())
+        && exact_input_details(row, (&original.run_id, &original.conversation_id), details)
+        && details["claude_outbox_supported"] == true
 }
 
 fn supported_agent(agent: &str) -> bool {
@@ -657,6 +705,63 @@ impl Composers {
         status(&entry.target, &receipt_action(entry), &entry.request_id)
     }
 
+    #[cfg(target_os = "linux")]
+    fn delivery_head<'a>(&self, hub: &'a Hub, handle: u64, request_id: &str) -> Option<(&'a Entry, ViewRow)> {
+        let key = hub.open_key.as_ref()?;
+        let session = hub.open.as_ref()?;
+        let composer = hub.composers.get(key)?;
+        if hub.closed || composer.handle != handle || !composer.loaded || composer.renaming
+            || composer.queue_editing || composer.queue_writing || composer.outbox_damaged
+            || hub.followed.computer != session.computer || hub.followed.key != session.key
+            || hub.followed.awaiting_outbox_details
+        {
+            return None;
+        }
+        let head = composer.outbox.first().filter(|head| head.request_id == request_id)?;
+        let details = hub.followed.details.as_deref()?;
+        // Unlike the scheduler's context, this path needs no write facts or
+        // send readiness; it only reads catalog identity and followed details.
+        let (row, online) = (self.0.deps.rows)(&session.computer, &session.key, &session.name)?;
+        claude_delivery_head(head, key, session, &row, online, details).then_some((head, row))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_delivery(
+        &self,
+        handle: u64,
+        request_id: &str,
+        read_receipt: impl FnOnce(&Target, &Action, &str, &(String, u64, u64)) -> Option<Value>,
+    ) -> DeliveryObservation {
+        let (original, source, revision) = {
+            let hub = self.lock();
+            let Some((head, row)) = self.delivery_head(&hub, handle, request_id) else {
+                return DeliveryObservation::Unresolved;
+            };
+            let Some(source) = row.catalog_source else { return DeliveryObservation::Unresolved };
+            (head.clone(), source, hub.outbox_route_revision)
+        };
+        // This is the validated point-read transport only, never the scheduler's
+        // probe callback. It hashes the same guarded stdin, including files.
+        let Some(receipt) = read_receipt(&original.target, &receipt_action(&original), &original.request_id, &source) else {
+            return DeliveryObservation::Unresolved;
+        };
+        let hub = self.lock();
+        if hub.outbox_route_revision != revision
+            || !self.delivery_head(&hub, handle, request_id).is_some_and(|(head, row)| {
+                head == &original && row.catalog_source.as_ref() == Some(&source)
+            })
+        {
+            return DeliveryObservation::Unresolved;
+        }
+        if zerus_client_core::actions::terminal_outbox_refusal(&original.target, &receipt) {
+            DeliveryObservation::NoInput
+        } else if receipt["proof"] == "native_claude_receipt" && receipt["status"] == "submitted" {
+            DeliveryObservation::Accepted
+        } else {
+            DeliveryObservation::Unresolved
+        }
+    }
+
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
         let Some(row) = self.outbox_row(entry) else {
             return false;
@@ -985,6 +1090,34 @@ impl Composers {
                 }
             }
         });
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn composer_check_delivery(
+    state: TauriState<'_, Composers>,
+    app: TauriState<'_, crate::commands::AppState>,
+    handle: u64,
+    request_id: String,
+) -> Result<DeliveryObservation, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(service) = app.desktop_service() else {
+            return Ok(DeliveryObservation::Unresolved);
+        };
+        let composers = state.inner().clone();
+        return Ok(tauri::async_runtime::spawn_blocking(move || {
+            composers.check_delivery(handle, &request_id, move |target, action, id, source| {
+                crate::desktop_service::termination_outcome::check_claude_delivery(
+                    service, target, action, id, source,
+                )
+            })
+        }).await.unwrap_or(DeliveryObservation::Unresolved));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, app, handle, request_id);
+        Ok(DeliveryObservation::Unresolved)
     }
 }
 
