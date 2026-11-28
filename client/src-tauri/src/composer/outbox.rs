@@ -161,11 +161,13 @@ pub(super) fn view(
                         && !active.conversation_id.is_empty()
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
-            can_check_delivery: cfg!(target_os = "linux") && index == 0 && context.is_some_and(|ctx| {
-                !ctx.awaiting_outbox_details && ctx.details.as_deref().is_some_and(|details| {
-                    claude_delivery_head(entry, key, &ctx.session, &ctx.row, ctx.online, details)
-                })
-            }),
+            can_check_delivery: cfg!(any(target_os = "linux", target_os = "macos"))
+                && index == 0
+                && context.is_some_and(|ctx| {
+                    !ctx.awaiting_outbox_details && ctx.details.as_deref().is_some_and(|details| {
+                        claude_delivery_head(entry, key, &ctx.session, &ctx.row, ctx.online, details)
+                    })
+                }),
             can_check_terminal: entry.state == State::Unknown
                 && !opencode_outbox(entry)
                 && !dsh_outbox(entry)
@@ -725,7 +727,7 @@ impl Composers {
         status(&entry.target, &receipt_action(entry), &entry.request_id)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn delivery_head<'a>(&self, hub: &'a Hub, handle: u64, request_id: &str) -> Option<(&'a Entry, ViewRow)> {
         let key = hub.open_key.as_ref()?;
         let session = hub.open.as_ref()?;
@@ -745,7 +747,7 @@ impl Composers {
         claude_delivery_head(head, key, session, &row, online, details).then_some((head, row))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn check_delivery(
         &self,
         handle: u64,
@@ -1125,7 +1127,7 @@ pub async fn composer_check_delivery(
     handle: u64,
     request_id: String,
 ) -> Result<DeliveryObservation, String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let Some(service) = app.desktop_service() else {
             return Ok(DeliveryObservation::Unresolved);
@@ -1139,7 +1141,7 @@ pub async fn composer_check_delivery(
             })
         }).await.unwrap_or(DeliveryObservation::Unresolved));
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (state, app, handle, request_id);
         Ok(DeliveryObservation::Unresolved)

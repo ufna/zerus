@@ -664,7 +664,7 @@ fn unix_only(command: &str, unix: bool) -> Result<()> {
 /// code a macOS task message, deferred send or deferred answer child runs, so
 /// only Linux advertises those ABIs.
 fn help_text() -> Cow<'static, str> {
-    let usage = advertised(usage_text(cfg!(unix)), cfg!(target_os = "linux"));
+    let usage = advertised(usage_text(cfg!(unix)), std::env::consts::OS);
     let usage = if cfg!(target_os = "linux") {
         Cow::Owned(format!("{usage}\n{}\n", state::LISTING_METADATA_MARKER))
     } else {
@@ -675,8 +675,8 @@ fn help_text() -> Cow<'static, str> {
         None => usage,
     }
 }
-fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
-    if linux {
+fn advertised(usage: Cow<'static, str>, platform: &str) -> Cow<'static, str> {
+    if platform == "linux" {
         return usage;
     }
     let markers = [
@@ -692,11 +692,14 @@ fn advertised(usage: Cow<'static, str>, linux: bool) -> Cow<'static, str> {
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
         zerus_client_core::desktop::session_resume::OBSERVE_MARKER,
-        "desktop-claude-outbox-status-v1",
     ];
     usage
         .lines()
-        .filter(|line| !markers.contains(&line.trim()))
+        .filter(|line| {
+            let marker = line.trim();
+            !markers.contains(&marker)
+                && (platform == "macos" || marker != "desktop-claude-outbox-status-v1")
+        })
         .map(|line| format!("{line}\n"))
         .collect::<String>()
         .into()
@@ -840,10 +843,10 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         && args.get(1).map(String::as_str) == Some("delivery")
     {
         if args.get(2).is_some_and(|operation| operation == "claude-outbox-status") {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             return state::scoped_claude_outbox_status(&args[3..]).map_err(|e| Error::new(1, e));
-            #[cfg(not(target_os = "linux"))]
-            return Err(Error::new(1, "Claude outbox status is supported only on Linux"));
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            return Err(Error::new(1, "Claude outbox status is supported only on Linux and macOS"));
         }
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
@@ -5063,13 +5066,14 @@ mod tests {
         let observe = zerus_client_core::desktop::session_resume::OBSERVE_MARKER;
         let clone = zerus_client_core::desktop::creation_clone::HELP_MARKER;
         let check_delivery = "desktop-claude-outbox-status-v1";
-        let linux = advertised(usage_text(true), true);
+        let linux = advertised(usage_text(true), "linux");
         assert_eq!(linux, USAGE);
         assert!(linux.lines().any(|line| line.trim() == check_delivery));
-        let mac = advertised(usage_text(true), false);
-        let windows = advertised(usage_text(false), false);
+        let mac = advertised(usage_text(true), "macos");
+        let windows = advertised(usage_text(false), "windows");
+        assert!(mac.lines().any(|line| line.trim() == check_delivery));
+        assert!(!windows.lines().any(|line| line.trim() == check_delivery));
         for usage in [&mac, &windows] {
-            assert!(!usage.lines().any(|line| line.trim() == check_delivery));
             assert!(usage.lines().any(|line| line.trim() == "delivery-receipt-v1"));
         }
         assert!(!mac.lines().any(|line| line.trim() == marker));
@@ -5131,29 +5135,31 @@ mod tests {
                     "       Desktop deferred session resume Codex readiness: desktop-deferred-session-resume-codex-v1\n",
                     ""
                 )
-                .replace("       desktop-claude-outbox-status-v1\n", "")
         );
         for marker in [
             marker, message, references, review, send, answer, phase, compact, resume, observe,
-            check_delivery,
         ] {
             assert_eq!(
                 help_text().lines().any(|line| line.trim() == marker),
                 cfg!(target_os = "linux")
             );
         }
+        assert_eq!(
+            help_text().lines().any(|line| line.trim() == check_delivery),
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
-    fn closed_claude_outbox_status_refuses_before_reading_on_non_linux() {
+    fn closed_claude_outbox_status_refuses_before_reading_on_unsupported_hosts() {
         for args in [
             vec!["__state", "delivery", "claude-outbox-status"],
             vec!["__state", "delivery", "claude-outbox-status", "claude/example/original", "--json"],
         ] {
             let error = dispatch_normal(args.into_iter().map(str::to_owned).collect()).unwrap_err();
             assert_eq!(error.code, 1);
-            assert_eq!(error.message, "Claude outbox status is supported only on Linux");
+            assert_eq!(error.message, "Claude outbox status is supported only on Linux and macOS");
         }
     }
 

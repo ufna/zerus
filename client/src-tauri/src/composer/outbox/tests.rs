@@ -1682,7 +1682,7 @@ fn claude_fifo_waits_for_native_queue_and_reconciles_one_lost_acknowledgement() 
     assert_eq!(lock(&fake.calls).len(), 1);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn check_delivery_observes_only_the_exact_unknown_claude_head() {
     use sha2::{Digest, Sha256};
@@ -1764,6 +1764,9 @@ fn check_delivery_observes_only_the_exact_unknown_claude_head() {
     };
     assert_eq!(c.check_delivery(held.handle, &follower_id, &reader), DeliveryObservation::Unresolved);
     assert_eq!(c.check_delivery(held.handle + 1, &head_id, &reader), DeliveryObservation::Unresolved);
+    let source = lock(&fake.row).catalog_source.take();
+    assert_eq!(c.check_delivery(held.handle, &head_id, &reader), DeliveryObservation::Unresolved);
+    lock(&fake.row).catalog_source = source;
     assert_eq!(*lock(&reads), 0);
     let positive = json!({"schema":1,"status":"submitted","proof":"native_claude_receipt",
         "claude_outbox":true,"transport":"terminal","native":"queue",
@@ -1774,10 +1777,13 @@ fn check_delivery_observes_only_the_exact_unknown_claude_head() {
     negative["proof"] = json!("native_input_lock");
     let mut wrong = positive.clone();
     wrong["input_sha256"] = json!("wrong");
+    let mut wrong_run = positive.clone();
+    wrong_run["run_id"] = json!("previous-run");
     for (index, (receipt, expected)) in [
         (positive.clone(), DeliveryObservation::Accepted),
         (negative, DeliveryObservation::NoInput),
         (wrong, DeliveryObservation::Unresolved),
+        (wrong_run, DeliveryObservation::Unresolved),
     ].into_iter().enumerate() {
         *lock(&response) = receipt;
         assert_eq!(c.check_delivery(held.handle, &head_id, &reader), expected);
@@ -1791,7 +1797,7 @@ fn check_delivery_observes_only_the_exact_unknown_claude_head() {
     *lock(&response) = positive;
     change_route.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(c.check_delivery(held.handle, &head_id, &reader), DeliveryObservation::Unresolved);
-    assert_eq!(*lock(&reads), 4);
+    assert_eq!(*lock(&reads), 5);
     assert!(lock(&fake.calls).is_empty());
     assert_eq!(schedule(), schedule_before);
 }

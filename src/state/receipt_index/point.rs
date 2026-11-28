@@ -375,7 +375,7 @@ pub(in crate::state) fn claude_outbox_status(state: &Path, name: &str, bytes: &[
 
 /// The explicit check classifies one bounded snapshot. In particular a failure
 /// to prove submission cannot trigger a second open to look for refusal.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::state) fn observe_claude_outbox(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
     let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid Claude outbox query")?;
     // Typed terminal refusals retain their existing bounded identity rules;

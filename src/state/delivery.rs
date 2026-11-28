@@ -51,7 +51,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
 
 /// Closed local read only. The expected physical machine is checked before
 /// opening any original receipt; the existing lookup still checks its digest.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn scoped_claude_outbox_status(args: &[String]) -> Result<i32> {
     let [name, format] = args else {
         return Err("Invalid Claude outbox status arguments".into());
@@ -72,7 +72,7 @@ pub(crate) fn scoped_claude_outbox_status(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_claude_outbox_status(config: &crate::config::Config, name: &str, bytes: &[u8]) -> Result<Value> {
     #[derive(serde::Deserialize, serde::Serialize)]
     #[serde(deny_unknown_fields)]
@@ -95,7 +95,7 @@ fn read_claude_outbox_status(config: &crate::config::Config, name: &str, bytes: 
     receipt_index::observe_claude_outbox(&config.state, name, &input)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -130,6 +130,9 @@ mod tests {
         let read = |query: &Value| read_claude_outbox_status(&config, NAME, query.to_string().as_bytes());
         assert_eq!(read(&query).unwrap_err().to_string(), "Claude outbox computer changed");
         assert!(!state.exists());
+        query["expected_machine_id"] = json!(OWNER);
+        assert!(read(&query).is_err());
+        assert!(!state.exists());
         let receipts = state.join("input_receipts");
         std::fs::create_dir_all(&receipts).unwrap();
         let original = receipts.join(format!("{ID}.json"));
@@ -138,7 +141,6 @@ mod tests {
             "claude_outbox":true,"native":"queue"}).to_string();
         std::fs::write(&original, &bytes).unwrap();
         std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o600)).unwrap();
-        query["expected_machine_id"] = json!(OWNER);
         assert_eq!(read(&query).unwrap()["proof"], "native_claude_receipt");
         let mut wrong_digest = query.clone();
         wrong_digest["input_sha256"] = json!("b".repeat(64));
