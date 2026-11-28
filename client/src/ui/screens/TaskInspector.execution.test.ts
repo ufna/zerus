@@ -103,7 +103,10 @@ it("shows the saved acceptance criterion beside the review owner", () => {
 
 // Older peers omit report-bound quick-review metadata. Keep their reviewer
 // compatibility assertions separate from the current native projection below.
-const legacyReview = <T extends object>(row: T) => ({ ...row, quick_review_status: undefined, review_report_id: undefined });
+const legacyReview = <T extends { quick_review_status?: unknown; review_report_id?: unknown }>(row: T) => {
+  const { quick_review_status: _status, review_report_id: _report, ...legacy } = row;
+  return legacy;
+};
 
 it.each([
   ["en", "Review assignment", "Acceptance criterion: Check the fixture", "Your decision", "Coordinator or reviewer next", "Coordinator to triage"],
