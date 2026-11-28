@@ -3310,7 +3310,7 @@ mod tests {
             .is_err());
 
         let description_only = CODEX_MODEL_LIST
-            .replace("GPT-6-Sol (current)  Workhorse", "GPT-6-Astra  GPT-6-Sol · Fastest on routine work")
+            .replace("GPT-6-Sol (current)  Workhorse", "GPT-6-Astra  GPT-6-Sol compatible")
             .replace("GPT-6-Sol Mini", "GPT-6-Astra Mini");
         let (codex, _) = selected_codex(&description_only, "Select Model and Effort").unwrap();
         assert_eq!(codex.selected_matches("GPT-6-Sol"), Ok(false));

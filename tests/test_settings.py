@@ -23,7 +23,7 @@ AGENT = AGENT.replace("    os.write(1, screen.encode())", r'''
         if stage == 'advanced': title = 'Advanced Reasoning'
         screen = '\x1b[2J\x1b[10;1H  ' + title + '\r\n\r\n'
         for i, n in enumerate(names):
-            detail = '  GPT-6-Sol · Fastest on routine work' if stage == 'model' and i == 0 and (root / 'model-description-prefix').exists() else ''
+            detail = '  GPT-6-Sol compatible' if stage == 'model' and i == 0 and (root / 'model-description-prefix').exists() else ''
             screen += ('› ' if i == selected else '  ') + str(i+1) + '. ' + n + detail + '\r\n'
         screen += '\r\n  enter select · esc back' if stage == 'model' else '\r\n  enter default · s session · esc back'
     os.write(1, screen.encode())''')
