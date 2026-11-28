@@ -446,8 +446,8 @@ fn busy_codex_waits_for_exact_native_queue_support_then_offers_the_closed_editor
     drop(calls);
     c.open(Some(session));
     c.observe(&state(busy));
-    let view = until(&c, |v| v.status == "Queued in Codex");
-    assert_eq!(view.local.len(), 2);
+    let view = until(&c, |v| v.waiting_in_zerus.is_empty() && v.local.len() == 2);
+    assert_ne!(view.status, "Queued in Codex");
     for ((row, id), native) in view.local.iter().zip([original, second]).zip(native_ids) {
         assert_eq!(row.source.as_deref(), Some("zerus_codex_queue"));
         assert_eq!(row.id, id);
@@ -1230,21 +1230,15 @@ fn outbox_transport(agent: &str, transport: &'static str, terminal_status: bool)
     } else {
         assert!(view.terminal_only_outbox.is_empty());
     }
-    assert_eq!(view.status == "Submitted to terminal", terminal_status);
+    assert_ne!(view.status, "Submitted to terminal");
     assert!(!view.status_error);
     assert_eq!(lock(&fake.calls).len(), 1);
     if terminal_status {
         lock(&fake.row).conversation_id = Some("successor".into());
-        assert_ne!(
-            c.current().unwrap().status,
-            "Submitted to terminal",
+        assert!(
+            c.current().unwrap().terminal_only_outbox.is_empty(),
             "a new catalog conversation must not show the old acknowledgement"
         );
-        lock(&fake.row).conversation_id = Some("conv-1".into());
-        assert_eq!(c.current().unwrap().status, "Submitted to terminal");
-        c.edit(view.handle, view.rev + 1, view.text_epoch, "New draft".into(), 0, 0);
-        c.edit(view.handle, view.rev + 2, view.text_epoch, String::new(), 0, 0);
-        assert_ne!(c.current().unwrap().status, "Submitted to terminal");
     }
 }
 

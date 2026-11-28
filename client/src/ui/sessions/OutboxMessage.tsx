@@ -23,7 +23,7 @@ export const outboxStamp = (item: OutboxItem) => {
 export function OutboxHeader(props: { item: OutboxItem }) {
   return <>
     <span class="act-stamp" classList={{ failed: props.item.state === "unknown" || props.item.state === "failed" }}
-      title={props.item.state === "waiting" && !props.item.target_changed ? tr("Waiting for the agent to become ready") : undefined}>
+      title={props.item.state === "waiting" && !props.item.target_changed && !props.item.blockedBy ? tr("Waiting for the agent to become ready") : undefined}>
       {outboxStamp(props.item)}
     </span>
     <Show when={queuedDate(props.item.queued_at)} fallback={<span class="act-time">{tr("Queue time unavailable")}</span>}>{(at) =>
@@ -54,6 +54,9 @@ export function OutboxActions(props: { item: OutboxItem }) {
     <Show when={props.item.target_changed}>
       <p class="act-inbox-hint">{tr("The original session changed.")}</p>
     </Show>
+    <Show when={props.item.blockedBy}>{(head) => (
+      <p class="act-inbox-hint">{tr("Waiting on the first queued message (delivery not confirmed): %1", head().preview || tr("Message with files"))}</p>
+    )}</Show>
     <Show when={props.item.state === "unknown" && current()?.can_check_terminal}>
       <p class="act-error">{tr("Delivery unknown. Check Terminal before removing this message.")}</p>
     </Show>

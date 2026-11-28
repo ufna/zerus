@@ -491,7 +491,6 @@ pub(crate) struct Composer {
     /// Any already-started inspection predates this hold.
     pub(crate) hold_after_inspect: u64,
     outbox: Vec<zerus_client_core::drafts::outbox::Entry>,
-    last_submission: Option<(Target, &'static str)>,
     terminal_only_outbox: VecDeque<(Target, outbox::TerminalReceiptView)>,
     outbox_damaged: bool,
     queue_editing: bool,
@@ -543,7 +542,6 @@ impl Composer {
             earlier_input_hold: None,
             hold_after_inspect: 0,
             outbox: Vec::new(),
-            last_submission: None,
             terminal_only_outbox: VecDeque::new(),
             outbox_damaged: false,
             queue_editing: false,
@@ -1386,7 +1384,6 @@ impl Composers {
         }
         composer.rev = rev;
         composer.draft.text = text;
-        composer.last_submission = None;
         composer.position = position;
         composer.anchor = anchor;
         // The webview took the offer, or typed its own text: either ends it.
@@ -1939,15 +1936,6 @@ impl Composers {
         };
         if status.is_empty() && attachments_blocked {
             status = session.attachments_reason.clone();
-        }
-        if status.is_empty()
-            && session.available
-            && !session.session_status_error
-            && !composer.has_content()
-        {
-            if let Some(notice) = context.as_ref().and_then(|ctx| ctx.submission_notice(composer)) {
-                status = notice.into();
-            }
         }
         if status.is_empty() {
             status = if too_long {

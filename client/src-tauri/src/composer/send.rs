@@ -2131,11 +2131,7 @@ impl Composers {
             } else {
                 composer.error = !ok;
                 composer.uncertain = uncertain;
-                composer.notice = if ok && detail.is_empty() {
-                    "Submitted to terminal".into()
-                } else {
-                    detail.to_owned()
-                };
+                composer.notice = detail.to_owned();
                 if ok {
                     composer.draft = attachments::Draft::default();
                     composer.position = 0;

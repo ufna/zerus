@@ -2762,7 +2762,9 @@ from the editable draft so an older desktop can edit that draft during rollback.
 
 The native queue shown in Activity has its own **Send now** action. It
 operates only on the native queue already shown there. A refused or unknown
-delivery pauses the Zerus queue at that message. For OpenCode, Zerus can check
+delivery pauses the Zerus queue at that message. When delivery of the first
+message is unconfirmed, later waiting rows in Activity identify that message,
+even when the agent is ready. For OpenCode, Zerus can check
 the original native message and settle the original receipt without another offer.
 For Claude, a final original receipt can settle a lost command response. Activity
 matches the original request and Claude's typed prompt ID to link the outgoing
@@ -2781,15 +2783,12 @@ Check Activity or Terminal before deciding whether to remove an unknown message
 from the Zerus queue. A new run or a renamed session cannot inherit the earlier
 run's delivery.
 
-When Send has a proven native request binding, Activity keeps the outgoing
-message in the same position while delivery and history arrive. For an
-existing embedded Codex terminal session that supplies no such binding,
-Zerus shows the original request's delivery status beside the composer from
-the first update. Expand it to see the message, its files and any available
-recovery actions. **Submitted to terminal** confirms the terminal submission.
-The outgoing article appears when Codex records it. A separate equal prompt
-typed in Terminal has its own article. Zerus uses this presentation when it
-cannot establish the route's native binding at Send time.
+Activity shows the original outgoing message, its files, its delivery status,
+and any available recovery actions together. For a terminal route without a
+proven native request binding, **Submitted to terminal** confirms terminal
+submission, not native acceptance or a model read. Activity joins native
+history to the original only when it can verify the binding. An independently
+recorded prompt with the same text is not used to infer that binding.
 
 Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.

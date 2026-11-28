@@ -42,7 +42,8 @@ vi.mock("../../bridge", async (original) => {
     composerDismissCompactionNotice: withDesktop(bridge.composerDismissCompactionNotice),
     runAction: withDesktop(bridge.runAction),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
-    localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
+    localInspect: withDesktop(bridge.localInspect), localDelete: withDesktop(bridge.localDelete),
+    sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
     inTauri: () => transport.enablesTeams, setParent: transport.parent,
     activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
     terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
@@ -517,7 +518,8 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   expect(waitingRows()[2].querySelector("time")).toBeNull();
   expect(waitingRows()[0].querySelector(".act-stamp")?.textContent?.trim()).toBe(lang === "ru" ? "В очереди Zerus" : "Queued in Zerus");
   expect(host.querySelector(".cmp-draft-status summary")).toBeNull();
-  expect(host.querySelector(".cmp-hint")?.textContent).toBe(lang === "ru" ? "Поставлено в очередь Zerus." : "Queued in Zerus.");
+  expect(host.querySelector(".cmp-hint")).toBeNull();
+  expect(host.querySelector(".activity > .sr-only[role=status]")?.textContent).toBe(lang === "ru" ? "В очереди Zerus" : "Queued in Zerus");
 
   editor().value = "fourth draft still editable";
   editor().dispatchEvent(new Event("input", { bubbles: true }));
@@ -584,9 +586,17 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   watcher.disconnect();
 
   const held = { ...staged, waiting_in_zerus: [
-    { ...localQueue[1], state: "unknown" as const, can_check_terminal: true }, localQueue[2],
+    { ...localQueue[1], state: "unknown" as const, can_check_terminal: true, delivery_in_composer: true }, localQueue[2],
   ] };
-  receive({ ...emptyBatch(), composer: held });
+  put({ ...row, phase: "idle", activity: "idle" });
+  receive({ ...emptyBatch(), composer: { ...held, status: "", previous_message_pending: false } });
+  await vi.waitFor(() => expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`)));
+  expect(waitingRows()[1].getAttribute("data-blocked-by-request")).toBe(localQueue[1].request_id);
+  expect(waitingRows()[1].querySelector(".act-inbox-hint")?.textContent).toBe(lang === "ru"
+    ? `Ожидает первого сообщения в очереди (доставка не подтверждена): ${localQueue[1].preview}`
+    : `Waiting on the first queued message (delivery not confirmed): ${localQueue[1].preview}`);
+  expect(waitingRows()[1].querySelector(".act-stamp")?.getAttribute("title")).toBeNull();
+  expect(host.querySelector(".cmp-delivery")).toBeNull();
   const removeButton = () => waitingRows().at(-1)?.querySelector<HTMLButtonElement>(".act-outbox-actions .icon-btn");
   const confirm = () => host.querySelector<HTMLButtonElement>(".act-outbox-confirm button:last-child");
   removeButton()!.click();
@@ -1070,6 +1080,22 @@ describe("a shown tool search hit (zerus-tso9j, zerus-2r73y)", () => {
   };
   afterEach(() => clearSearchPreview());
 
+  it("keeps a search hit while the selected session hydrates a saved queue", async () => {
+    const row = fixtureRow();
+    const key = put(row);
+    let finish!: (view: ComposerView) => void;
+    vi.mocked(bridge.composerOpen).mockImplementation(selection => selection?.name === row.name
+      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null));
+    setSelectedKey(key);
+    setDetailTab("activity");
+    setSearchPreview({ key, run: row.run_id!, conversation: row.conversation_id!, query: "needle", hit: toolHit(row, "Saved needle") });
+    await vi.waitFor(() => expect(host.querySelector(".search-preview mark")?.textContent).toBe("needle"));
+    finish({ ...sessionComposer(row), waiting_in_zerus: [{ request_id: uuid(99012), state: "unknown", preview: "Restored original",
+      run_id: row.run_id!, conversation_id: row.conversation_id!, delivery_in_composer: true }] });
+    await flush();
+    expect(host.querySelector(".search-preview mark")?.textContent).toBe("needle");
+  });
+
   it("Show more reveals a match past the first 2,000 characters", async () => {
     const detail = await show(`${"x".repeat(2_200)}needle${"y".repeat(1_000)}`);
     expect(detail()!.textContent).toHaveLength(2_000);
@@ -1369,7 +1395,10 @@ it.each(["en", "ru"] as const)("keeps retired Antigravity history readable witho
   expect(writes).toEqual([]);
 });
 
-it("keeps terminal-only Send recovery beside the composer and uses guarded local actions", async () => {
+it("shows terminal-only Send recovery in Activity and uses guarded local actions", async () => {
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
   const row: ViewRow = { ...fixtureRow("Embedded Codex"), name: "codex/example/embedded", agent: "codex" };
   const initial = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "",
     attachments_available: true, text: "Original user text" };
@@ -1389,26 +1418,34 @@ it("keeps terminal-only Send recovery beside the composer and uses guarded local
     return undefined;
   };
   await open(row);
-  host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!.click();
-  const present = () => host.querySelector<HTMLElement>(".cmp-delivery [role=status]");
-  await vi.waitFor(() => expect(present()?.dataset.requestId).toBe(request));
-  expect(present()?.textContent).toBe("Sending…");
-  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
+  const send = host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
+  expect(send.disabled).toBe(false);
+  send.click();
+  await vi.waitFor(() => expect(calls.some(call => call.command === "send_message")).toBe(true));
+  const present = () => host.querySelector<HTMLElement>(`#item-local-${request}`);
+  await vi.waitFor(() => expect(present()?.querySelector(".act-stamp")?.textContent).toBe("Sending…"));
+  put({ ...row, conversation_id: "successor-conversation" });
+  await vi.waitFor(() => expect(present()).toBeNull());
+  await open(row);
   receive({ ...emptyBatch(), composer: { ...initial, text: "Independent draft", text_epoch: 3, rev: 3, uncertain: true,
     local: [{ ...original, status: "error", uncertain: true, error: "Delivery not confirmed" }] } });
-  await vi.waitFor(() => expect(present()?.textContent).toBe("Delivery not confirmed"));
-  expect(present()?.dataset.requestId).toBe(request);
-  const dock = host.querySelector<HTMLDetailsElement>(".cmp-delivery")!;
-  dock.open = true;
-  expect(dock.querySelector("li")?.textContent).toContain("report.txt");
-  expect(host.querySelectorAll(".act-scroll .k-user")).toHaveLength(0);
-  const action = (text: string) => [...dock.querySelectorAll("button")].find(button => button.textContent === text);
+  await vi.waitFor(() => expect(present()?.querySelector(".act-stamp")?.textContent).toBe("Delivery not confirmed"));
+  expect(present()?.textContent).toContain("report.txt");
+  expect(host.querySelector(".cmp-delivery")).toBeNull();
+  const action = (text: string) => [...present()!.querySelectorAll("button")].find(button => button.textContent === text);
   expect(action("Retry")).toBeUndefined();
   action("Check Terminal")!.click();
   await vi.waitFor(() => expect(calls).toContainEqual({ command: "local_inspect", args: { handle: initial.handle, id: request } }));
   action("Delete")!.click();
   await flush();
-  expect(host.querySelector<HTMLDialogElement>(".activity dialog[role=alertdialog]")?.open).toBe(true);
+  const review = host.querySelector<HTMLDialogElement>(".activity dialog[role=alertdialog]")!;
+  expect(review.open).toBe(true);
+  const staleConfirm = review.querySelector<HTMLButtonElement>(".solid-danger")!;
+  put({ ...row, conversation_id: "successor-conversation" });
+  await vi.waitFor(() => expect(present()).toBeNull());
+  expect(review.open).toBe(false);
+  staleConfirm.click();
+  expect(calls).not.toContainEqual(expect.objectContaining({ command: "local_delete" }));
   expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe("Independent draft");
   expect(calls.filter(call => call.command === "send_message")).toHaveLength(1);
 });
