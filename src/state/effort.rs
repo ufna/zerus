@@ -3309,6 +3309,14 @@ mod tests {
             .selected_matches("K3")
             .is_err());
 
+        let description_only = CODEX_MODEL_LIST
+            .replace("GPT-6-Sol (current)  Workhorse", "GPT-6-Astra  GPT-6-Sol · Fastest on routine work")
+            .replace("GPT-6-Sol Mini", "GPT-6-Astra Mini");
+        let (codex, _) = selected_codex(&description_only, "Select Model and Effort").unwrap();
+        assert_eq!(codex.selected_matches("GPT-6-Sol"), Ok(false));
+        assert!(!claude_row_is("3. Fable  Fable 5.2 is fastest", "Fable 5.2"));
+        assert!(claude_row_is("3. Fable  Fable 5.2 · Most capable", "Fable 5.2"));
+
         let quoted = "● The list was:\n    2.  Opus 5.5  Complex tasks\n  ▶ 3.  Fable 5.2  Tough challenges\n\n❯ ";
         assert!(claude_picker(quoted).is_none());
         assert!(selected_codex(quoted, "Select Model and Effort").is_none());

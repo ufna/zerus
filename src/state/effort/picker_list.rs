@@ -1,7 +1,7 @@
 //! Rows inside a provider-validated picker panel. A row never supplies
 //! authority to open a panel, navigate a section, or apply a setting.
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Layout {
     Numbered,
     Claude,
@@ -22,6 +22,8 @@ pub(super) struct Row {
     pub raw: String,
     pub position: Position,
     caption: String,
+    description: String,
+    layout: Layout,
     selected: bool,
 }
 
@@ -109,6 +111,8 @@ impl Row {
                 section: section.map(|(marker, _)| marker),
             },
             caption: caption.to_owned(),
+            description: description.to_owned(),
+            layout,
             selected: cursor.is_some(),
         })
     }
@@ -125,11 +129,9 @@ impl Row {
             return false;
         }
         label == name
-            || (!label.starts_with(name)
-                && description.strip_prefix(name).is_some_and(|tail| {
-                    tail.first()
-                        .is_none_or(|next| !next.chars().all(char::is_numeric))
-                }))
+            || (matches!(self.layout, Layout::Claude)
+                && !label.starts_with(name)
+                && tokens(self.description.split('·').next().unwrap_or("")) == name)
     }
 }
 
