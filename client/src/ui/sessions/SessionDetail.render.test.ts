@@ -39,9 +39,11 @@ vi.mock("../../bridge", async (original) => {
     ...bridge,
     composerEdit: withDesktop(bridge.composerEdit), sendMessage: withDesktop(bridge.sendMessage),
     composerRemoveWaiting: withDesktop(bridge.composerRemoveWaiting),
+    composerDismissCompactionNotice: withDesktop(bridge.composerDismissCompactionNotice),
     runAction: withDesktop(bridge.runAction),
     queueSendNow: withDesktop(bridge.queueSendNow), localRetry: withDesktop(bridge.localRetry),
-    localInspect: withDesktop(bridge.localInspect), sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
+    localInspect: withDesktop(bridge.localInspect), localDelete: withDesktop(bridge.localDelete),
+    sendAnswer: withDesktop(bridge.sendAnswer), composerAllowRetry: withDesktop(bridge.composerAllowRetry),
     inTauri: () => transport.enablesTeams, setParent: transport.parent,
     activityPort: { follow: vi.fn(async () => {}), unfollow: vi.fn(async () => {}) },
     terminalStatus: vi.fn(async () => ({ supported: true, available: false, reason: "Private fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" })),
@@ -73,7 +75,8 @@ import { openCleanup, closeCleanup } from "../../store/terminationCleanup";
 import { machineMeta } from "../../store/testing";
 import { listRows } from "./model";
 import { archive } from "../../store/archive";
-import { clearSearchPreview, setSearchPreview } from "../../store/searchSelection";
+import { terminal } from "../../store/terminal";
+import { clearSearchPreview, setSearchPreview, searchPreview } from "../../store/searchSelection";
 import type { SearchHit } from "../../store/content-search-model";
 import { emptyBatch, type ComposerView, type LocalMessage, type ViewRow } from "../../types";
 import { draftKey } from "../../store/draftKeys";
@@ -134,6 +137,31 @@ async function open(row: ViewRow, tab: "activity" | "processes" | "terminal" = "
   activity.applyActivity([{ computer: "", key: key.slice(1), kind: "state", payload: { rev: 1, value: { run_id: row.run_id, conversation_id: row.conversation_id, activity: "idle", phase: "idle", activity_summary: "Ready" } } }]);
   return key;
 }
+
+it("ignores an outdated OpenCode terminal status for the same selected row", async () => {
+  const row = { ...fixtureRow(), name: "opencode/example/terminal-status", agent: "opencode" };
+  const key = put(row);
+  const status = { supported: true, available: false, reason: "Current fixture", idle: "Fixture terminal", connecting: "Connecting", disconnected: "Disconnected" };
+  let resolveOld!: (result: typeof status) => void;
+  vi.mocked(bridge.terminalStatus)
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+    .mockResolvedValueOnce(status);
+  const setTarget = vi.spyOn(terminal, "setTarget");
+  onTestFinished(() => setTarget.mockRestore());
+
+  setSelectedKey(key);
+  await flush();
+  expect(resolveOld).toBeTypeOf("function");
+  expect(put({ ...row, conversation_id: "new-conversation" })).toBe(key);
+  await flush();
+  expect(setTarget).toHaveBeenLastCalledWith(expect.objectContaining({ conversation_id: "new-conversation" }), status, "opencode");
+  const targetCalls = setTarget.mock.calls.length;
+
+  resolveOld({ ...status, reason: "Outdated fixture" });
+  await flush();
+  expect(setTarget).toHaveBeenCalledTimes(targetCalls);
+});
+
 const queueDraftLabels = {
   en: { send: "Send", queue: "Send queued messages now", retry: "Retry this message", notSent: "Not sent",
     check: "Check Terminal", allow: "Allow retry", notConfirmed: "Delivery not confirmed",
@@ -490,7 +518,8 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   expect(waitingRows()[2].querySelector("time")).toBeNull();
   expect(waitingRows()[0].querySelector(".act-stamp")?.textContent?.trim()).toBe(lang === "ru" ? "В очереди Zerus" : "Queued in Zerus");
   expect(host.querySelector(".cmp-draft-status summary")).toBeNull();
-  expect(host.querySelector(".cmp-hint")?.textContent).toBe(lang === "ru" ? "Поставлено в очередь Zerus." : "Queued in Zerus.");
+  expect(host.querySelector(".cmp-hint")).toBeNull();
+  expect(host.querySelector(".activity > .sr-only[role=status]")?.textContent).toBe(lang === "ru" ? "В очереди Zerus" : "Queued in Zerus");
 
   editor().value = "fourth draft still editable";
   editor().dispatchEvent(new Event("input", { bubbles: true }));
@@ -500,20 +529,74 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
     error: "", uncertain: false, message_id: localQueue[0].request_id, submitted_text: "same", source: "zerus_outbox", voice: null,
   };
   const firstId = waitingRows()[0].id;
+  const firstNode = waitingRows()[0];
+  const originalNode = () => host.querySelector<HTMLElement>(`#${firstId}`);
+  const firstRow = firstNode.closest(".act-virtual-row");
+  const file = firstNode.querySelector(".att-card");
+  expect(file).not.toBeNull();
+  const scroller = firstNode.closest<HTMLElement>(".act-scroll")!;
+  Object.defineProperties(scroller, { clientHeight: { value: 400 }, scrollHeight: { value: 1000 } });
+  scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -30, bubbles: true }));
+  scroller.scrollTop = 180;
+  scroller.dispatchEvent(new Event("scroll"));
+  const currentOriginal = () => {
+    expect(host.querySelectorAll(`#${firstId}`)).toHaveLength(1);
+    expect(originalNode()).toBe(firstNode);
+    expect(originalNode()?.closest(".act-virtual-row")).toBe(firstRow);
+    expect(originalNode()?.querySelector(".att-card")).toBe(file);
+    expect(scroller.scrollTop).toBe(180);
+  };
+  const firstRemoved: MutationRecord[] = [];
+  const watcher = new MutationObserver(records => firstRemoved.push(...records.filter(record =>
+    [...record.removedNodes].some(node => node === firstNode || node === firstRow || node === file))));
+  watcher.observe(scroller, { childList: true, subtree: true });
+  onTestFinished(() => watcher.disconnect());
   const staged = { ...initial, text_epoch: 4, waiting_in_zerus: localQueue.slice(1), local: [confirmed] };
+  // The desktop composer can retire its queue entry against a receipt before
+  // the independent Activity follow publishes the corresponding native event.
+  receive({ ...emptyBatch(), composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
   receive({ ...emptyBatch(), composer: staged });
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  currentOriginal();
   const sent = [...host.querySelectorAll(".act-scroll article")].filter(item => item.id === firstId);
   expect(sent).toHaveLength(1);
+  expect(sent[0]).toBe(firstNode);
   expect(sent[0].classList.contains("act-outbox")).toBe(false);
   expect(sent[0].textContent).toContain("queue-fixture.txt");
   expect(editor().value).toBe("fourth draft still editable");
   expect(editor().readOnly).toBe(false);
 
+  const activityKey = `run:${row.run_id}`;
+  const scope = { run_id: row.run_id, conversation_id: row.conversation_id };
+  const echo = { ...scope, seq: 103, type: "UserPromptSubmit", source: "opencode_native",
+    request_id: confirmed.id, message_id: "msg_Output", detail: "same", at: confirmed.submitted_at };
+  const interleaved = { ...scope, seq: 101, type: "AgentMessage", detail: "Unrelated activity", at: confirmed.submitted_at - 1 };
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [interleaved], cursor: 101 } }],
+    composer: { ...staged, local: [] } });
+  await flush();
+  currentOriginal();
+  receive({ ...emptyBatch(), activity: [{ computer: "", key: activityKey, kind: "events", payload: { events: [echo], cursor: 103 } }] });
+  await vi.waitFor(() => expect(originalNode()?.querySelector(".act-receipt")?.textContent?.trim()).toBe(lang === "ru" ? "Отправлено" : "Sent"));
+  currentOriginal();
+  expect([...scroller.querySelectorAll("article.k-user")].slice(0, 3).map(item => item.id)).toEqual(
+    localQueue.map(item => `item-local-${item.request_id}`));
+  expect(firstRemoved).toHaveLength(0);
+  watcher.disconnect();
+
   const held = { ...staged, waiting_in_zerus: [
-    { ...localQueue[1], state: "unknown" as const, can_check_terminal: true }, localQueue[2],
+    { ...localQueue[1], state: "unknown" as const, can_check_terminal: true, delivery_in_composer: true }, localQueue[2],
   ] };
-  receive({ ...emptyBatch(), composer: held });
+  put({ ...row, phase: "idle", activity: "idle" });
+  receive({ ...emptyBatch(), composer: { ...held, status: "", previous_message_pending: false } });
+  await vi.waitFor(() => expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`)));
+  expect(waitingRows()[1].getAttribute("data-blocked-by-request")).toBe(localQueue[1].request_id);
+  expect(waitingRows()[1].querySelector(".act-inbox-hint")?.textContent).toBe(lang === "ru"
+    ? `Ожидает первого сообщения в очереди (доставка не подтверждена): ${localQueue[1].preview}`
+    : `Waiting on the first queued message (delivery not confirmed): ${localQueue[1].preview}`);
+  expect(waitingRows()[1].querySelector(".act-stamp")?.getAttribute("title")).toBeNull();
+  expect(host.querySelector(".cmp-delivery")).toBeNull();
   const removeButton = () => waitingRows().at(-1)?.querySelector<HTMLButtonElement>(".act-outbox-actions .icon-btn");
   const confirm = () => host.querySelector<HTMLButtonElement>(".act-outbox-confirm button:last-child");
   removeButton()!.click();
@@ -523,18 +606,21 @@ it.each(["en", "ru"] as const)("uses the same single Send for click and Enter in
   const other = fixtureRow("Other session");
   const otherKey = draftKey({ computer: "", key: `run:${other.run_id}`, name: other.name,
     session_id: other.session_id, archive_id: null });
-  const reopened = { ...held, handle: held.handle + 2, text: "fourth draft still editable" };
+  const reopened = { ...held, local: [], handle: held.handle + 2, text: "fourth draft still editable",
+    terminal_only_outbox: [{ ...localQueue[0], run_id: row.run_id!, conversation_id: row.conversation_id!, attachments: localQueue[0].attachments ?? [] }] };
   vi.mocked(bridge.composerOpen).mockImplementation(async (selection) =>
     selection?.key === `run:${row.run_id}` ? reopened
       : selection?.key === `run:${other.run_id}` ? { ...initial, handle: initial.handle + 1, key: otherKey } : null);
   await open(other);
   expect(waitingRows()).toHaveLength(0);
+  expect(originalNode()).toBeNull();
   expect(confirm()).toBeNull();
   staleConfirmation.click();
   expect(removals).toHaveLength(0);
 
   await open(row);
   await vi.waitFor(() => expect(waitingRows()).toHaveLength(2));
+  expect(originalNode()?.textContent).toContain("queue-fixture.txt");
   expect(confirm()).toBeNull();
   expect(visibleOrder()).toEqual(localQueue.slice(1).map(item => `item-local-${item.request_id}`));
   removeButton()!.click();
@@ -994,6 +1080,22 @@ describe("a shown tool search hit (zerus-tso9j, zerus-2r73y)", () => {
   };
   afterEach(() => clearSearchPreview());
 
+  it("keeps a search hit while the selected session hydrates a saved queue", async () => {
+    const row = fixtureRow();
+    const key = put(row);
+    let finish!: (view: ComposerView) => void;
+    vi.mocked(bridge.composerOpen).mockImplementation(selection => selection?.name === row.name
+      ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(null));
+    setSelectedKey(key);
+    setDetailTab("activity");
+    setSearchPreview({ key, run: row.run_id!, conversation: row.conversation_id!, query: "needle", hit: toolHit(row, "Saved needle") });
+    await vi.waitFor(() => expect(host.querySelector(".search-preview mark")?.textContent).toBe("needle"));
+    finish({ ...sessionComposer(row), waiting_in_zerus: [{ request_id: uuid(99012), state: "unknown", preview: "Restored original",
+      run_id: row.run_id!, conversation_id: row.conversation_id!, delivery_in_composer: true }] });
+    await flush();
+    expect(host.querySelector(".search-preview mark")?.textContent).toBe("needle");
+  });
+
   it("Show more reveals a match past the first 2,000 characters", async () => {
     const detail = await show(`${"x".repeat(2_200)}needle${"y".repeat(1_000)}`);
     expect(detail()!.textContent).toHaveLength(2_000);
@@ -1112,22 +1214,13 @@ it("shows the bound Team tab's unread count from the producer's list while Activ
   expect(host.querySelector('[data-tab="team"]')?.getAttribute("aria-selected")).toBe("false");
 });
 
-it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle through the ordinary menu in %s", async (lang) => {
-  transport.language = lang;
-  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
-  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
-  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
-  const labels = lang === "ru"
-    ? { menu: "Действия сессии", stop: "Остановить сессию…", confirm: "Остановить сессию", resume: "Возобновить сессию", retry: "Повторить запуск", cancel: "Отмена" }
-    : { menu: "Session actions", stop: "Stop session…", confirm: "Stop session", resume: "Resume session", retry: "Retry start", cancel: "Cancel" };
-  const fixture = fixtureRow("Private Antigravity");
-  const row: ViewRow = { ...fixture, name: "agy/example/fixture", agent: "agy", terminal_supported: false };
-  const view: ComposerView = {
+function sessionComposer(row: ViewRow): ComposerView {
+  return {
     handle: 118, key: draftKey({ computer: "", key: `run:${row.run_id}`, name: row.name, session_id: row.session_id, archive_id: null }),
     loaded: true, rev: 1, text_epoch: 1, text: "Private Antigravity draft", position: 0, anchor: 0,
     attachments: [], removed: null, attaching: false, sending: false, waiting: null, uncertain: false,
     status: "", status_error: false, can_send: false, send_label: { source: "Send" }, available: false,
-    unavailable_reason: "On this computer, run agy acp --login, then refresh the session. Your draft stays here.",
+    unavailable_reason: "Antigravity integration has been retired from Zerus.",
     block_reason: null, attachments_available: false, attachments_reason: "", session_status: "", session_status_error: false,
     session_blocks_input: false, inspect_error: false, local: [], compacting: false, cancel_send: false, input_visible: true,
     question: null, queue: null, cache: { visible: false, tone: "quiet", label: "", short_label: "" },
@@ -1135,60 +1228,114 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     context: { visible: false, tone: "quiet", text: "", tooltip: "", warning: false, percent: null, accessible_name: "" },
     clear: { enabled: false, dismiss: false, title: "", text: "", confirm: "", run: "", conversation: "", cache_enabled: false, running: false, reason: "", cache_reason: "" },
   };
+}
+
+it.each(["en", "ru"] as const)("dismisses a past Kimi compaction notice without using a delivery action in %s", async (lang) => {
+  transport.language = lang;
+  const labels = lang === "ru" ? {
+    notice: "Сжатие контекста не подтверждено. Проверьте терминал; черновик сохранён без отправки.",
+    dismiss: "Закрыть уведомление о сжатии контекста",
+    unknown: "Результат сжатия контекста пока неизвестен. Проверьте терминал.",
+  } : {
+    notice: "Compaction was not confirmed. Check Terminal; your draft was kept without sending.",
+    dismiss: "Dismiss compaction notice",
+    unknown: "The compaction result is still unknown. Check Terminal.",
+  };
+  const source = "Compaction was not confirmed. Check Terminal; your draft was kept without sending.";
+  const unknown = "The compaction result is still unknown. Check Terminal.";
+  const row: ViewRow = { ...fixtureRow("Kimi fixture"), name: "kimi/example/compaction-notice", agent: "kimi" };
+  const original = uuid(901), later = uuid(902);
+  const attachments: ComposerView["attachments"] = [
+    { name: "fixture.txt", mime: "text/plain", reference: "@fixture.txt", bytes: 4, path: "zerus-file://fixture.txt", excerpt: "test" },
+  ];
+  let draft: ComposerView & { compaction_notice_id?: string } = {
+    ...sessionComposer(row), text: "Keep my draft @fixture.txt", attachments, available: true,
+    attachments_available: true, unavailable_reason: "", status: source,
+    status_error: true, uncertain: true, can_send: false, compaction_notice_id: original,
+  };
+  vi.mocked(bridge.composerOpen).mockImplementation(async session => session?.name === row.name ? draft : null);
+  const calls: Array<[string, unknown]> = [];
+  const publish = () => receive({ ...emptyBatch(), composer: draft });
+  transport.composer = (command, args) => {
+    calls.push([command, args]);
+    if (command === "composer_dismiss_compaction_notice") {
+      draft = { ...draft, status: unknown, compaction_notice_id: undefined };
+      queueMicrotask(publish);
+    }
+  };
+  const key = await open(row);
+  const editor = () => host.querySelector<HTMLTextAreaElement>(".cmp-editor")!;
+  const send = () => host.querySelector<HTMLButtonElement>(".cmp-actions button.primary")!;
+  const dismiss = () => host.querySelector<HTMLButtonElement>(`button[aria-label="${labels.dismiss}"]`);
+  await vi.waitFor(() => expect(dismiss()).not.toBeNull());
+  expect(host.querySelector(".cmp-draft-status")?.textContent).toContain(labels.notice);
+  expect(send().disabled).toBe(true);
+  dismiss()!.focus();
+  dismiss()!.click();
+  await vi.waitFor(() => expect(dismiss()).toBeNull());
+  expect(calls).toEqual([["composer_dismiss_compaction_notice", { handle: draft.handle, requestId: original }]]);
+  expect(host.textContent).toContain(labels.unknown);
+  expect(editor().value).toBe(draft.text);
+  expect(document.activeElement).toBe(editor());
+  expect(send().disabled).toBe(true);
+
+  setSelectedKey(undefined); await flush();
+  setSelectedKey(key); await flush();
+  await vi.waitFor(() => expect(editor().value).toBe(draft.text));
+  expect(dismiss()).toBeNull();
+  expect(send().disabled).toBe(true);
+  expect(host.textContent).toContain(labels.unknown);
+
+  draft = { ...draft, status: source, compaction_notice_id: later };
+  publish();
+  await vi.waitFor(() => expect(dismiss()).not.toBeNull());
+  expect(host.querySelector(".cmp-draft-status")?.textContent).toContain(labels.notice);
+  dismiss()!.click();
+  await vi.waitFor(() => expect(calls.at(-1)).toEqual(["composer_dismiss_compaction_notice", { handle: draft.handle, requestId: later }]));
+  expect(editor().value).toBe("Keep my draft @fixture.txt");
+  expect(draft.attachments).toEqual(attachments);
+  expect(send().disabled).toBe(true);
+});
+
+it.each(["en", "ru"] as const)("keeps retired Antigravity history readable without active controls in %s", async (lang) => {
+  transport.language = lang;
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
+  const row: ViewRow = { ...fixtureRow("Private Antigravity"), name: "agy/example/fixture", agent: "agy",
+    state: "running", status: "working", process_state: "running", resumable: true,
+    allowed_actions: ["pause", "archive", "rename", "terminate"], model: "Historical model", effort: "high", terminal_supported: true };
+  const view = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "" };
   vi.mocked(bridge.composerOpen).mockImplementation(async s => s?.name === row.name ? view : null);
   const key = (await open(row)).slice(1);
-  const lifecycle: unknown[] = [], sendCalls: unknown[] = [], inspections: unknown[] = [];
+  const writes: unknown[] = [], inspections: unknown[] = [];
   transport.composer = (command, args) => {
     if (command === "local_inspect") {
       inspections.push(args);
       return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
     }
-    if (command === "send_message") {
-      sendCalls.push(args);
-      return { kind: "sending" };
-    }
-    if (command === "run_action") {
-      lifecycle.push(args);
-      return { outcome: "done", receipt: {}, cleanup: null };
-    }
+    if (["send_message", "local_retry", "composer_allow_retry", "run_action"].includes(command)) writes.push(args);
     return undefined;
   };
-  const menus = () => [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
-  const openMenu = async (label: string) => {
-    setMenu(undefined);
-    host.querySelector<HTMLButtonElement>(`.detail-head button[data-tip="${labels.menu}"]`)!.click();
-    await flush();
-    return menus().find((button) => button.textContent?.trim() === label);
-  };
-  const state = (rev: number, extra: Record<string, unknown>) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key, kind: "state", payload: { rev, value: { backend: "agy", run_id: row.run_id,
-      conversation_id: row.conversation_id, terminal_supported: false, ...extra } },
+  receive({ ...emptyBatch(), activity: [{
+    computer: "", key, kind: "state", payload: { rev: 2, value: { backend: "agy", run_id: row.run_id,
+      conversation_id: row.conversation_id, terminal_supported: true, activity_supported: true, send_supported: true,
+      send_available: true, allowed_actions: ["pause", "archive", "rename", "terminate"], resumable: true,
+      runtime_state: "live", phase: "working", interrupt_supported: true, turn_started: 5, settings_change_supported: true } },
   }] });
-  const confirmButton = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('dialog[aria-labelledby="action-dlg-title"] button')]
-    .find(b => b.textContent?.trim() === label);
   expect(selected()?.agent).toBe("agy");
   expect(host.querySelector(".detail-head .agent-badge")?.getAttribute("title")).toBe("Google Antigravity");
-  state(2, { activity_supported: false, auth_required: true });
-  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain("agy acp --login");
+  expect(host.querySelector(".detail-head")?.textContent).toContain("Historical model");
+  expect(host.querySelector(".cmp-actions .cmp-model")).toBeNull();
+  expect(host.querySelector('[data-tab="terminal"]')).toBeNull();
+  expect(host.querySelector(".cmp-actions .btn:not(.primary)")).toBeNull();
+  expect(host.querySelector(".cmp-status")?.textContent).toContain(lang === "ru"
+    ? "Интеграция Antigravity удалена из Zerus." : "Antigravity integration has been retired from Zerus.");
+  expect(host.querySelector(".qcard[role=status]")).toBeNull();
   const sendDraft = () => host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
   expect(sendDraft().disabled).toBe(true);
-  sendDraft().click();
-  expect(sendCalls).toEqual([]);
   expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
-  expect((await openMenu(labels.stop))?.getAttribute("aria-disabled")).toBe("true");
-  expect(lifecycle).toEqual([]);
 
-  state(3, { activity_supported: true, send_supported: true, send_available: true,
-    allowed_actions: ["pause"], activity: "idle", phase: "idle", runtime_state: "live" });
-  receive({ ...emptyBatch(), composer: { ...view, available: true, can_send: true, unavailable_reason: "" } });
-  expect(host.querySelector(".qcard[role=status]")).toBeNull();
-  expect(sendDraft().disabled).toBe(false);
-  sendDraft().click();
-  await vi.waitFor(() => expect(sendCalls).toHaveLength(1));
-  expect(sendCalls[0]).toMatchObject({ handle: view.handle, text: view.text });
-  const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
-  receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [reply], cursor: 2 } }] });
-  expect(activity.events()).toEqual([reply]);
   const unknownId = uuid(99801);
   const unknown: LocalMessage = {
     id: unknownId, text: view.text, status: "error", attachments: [], run_id: row.run_id ?? "",
@@ -1196,15 +1343,15 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     uncertain: true, message_id: null, submitted_text: null, source: null, voice: null,
   };
   const earlier = { seq: 1, type: "UserPromptSubmit", source: "agy_acp", detail: "Earlier Antigravity prompt", delivery_state: "submitted" };
+  const reply = { seq: 2, type: "AgentMessage", source: "agy_acp", detail: "Synthetic Antigravity reply" };
   const offer = { seq: 3, type: "UserPromptSubmit", source: "agy_acp", detail: unknown.text, request_id: unknownId,
     run_id: row.run_id, conversation_id: row.conversation_id, delivery_state: "unconfirmed" };
   receive({ ...emptyBatch(), activity: [{ computer: "", key, kind: "replace", payload: { events: [earlier, reply, offer], cursor: 3 } }] });
-  receive({ ...emptyBatch(), composer: { ...view, rev: 2, available: true, uncertain: true, local: [unknown],
-    status: unknown.error, status_error: true } });
+  receive({ ...emptyBatch(), composer: { ...view, rev: 2, uncertain: true, local: [unknown], status: unknown.error, status_error: true } });
   const localButtons = () => [...host.querySelectorAll<HTMLButtonElement>(".act-local-actions button")];
   const checkLabel = lang === "ru" ? "Проверить активность" : "Check Activity";
   await vi.waitFor(() => expect(localButtons().map(button => button.textContent)).toContain(checkLabel));
-  expect(localButtons()).toHaveLength(2); // Inspect and Delete, with no ordinary Retry
+  expect(localButtons()).toHaveLength(2);
   const userRows = () => [...host.querySelectorAll(".act-msg.k-user")];
   expect(userRows()).toHaveLength(2);
   expect(userRows()[0].querySelector(".act-receipt")?.textContent).toBe(lang === "ru" ? "Отправлено" : "Sent");
@@ -1213,10 +1360,11 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
   const guidance = lang === "ru" ? "Доставка не подтверждена. Перед повторной попыткой проверьте активность." : unknown.error;
   expect(userRows()[1].querySelector(".act-error")?.textContent).toBe(guidance);
   expect(host.querySelector(".cmp-status")?.getAttribute("aria-label")).toBe(guidance);
-  expect(sendDraft().disabled).toBe(true);
+  expect(host.querySelector(".cmp-actions .btn.ghost")).toBeNull();
   sendDraft().click();
   host.querySelector(".cmp-editor")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-  expect(sendCalls).toHaveLength(1);
+  expect(writes).toEqual([]);
+
   vi.mocked(bridge.activityPort.follow).mockClear();
   localButtons().find(button => button.textContent === checkLabel)!.click();
   await vi.waitFor(() => expect(inspections).toEqual([{ handle: view.handle, id: unknownId }]));
@@ -1224,54 +1372,211 @@ it.each(["en", "ru"] as const)("uses Antigravity Activity and guarded lifecycle 
     computer: "", key, name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, after: undefined, tail: 100,
   }));
   expect(activity.events()).toEqual([earlier, reply, offer]);
-  expect(sendCalls).toHaveLength(1);
-  expect(detailTab()).toBe("activity");
-  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe(view.text);
-  const stop = await openMenu(labels.stop);
-  expect(stop?.getAttribute("aria-disabled")).toBe("false");
-  stop!.click();
-  await flush();
-  expect(lifecycle).toEqual([]);
-  confirmButton(labels.cancel)!.click();
-  expect(lifecycle).toEqual([]);
+  expect(writes).toEqual([]);
 
-  (await openMenu(labels.stop))!.click();
+  setMenu(undefined);
+  const menuLabel = lang === "ru" ? "Действия сессии" : "Session actions";
+  host.querySelector<HTMLButtonElement>(`.detail-head button[data-tip="${menuLabel}"]`)!.click();
   await flush();
-  confirmButton(labels.confirm)!.click();
-  const target = { name: row.name, run_id: row.run_id, conversation_id: row.conversation_id, computer: "" };
-  await vi.waitFor(() => expect(lifecycle).toEqual([{ target, action: { kind: "pause" }, delay: undefined }]));
+  const menuButtons = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
+  const menuText = menuButtons.map(button => button.textContent).join("\n");
+  const item = (label: string) => menuButtons.find(button => button.textContent?.trim() === label);
+  const labels = lang === "ru" ? {
+    pause: "Приостановить сессию", command: "Копировать команду подключения", reference: "Копировать ссылку на сессию",
+  } : {
+    pause: "Pause session", command: "Copy connect command", reference: "Copy session reference",
+  };
+  expect(item(labels.pause)?.getAttribute("aria-disabled")).toBe("true");
+  expect(item(labels.command)?.getAttribute("aria-disabled")).toBe("true");
+  expect(item(labels.reference)).toBeDefined();
+  expect(item(labels.reference)?.getAttribute("aria-disabled")).not.toBe("true");
+  const lifecycle = lang === "ru" ? ["Остановить сессию", "Повторить запуск"] : ["Stop session", "Retry start"];
+  for (const label of lifecycle) expect(menuText).not.toContain(label);
+  expect(writes).toEqual([]);
+});
 
-  put({ ...row, state: "paused", status: "paused", resumable: true, allowed_actions: ["resume"] });
-  state(4, { activity_supported: true, allowed_actions: ["resume"], runtime_state: "stopped" });
+it("shows terminal-only Send recovery in Activity and uses guarded local actions", async () => {
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(400);
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700);
+  onTestFinished(() => { height.mockRestore(); width.mockRestore(); });
+  const row: ViewRow = { ...fixtureRow("Embedded Codex"), name: "codex/example/embedded", agent: "codex" };
+  const initial = { ...sessionComposer(row), available: true, can_send: true, unavailable_reason: "",
+    attachments_available: true, text: "Original user text" };
+  const request = uuid(99901);
+  const original: LocalMessage = {
+    id: request, text: initial.text, status: "sending", attachments: [{ name: "report.txt" }],
+    run_id: row.run_id!, conversation_id: row.conversation_id!, submitted_at: 1760000000,
+    error: "", uncertain: false, message_id: null, submitted_text: null, source: "zerus_terminal_status", voice: null,
+  };
+  const calls: { command: string; args?: Record<string, unknown> }[] = [];
+  vi.mocked(bridge.composerOpen).mockImplementation(async selection => selection?.name === row.name ? initial : null);
+  transport.composer = (command, args) => {
+    calls.push({ command, args });
+    if (command === "send_message") return { kind: "accepted", waiting: false,
+      view: { ...initial, text: "", rev: Number(args?.rev), text_epoch: Number(args?.epoch) + 1, local: [original] } };
+    if (command === "local_inspect") return { kind: "activity", run_id: row.run_id, conversation_id: row.conversation_id };
+    return undefined;
+  };
+  await open(row);
+  const send = host.querySelector<HTMLButtonElement>(".cmp-actions .primary")!;
+  expect(send.disabled).toBe(false);
+  send.click();
+  await vi.waitFor(() => expect(calls.some(call => call.command === "send_message")).toBe(true));
+  const present = () => host.querySelector<HTMLElement>(`#item-local-${request}`);
+  await vi.waitFor(() => expect(present()?.querySelector(".act-stamp")?.textContent).toBe("Sending…"));
+  put({ ...row, conversation_id: "successor-conversation" });
+  await vi.waitFor(() => expect(present()).toBeNull());
+  await open(row);
+  receive({ ...emptyBatch(), composer: { ...initial, text: "Independent draft", text_epoch: 3, rev: 3, uncertain: true,
+    local: [{ ...original, status: "error", uncertain: true, error: "Delivery not confirmed" }] } });
+  await vi.waitFor(() => expect(present()?.querySelector(".act-stamp")?.textContent).toBe("Delivery not confirmed"));
+  expect(present()?.textContent).toContain("report.txt");
+  expect(host.querySelector(".cmp-delivery")).toBeNull();
+  const action = (text: string) => [...present()!.querySelectorAll("button")].find(button => button.textContent === text);
+  expect(action("Retry")).toBeUndefined();
+  action("Check Terminal")!.click();
+  await vi.waitFor(() => expect(calls).toContainEqual({ command: "local_inspect", args: { handle: initial.handle, id: request } }));
+  action("Delete")!.click();
   await flush();
-  expect(selected()).toMatchObject({ state: "paused", cmd: "agy" });
-  const resume = await openMenu(labels.resume);
-  expect(resume?.getAttribute("aria-disabled"), menus().map(b => b.textContent).join(", ")).toBe("false");
-  resume!.click();
-  await vi.waitFor(() => expect(lifecycle).toEqual([
-    { target, action: { kind: "pause" }, delay: undefined },
-    { target, action: { kind: "resume" }, delay: undefined },
-  ]));
+  const review = host.querySelector<HTMLDialogElement>(".activity dialog[role=alertdialog]")!;
+  expect(review.open).toBe(true);
+  const staleConfirm = review.querySelector<HTMLButtonElement>(".solid-danger")!;
+  put({ ...row, conversation_id: "successor-conversation" });
+  await vi.waitFor(() => expect(present()).toBeNull());
+  expect(review.open).toBe(false);
+  staleConfirm.click();
+  expect(calls).not.toContainEqual(expect.objectContaining({ command: "local_delete" }));
+  expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe("Independent draft");
+  expect(calls.filter(call => call.command === "send_message")).toHaveLength(1);
+});
 
-  const signedOut = { ...fixtureRow("First-time sign-in"), name: "agy/example/sign-in", agent: "agy",
-    conversation_id: "", state: "stopped", status: "paused", resumable: true, allowed_actions: ["resume"] };
-  const authKey = (await open(signedOut)).slice(1);
-  const auth = (rev: number, retry?: boolean) => receive({ ...emptyBatch(), activity: [{
-    computer: "", key: authKey, kind: "state", payload: { rev, value: {
-      run_id: signedOut.run_id, conversation_id: "", allowed_actions: ["resume"], auth_required: true, startup_retry_available: retry,
-    } },
-  }] });
-  auth(2);
-  expect((await openMenu(labels.resume))?.getAttribute("aria-disabled")).toBe("true");
-  expect(lifecycle).toHaveLength(2);
-  auth(3, true);
-  expect(host.querySelector(".qcard[role=status]")?.textContent).toContain(labels.retry);
-  const retry = await openMenu(labels.retry);
-  expect(retry?.getAttribute("aria-disabled")).toBe("false");
-  retry!.click();
-  await vi.waitFor(() => expect(lifecycle).toHaveLength(3));
-  expect(lifecycle[2]).toMatchObject({
-    target: { computer: "", name: signedOut.name, run_id: signedOut.run_id, conversation_id: "" },
-    action: { kind: "resume" },
-  });
+
+it("Plan queue production Activity reveals the unmounted exact original and cancels a stale jump", async () => {
+  // Happy DOM supplies geometry only. Activity, its real TanStack virtualizer,
+  // index, bridge, measured-offset path and reading anchor are not mocked.
+  const { loadMarkdown } = await import("./markdown"); await loadMarkdown();
+  const frames = new Map<number, FrameRequestCallback>(); let serial = 0;
+  vi.stubGlobal("requestAnimationFrame", (run: FrameRequestCallback) => { frames.set(++serial, run); return serial; });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  onTestFinished(() => { vi.unstubAllGlobals(); });
+  const scrollerOf = (node: HTMLElement) => node.matches(".act-scroll") ? node : node.closest<HTMLElement>(".act-scroll");
+  const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 700, width: 700, height, x: 0, y: top, toJSON() {} });
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  const spies: Array<{ mockRestore(): void }> = [
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function(this: HTMLElement) { return this.matches(".act-virtual-row") ? 500 : 400; }),
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700),
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700),
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function(this: HTMLElement) {
+      return Math.max(400, Number.parseFloat(this.querySelector<HTMLElement>(".act-virtual")?.style.minHeight ?? "0") + 46);
+    }),
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+      const scroller = scrollerOf(this), row = this.closest<HTMLElement>(".act-virtual-row");
+      if (this.matches(".act-scroll")) return rect(0, 400);
+      if (row) return rect(46 + Number(row.dataset.start ?? 0) - (scroller?.scrollTop ?? 0), 500);
+      if (this.matches(".act-virtual")) return rect(46 - (scroller?.scrollTop ?? 0), Number.parseFloat(this.style.minHeight || "0"));
+      return originalRect.call(this);
+    }),
+  ];
+  const scrollWrites: Array<{ selected: string | undefined; top: number }> = [];
+  spies.push(vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function(this: HTMLElement, value?: ScrollToOptions | number) {
+    const top = typeof value === "object" ? value.top ?? 0 : value ?? 0;
+    if (this.matches(".act-scroll")) scrollWrites.push({ selected: selected()?.key, top });
+    this.scrollTop = Math.max(0, Math.min(top, this.scrollHeight - this.clientHeight));
+    queueMicrotask(() => this.dispatchEvent(new Event("scroll")));
+  }));
+  onTestFinished(() => spies.forEach(spy => spy.mockRestore()));
+  const paintUntil = async (predicate: () => boolean) => {
+    for (let n = 0; n < 80; n++) {
+      await flush(); const pending = [...frames.values()]; frames.clear();
+      pending.forEach(run => run(n * 16)); await flush();
+      if (predicate()) return;
+    }
+    throw Error("Production Activity did not reach the requested measured frame state");
+  };
+  const row = fixtureRow("Private original navigation"), one = uuid(99601), duplicate = uuid(99613);
+  const waiting = Array.from({ length: 16 }, (_, n) => ({ request_id: uuid(99601 + n),
+    preview: n === 0 || n === 12 ? "Same original text" : `Original ${n + 1}`,
+    state: n === 0 ? "unknown" as const : "waiting" as const,
+    run_id: row.run_id!, conversation_id: row.conversation_id! }));
+  const initial = { ...sessionComposer(row), waiting_in_zerus: waiting };
+  vi.mocked(bridge.composerOpen).mockImplementation(async selection => selection?.name === row.name ? initial : null);
+  const writes: string[] = [];
+  transport.composer = command => { writes.push(command); return undefined; };
+  await open(row);
+  const scroller = () => host.querySelector<HTMLElement>(".act-scroll")!;
+  const original = () => host.querySelector<HTMLElement>(`#item-local-${one}`);
+  const otherOriginal = () => host.querySelector<HTMLElement>(`#item-local-${duplicate}`);
+  const index = () => host.querySelector("[data-queue-index]");
+  await paintUntil(() => scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible"
+    && !original() && !!otherOriginal());
+  const before = { top: scroller().scrollTop, targetMounted: !!original(), duplicateMounted: !!otherOriginal(), rows: scroller().querySelectorAll(".act-virtual-row").length };
+  expect(before.targetMounted).toBe(false); expect(before.duplicateMounted).toBe(true);
+  expect(before.rows).toBeLessThan(16);
+  const first = () => index()!.querySelector<HTMLButtonElement>(`[data-queue-request="${one}"] button`)!;
+  const matching = { key: selected()!.key, run: row.run_id!, conversation: row.conversation_id!, query: "needle",
+    hit: { name: row.name!, run_id: row.run_id!, conversation_id: row.conversation_id!, archive_id: "", message_id: "fixture-preview",
+      at: 1793000000, role: "assistant", snippet: "needle", event: { seq: 1, type: "AgentMessage", detail: "Private needle preview" },
+      content_truncated: false, session: null, group: "" } as SearchHit };
+  onTestFinished(clearSearchPreview);
+  const settled = () => frames.size === 0 && scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible";
+  setSearchPreview(matching); await flush();
+  expect(host.querySelector(".search-preview")).not.toBeNull();
+  const previewDisabled = first().disabled;
+  first().click(); await flush();
+  expect(searchPreview()).toBe(matching); // index navigation never dismisses the reader's preview
+  clearSearchPreview();
+  await paintUntil(settled);
+  expect(original(), "a click during matching preview must not become a delayed reveal").toBeNull();
+  expect(previewDisabled).toBe(true);
+
+  // A valid click queued before preview entry must be invalidated without a selection change.
+  first().click(); await flush();
+  expect(frames.size).toBeGreaterThan(0);
+  setSearchPreview(matching); await flush();
+  expect(first().disabled).toBe(true);
+  expect(searchPreview()).toBe(matching);
+  clearSearchPreview();
+  await paintUntil(settled);
+  expect(original(), "entering matching preview must cancel the pending exact-row reveal").toBeNull();
+
+  // Another conversation's retained preview neither blocks nor gets cleared by this explicit jump.
+  const unrelated = { ...matching, conversation: "different-conversation" };
+  setSearchPreview(unrelated); await flush();
+  expect(first().disabled).toBe(false);
+  first().click();
+  await paintUntil(() => !!original() && Math.abs(original()!.getBoundingClientRect().top) <= 1);
+  expect(searchPreview()).toBe(unrelated);
+  const unrelatedPreviewPreserved = searchPreview() === unrelated;
+  const landedAnchorTop = original()!.getBoundingClientRect().top;
+  expect(original()!.id).toBe(`item-local-${one}`);
+  expect(original()!.textContent).toContain("Same original text");
+  expect(scroller().scrollTop).toBeLessThan(before.top);
+  expect(Math.abs(otherOriginal()?.getBoundingClientRect().top ?? Infinity)).toBeGreaterThan(1);
+  expect(writes).toEqual([]);
+
+  // Queue a second exact-row reveal, then switch before its RAF is delivered.
+  const second = index()!.querySelector<HTMLButtonElement>(`[data-queue-request="${duplicate}"] button`)!;
+  second.click(); await flush();
+  expect(frames.size).toBeGreaterThan(0);
+  const other = fixtureRow("Different private session"); const afterSwitch = scrollWrites.length;
+  await open(other);
+  // This selected source has no queued rows: publish its actual empty first page.
+  activity.applyActivity([{ computer: "", key: `run:${other.run_id}`, kind: "events", payload: { events: [], cursor: 0 } }]);
+  await paintUntil(() => selected()?.name === other.name && scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible");
+  expect(index()).toBeNull();
+  expect(original()).toBeNull(); expect(otherOriginal()).toBeNull();
+  expect(scrollWrites.slice(afterSwitch).every(write => write.top <= 400)).toBe(true);
+  expect(writes).toEqual([]);
+
+  await open(row);
+  receive({ ...emptyBatch(), composer: { ...initial, waiting_in_zerus: [
+    ...waiting, { ...waiting[1], request_id: uuid(99801), preview: "UNRELATED PRIVATE PREVIEW", conversation_id: "foreign" },
+  ] } }); await flush();
+  expect(index()?.querySelectorAll("li")).toHaveLength(16);
+  expect(index()?.textContent).not.toContain("UNRELATED PRIVATE PREVIEW");
+  receive({ ...emptyBatch(), composer: { ...initial, waiting_in_zerus: [] } }); await flush();
+  expect(index()).toBeNull();
+  expect(writes).toEqual([]);
+  console.log("PLAN_QUEUE_PRODUCTION_WITNESS=" + JSON.stringify({ before, revealed: `local-${one}`, duplicate: `local-${duplicate}`, exactAnchorTop: landedAnchorTop, staleJumpCancelled: true, matchingPreviewDisabled: previewDisabled, noDelayedPreviewReveal: true, previewEntryCancelledPendingJump: true, unrelatedPreviewPreserved, ipcWrites: writes.length }));
 });

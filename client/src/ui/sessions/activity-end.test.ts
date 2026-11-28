@@ -145,5 +145,7 @@ describe("local send detection", () => {
     expect(initial.baseline).toEqual(new Set(["local-1", "local-2"]));
     expect(newLocalSends(initial.baseline, ["local-1", "local-2"]).added).toEqual([]);
     expect(newLocalSends(initial.baseline, ["local-1", "local-2", "local-3"]).added).toEqual(["local-3"]);
+    const empty = newLocalSends(initial.baseline, []);
+    expect(newLocalSends(empty.baseline, ["local-1", "local-3"]).added).toEqual(["local-3"]);
   });
 });

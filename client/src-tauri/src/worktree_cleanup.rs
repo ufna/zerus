@@ -114,6 +114,24 @@ pub(crate) fn inspect(
     })?;
     review::inspected(exit, path, common, file, offset)
 }
+/// Current use of a recorded, owned local checkout. The CLI reads the existing
+/// machine identity and does not reconcile old removal records in this mode.
+pub(crate) fn inspect_stop_blockers(
+    machine: &str,
+    path: &str,
+    common: &str,
+    owner: &str,
+) -> Result<Value, String> {
+    let mut inv = review::inspect_invocation(&ComputerId(String::new()), path, common, "", 0);
+    inv.args.extend([
+        "--blockers-only".into(),
+        "--recorded-machine".into(),
+        machine.into(),
+        "--owner-id".into(),
+        owner.into(),
+    ]);
+    review::inspected(run(&inv)?, path, common, "", 0)
+}
 /// The maintained exact request-bound removal path, shared by manual surfaces.
 pub(crate) fn remove(computer: &str, expected: &str, removal: &review::Removal) -> review::Removed {
     let request = uuid::Uuid::new_v4().to_string();

@@ -265,6 +265,68 @@ pub(super) fn event_db() -> Result<Connection> {
     event_db_at(&root())
 }
 
+/// Append the notice and retain its identity in the same transaction. Ordinary
+/// Activity retention can remove a row without making its refusal publish again.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn child_policy_notice(
+    tx: &rusqlite::Transaction<'_>,
+    parent: &Value,
+    id: &str,
+    event: &Value,
+) -> Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS child_policy_notices_v1 (id TEXT PRIMARY KEY) WITHOUT ROWID;",
+    )
+    .map_err(|error| error.to_string())?;
+    if tx
+        .execute("INSERT OR IGNORE INTO child_policy_notices_v1(id) VALUES (?1)", [id])
+        .map_err(|error| error.to_string())?
+        != 0
+    {
+        tx.execute(
+            "INSERT INTO events(name, conversation, payload) VALUES (?1, ?2, ?3)",
+            params![journal_name(parent), string(parent, "conversation_id"), event.to_string()],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[test]
+fn child_policy_notice_tombstone_and_event_commit_together() {
+    let fixture = tempfile::tempdir().unwrap();
+    let parent = json!({"name":"codex/example/parent","conversation_id":"chat"});
+    let notice = json!({"type":"Notification","source":"zerus_child_policy"});
+    let open = || event_db_at(fixture.path()).unwrap();
+    let rows = |db: &Connection| {
+        db.query_row("SELECT count(*) FROM events", [], |row| row.get::<_, u64>(0)).unwrap()
+    };
+    let publish = |db: &mut Connection| -> Result<()> {
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        child_policy_notice(&tx, &parent, "native-event", &notice)?;
+        tx.commit().map_err(|error| error.to_string())
+    };
+    let mut db = open();
+    db.execute_batch(
+        "CREATE TRIGGER fixture_unavailable BEFORE INSERT ON events BEGIN
+            SELECT RAISE(ABORT, 'simulated unavailable writer');
+         END;",
+    ).unwrap();
+    assert!(publish(&mut db).is_err());
+    assert_eq!(rows(&db), 0);
+    db.execute_batch("DROP TRIGGER fixture_unavailable;").unwrap();
+    publish(&mut db).unwrap();
+    drop(db);
+    let mut db = open();
+    publish(&mut db).unwrap();
+    assert_eq!(rows(&db), 1);
+    db.execute_batch("DELETE FROM events;").unwrap();
+    publish(&mut db).unwrap();
+    assert_eq!(rows(&db), 0);
+}
+
 fn event_db_at(root: &Path) -> Result<Connection> {
     private_dir(root)?;
     let path = root.join("events.sqlite3");
@@ -329,6 +391,12 @@ fn kimi_completion_logged(db: &Connection, record: &Value, id: u64) -> Result<bo
 }
 
 pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
+    log_event_with_send(record, event, None, None)
+}
+
+pub(super) fn log_event_with_send(
+    record: &Value, event: &Value, claude_request: Option<&str>, kimi_request: Option<&str>,
+) -> Result<()> {
     // Kimi's heartbeat and Claude's model switch change state, not Activity;
     // the model selector shows the switch.
     if ["SessionHeartbeat", "PostModelSwitch"].contains(&string(event, "hook_event_name")) {
@@ -359,9 +427,26 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
         }
     }
     retain_message_text(&mut data, event);
+    if record["agent"] == "claude" && event["hook_event_name"] == "UserPromptSubmit"
+        && string(&data, "agent_id").is_empty()
+        && string(&data, "origin").is_empty()
+        && ["", "user"].contains(&string(&data, "turn_origin"))
+        && event["session_id"] == record["conversation_id"]
+        && receipt_index::claude_prompt_uuid(string(event, "prompt_id"))
+    {
+        data["claude_prompt_id"] = event["prompt_id"].clone();
+        if let Some(request) = claude_request {
+            data["claude_outbox_request_id"] = json!(request);
+        }
+        data["conversation_id"] = record["conversation_id"].clone();
+    }
     if let Some(id) = kimi_turn_id(record, event) {
         data["kimi_turn_id"] = json!(id);
         data["kimi_conversation_id"] = record["conversation_id"].clone();
+        if let Some(request) = kimi_request {
+            data["kimi_request_id"] = json!(request);
+            data["conversation_id"] = record["conversation_id"].clone();
+        }
         if ["kimi_wire","kimi_hook"].contains(&string(event,"turn_identity_source")) {
             data["turn_identity_source"] = event["turn_identity_source"].clone();
         }
@@ -534,6 +619,9 @@ pub(super) fn archive_summary(record: &Value, name_taken: bool) -> Value {
 }
 
 fn observed_summary(record: &Value, live_pane: bool, archive_name_taken: Option<bool>) -> Value {
+    if record["backend"] == "agy" && !string(record, "archive_id").is_empty() {
+        return retired_agy::row(record, None);
+    }
     let mut output = normalized_activity(record, live_pane);
     output["conversation_id"] = record["conversation_id"].clone();
     output
@@ -1056,9 +1144,17 @@ pub(super) fn inspection_with(
     } else {
         read(name)?
     };
+    if archive_id.is_some() && record["backend"] == "agy" {
+        drop(_guard);
+        return Ok(retired_agy::row(&record, Some(after.max(0) as u64)));
+    }
     if archive_id.is_some() && record["backend"] == "dsh" {
         drop(_guard);
         return dsh::retirement::inspect(&record, after);
+    }
+    if archive_id.is_some() && record["backend"] == "opencode" {
+        drop(_guard);
+        return Ok(opencode::archives::inspect(&record));
     }
     if archive_id.is_none() {
         input::acceptance::reconcile_locked(&mut record)?;
@@ -1148,6 +1244,22 @@ pub(super) fn inspection_with(
         // This owning host can return the exact pre-input refusal required
         // by the desktop FIFO. Older inspections leave the field absent.
         output["guarded_idle_send"] = json!(true);
+        if record["agent"] == "codex" {
+            output["codex_interrupted_outbox_supported"] = json!(true);
+            output["codex_busy_outbox_supported"] = json!(true);
+            // A multi-task pane cannot prove which thread would receive Enter.
+            // Its existing exact-thread queued route remains available.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            { output["codex_ordered_manual_turn_send"] = json!(!codex_tasks::multiple(&record)); }
+            output["codex_manual_turn_send"] = json!(!codex_tasks::multiple(&record));
+            output["codex_idle_outbox_supported"] = json!(true);
+        }
+        if record["agent"] == "claude" {
+            output["claude_outbox_supported"] = json!(true);
+        }
+        if input::supports_native_accept(&record) {
+            output["terminal_native_accept_supported"] = json!(true);
+        }
     }
     #[cfg(target_os = "linux")]
     if archive_id.is_none()

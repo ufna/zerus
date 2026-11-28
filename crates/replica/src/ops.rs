@@ -2,7 +2,7 @@
 //! list and whether its prompt could be sent. hgs and the mobile apps use
 //! these, so the rules hold the same everywhere.
 use crate::render::{task_prompt, Tools};
-use crate::schema::{Actor, Stage, Target};
+use crate::schema::{Actor, ReviewAssignment, Stage, Target};
 use crate::store::{Placement, Position, ProjectStore};
 use crate::task::{check_new_stage, NewTask, TaskDoc};
 use crate::Result;
@@ -106,6 +106,7 @@ impl ProjectStore {
             now,
             request,
             start,
+            None,
         )
     }
 
@@ -125,6 +126,7 @@ impl ProjectStore {
         now: i64,
         request: Option<&str>,
         start: bool,
+        review: Option<&ReviewAssignment>,
     ) -> Result<(TaskDoc, bool)> {
         use sha2::{Digest, Sha256};
         fn identities(value: &mut serde_json::Value) {
@@ -149,6 +151,10 @@ impl ProjectStore {
         crate::attachment::check_attachments(files)?;
         let mut intent = serde_json::json!({"project":self.project_id(), "title":title,"text":text,"stage":stage,"target":target,"author":author,"position":format!("{position:?}"),"start":start,
             "files":files.iter().map(|file| file.metadata()).collect::<Result<Vec<_>>>()?});
+        if let Some(review) = review {
+            review.check()?;
+            intent["review_assignment"] = serde_json::to_value(review)?;
+        }
         identities(&mut intent);
         let fingerprint = format!("{:x}", Sha256::digest(serde_json::to_vec(&intent)?));
         if let Some(uuid) = request {
@@ -181,6 +187,9 @@ impl ProjectStore {
         )?;
         if !files.is_empty() {
             task.set_attachments(files, &author, now)?;
+        }
+        if let Some(review) = review {
+            task.set_review_assignment(Some(review), &author, now)?;
         }
         if start {
             task.record_start(&author, now)?;

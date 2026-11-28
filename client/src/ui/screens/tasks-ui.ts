@@ -1,6 +1,7 @@
 import type { Session } from "../sessions/types";
 import { tr, trNoop } from "../../i18n";
 import { savedExecution, type SavedExecution } from "./task-execution";
+import { canonicalReviewUuid, quickStatus, readQuickReport, type QuickReport, type QuickStatus } from "./quick-review";
 
 export const STAGES = ["review", "active", "todo", "backlog", "done"] as const;
 export type Stage = typeof STAGES[number];
@@ -25,6 +26,9 @@ export interface Task {
   reviewLane?: "person" | "technical" | "triage" | "team";
   reviewEditable?: true;
   teamRouted?: true;
+  team?: { id: string; home: string };
+  quickReport?: QuickReport;
+  quickStatus?: QuickStatus;
 }
 const reference = (v: unknown): TaskRef => {
   const o = object(v);
@@ -34,8 +38,11 @@ export function taskItem(value: unknown, queue = 0): Task {
   const t = object(value), target = object(t.target), author = object(t.author);
   const execution = savedExecution(t.execution);
   const executionUnavailable = t.execution_unavailable === true || (t.execution != null && !execution);
-  const team = object(t.team);
-  const teamRouted = !!(text(team.team) && text(team.home)) || t.team_invalid === true;
+  const rawTeam = object(t.team);
+  const team = canonicalReviewUuid(rawTeam.team) && canonicalReviewUuid(rawTeam.home)
+    ? { id: rawTeam.team, home: rawTeam.home } : undefined;
+  // An incomplete native Team reference still excludes ordinary task decisions.
+  const teamRouted = t.team != null || t.team_invalid === true || t.review_lane === "team" || t.quick_review_status === "team";
   const assignment = object(t.review_assignment), criterion = text(assignment.criterion);
   const owner = assignment.owner;
   const reviewAssignment: ReviewAssignment | undefined =
@@ -43,6 +50,8 @@ export function taskItem(value: unknown, queue = 0): Task {
       && !/[\p{Cc}\u2028-\u202e\u2066-\u2069]/u.test(criterion)
       ? { owner, criterion }
       : undefined;
+  const status = quickStatus(t.quick_review_status);
+  const quickReport = readQuickReport(t, !teamRouted && !executionUnavailable);
   const lane = t.review_lane;
   const reviewLane = lane === "person" || lane === "technical" || lane === "triage" || lane === "team" ? lane : undefined;
   return { uuid: text(t.uuid), id: text(t.id), ref: text(t.ref), title: text(t.title) || text(t.text).split("\n", 1)[0],
@@ -51,7 +60,7 @@ export function taskItem(value: unknown, queue = 0): Task {
     target: reference(target.kind === "any" ? undefined : target.parent ?? target), executor: reference(t.session),
     author: reference(author.kind === "agent" ? author : undefined), targetKind: text(target.kind), worker: text(object(t.worker).name),
     attachments: Array.isArray(t.attachments) ? t.attachments.length : 0, ...(execution ? { execution } : {}), ...(executionUnavailable ? { executionUnavailable: true } : {}), ...(reviewAssignment ? { reviewAssignment } : {}), ...(teamRouted ? { teamRouted: true } : {}),
-    ...(reviewLane ? { reviewLane } : {}),
+    ...(reviewLane ? { reviewLane } : {}), ...(team ? { team } : {}), ...(quickReport ? { quickReport } : {}), ...(status ? { quickStatus: status } : {}),
     ...(t.review_editable === true && !teamRouted && !executionUnavailable && /^[0-9a-f]{64}$/.test(text(t.history_revision)) ? { reviewEditable: true } : {}) };
 }
 /** Keep decoded rows in order and append only new UUIDs from the wire page. */
@@ -66,6 +75,13 @@ export function decodeTaskRows(values: readonly unknown[], stage?: Stage, existi
   }
   return rows;
 }
+/** Quick and Team verdicts have their own report- or Team-bound authority. */
+export const reportReviewOnly = (task: Task) => task.stage === "review"
+  && (!!task.teamRouted || !!task.quickStatus || !!task.quickReport);
+
+/** A Team or unresolved report does not get an ordinary stage change. */
+export const ordinaryReviewReturn = (task: Task) => !task.teamRouted && task.quickStatus !== "unresolved";
+
 export function reviewNext(task: Task): string | undefined {
   if (task.stage !== "review" || task.teamRouted) return;
   if (task.cancelledAt || task.executionUnavailable || task.execution?.conflict

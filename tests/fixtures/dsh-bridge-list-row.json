@@ -115,6 +115,8 @@
       "history-search",
       "schedules"
     ],
+    "outboxQueueSend": true,
+    "outboxSend": true,
     "protocol": 1,
     "schedule": false,
     "sessionActions": true,

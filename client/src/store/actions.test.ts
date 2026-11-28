@@ -11,6 +11,7 @@ import { emptyBatch, type Action, type Batch, type Details, type Outcome, type R
 vi.mock("../bridge", () => ({
   runAction: vi.fn(),
   terminationCleanupConfirm: vi.fn(),
+  terminationCleanupCancel: vi.fn(),
   inspectSession: vi.fn(),
   pendingReadMarks: vi.fn(),
   attentionMarks: vi.fn(async () => ({ marks: {}, replies: {} })),
@@ -50,6 +51,8 @@ beforeEach(() => {
   vi.setSystemTime(1_790_000_000_000);
   mocked.runAction.mockReset();
   mocked.terminationCleanupConfirm.mockReset();
+  mocked.terminationCleanupCancel.mockReset();
+  mocked.terminationCleanupCancel.mockResolvedValue(undefined);
   mocked.inspectSession.mockReset();
   mocked.pendingReadMarks.mockReset();
   mocked.sessionReference.mockReset();
@@ -110,6 +113,21 @@ describe("perform", () => {
       await a.perform(session({}, "run:zz"), { kind: "pause" });
       expect(mocked.runAction).not.toHaveBeenCalled();
       expect(a.notices()).toHaveLength(1);
+      dispose();
+    });
+  });
+
+  it("shows the unconfirmed result of Archive and Restore", async () => {
+    await createRoot(async (dispose) => {
+      const a = setup();
+      const detail = "Archive receipt unavailable";
+      mocked.runAction.mockResolvedValue({ outcome: "uncertain", detail });
+      const operations: Action[] = [{ kind: "archive" }, { kind: "restore", archive_id: "original" }];
+      for (const action of operations) {
+        await a.perform(session(), action);
+        expect(a.notices()).toMatchObject([{ tone: "warn", sticky: true, text: detail }]);
+        a.dismiss(a.notices()[0].id);
+      }
       dispose();
     });
   });

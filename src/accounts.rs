@@ -18,6 +18,7 @@ use crate::{
     cli::{Error, Result},
     config::Config,
     platform,
+    state::retired_agy,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -77,18 +78,18 @@ fn decode(bytes: &[u8]) -> Result<Catalog> {
         validate(id, p)?;
     }
     for (id, label) in &catalog.native_labels {
-        if !["native-codex", "native-claude", "native-kimi", "native-dsh", "native-opencode"].contains(&id.as_str()) {
+        if id != retired_agy::ACCOUNT && !native_id(id) {
             return Err(Error::new(1, "Invalid native account label."));
         }
         validate_label(label)?;
     }
     for id in &catalog.hidden_profiles {
-        if !native_id(id) && !catalog.profiles.contains_key(id) {
+        if id != retired_agy::ACCOUNT && !native_id(id) && !catalog.profiles.contains_key(id) {
             return Err(Error::new(1, "Invalid removed account profile."));
         }
     }
     for (id, mode) in &catalog.permission_modes {
-        if (!native_id(id) && !catalog.profiles.contains_key(id)) || !["provider", "bypass"].contains(&mode.as_str()) {
+        if (id != retired_agy::ACCOUNT && !native_id(id) && !catalog.profiles.contains_key(id)) || !["provider", "bypass"].contains(&mode.as_str()) {
             return Err(Error::new(1,"Invalid account permission mode."));
         }
     }
@@ -98,6 +99,9 @@ fn decode(bytes: &[u8]) -> Result<Catalog> {
         }
     }
     for (provider, id) in &catalog.defaults {
+        if provider == "agy" && id == retired_agy::ACCOUNT {
+            continue;
+        }
         if !["codex", "claude", "kimi"].contains(&provider.as_str())
             || catalog.hidden_profiles.contains(id)
             || (id != &format!("native-{provider}") && catalog.profiles.get(id).is_none_or(|p| &p.provider != provider)) {
@@ -174,6 +178,9 @@ fn profile_home(config: &Config, id: &str) -> PathBuf {
     config.dir.join("accounts").join(id)
 }
 fn lookup(config: &Config, id: &str) -> Result<(Profile, PathBuf, bool)> {
+    if id == retired_agy::ACCOUNT {
+        return Err(Error::new(1, retired_agy::RETIRED));
+    }
     let catalog = decode(&read(config)?)?;
     if let Some(provider) = id.strip_prefix("native-") {
         if !["dsh","opencode"].contains(&provider) {
@@ -349,16 +356,6 @@ fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
         };
         rows.push(row);
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if wanted("agy") {
-        let executable = crate::state::agy::executable();
-        rows.push(json!({"id":crate::state::agy::ACCOUNT,"provider":"agy",
-            "label":"Google Antigravity","native":true,"installed":executable.is_some(),
-            "executable":executable,"launch_supported":executable.is_some(),
-            "auth_status":"unknown","credential_file":false,"portable":false,
-            "permission_mode_supported":false,"login_command":"agy acp --login",
-            "native_login_supported":executable.is_some()}));
-    }
     for row in &mut rows {
         let provider = row["provider"].as_str().unwrap_or("").to_owned();
         row["is_default"] = json!(row["id"].as_str() == Some(catalog.defaults.get(&provider).map(String::as_str).unwrap_or(&format!("native-{provider}"))));
@@ -384,8 +381,10 @@ fn listing(config: &Config, only: Option<&str>) -> Result<Value> {
             .hidden_profiles
             .contains(r["id"].as_str().unwrap_or(""))
     });
+    let mut defaults = catalog.defaults;
+    defaults.remove("agy");
     Ok(
-        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":catalog.defaults,"revision":revision(&bytes),"setup_revision":true,"copy_revision":true,"permission_scope_supported":true,"marks_supported":true}),
+        json!({"host":config.host(),"profiles":visible,"removed_profiles":removed,"defaults":defaults,"revision":revision(&bytes),"setup_revision":true,"copy_revision":true,"permission_scope_supported":true,"marks_supported":true}),
     )
 }
 pub const AUTH_ENV: &[&str] = &[
@@ -577,19 +576,7 @@ pub(crate) fn model_settings(config: &Config, id: &str) -> Result<Value> {
     model_defaults::inspect(config, id)
 }
 /// The providers `account ls --provider` accepts.
-const PROVIDERS: [&str; 6] = ["codex", "claude", "kimi", "dsh", "opencode", "agy"];
-pub(crate) fn require_antigravity_login_person() -> Result<()> {
-    if crate::cli::agent_caller() {
-        return Err(Error::new(
-            1,
-            "Antigravity sign-in must be completed by the person in a terminal",
-        ));
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    crate::tasks::person::check()?;
-    Ok(())
-}
-
+const PROVIDERS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
 pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     let dry = dry || args.iter().any(|arg| arg == "--dry-run");
     let operation = args.first().map(String::as_str).unwrap_or("ls");
@@ -617,7 +604,7 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             let only=match args.iter().position(|x|x=="--provider") {
                 None=>None,
                 Some(i)=>Some(args.get(i+1).map(String::as_str).filter(|p|PROVIDERS.contains(p))
-                    .ok_or_else(||Error::new(2,"Choose --provider codex, claude, kimi, dsh, opencode or agy."))?),
+                    .ok_or_else(||Error::new(2,"Choose --provider codex, claude, kimi, dsh or opencode."))?),
             };
             println!("{}",listing(config,only)?);
         },
@@ -739,23 +726,6 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
             println!("{}",import(config,id,arg(args,"--label").unwrap_or(id),&payload,args)?);
         },
         "login"=>{
-            if id == "native-agy" {
-                const GUIDANCE: &str = "Sign in to Antigravity with `agy acp --login` in Terminal on this computer";
-                if dry { println!("{GUIDANCE}"); return Ok(0); }
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                {
-                    use std::io::IsTerminal;
-                    require_antigravity_login_person()?;
-                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-                        return Err(Error::new(1, GUIDANCE));
-                    }
-                    let executable = crate::state::agy::executable()
-                        .ok_or_else(|| Error::new(1, "Install Antigravity CLI on this computer before signing in"))?;
-                    return platform::wait_interactive(std::process::Command::new(executable).args(["acp", "--login"]));
-                }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                return Err(Error::new(1, GUIDANCE));
-            }
             if id=="native-dsh" {return crate::native_ui::open(config,"","@account",None,dry);}
             if id=="native-opencode" {
                 const GUIDANCE: &str = "Connect OpenCode providers with `opencode auth login` in a terminal on this computer";
@@ -1270,6 +1240,19 @@ pub(crate) fn kimi_compact_on_expiry(config: &Config, id: &str, home: &Path) -> 
 #[cfg(test)]
 mod permission_tests {
     use super::*;
+
+    #[test]
+    fn retired_native_account_metadata_preserves_other_accounts_and_round_trips() {
+        let raw = json!({
+            "profiles":{"testing":{"provider":"codex","label":"Test"}},
+            "native_labels":{"native-agy":"Retained label"},
+            "hidden_profiles":["native-agy"],
+            "permission_modes":{"native-agy":"provider"},
+            "defaults":{"agy":"native-agy","codex":"testing"}
+        });
+        let catalog = decode(&serde_json::to_vec(&raw).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(catalog).unwrap(), raw);
+    }
 
     #[test]
     fn selecting_an_account_clears_the_inspection_test_seam() {

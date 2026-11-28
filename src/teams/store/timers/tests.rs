@@ -192,7 +192,12 @@ fn every_timer_read_searches_an_index() {
         for line in &plan {
             let table = !line.starts_with("SCAN (subquery-") && line != "SCAN CONSTANT ROW";
             let access = table && (line.starts_with("SCAN") || line.starts_with("SEARCH"));
-            assert!(!access || line.contains("USING"), "{name}: {line}");
+            // json_each walks only the notes of one already indexed inbox
+            // row. SQLite calls this a virtual-table SCAN even with its JSON
+            // argument bound (index 1); it is not a scan of stored Team rows.
+            let bound_notes = line == "SCAN n VIRTUAL TABLE INDEX 1:"
+                && sql.contains("json_each(i.notes) n");
+            assert!(!access || line.contains("USING") || bound_notes, "{name}: {line}");
             assert!(!line.contains("TEMP B-TREE"), "{name}: {line}");
         }
     }

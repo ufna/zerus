@@ -131,22 +131,41 @@ fn merge_provider_message(state: &mut Map<String, Value>, message: Value) -> boo
     };
     let id = field(&message, "message_id");
     let kind = field(&message, "type");
-    if !id.is_empty() {
-        let same = list
-            .iter()
-            .position(|old| field(old, "message_id") == id && field(old, "type") == kind);
-        if let Some(index) = same {
-            list[index] = message;
-            return true;
+    let codex_client = |body: &Value| {
+        field(body, "type") == "UserMessageBody"
+            && field(body, "source") == "codex_transcript"
+            && !field(body, "conversation_id").is_empty()
+            && crate::creation::canonical_uuid(field(body, "codex_client_id"))
+    };
+    let identified = codex_client(&message);
+    let same = list.iter().position(|old| {
+        if identified && codex_client(old) {
+            return old["conversation_id"] == message["conversation_id"]
+                && old["codex_client_id"] == message["codex_client_id"];
         }
+        !id.is_empty()
+            && field(old, "type") == kind
+            && field(old, "message_id") == id
+            && (!identified
+                || (old["conversation_id"] == message["conversation_id"]
+                    && old["source"] == message["source"]))
+    });
+    if let Some(index) = same {
+        // A less informative copy is not allowed to discard the client's native identity.
+        if !identified && codex_client(&list[index]) {
+            return false;
+        }
+        list[index] = message;
+        return true;
     }
     let detail = message.get("detail");
     let when = at(&message);
-    let repeat = list.iter().any(|old| {
-        field(old, "type") == kind
-            && old.get("detail") == detail
-            && (at(old) - when).abs() <= REPEAT_SECONDS
-    });
+    let repeat = !identified
+        && list.iter().any(|old| {
+            field(old, "type") == kind
+                && old.get("detail") == detail
+                && (at(old) - when).abs() <= REPEAT_SECONDS
+        });
     if repeat {
         return false;
     }
@@ -2302,6 +2321,25 @@ mod tests {
         assert_eq!(
             activity.state.as_ref().unwrap()["user_message_bodies"][99]["detail"],
             "Updated"
+        );
+    }
+
+    #[test]
+    fn live_codex_queue_bodies_with_distinct_client_ids_survive_equal_text_and_timestamp() {
+        let mut activity = ActivityState::default();
+        activity.replace_state(json!({}), 1);
+        let body = |client| {
+            json!({"type":"UserMessageBody","source":"codex_transcript",
+            "conversation_id":"thread","detail":"identical","at":10.0,"codex_client_id":client})
+        };
+        let first = body("00000001-2222-4444-8888-000000000001");
+        let second = body("00000002-2222-4444-8888-000000000002");
+        assert!(activity.merge_event("1", 1, first.clone()));
+        assert!(activity.merge_event("2", 1, second.clone()));
+        assert!(activity.merge_event("1", 2, first.clone()));
+        assert_eq!(
+            activity.state.as_ref().unwrap()["user_message_bodies"],
+            json!([first, second])
         );
     }
 

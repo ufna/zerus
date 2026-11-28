@@ -182,6 +182,11 @@ hides the Clear session icon and offers
 place. **Restore session** follows the computer's restore decision, as batch
 Restore does; a computer that reports no actions keeps the earlier rule.
 
+Google Antigravity integration has been retired. Existing Zerus sessions and
+archives remain available for reading their saved Activity and identifiers.
+Zerus leaves existing account files and running programs in place, and retained
+session and archive records still protect their working folders.
+
 A Claude or Codex session that exited before its first message reported a
 conversation ID but wrote no transcript. Its archive therefore does not offer
 Restore, and gives the reason "This session ended before its first message"
@@ -500,7 +505,10 @@ With `@host` the flag reaches a peer only once its `hgs --help` lists
 `session-id-selector-v1` and every marker the call needs already, including a
 guarded `--expect-machine` call that wraps the command and `native-ui`, whose
 peer resolves the ID itself; an older peer is refused with "update the
-selected computer". Names stay unique for now. When several sessions later
+selected computer". A write addressed only by ID also requires the peer's
+`retired-provider-selector-v1` capability. On an older peer, the current
+session name and its ID can still identify a supported session for a write.
+Names stay unique for now. When several sessions later
 share a name, commands exit with status 5 and list the candidates; see
 `docs/superpowers/specs/2026-11-04-session-names-as-labels.md`. Because an
 older hgs can change a session's ID once, a client whose `--session-id` is no
@@ -1457,6 +1465,14 @@ Retirement requires the resident host to confirm the session is stopped. Restore
 resumes the archived conversation on that host. When the first restore result is
 unclear, Restore checks the original outcome without sending a second resume.
 Other sessions on the host stay available throughout.
+
+OpenCode offers **Archive** for a confirmed idle conversation with no pending
+input, queued messages or running native child. Closing the Terminal client
+leaves the saved conversation available. Archive moves its Zerus binding into
+a separate local store, and Restore rebinds the original native conversation
+and history in its original folder. Neither operation stops the shared
+OpenCode service. **Forget** removes the selected Zerus binding without
+creating an archive and preserves the native history.
 
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
@@ -2701,32 +2717,78 @@ with `agent busy` before submission; wait or inspect Terminal rather than typing
 through that refusal.
 
 **Send** and Enter in Desktop Composer send to a ready agent immediately.
-For a busy live Codex or Kimi conversation, or one with earlier Zerus messages
+When the owner host confirms a single live Codex conversation, an empty
+Desktop queue, and a working turn with no pending question or earlier input,
+a manual Send uses the ordinary native composer and Enter. Codex can read
+the follow-up when the current tool call completes. Hosts with ordered
+Codex Send also check this conversation's native queue under the input
+lock. A manual Send appends behind an already accepted native item even
+after that item has left the Desktop queue. If the queue cannot be
+verified, the message waits. The owning host checks the terminal before input. A native draft or dialog stays intact on refusal.
+For other busy live Codex, Claude, Kimi, supported OpenCode or supported DeepSeek
+conversation, or one with earlier Zerus messages
 waiting, Send saves the message and its attachments in the local queue and
 clears the editable draft. Main Activity shows each waiting message as an
 outgoing row with **Queued in Zerus**, its original local enqueue time, and
 its attachments. The agent receives no input during that save. The desktop
-checks the original run and sends in order when it confirms an idle input
-with no earlier message pending. The host checks idle again under its native
-input lock before offering the message. If it confirms that the agent became
-busy before any input was offered, that same message waits with its original
-request ID. Queueing requires guarded Send support from the computer running
-the session. A ready session on an older computer still uses ordinary Send.
-Previously opened queues can drain while
-another session is selected. After restarting the app, open the session to
-load its saved queue. The queue holds up to 16 messages, 80 KiB of text and
+checks the original run and sends messages in order. On a host with native
+Codex queue support, **Send** can hand a message to the exact working Codex
+conversation for its next turn. **Queued in Codex** confirms native acceptance.
+Activity retains the original text and files after this handoff, including
+after a restart. A native queue receipt confirms acceptance. Activity can
+match it to the native user message once the original queue item and the
+recorded turn share a verified client ID. Older accepted messages can be
+read in bounded pages from Activity. On older hosts the desktop waits for the existing guarded input
+route. After an interrupted turn, a live Codex session can receive input when
+the host confirms an empty, usable native prompt.
+For Codex, Claude and Kimi, the host checks readiness again under its native
+input lock before offering the message. A compatible terminal can accept an
+ordinary next message while Claude Code or Kimi works. The host checks the
+exact native composer, preserves earlier input and leaves the message waiting
+if the terminal holds an unsent draft.
+A compatible OpenCode service or
+DeepSeek bridge can accept an exact next-turn offer while the agent works.
+Desktop can send a new message or advance its original waiting entries and
+files as soon as that route is available. The existing native inbox keeps its
+order. Questions, approvals and active DeepSeek recovery keep their normal
+controls. Older helpers and resident bridges continue to use their previously
+supported route. A confirmed refusal before input keeps the original request
+ID in the local queue. A ready session on an older computer still uses
+ordinary Send.
+After restarting, Desktop checks saved queues in the background.
+Messages can leave the queue while another session is selected or the editor is closed. The queue holds up to 16 messages, 80 KiB of text and
 20 MiB of files per session. The queue saves its messages and files separately
 from the editable draft so an older desktop can edit that draft during rollback.
 
 The native queue shown in Activity has its own **Send now** action. It
 operates only on the native queue already shown there. A refused or unknown
-delivery pauses the Zerus queue at that message. Check the agent's Terminal
-before deciding whether to remove an unknown message from the Zerus queue.
-A new run or a renamed session cannot inherit the earlier run's delivery.
+delivery pauses the Zerus queue at that message. When delivery of the first
+message is unconfirmed, later waiting rows in Activity identify that message,
+even when the agent is ready. For OpenCode, Zerus can check
+the original native message and settle the original receipt without another offer.
+For Claude, a final original receipt can settle a lost command response. Activity
+matches the original request and Claude's typed prompt ID to link the outgoing
+row and its files. A native queue hook can reuse the active prompt ID, so it
+keeps its own Activity row.
+For Kimi, the original terminal receipt proves delivery to its terminal. The
+next offer still waits for Kimi's native input acknowledgement, and Activity
+uses native history to identify the turn.
+For DeepSeek, the original request and native message ID bind the Activity row
+and files. Desktop can recover a lost acknowledgement after the same native
+host reconnects when its durable log proves the original queued or delivered
+message, including the ordered attachment hashes. If that proof is unavailable, the original remains
+unknown and later messages remain queued. A resident bridge that lacks this
+capability continues to use its existing Send route while ready.
+Check Activity or Terminal before deciding whether to remove an unknown message
+from the Zerus queue. A new run or a renamed session cannot inherit the earlier
+run's delivery.
 
-A successful plain-text Codex terminal submission shows **Submitted to
-terminal** in the composer. Its outgoing message appears in Activity when
-Codex records it. An equal prompt typed in Terminal is its own native message.
+Activity shows the original outgoing message, its files, its delivery status,
+and any available recovery actions together. For a terminal route without a
+proven native request binding, **Submitted to terminal** confirms terminal
+submission, not native acceptance or a model read. Activity joins native
+history to the original only when it can verify the binding. An independently
+recorded prompt with the same text is not used to infer that binding.
 
 Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.
@@ -4738,6 +4800,14 @@ proof, never renderer, manual or background requests. If the selected route
 cannot support this pipeline, removal remains available through the existing
 separately guarded folder review rather than an alternate CLI selection.
 
+When the program stop is unconfirmed, **Check again** in **Remove working
+folders** reads the recorded stop result if its exact request is still
+available. It also checks which programs and sessions currently use the
+recorded checkout on its original computer. This inspection leaves the
+folder and its cleanup records in place. A recovered stop result remains
+informational. No stop, Force, removal, Restore or consent follows from
+this check.
+
 A checkout with uncommitted or untracked files can also have such access
 denials. Its review then offers both consents (`discardable_with_process_consent`
 beside the discard and process fingerprints, while `discardable` stays false for
@@ -5485,6 +5555,22 @@ on stdin. Set it in Backlog or To do, alongside the executor assignment.
 `technical` is for the coordinator or reviewer. `review-owner REF unspecified`
 clears the assignment. The task details show the reviewer and criterion.
 
+An agent already working on an ordinary technical request can file and start
+it in one step. Give a specific, one-line criterion of at most 512 bytes
+and put the original request on stdin.
+
+```sh
+hgs task add-technical --project example --start \
+  --criterion 'The isolated CLI reopens the exact task once after restart.' <<'EOF'
+Fix and verify task reopen after an interrupted delivery.
+EOF
+```
+
+The creation records the criterion before starting the task in the calling
+agent's session. For a named card, reuse the same optional `--request-id`
+with the same title, request and criterion to check a lost reply. This takes
+the normal technical review route after the agent's report.
+
 The shared **In review** stage still includes all reports. The desktop board
 opens **Your decision**, **Technical review** and **Coordinator triage**
 directly. Counts cover the whole selected project, or the current session and
@@ -5506,6 +5592,106 @@ reports bounded pages and counts. The lanes are `all`, `person`,
 `technical`, `triage` and `team`. The response includes scope-wide
 `review_counts` and echoes `review_lane`. Cursor scope includes the chosen
 lane, session and search.
+
+Quick review records one decision about a settled ordinary report. Read
+`review_report_id` and `history_revision` from the task. The report ID is the
+opaque ID shown on the exact report in a paged history with `--attachments
+metadata`. If the task has no exact settled report, quick review is unavailable.
+This includes ambiguous legacy results, unresolved delivery or execution, and
+competing quick review decisions. Team review continues through its own lane and
+uses its existing Team acceptance rules.
+
+`hgs task quick-review REF --json` takes one JSON object on stdin. For `op: "set"`,
+send the expected `history_revision`, `report_id`, and one `disposition`:
+
+| `kind` | Required fields |
+| --- | --- |
+| `ready` | `evidence` describing the existing verification |
+| `check` | `criterion` and one `assignee` with `machine` and `session_id` |
+| `rework` | `defect` describing the failure and expected result |
+| `parked` | `reopen_when` naming the evidence needed for reevaluation |
+
+Text fields must be nonblank and at most 1024 UTF-8 bytes. The assignee's
+identity is the computer UUID and exact `launch_id:…` or `run_id:…` session
+key, up to 200 bytes. Choose a named session verified on the computer handling
+the request. The pilot refuses peer assignees before writing. Displayed names
+are hints. The request is limited to 8192
+bytes and report IDs to 512 bytes. A decision records metadata and history; it
+does not send a task, change its stage or assign a new task executor. To
+reevaluate a parked report, explicitly set a new disposition against a fresh
+read. A later report or cycle leaves earlier decisions in history and requires
+a new decision.
+
+For `op: "accept"`, send only the same two guards and the operation. This
+accepts a current `ready` report using the existing ordinary Done transition
+when invoked by the person or the task's exact verified executor. A different
+report, stale revision, or non-ready disposition refuses. Replies echo `op`,
+`report_id`, `project_uuid`, `task_uuid` and the resulting `task`.
+
+### Verified technical completion
+
+Automatic completion is opt-in for one project on its owning computer. An
+enrolled local Codex reviewer must be independent of the exact reporter.
+A bare report, a technical review label or the ordinary Ready outcome grants
+no automatic acceptance. Person and Team reviews, historical or ambiguous
+reports, conflicting or unknown execution and parked or rework outcomes retain
+their existing routes.
+
+After an enrolled project's ordinary technical agent report settles, the
+desktop background worker places it in Review Check with an exact reviewer and
+the existing criterion. The worker sends one guarded idle-only notice to that
+reviewer. Review history shows assignment, unavailable reviewer, submitted
+notice, refusal or unknown outcome. A refusal or unknown leaves the assigned
+Check visible. Restart reads the original reservation and receipt and never
+repeats its native offer. The reviewer opens the original request and exact
+report, verifies the requested result using a retained test, installed witness
+or comparable evidence for the same scope, and records its observation and
+reproducible reference.
+
+The assigned reviewer uses the existing `hgs task quick-review REF --json`
+writer with `op: "verify"`, the current `history_revision`, exact
+`report_id`, `observation` and `evidence_reference`. The verified session
+must match the current assignment. The writer records the exact reviewed
+evidence and the automatic Done transition together. The ordinary `set` and
+`accept` requests retain their existing behavior.
+
+The person enrolls reviewers once through their own terminal or a verified
+person request addressed to an agent. In that context run
+`hgs task technical-review-policy --project PROJECT --json` with
+`{"op":"enable","reviewers":["launch_id:UUID"]}`. Use one to four exact
+local reviewer session IDs. The response records the local project, computer,
+reviewers, policy generation and authorization. Use `{"op":"status"}` for
+readback and `{"op":"disable"}` to revoke. An ordinary relayed or unrelated
+agent command cannot enroll a reviewer. A task never asks the person to run
+this command as part of ordinary completion.
+
+Enrollment may also give up to eight preexisting exact Ready decisions in
+`legacy`, with `task_uuid`, `history_revision`, `report_id`, `decision_id`
+and `reviewer_session_id` per entry. Copy IDs from ordinary paged task history
+and only include independently reviewed technical evidence produced by an
+enrolled reviewer. Enrollment validates the exact saved decision and actor.
+The admitted desktop worker rechecks the full guard at start and completes it
+with a separate legacy audit. If the report, decision or scope changed, the
+old enrollment entry cannot accept its replacement.
+
+To send a decided rework to its original executor, use `hgs task
+message-reviewed REF --mode reopen` with the usual message content,
+`--request-id`, `--expect-dispatch`, plus `--expect-history-revision` and
+`--expect-report-id`. Fresh admission checks the exact current report and its
+rework decision under the task lock. This uses the existing reopen reservation
+and delivery protocol. Check the same original request to recover a receipt.
+Its unknown outcome grants no second offer. The separate verb makes an older
+helper refuse before ordinary message dispatch.
+
+Paged Review lists support `--quick-review work|all|ready|check|rework|parked|unclassified|unresolved`.
+`work` includes checks, rework, and unclassified tasks with an exact settled
+report. `all` includes the ordinary ready, parked and unresolved groups as
+well. Team tasks remain in `--review-lane team`. Review list replies expose
+scope-wide `quick_review_counts` and echo a selected `quick_review_lane`.
+Cursors bind the selected queue, session and search. Rows show
+`quick_review_status` and, for a usable report, `review_report_id` and an
+optional current `quick_review` disposition. Legacy review-lane replies keep
+their existing fields and counts.
 
 Both report commands add the report to history. For a managed execution an
 agent uses `hgs task report-attempt REF --attempt UUID`, with the UUID supplied
@@ -8787,9 +8973,9 @@ not close it, and passes it the right to come to the front.
 after 0.42.2 and nightly releases carry the same tested zip. A portable
 installation starts on the stable channel; choose Nightly to hear about nightly
 builds too. Earlier portable builds saved Nightly as their default, and that saved
-choice is kept. A zip that winget installed as `ufna.Zerus` offers its
-`winget upgrade` command on the stable channel instead of the download link;
-winget carries stable releases only. Settings → Updates reports
+choice is kept. Existing `ufna.Zerus` installations are still recognized, but
+get the same GitHub release-page guidance as other portable installations.
+Settings → Updates reports
 a stable release or nightly with a newer product version than the running app and
 links to its release page; nightlies of the same product version cannot be told
 apart. Stable 0.42.2 and earlier have no Windows build and are never reported as

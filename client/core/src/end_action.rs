@@ -52,7 +52,8 @@ impl Captured {
     pub fn valid(&self) -> bool {
         let t = &self.target;
         let archived = matches!(self.action, Action::ForgetArchive { .. });
-        bounded(&t.computer, 512, false)
+        !t.name.starts_with("agy/")
+            && bounded(&t.computer, 512, false)
             && bounded(&t.name, 512, true)
             && bounded(
                 &t.run_id,
@@ -66,7 +67,8 @@ impl Captured {
             )
             && (self.state == "archived") == archived
             && match &self.action {
-                Action::Archive | Action::Forget => self.state != "running",
+                Action::Archive => self.state != "running" || self.open_code_archive(),
+                Action::Forget => self.state != "running",
                 Action::Terminate | Action::Kill => self.state == "running",
                 Action::TerminateShell { ref identity } => {
                     self.state == "running"
@@ -81,6 +83,13 @@ impl Captured {
                 Action::ForgetArchive { archive_id } => creation::canonical_uuid(archive_id),
                 _ => false,
             }
+    }
+
+    fn open_code_archive(&self) -> bool {
+        matches!(self.action, Action::Archive)
+            && self.target.name.starts_with("opencode/")
+            && !self.target.conversation_id.is_empty()
+            && self.state == "running"
     }
 
     fn archive_id(&self) -> Option<&str> {
@@ -147,6 +156,11 @@ impl Captured {
             && text("run_id") == self.target.run_id
             && text("conversation_id") == self.target.conversation_id
             && lifecycle
+            && (!self.open_code_archive()
+                || (text("backend") == "opencode"
+                    && value["allowed_actions"]
+                        .as_array()
+                        .is_some_and(|actions| actions.iter().any(|op| op == "archive"))))
             && text("archive_id") == self.archive_id().unwrap_or("")
     }
 
@@ -204,6 +218,9 @@ impl Captured {
     pub fn completed(&self, inv: &Invocation, exit: Exit) -> Outcome {
         if !self.valid() {
             return actions::failed(STATE_CHANGED);
+        }
+        if self.open_code_archive() {
+            return actions::classify_archive_lifecycle(&self.target, inv, exit, None);
         }
         if matches!(&exit, Exit::Code { stdout, .. } if stdout.len() > RECEIPT_LIMIT) {
             let detail = "Invalid acknowledgement. Check the session before retrying.";

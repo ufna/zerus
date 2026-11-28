@@ -125,7 +125,7 @@ createRoot(() => {
   createEffect(() => {
     const row = selected(), v = composer.view();
     const followed = row ? followedFor(row.key) : undefined;
-    const context = row && !subagentOpen() ? { row, details: followed?.value, online: !computerOffline(row.computer),
+    const context = row && row.cmd !== "agy" && !subagentOpen() ? { row, details: followed?.value, online: !computerOffline(row.computer),
       busy: updating(row.computer, row.name) || !!v?.sending || !!v?.waiting,
       answering: !!v?.question?.answering, inspectError: !!activity.error() || !!v?.inspect_error } : undefined;
     untrack(() => sessionModels.setContext(context));

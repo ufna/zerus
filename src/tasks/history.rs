@@ -81,6 +81,7 @@ pub(super) fn materialize(task: &TaskDoc) -> Result<Read> {
         }
     }
     let (lane, editable) = (view.review_lane(), view.review_editable());
+    quick_review::scope_reports(&mut view);
     let log = std::mem::take(&mut view.log);
     let mut header = serde_json::to_value(view).map_err(fail)?;
     set_review_projection(&mut header, lane, editable, task.revision());

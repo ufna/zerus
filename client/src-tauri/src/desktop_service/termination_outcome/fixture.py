@@ -45,12 +45,25 @@ if args[:2] == ['desktop', 'status'] and offer_case == 'status':
     print(json.dumps(dict(abi='desktop-v1', running=True, configuration='b' * 64, epoch='00000000-0000-4000-8000-000000000001')))
     sys.exit(0)
 if args == ['--help']:
+    if offer_case != 'receipt_abi':
+        print('desktop-claude-outbox-status-v1')
     print('guarded-create-v1')
     if offer_case != 'lifecycle':
         print('scoped native lifecycle action')
     if offer_case != 'abi':
         print('Desktop termination outcome ABI: desktop-termination-outcome-v1')
     print('Desktop frontend request ABI: desktop-ui-request-v1')
+elif args[:3] == ['__state', 'delivery', 'claude-outbox-status']:
+    assert len(args) == 5 and args[3] == 'claude/example/original' and args[4] == '--json'
+    query = json.load(sys.stdin)
+    with (root / 'explicit-claude-read').open('a') as log:
+        log.write(json.dumps(query) + '\n')
+    assert query['expected_machine_id'] == '00000000-0000-4000-8000-000000000009'
+    print(json.dumps(dict(schema=1, status='submitted', proof='native_claude_receipt',
+        claude_outbox=True, transport='terminal', native='queue', name=args[3],
+        request_id=query['request_id'], run_id=query['expected_run_id'],
+        conversation_id=query['expected_conversation_id'], input_sha256=query['input_sha256'])))
+    sys.exit(0)
 elif args[:1] in [['inspect'], ['session-action']] or args[:2] in [['desktop', 'frontend-request']]:
     import hashlib, json, os, socket, time
     config = json.loads((root / 'fixture.json').read_text())

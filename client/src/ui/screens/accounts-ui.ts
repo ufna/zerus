@@ -27,7 +27,7 @@ export function memberStateText(s: MemberState): string {
 
 /** The sign-in button (AccountsPage.cpp:639-641); none for OpenCode or an agent that is not installed. */
 export function loginLabel(p: Profile): string | undefined {
-  if (["opencode", "agy"].includes(p.provider) || !p.installed) return undefined;
+  if (p.provider === "opencode" || !p.installed) return undefined;
   if (p.provider === "dsh") return p.usage.status === "configured" ? tr("Change API key on %1…", p.machine) : tr("Set API key on %1…", p.machine);
   return p.signed_in ? tr("Sign in again on %1…", p.machine) : tr("Sign in on %1…", p.machine);
 }
@@ -89,6 +89,7 @@ export function visibleAccounts(view: AccountsView, machine: string, options: Ac
   const language = uiLanguage(), compare = new Intl.Collator(language, { numeric: true, sensitivity: "base" }).compare;
   const query = (options.query ?? "").trim().toLocaleLowerCase(language);
   return view.accounts.filter((a) => {
+    if (a.provider === "agy") return false;
     if (machine !== "*" && !a.members.some((m) => m.host === machine)) return false;
     if (options.provider && options.provider !== "*" && a.provider !== options.provider) return false;
     return !query || [a.label, providerName(a.provider), a.usage.identity.name, a.usage.identity.email,

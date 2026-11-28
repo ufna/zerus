@@ -1,5 +1,7 @@
 //! Attachment access uses durable delivery receipts, never a caller's file path.
 use super::*;
+mod codex_queue;
+use codex_queue::{codex_queue_page, mark_native_consumed};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::fs::OpenOptions;
 #[cfg(all(test, unix))]
@@ -125,7 +127,7 @@ pub(super) fn terminal_text(text: &str, files: &[Value]) -> String {
     result
 }
 
-fn public_files(receipt: &Value) -> Vec<Value> {
+pub(super) fn public_files(receipt: &Value) -> Vec<Value> {
     receipt["attachments"].as_array().into_iter().flatten().take(8).enumerate()
         .map(|(index,file)|json!({"request_id":receipt["request_id"],"index":index,"name":file["name"],"mime":file["mime"],"bytes":file["bytes"],"reference":file["reference"]})).collect()
 }
@@ -190,8 +192,34 @@ fn projected_page(record:&Value,agent:&str,cursor:&str,limit:usize)->Result<(Val
             receipt["resolved_conversation_id"]=record["conversation_id"].clone();
             let _=receipt_index::persist(&directory(record).join(format!("{}.json",locator.id)),&receipt);
         }
-        messages.push(json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
-            "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)}));
+        let mut message = json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":receipt["request_id"],"agent_id":"",
+            "at":receipt.get("submitted_at").unwrap_or(&receipt["at"]),"detail":message_text(&receipt),"submitted_text":receipt["submitted_text"],"attachments":public_files(&receipt)});
+        if record["agent"] == "codex" && receipt["codex_outbox"] == true && receipt["transport"] == "codex_queue" {
+            message["codex_outbox"] = json!(true);
+        }
+        if record["agent"] == "claude" && receipt["claude_outbox"] == true {
+            message["claude_outbox"] = json!(true);
+            if receipt["native"] == "queue" {
+                message["claude_queued_outbox"] = json!(true);
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
+            if let Some(prompt) = receipt_index::claude_outbox_prompt(&receipt) {
+                message["claude_prompt_id"] = json!(prompt);
+                message["claude_outbox_request_id"] = receipt["request_id"].clone();
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
+        }
+        if record["backend"] == "dsh" && receipt["dsh_outbox"].is_object() {
+            message["dsh_outbox"] = json!(true);
+            if dsh::outbox_message_id(string(&receipt["dsh_outbox"], "message_id")) {
+                message["dsh_message_id"] = receipt["dsh_outbox"]["message_id"].clone();
+                message["conversation_id"] = receipt["conversation_id"].clone();
+                message["run_id"] = receipt["run_id"].clone();
+            }
+        }
+        messages.push(message);
     }
     if !gaps.is_empty() {page.metadata["state"]=json!("partial");}
     page.metadata["gaps"]=json!(gaps);
@@ -205,6 +233,19 @@ pub(super) fn decorate(record:&Value,agent:&str,output:&mut Value) {
     });
     output["attachment_messages"]=messages;
     output["receipt_projection"]=metadata;
+    if record["agent"] == "codex" && agent.is_empty() && !string(record, "conversation_id").is_empty() {
+        match codex_queue_page(record, agent, "", receipt_index::PAGE_LIMIT) {
+            Ok((mut rows, meta)) => {
+                mark_native_consumed(&mut rows, &output["user_message_bodies"]);
+                output["codex_queued_messages"] = json!(rows);
+                output["codex_queue_projection"] = meta;
+            }
+            Err(_) => {
+                output["codex_queued_messages"] = json!([]);
+                output["codex_queue_projection"] = json!({"state":"unavailable","absence_confirmed":false});
+            }
+        }
+    }
 }
 
 /// Internal bounded paging seam for native receipt consumers. It neither sends
@@ -213,6 +254,7 @@ pub(super) fn page_dispatch(args:&[String])->Result<i32> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Request {
+        #[serde(default)] projection: String,
         expected_run_id:String,
         expected_conversation_id:String,
         #[serde(default)] agent_id:String,
@@ -235,7 +277,15 @@ pub(super) fn page_dispatch(args:&[String])->Result<i32> {
     if string(&record,"run_id")!=request.expected_run_id || string(&record,"conversation_id")!=request.expected_conversation_id {
         return Err("Receipt target identity changed".into());
     }
-    let (messages,metadata)=projected_page(&record,&request.agent_id,&request.cursor,request.limit.unwrap_or(receipt_index::PAGE_LIMIT))?;
+    let limit = request.limit.unwrap_or(receipt_index::PAGE_LIMIT);
+    if request.projection == "codex_queue" {
+        let (rows, metadata) = codex_queue_page(&record, &request.agent_id, &request.cursor, limit)?;
+        println!("{}", json!({"run_id":record["run_id"],"conversation_id":record["conversation_id"],
+            "codex_queued_messages":rows,"codex_queue_projection":metadata}));
+        return Ok(0);
+    }
+    if !request.projection.is_empty() { return Err("Unknown receipt projection".into()); }
+    let (messages,metadata)=projected_page(&record,&request.agent_id,&request.cursor,limit)?;
     println!("{}",json!({"run_id":record["run_id"],"conversation_id":record["conversation_id"],"attachment_messages":messages,"receipt_projection":metadata}));
     Ok(0)
 }
@@ -302,6 +352,10 @@ pub(super) struct NativeStage {
 }
 
 impl NativeStage {
+    pub(super) fn files(&self) -> &Value {
+        &self.files
+    }
+
     pub fn keep(self) -> Value {
         if let Some(directory) = self.directory {
             let _ = directory.keep();
@@ -311,7 +365,7 @@ impl NativeStage {
 }
 
 pub(super) fn prepare_native(request: &Value) -> Result<NativeStage> {
-    if request["attachments"].is_null() {
+    if request["attachments"].is_null() || request["attachments"].as_array().is_some_and(Vec::is_empty) {
         return Ok(NativeStage {
             files: json!([]),
             directory: None,
@@ -480,7 +534,13 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         println!("{output}");
         return Ok(0);
     }
-    let receipt = receipt(&directory(&record).join(format!("{id}.json")))?;
+    let path = directory(&record).join(format!("{id}.json"));
+    let receipt = if record["agent"] == "codex" {
+        receipt_index::read_codex_display_original(&path)
+            .map_err(|reason| format!("Attachment receipt is unavailable ({reason})"))?
+    } else {
+        receipt(&path)?
+    };
     if !belongs(&receipt, &record, flag("--agent")) {
         return Err("This attachment belongs to another conversation".into());
     }

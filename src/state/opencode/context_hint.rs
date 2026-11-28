@@ -424,7 +424,7 @@ pub(crate) fn lookup(args: &[String]) -> Option<&'static str> {
         return None;
     }
     // Exclude native children even if somebody adopted one as a main binding.
-    let service = service::Service { reg, manual_compact: false };
+    let service = service::Service { reg, manual_compact: false, desktop_outbox: false };
     let native = service
         .call_within(
             "GET",
@@ -594,6 +594,7 @@ mod tests {
         });
         let service = service::Service {
             manual_compact: false,
+            desktop_outbox: false,
             reg: service::Registration {
                 id: "private-alias-fixture".into(),
                 version: "2.2.7".into(),

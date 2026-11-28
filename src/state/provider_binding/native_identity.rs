@@ -489,6 +489,17 @@ fn complete_scan(provider: Provider, native: &str, home: &Path) -> Result<Scan> 
             "Native session metadata is busy; retry hgs self".into(),
         ));
     };
+    scan_locked(provider, native, home, true)
+}
+
+pub(super) fn read_locked(provider: Provider, native: &str, home: &Path) -> Result<Option<Value>> {
+    match scan_locked(provider, native, home, false)? {
+        Scan::Done(record) => Ok(record),
+        Scan::Unavailable(reason) => Err(reason),
+    }
+}
+
+fn scan_locked(provider: Provider, native: &str, home: &Path, publish: bool) -> Result<Scan> {
     let until = Instant::now() + Duration::from_secs(2);
     let mut count = 0;
     let mut bytes = 0;
@@ -505,7 +516,9 @@ fn complete_scan(provider: Provider, native: &str, home: &Path) -> Result<Scan> 
         for entry in entries {
             count += 1;
             if count > RECORDS {
-                record_overflow(provider);
+                if publish {
+                    record_overflow(provider);
+                }
                 return Ok(Scan::Unavailable(METADATA_BOUND.into()));
             }
             if Instant::now() >= until {
@@ -547,6 +560,9 @@ fn complete_scan(provider: Provider, native: &str, home: &Path) -> Result<Scan> 
         ));
     }
     let record = unique(records)?;
+    if !publish {
+        return Ok(Scan::Done(record));
+    }
     if let Some(record) = &record {
         // A writer's optional note alone cannot establish complete coverage:
         // other legacy bindings may not have been indexed yet. Only this

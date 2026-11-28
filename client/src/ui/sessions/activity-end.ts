@@ -63,5 +63,11 @@ export function createActivityEnd(read: () => ScrollGeometry, writeEnd: () => vo
 }
 
 export function newLocalSends(baseline: ReadonlySet<string> | undefined, current: readonly string[]): { added: string[]; baseline: Set<string> } {
-  return { added: baseline ? current.filter((id) => !baseline.has(id)) : [], baseline: new Set(current) };
+  const seen = new Set(baseline);
+  for (const id of current) {
+    seen.delete(id);
+    seen.add(id);
+  }
+  while (seen.size > 128) seen.delete(seen.values().next().value!);
+  return { added: baseline ? current.filter((id) => !baseline.has(id)) : [], baseline: seen };
 }

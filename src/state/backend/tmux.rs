@@ -637,6 +637,24 @@ impl TerminalBackend for Tmux {
             String::from_utf8_lossy(&output.stdout).into_owned(),
         ))
     }
+    fn pane_info_until(
+        &self,
+        target: Target,
+        fields: &[PaneField],
+        until: std::time::Instant,
+    ) -> Result<PaneInfo> {
+        if crate::state::effort::picker_entered() {
+            return crate::state::effort::picker_refuse(
+                "Unowned tmux call refused in original Effort keeper".into(),
+            );
+        }
+        let mut command = Command::new("tmux");
+        command.args(pane_info_args(target, fields));
+        let (status, stdout, stderr) = platform::run_bounded(&mut command, [4096, 4096], until, &|| false)
+            .map_err(|error| format!("Terminal pane information unavailable: {error:?}"))?;
+        let output = checked(Ok(Output { status, stdout, stderr }), true)?;
+        Ok(PaneInfo::new(String::from_utf8_lossy(&output.stdout).into_owned()))
+    }
     fn probe(&self, target: Target, fields: &[PaneField]) -> Option<PaneInfo> {
         let arguments = pane_info_args(target, fields);
         #[cfg(any(target_os = "linux", target_os = "macos"))]

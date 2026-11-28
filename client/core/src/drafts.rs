@@ -582,13 +582,16 @@ fn load_editable(root: &Path, key: &str) -> (StoredDraft, bool, Option<String>) 
             None => {
                 draft.outbox_damaged = true;
                 valid = false;
-            },
+            }
         }
     }
     let (attachments, attachments_valid) =
         read_attachments(&path, object.get("attachments").and_then(Value::as_array));
     draft.draft.attachments = attachments;
-    let claim = object.get("queue_claim").and_then(Value::as_str).map(str::to_owned);
+    let claim = object
+        .get("queue_claim")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     (draft, valid && attachments_valid, claim)
 }
 
@@ -1029,25 +1032,32 @@ impl DraftStore {
         done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
         let (root, owned, fence) = (self.root.clone(), key.to_owned(), self.fence.clone());
-        self.writer.enqueue(key, false, Box::new(move || {
-            let key = owned;
-            let write = || {
-                if !lock(&fence).gate.writes {
-                    return Err(NOT_RECORDED.into());
-                }
-                let claim = after.outbox.last().ok_or_else(|| not_saved("missing queued message"))?;
-                if !before.outbox.is_empty() {
-                    outbox::preserve_inline(&root, &key, &before.outbox)?;
-                }
-                save_editable(&root, &key, &before, Some(&claim.request_id))?;
-                outbox::save(&root, &key, &after.outbox, Some(&claim.request_id))?;
-                // The queue owns the message already. A failed clear leaves
-                // only the matching draft claim for the next load to retire.
-                let _ = save_editable(&root, &key, &after, None);
-                Ok(())
-            };
-            done(write());
-        }));
+        self.writer.enqueue(
+            key,
+            false,
+            Box::new(move || {
+                let key = owned;
+                let write = || {
+                    if !lock(&fence).gate.writes {
+                        return Err(NOT_RECORDED.into());
+                    }
+                    let claim = after
+                        .outbox
+                        .last()
+                        .ok_or_else(|| not_saved("missing queued message"))?;
+                    if !before.outbox.is_empty() {
+                        outbox::preserve_inline(&root, &key, &before.outbox)?;
+                    }
+                    save_editable(&root, &key, &before, Some(&claim.request_id))?;
+                    outbox::save(&root, &key, &after.outbox, Some(&claim.request_id))?;
+                    // The queue owns the message already. A failed clear leaves
+                    // only the matching draft claim for the next load to retire.
+                    let _ = save_editable(&root, &key, &after, None);
+                    Ok(())
+                };
+                done(write());
+            }),
+        );
     }
 
     /// Saves a reservation, receipt settlement or explicit queue removal.
@@ -1059,12 +1069,36 @@ impl DraftStore {
         done: impl FnOnce(Result<(), String>) + Send + 'static,
     ) {
         let (root, owned, fence) = (self.root.clone(), key.to_owned(), self.fence.clone());
-        self.writer.enqueue(key, false, Box::new(move || {
-            if !lock(&fence).gate.writes {
-                return done(Err(NOT_RECORDED.into()));
-            }
-            done(outbox::save(&root, &owned, &entries, None));
-        }));
+        self.writer.enqueue(
+            key,
+            false,
+            Box::new(move || {
+                if !lock(&fence).gate.writes {
+                    return done(Err(NOT_RECORDED.into()));
+                }
+                done(outbox::save(&root, &owned, &entries, None));
+            }),
+        );
+    }
+
+    /// Visits one bounded portion of this store's saved queues on its writer.
+    pub fn scan_outboxes(
+        &self,
+        scan: outbox::Scan,
+        done: impl FnOnce(Option<outbox::Scan>, Option<String>) + Send + 'static,
+    ) {
+        let (root, fence) = (self.root.clone(), self.fence.clone());
+        self.writer.enqueue(
+            "",
+            false,
+            Box::new(move || {
+                if !lock(&fence).gate.writes {
+                    return done(None, None);
+                }
+                let (next, key) = scan.page(&root);
+                done(next, key);
+            }),
+        );
     }
 
     /// Loads after every save queued before it.

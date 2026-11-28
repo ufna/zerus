@@ -415,9 +415,7 @@ pub(super) fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
 pub(super) fn binding_agent(record: &Value) -> bool {
     let agent = string(record, "agent");
     AGENTS.contains(&agent)
-        || (agent == "agy" && record["backend"] == "agy"
-            && string(record, "name").starts_with("agy/")
-            && record["account_id"] == "native-agy")
+        || retired_agy::identity(record)
 }
 
 pub(super) fn verify_metadata_at(path: &Path, name: &str, bytes: &[u8]) -> Result<Value> {

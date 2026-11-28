@@ -1,8 +1,8 @@
 //! Composer-owned queue. Enqueue writes the editable draft and its new position
 //! in the queue together. Only a durably reserved head can reach native Send.
-use super::send::{Context, SendReply, exact_input_details};
+use super::send::{Context, SendReply, exact_input_details, first_input_details};
 use super::{Composer, Composers, Hub, MAX_TEXT_BYTES};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use tauri::State as TauriState;
@@ -14,7 +14,6 @@ use zerus_client_core::{Action, Outcome, Target, ViewRow};
 
 const CHECK_INTERVAL: f64 = 3.0;
 const BUSY: &str = "The draft could not be queued. Its text is still in the editor.";
-pub(super) const TERMINAL_SUBMITTED: &str = "Submitted to terminal";
 pub(super) fn reserved(c: &Composer) -> bool {
     c.outbox
         .first()
@@ -54,7 +53,18 @@ pub(super) enum ManualSend {
     Direct,
     Wait,
     TryNow,
+    TryNativeQueue,
     Blocked(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryObservation {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Accepted,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    NoInput,
+    Unresolved,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -70,6 +80,63 @@ pub struct EntryView {
     pub state: State,
     pub target_changed: bool,
     pub can_check_terminal: bool,
+    pub can_check_delivery: bool,
+    pub delivery_in_composer: bool,
+}
+
+/// A bounded, read-only confirmation binding. It never authorizes an offer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkipWaiting {
+    pub handle: u64,
+    pub key: String,
+    pub target: Target,
+    pub selection_epoch: u64,
+    pub route_revision: u64,
+    pub queue_revision: u64,
+    pub queue: Vec<(String, State)>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitingRemovalIntent {
+    SkipUnknown { binding: SkipWaiting },
+}
+
+/// Presentation evidence from a transport acknowledgement with no native
+/// prompt binding. This view cannot be loaded as an entry or offer an input.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TerminalReceiptView {
+    pub request_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub queued_at: Option<f64>,
+    pub preview: String,
+    pub attachments: Vec<AttachmentInfo>,
+    pub delivery_in_composer: bool,
+}
+
+impl TerminalReceiptView {
+    fn from_original(entry: &Entry, submitted_at: f64) -> Self {
+        Self {
+            request_id: entry.request_id.clone(),
+            run_id: entry.target.run_id.clone(),
+            conversation_id: entry.target.conversation_id.clone(),
+            queued_at: entry.queued_at.or(Some(submitted_at)),
+            delivery_in_composer: entry.delivery_in_composer,
+            preview: preview(entry),
+            attachments: entry.attachments.iter().map(Attachment::info).collect(),
+        }
+    }
+}
+
+fn preview(entry: &Entry) -> String {
+    let mut text = entry.text.trim().chars();
+    let mut preview: String = text.by_ref().take(240).collect();
+    if text.next().is_some() {
+        preview.push('…');
+    }
+    preview
 }
 
 pub(super) fn view(
@@ -79,19 +146,14 @@ pub(super) fn view(
 ) -> Vec<EntryView> {
     entries
         .iter()
-        .map(|entry| EntryView {
+        .enumerate()
+        .map(|(index, entry)| EntryView {
             request_id: entry.request_id.clone(),
             run_id: entry.target.run_id.clone(),
             conversation_id: entry.target.conversation_id.clone(),
             queued_at: entry.queued_at,
-            preview: {
-                let mut text = entry.text.trim().chars();
-                let mut preview: String = text.by_ref().take(240).collect();
-                if text.next().is_some() {
-                    preview.push('…');
-                }
-                preview
-            },
+            delivery_in_composer: entry.delivery_in_composer,
+            preview: preview(entry),
             attachments: entry.attachments.iter().map(Attachment::info).collect(),
             state: entry.state,
             target_changed: entry.draft_key != key
@@ -101,7 +163,16 @@ pub(super) fn view(
                         && !active.conversation_id.is_empty()
                         && (entry.target != active || entry.catalog_key != ctx.session.key)
                 }),
+            can_check_delivery: cfg!(any(target_os = "linux", target_os = "macos"))
+                && index == 0
+                && context.is_some_and(|ctx| {
+                    !ctx.awaiting_outbox_details && ctx.details.as_deref().is_some_and(|details| {
+                        claude_delivery_head(entry, key, &ctx.session, &ctx.row, ctx.online, details)
+                    })
+                }),
             can_check_terminal: entry.state == State::Unknown
+                && !opencode_outbox(entry)
+                && !dsh_outbox(entry)
                 && entry.draft_key == key
                 && context.is_some_and(|ctx| {
                     ctx.online
@@ -125,22 +196,103 @@ fn target(ctx: &super::send::Context) -> Target {
     }
 }
 
-impl Context {
-    pub(super) fn terminal_submission_shown(&self, composer: &Composer) -> bool {
-        composer.outbox.is_empty()
-            && !self.awaiting_outbox_details
-            && composer.last_terminal_submission.as_ref().is_some_and(|submission| {
-                self.details
-                    .as_deref()
-                    .is_some_and(|details| self.exact_outbox_details(details))
-                    && *submission == target(self)
-            })
-    }
+fn claude_delivery_head(
+    entry: &Entry,
+    key: &str,
+    session: &super::SessionRef,
+    row: &ViewRow,
+    online: bool,
+    details: &Value,
+) -> bool {
+    let original = &entry.target;
+    entry.state == State::Unknown
+        && original.computer.is_empty()
+        && row.catalog_source.is_some()
+        && online
+        && !session.archived()
+        && session.subagent.is_none()
+        && row.parent.is_none()
+        && row.agent == "claude"
+        && original.name.starts_with("claude/")
+        && row.name == original.name
+        && row.state == "running"
+        && row.process_state == "running"
+        && zerus_client_core::creation::canonical_uuid(&entry.request_id)
+        && entry.draft_key == key
+        && entry.catalog_key == session.key
+        && original.computer == session.computer
+        && original.name == session.name
+        && session.session_id.as_ref().is_none_or(|id| row.session_id.as_ref() == Some(id))
+        && row.run_id.as_deref() == Some(original.run_id.as_str())
+        && row.conversation_id.as_deref() == Some(original.conversation_id.as_str())
+        && exact_input_details(row, (&original.run_id, &original.conversation_id), details)
+        && details["claude_outbox_supported"] == true
+}
 
+fn supported_agent(agent: &str) -> bool {
+    matches!(agent, "codex" | "kimi" | "opencode" | "claude" | "dsh" | "deepseek")
+}
+
+fn codex_work_phase(phase: Option<&str>) -> bool {
+    matches!(phase, Some("working" | "tool" | "compacting"))
+}
+
+/// A Waiting entry came from the saved FIFO. An immediate ordinary send
+/// owns a Reserved entry from the outset and keeps its existing transport.
+fn idle_codex_queue(entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+    entry.state == State::Waiting && row.agent == "codex"
+        && row.phase.as_deref() == Some("idle") && details["codex_idle_outbox_supported"] == true
+}
+
+fn dsh_agent(agent: &str) -> bool {
+    matches!(agent, "dsh" | "deepseek")
+}
+
+fn opencode_outbox(entry: &Entry) -> bool {
+    entry.target.name.starts_with("opencode/")
+}
+
+fn dsh_outbox(entry: &Entry) -> bool {
+    entry.target.name.starts_with("dsh/")
+}
+
+fn terminal_native_agent(agent: &str) -> bool {
+    matches!(agent, "claude" | "kimi")
+}
+
+fn terminal_native_supported(agent: &str, details: &Value) -> bool {
+    terminal_native_agent(agent) && details["terminal_native_accept_supported"] == true
+}
+
+// Ready Kimi sessions retain the existing route even if their native history
+// is too old or incomplete to establish the ordered working-turn floor.
+fn terminal_native_route(agent: &str, details: &Value) -> bool {
+    terminal_native_supported(agent, details) && (agent != "kimi" || details["activity"] == "busy")
+}
+
+fn receipt_action(entry: &Entry) -> Action {
+    Action::SendWhenIdle { text: entry.text.clone(), attachments: entry.attachments.clone() }
+}
+
+pub(super) fn can_probe(entry: &Entry) -> bool {
+    matches!(entry.state, State::Waiting | State::Unknown)
+}
+
+fn guarded_supported(agent: &str, details: &serde_json::Value) -> bool {
+    details["guarded_idle_send"] == true
+        && (agent != "claude" || details["claude_outbox_supported"] == true)
+        && (!dsh_agent(agent) || details["dsh_outbox_supported"] == true)
+}
+
+fn provider_queue(agent: &str) -> bool {
+    agent == "opencode" || dsh_agent(agent)
+}
+
+impl Context {
     pub(super) fn outbox_candidate(&self) -> bool {
         self.session.subagent.is_none()
             && !self.session.archived()
-            && matches!(self.row.agent.as_str(), "codex" | "kimi")
+            && supported_agent(&self.row.agent)
     }
 
     fn exact_outbox_details(&self, details: &Value) -> bool {
@@ -157,8 +309,19 @@ impl Context {
 }
 
 impl Composers {
+    // The ticker may have parked while a durable reservation was being
+    // written. Its successor must run even when no editor is selected.
+    fn outbox_changed(&self) {
+        self.0.opened.notify_all();
+        self.changed();
+    }
+
     pub(crate) fn set_outbox_dispatch(&self, dispatch: super::OutboxDispatch) {
         assert!(self.0.outbox_dispatch.set(dispatch).is_ok());
+    }
+
+    pub(crate) fn set_outbox_status(&self, status: super::OutboxStatus) {
+        assert!(self.0.outbox_status.set(status).is_ok());
     }
 
     fn offer_guarded(
@@ -186,14 +349,19 @@ impl Composers {
         if hub.followed.awaiting_outbox_details
             && self
                 .context(hub)
-                .is_some_and(|ctx| !ctx.outbox_candidate() || ctx.exact_outbox_details(details))
+                .is_some_and(|ctx| {
+                    !ctx.outbox_candidate() || ctx.exact_outbox_details(details)
+                        || (ctx.row.name == ctx.session.name && first_input_details(&ctx.row, details))
+                })
         {
             hub.followed.awaiting_outbox_details = false;
         }
     }
 
     pub(super) fn manual_send(&self, hub: &Hub, ctx: &Context, c: &Composer) -> ManualSend {
-        if ctx.session.subagent.is_some() || ctx.session.archived() {
+        // Recovery asks for consent before offering input. Retained Activity
+        // from the stopped run can still describe an earlier native queue.
+        if Self::can_offer_start(hub, ctx) || ctx.session.subagent.is_some() || ctx.session.archived() {
             return ManualSend::Direct;
         }
         let details = ctx.details.as_deref().unwrap_or(&serde_json::Value::Null);
@@ -202,9 +370,15 @@ impl Composers {
                 ctx.row.phase.as_deref(),
                 Some("tool" | "working" | "compacting")
             )
-            || details["input_queue"].is_object();
+            || details["input_queue"].is_object()
+            || dsh_agent(&ctx.row.agent) && details["dsh_outbox_ready"] == false;
         let supported = ctx.outbox_candidate() && ctx.online && ctx.row.process_state == "running";
-        if supported && ctx.awaiting_outbox_details {
+        // A later Activity frame or catalog update can replace the initial run.
+        // Recheck the binding at Send as well as when accepting a fresh read.
+        let stale_first = details["first_message_can_send"] == true
+            && ctx.row.agent == "codex" && details["conversation_id"].as_str().unwrap_or_default().is_empty()
+            && (ctx.session.name != ctx.row.name || !first_input_details(&ctx.row, details));
+        if supported && (ctx.awaiting_outbox_details || stale_first) {
             return ManualSend::Blocked(
                 ctx.reason()
                     .unwrap_or_else(|| "Checking the session…".into()),
@@ -213,6 +387,20 @@ impl Composers {
         let waiting = !c.outbox.is_empty() || busy || (supported && ctx.ordinary_input_held(hub));
         let target = target(ctx);
         let exact = ctx.exact_outbox_details(details);
+        // A person's Send to the current working Codex turn uses its normal
+        // guarded composer and Enter. A saved FIFO head keeps its own route.
+        if supported && exact && c.outbox.is_empty()
+            && ctx.row.agent == "codex" && codex_work_phase(ctx.row.phase.as_deref())
+            && details["codex_manual_turn_send"] == true
+            && !ctx.ordinary_input_held(hub)
+            && self.guarded_send_details(&ctx.row, &target, details)
+        {
+            if details["codex_ordered_manual_turn_send"] == true {
+                return ManualSend::TryNow;
+            }
+            return ManualSend::Direct;
+        }
+        let native_queue = exact && supported && self.native_queue_details(&ctx.row, &target, details);
         if waiting {
             if let Some(reason) = ctx.reason() {
                 return ManualSend::Blocked(reason);
@@ -229,16 +417,24 @@ impl Composers {
             {
                 return ManualSend::Blocked(QUEUE_TARGET_CHANGED.into());
             }
-            if details["guarded_idle_send"] != true {
+            if !guarded_supported(&ctx.row.agent, details) {
                 return ManualSend::Blocked(QUEUE_OLD_HOST.into());
             }
-            ManualSend::Wait
+            if c.outbox.is_empty()
+                && ((native_queue && !ctx.exact_earlier_input_hold(hub))
+                    || (terminal_native_route(&ctx.row.agent, details) && !ctx.ordinary_input_held(hub)
+                        && self.guarded_send_details(&ctx.row, &target, details)))
+            {
+                ManualSend::TryNativeQueue
+            } else {
+                ManualSend::Wait
+            }
         } else if exact
             && supported
             && ctx.reason().is_none()
-            && self.idle_details(&ctx.row, &target, details)
+            && (native_queue || !dsh_agent(&ctx.row.agent) && self.guarded_send_details(&ctx.row, &target, details))
         {
-            ManualSend::TryNow
+            if native_queue { ManualSend::TryNativeQueue } else { ManualSend::TryNow }
         } else {
             ManualSend::Direct
         }
@@ -263,7 +459,7 @@ impl Composers {
         let ready = match self.manual_send(hub, &ctx, c) {
             ManualSend::Direct => return Ok(None),
             ManualSend::Wait => None,
-            ManualSend::TryNow => ctx.details.clone(),
+            ManualSend::TryNow | ManualSend::TryNativeQueue => ctx.details.clone(),
             ManualSend::Blocked(reason) => {
                 return Err(SendReply::Notice {
                     text: reason,
@@ -294,6 +490,16 @@ impl Composers {
         {
             return Err(SendReply::Busy);
         }
+        // Claude FIFO offers are ordinary terminal messages. Reject commands
+        // before enqueue consumes the editor's exact draft.
+        if ctx.row.agent == "claude" && zerus_client_core::send::is_terminal_command(text) {
+            return Err(SendReply::Notice {
+                text: zerus_client_core::source!(
+                    "Not sent. Run slash or shell commands in Terminal."
+                ).into(),
+                error: true,
+            });
+        }
         if !outbox::capacity(&c.outbox, text, &c.draft.attachments) {
             return Err(SendReply::Notice {
                 text: "The local message queue is full. The draft is still in the editor.".into(),
@@ -302,7 +508,18 @@ impl Composers {
         }
         let before = c.stored();
         let mut stored = before.clone();
+        // Both busy and idle offers of this saved FIFO entry can use the
+        // exact native queue. The ordered immediate route may use Terminal,
+        // and its acknowledgement cannot change the original presentation.
+        let native_codex_fifo = ready.is_none() && ctx.details.as_deref().is_some_and(|details| {
+            details["codex_manual_turn_send"] == false
+                && details["codex_busy_outbox_supported"] == true
+                && details["codex_idle_outbox_supported"] == true
+                && !zerus_client_core::cache::expired(details, self.now())
+        });
+        let delivery_in_composer = ctx.row.agent == "codex" && !native_codex_fifo;
         let entry = Entry {
+            delivery_in_composer,
             target: target(&ctx),
             request_id: uuid::Uuid::new_v4().to_string(),
             queued_at: outbox::enqueue_time(self.now()),
@@ -340,6 +557,7 @@ impl Composers {
                 let view = match result {
                     Ok(()) => {
                         c.outbox = stored.outbox;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                         c.draft = stored.draft;
                         c.position = 0;
                         c.anchor = 0;
@@ -364,7 +582,7 @@ impl Composers {
                 };
                 let dispatch = matches!(view, SendReply::Accepted { .. }) && !hub.closed;
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let _ = done.send(view);
                 if let Some(details) = ready.filter(|_| dispatch) {
                     let work = me.clone();
@@ -377,16 +595,50 @@ impl Composers {
         Ok(Some(accepted))
     }
 
+    pub(crate) fn restore_saved_outboxes(&self) {
+        self.lock().outbox_scanning = true;
+        self.read_outbox_page(outbox::Scan::default());
+    }
+
+    fn read_outbox_page(&self, scan: outbox::Scan) {
+        let me = self.clone();
+        self.0.store.scan_outboxes(scan, move |next, key| {
+            let mut hub = me.lock();
+            hub.outbox_scanning = next.is_some();
+            if hub.closed { return; }
+            if let Some(key) = key.filter(|key| !hub.composers.contains_key(key)) {
+                hub.order.push_back(key.clone());
+                me.ensure(&mut hub, &key);
+                // Give this queue a turn before paging more candidates into
+                // the bounded composer cache. Selection stays with the person.
+                hub.outbox_scan = next;
+                me.0.opened.notify_all();
+            } else if let Some(next) = next {
+                drop(hub);
+                me.read_outbox_page(next);
+            }
+        });
+    }
+
     pub(super) fn outbox_waiting(hub: &Hub) -> bool {
-        hub.composers.iter().any(|(key, c)| {
+        hub.outbox_scan.is_some() || hub.outbox_rescan_at.is_some() || hub.composers.iter().any(|(key, c)| {
             c.outbox
                 .first()
-                .is_some_and(|head| head.state == State::Waiting && &head.draft_key == key)
+                .is_some_and(|head| can_probe(head) && &head.draft_key == key)
         })
     }
 
     pub(super) fn tick_outbox(&self, now: f64) {
         let mut hub = self.lock();
+        if !hub.closed {
+            if let Some(scan) = hub.outbox_scan.take() {
+                self.read_outbox_page(scan);
+            } else if !hub.outbox_scanning && hub.outbox_rescan_at.is_some_and(|at| at <= now) {
+                hub.outbox_rescan_at = None;
+                hub.outbox_scanning = true;
+                self.read_outbox_page(outbox::Scan::default());
+            }
+        }
         if hub.closed || hub.outbox_probe {
             return;
         }
@@ -401,7 +653,7 @@ impl Composers {
                     && c.storage_error.is_none()
                     && c.outbox
                         .first()
-                        .is_some_and(|head| head.state == State::Waiting && &head.draft_key == *key)
+                        .is_some_and(|head| can_probe(head) && &head.draft_key == *key)
             })
             .min_by(|(_, a), (_, b)| a.queue_check_at.total_cmp(&b.queue_check_at))
         else {
@@ -415,14 +667,27 @@ impl Composers {
         drop(hub);
         let me = self.clone();
         (self.0.deps.spawn)(Box::new(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| me.check_outbox(&entry)));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if entry.state == State::Unknown {
+                    me.check_outbox_receipt(&entry)
+                } else {
+                    me.check_outbox(&entry)
+                }
+            }));
             let mut hub = me.lock();
             hub.outbox_probe = false;
             if hub.outbox_route_revision != route_revision {
                 return;
             }
-            if let Ok(Some(details)) = result {
-                me.reserve_head(&mut hub, key, entry, details);
+            if let Ok(Some(result)) = result {
+                if entry.state == State::Unknown {
+                    if me.outbox_row(&entry).is_some() {
+                        let outcome = Outcome::Done { receipt: result, cleanup: None };
+                        me.settle_head_locked(&mut hub, key, entry, Some(outcome), State::Unknown);
+                    }
+                } else {
+                    me.reserve_head(&mut hub, key, entry, result);
+                }
             }
         }));
     }
@@ -432,58 +697,182 @@ impl Composers {
         let (row, online) = (self.0.deps.rows)(&t.computer, &entry.catalog_key, &t.name)?;
         (online
             && row.name == t.name
+            && entry.draft_key.split_once("\nid:").is_none_or(|(_, id)| row.session_id.as_deref() == Some(id))
             && row.run_id.as_deref() == Some(&t.run_id)
             && row.conversation_id.as_deref() == Some(&t.conversation_id)
             && row.process_state == "running"
             && row.state == "running"
-            && matches!(row.agent.as_str(), "codex" | "kimi")
+            && supported_agent(&row.agent)
             && (self.0.deps.facts)(&t.computer, &t.name, &t.run_id).is_none())
         .then_some(row)
     }
 
     fn check_outbox(&self, entry: &Entry) -> Option<serde_json::Value> {
         let row = self.outbox_row(entry)?;
-        // Wait for an eligible idle turn. A present native queue, question,
-        // or unconfirmed earlier input gives no permission to type.
-        if row.phase.as_deref() != Some("idle") {
+        // Inspect eligible working terminals even when the editor is closed.
+        // Every new route still requires its owning host's exact capability.
+        let phase = row.phase.as_deref();
+        let eligible = phase == Some("idle")
+            || (row.agent == "codex" && (phase == Some("interrupted") || codex_work_phase(phase)))
+            || (provider_queue(&row.agent) && matches!(phase, Some("working" | "tool")))
+            || (terminal_native_agent(&row.agent) && matches!(phase, Some("working" | "tool" | "compacting")));
+        if !eligible {
             return None;
         }
         (self.0.deps.inspect)(&entry.target, None, None).ok()
+    }
+
+    fn check_outbox_receipt(&self, entry: &Entry) -> Option<serde_json::Value> {
+        self.outbox_row(entry)?;
+        let status = self.0.outbox_status.get()?;
+        // Each guarded provider route freezes the same stdin. This only reads the original receipt.
+        status(&entry.target, &receipt_action(entry), &entry.request_id)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn delivery_head<'a>(&self, hub: &'a Hub, handle: u64, request_id: &str) -> Option<(&'a Entry, ViewRow)> {
+        let key = hub.open_key.as_ref()?;
+        let session = hub.open.as_ref()?;
+        let composer = hub.composers.get(key)?;
+        if hub.closed || composer.handle != handle || !composer.loaded || composer.renaming
+            || composer.queue_editing || composer.queue_writing || composer.outbox_damaged
+            || hub.followed.computer != session.computer || hub.followed.key != session.key
+            || hub.followed.awaiting_outbox_details
+        {
+            return None;
+        }
+        let head = composer.outbox.first().filter(|head| head.request_id == request_id)?;
+        let details = hub.followed.details.as_deref()?;
+        // Unlike the scheduler's context, this path needs no write facts or
+        // send readiness; it only reads catalog identity and followed details.
+        let (row, online) = (self.0.deps.rows)(&session.computer, &session.key, &session.name)?;
+        claude_delivery_head(head, key, session, &row, online, details).then_some((head, row))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn check_delivery(
+        &self,
+        handle: u64,
+        request_id: &str,
+        read_receipt: impl FnOnce(&Target, &Action, &str, &(String, u64, u64)) -> Option<Value>,
+    ) -> DeliveryObservation {
+        let (original, source, revision) = {
+            let hub = self.lock();
+            let Some((head, row)) = self.delivery_head(&hub, handle, request_id) else {
+                return DeliveryObservation::Unresolved;
+            };
+            let Some(source) = row.catalog_source else { return DeliveryObservation::Unresolved };
+            (head.clone(), source, hub.outbox_route_revision)
+        };
+        // This is the validated point-read transport only, never the scheduler's
+        // probe callback. It hashes the same guarded stdin, including files.
+        let Some(receipt) = read_receipt(&original.target, &receipt_action(&original), &original.request_id, &source) else {
+            return DeliveryObservation::Unresolved;
+        };
+        let hub = self.lock();
+        if hub.outbox_route_revision != revision
+            || !self.delivery_head(&hub, handle, request_id).is_some_and(|(head, row)| {
+                head == &original && row.catalog_source.as_ref() == Some(&source)
+            })
+        {
+            return DeliveryObservation::Unresolved;
+        }
+        if zerus_client_core::actions::terminal_outbox_refusal(&original.target, &receipt) {
+            DeliveryObservation::NoInput
+        } else if receipt["proof"] == "native_claude_receipt" && receipt["status"] == "submitted" {
+            DeliveryObservation::Accepted
+        } else {
+            DeliveryObservation::Unresolved
+        }
     }
 
     fn ready(&self, entry: &Entry, details: &serde_json::Value) -> bool {
         let Some(row) = self.outbox_row(entry) else {
             return false;
         };
-        self.idle_details(&row, &entry.target, details)
+        self.entry_ready(entry, &row, details)
     }
 
-    fn idle_details(&self, row: &ViewRow, target: &Target, details: &serde_json::Value) -> bool {
-        details["guarded_idle_send"] == true
-            && row.phase.as_deref() == Some("idle")
-            && super::send::previous_message_pending(
-                row,
-                (&target.run_id, &target.conversation_id),
-                details,
-            ) == Some(false)
-            && details["activity"] == "idle"
-            && details["phase"] == "idle"
-            && details["input_queue"].is_null()
+    fn entry_ready(&self, entry: &Entry, row: &ViewRow, details: &Value) -> bool {
+        if row.agent == "codex" && !entry.delivery_in_composer
+            && !(details["codex_busy_outbox_supported"] == true
+                    && codex_work_phase(row.phase.as_deref())
+                || idle_codex_queue(entry, row, details))
+        {
+            // A known native-queue article keeps its original transport.
+            // If a peer stops advertising that route, keep this FIFO head.
+            return false;
+        }
+        (self.native_queue_details(row, &entry.target, details)
+            || self.guarded_send_details(row, &entry.target, details))
+            && (!idle_codex_queue(entry, row, details)
+                || (details["pending_questions_complete"] == true
+                    && details["pending_questions"].as_array().is_some_and(Vec::is_empty)))
+    }
+
+    fn eligible_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
+        guarded_supported(&row.agent, details)
+            && exact_input_details(row, (&target.run_id, &target.conversation_id), details)
             && details["pending_questions_complete"] != false
-            && details["pending_questions"]
-                .as_array()
-                .is_none_or(Vec::is_empty)
+            && details["pending_questions"].as_array().is_none_or(Vec::is_empty)
             && !zerus_client_core::cache::expired(details, self.now())
             && block_reason(
                 &BlockFacts {
                     online: true,
                     state: row.state.clone(),
-                    cmd: row.agent.clone(),
+                    cmd: super::send::cmd(row),
                     ..Default::default()
                 },
                 Some(details),
             )
             .is_none()
+    }
+
+    fn native_queue_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
+        let provider_ready = if row.agent == "opencode" && target.name.starts_with("opencode/") {
+            details["opencode_busy_outbox_supported"] == true
+        } else if dsh_agent(&row.agent) && target.name.starts_with("dsh/") {
+            details["dsh_busy_outbox_supported"] == true && details["dsh_busy_outbox_ready"] == true
+        } else {
+            return false;
+        };
+        provider_ready
+            && matches!(row.phase.as_deref(), Some("idle" | "working" | "tool"))
+            && matches!(details["phase"].as_str(), Some("idle" | "working" | "tool"))
+            && matches!(details["activity"].as_str(), Some("idle" | "busy"))
+            && details["pending_questions"].as_array().is_some_and(Vec::is_empty)
+            && self.eligible_details(row, target, details)
+    }
+
+    fn guarded_send_details(&self, row: &ViewRow, target: &Target, details: &Value) -> bool {
+        let phase = row.phase.as_deref();
+        let idle = phase == Some("idle") && details["phase"] == "idle" && details["activity"] == "idle";
+        let questions_clear = details["pending_questions_complete"] == true
+            && details["pending_questions"].as_array().is_some_and(Vec::is_empty);
+        let codex_queue = row.agent == "codex" && codex_work_phase(phase)
+            && codex_work_phase(details["phase"].as_str()) && details["activity"] == "busy"
+            && details["codex_busy_outbox_supported"] == true && questions_clear;
+        let interrupted = row.agent == "codex" && phase == Some("interrupted")
+            && details["phase"] == "interrupted" && details["activity"] == "unknown"
+            && details["codex_interrupted_outbox_supported"] == true
+            && details["interrupted_message_can_send"] == true
+            && questions_clear;
+        let native = terminal_native_supported(&row.agent, details);
+        let working = native
+            && matches!(phase, Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["phase"].as_str(), Some("idle" | "working" | "tool" | "compacting"))
+            && matches!(details["activity"].as_str(), Some("idle" | "busy"));
+        (idle || interrupted || codex_queue || working)
+            && self.eligible_details(row, target, details)
+            && (dsh_agent(&row.agent) || super::send::previous_message_pending(
+                row,
+                (&target.run_id, &target.conversation_id),
+                details,
+            ) == Some(false))
+            // The new hosts check their native queue against the current
+            // composer frame while admitting the offer.
+            && (terminal_native_route(&row.agent, details) || details["input_queue"].is_null())
+            && (!dsh_agent(&row.agent) || details["dsh_outbox_ready"] == true)
     }
 
     fn reserve_head(&self, hub: &mut Hub, key: String, entry: Entry, details: serde_json::Value) {
@@ -503,6 +892,7 @@ impl Composers {
         }
         c.queue_writing = true;
         c.outbox[0].state = State::Reserved;
+        c.outbox_revision = c.outbox_revision.wrapping_add(1);
         let route_revision = hub.outbox_route_revision;
         let me = self.clone();
         self.0.store.save_outbox(&key, c.outbox.clone(), {
@@ -515,16 +905,17 @@ impl Composers {
                 c.queue_writing = false;
                 if let Err(error) = saved {
                     c.outbox[0].state = State::Waiting;
+                    c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     c.storage_error = Some(error);
                     drop(hub);
-                    me.changed();
+                    me.outbox_changed();
                     return;
                 }
                 if hub.closed {
                     return;
                 }
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let work = me.clone();
                 (me.0.deps.spawn)(Box::new(move || {
                     work.dispatch_head(key, entry, &details, route_revision);
@@ -559,15 +950,26 @@ impl Composers {
             return;
         }
         let outcome = if let Some(row) = self.outbox_row(&entry) {
-            if !self.idle_details(&row, &entry.target, details)
+            if !self.entry_ready(&entry, &row, details)
                 || self.lock().outbox_route_revision != route_revision
             {
                 self.settle_head(key, entry, None);
                 return;
             }
-            let action = Action::SendWhenIdle {
-                text: entry.text.clone(),
-                attachments: entry.attachments.clone(),
+            let action = if entry.state == State::Reserved && row.agent == "codex"
+                && (row.phase.as_deref() == Some("idle") || codex_work_phase(row.phase.as_deref()))
+                && details["codex_ordered_manual_turn_send"] == true {
+                Action::SendToOrderedCodexTurn { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if (row.agent == "codex" && codex_work_phase(row.phase.as_deref()))
+                || idle_codex_queue(&entry, &row, details)
+            {
+                Action::SendToCodexQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if self.native_queue_details(&row, &entry.target, details) {
+                Action::SendToNativeQueue { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else if terminal_native_route(&row.agent, details) {
+                Action::SendWhenNativeAccepts { text: entry.text.clone(), attachments: entry.attachments.clone() }
+            } else {
+                receipt_action(&entry)
             };
             match catch_unwind(AssertUnwindSafe(|| {
                 self.offer_guarded(&entry, action, route_revision)
@@ -587,13 +989,26 @@ impl Composers {
 
     // None means this process retained the reservation and made no native call.
     fn settle_head(&self, key: String, entry: Entry, outcome: Option<Outcome>) {
-        let mut hub = self.lock();
+        self.settle_head_locked(&mut self.lock(), key, entry, outcome, State::Reserved);
+    }
+
+    fn settle_head_locked(
+        &self,
+        hub: &mut Hub,
+        key: String,
+        entry: Entry,
+        outcome: Option<Outcome>,
+        expected: State,
+    ) {
         let Some(c) = hub.composers.get_mut(&key) else {
             return;
         };
         if c.outbox
             .first()
-            .is_none_or(|head| head.state != State::Reserved || head.request_id != entry.request_id)
+            .is_none_or(|head| {
+                head.state != expected || head.request_id != entry.request_id
+            })
+            || c.queue_editing || c.queue_writing
         {
             return;
         }
@@ -609,13 +1024,35 @@ impl Composers {
             _ => None,
         };
         let exact = receipt.is_some_and(|receipt| receipt["status"] == "submitted");
+        let provider_queued = exact && receipt.is_some_and(|receipt| receipt["queued"] == true)
+            && (opencode_outbox(&entry) || dsh_outbox(&entry));
+        let terminal_refusal = receipt.is_some_and(|receipt|
+            zerus_client_core::actions::terminal_outbox_refusal(&entry.target, receipt));
+        if expected == State::Unknown && !exact && !terminal_refusal {
+            return;
+        }
         let terminal_only = exact
             && receipt.is_some_and(|receipt| receipt["transport"] == "terminal")
-            && entry.target.name.starts_with("codex/")
-            && entry.attachments.is_empty();
+            && (entry.target.name.starts_with("codex/") && (entry.delivery_in_composer || entry.attachments.is_empty())
+                || entry.target.name.starts_with("kimi/") && entry.attachments.is_empty()
+                    && receipt.is_some_and(|receipt| receipt["kimi_outbox"] == true && receipt["kimi_activity_binding"] != true)
+                || entry.target.name.starts_with("claude/") && receipt.is_some_and(|receipt| {
+                    zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
+                }));
+        let codex_queued = exact && receipt.is_some_and(zerus_client_core::actions::codex_outbox_submitted);
+        let native_accepted = exact && receipt.is_some_and(|receipt| {
+            receipt["kimi_outbox"] == true || (receipt["claude_outbox"] == true && receipt["native"] == "queue")
+        });
         let busy = outcome.is_none()
             || receipt.is_some_and(|receipt| {
-                receipt["status"] == "waiting_for_idle" && receipt["proof"] == "native_input_lock"
+                receipt["status"] == "waiting_for_idle"
+                    && receipt["proof"] == if opencode_outbox(&entry) {
+                        "native_opencode_queue"
+                    } else if dsh_outbox(&entry) {
+                        "native_dsh_idle_guard"
+                    } else {
+                        "native_input_lock"
+                    }
             });
         let mut entries = c.outbox.clone();
         if exact {
@@ -623,7 +1060,7 @@ impl Composers {
         } else {
             entries[0].state = if busy {
                 State::Waiting
-            } else if matches!(outcome, Some(Outcome::Failed { .. })) {
+            } else if terminal_refusal || matches!(outcome, Some(Outcome::Failed { .. })) {
                 State::Failed
             } else {
                 State::Unknown
@@ -640,36 +1077,76 @@ impl Composers {
                     .get_mut(&key)
                     .expect("queue write keeps the draft");
                 c.queue_writing = false;
+                let next_ready = (codex_queued || provider_queued || native_accepted) && saved.is_ok()
+                    && entries.first().is_some_and(|next| next.state == State::Waiting);
                 if let Err(error) = saved {
                     if exact {
                         // The on-disk reservation is still held. A failed
                         // write never makes an offered request eligible again.
                         c.outbox[0].state = State::Unknown;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     } else {
                         c.outbox = entries;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     }
                     c.storage_error = Some(error);
                 } else {
                     // Publish the pending-to-sent handoff together. A
                     // catalog update during the write keeps the head visible.
                     c.outbox = entries;
-                    c.queue_check_at = me.now() + CHECK_INTERVAL;
-                    // Codex's plain terminal receipt acknowledges input
-                    // transport. Only the native history can identify a turn.
-                    c.last_terminal_submission = terminal_only.then(|| entry.target.clone());
-                    if exact && !terminal_only {
-                        hub.local.sent_from_outbox(
-                            &key,
-                            &entry,
-                            outcome.as_ref().expect("submitted outcome"),
-                            me.now(),
-                        );
+                    c.outbox_revision = c.outbox_revision.wrapping_add(1);
+                    // Confirmed queue admission frees the next FIFO head immediately.
+                    c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
+                    if terminal_only {
+                        c.terminal_only_outbox.push_back((
+                            entry.target.clone(),
+                            TerminalReceiptView::from_original(&entry, me.now()),
+                        ));
+                        if c.terminal_only_outbox.len() > 64 {
+                            c.terminal_only_outbox.pop_front();
+                        }
+                    } else if exact {
+                        if let Some(outcome) = outcome.as_ref() {
+                            hub.local.sent_from_outbox(&key, &entry, outcome, me.now());
+                        }
                     }
                 }
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
+                if next_ready {
+                    // Use the same bounded, fair scheduler and a fresh inspection.
+                    me.tick_outbox(me.now());
+                }
             }
         });
+    }
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn composer_check_delivery(
+    state: TauriState<'_, Composers>,
+    app: TauriState<'_, crate::commands::AppState>,
+    handle: u64,
+    request_id: String,
+) -> Result<DeliveryObservation, String> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let Some(service) = app.desktop_service() else {
+            return Ok(DeliveryObservation::Unresolved);
+        };
+        let composers = state.inner().clone();
+        Ok(tauri::async_runtime::spawn_blocking(move || {
+            composers.check_delivery(handle, &request_id, move |target, action, id, source| {
+                crate::desktop_service::termination_outcome::check_claude_delivery(
+                    service, target, action, id, source,
+                )
+            })
+        }).await.unwrap_or(DeliveryObservation::Unresolved))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (state, app, handle, request_id);
+        Ok(DeliveryObservation::Unresolved)
     }
 }
 
@@ -678,20 +1155,70 @@ pub async fn composer_remove_waiting(
     state: TauriState<'_, Composers>,
     handle: u64,
     request_id: String,
+    intent: Option<WaitingRemovalIntent>,
 ) -> Result<super::ComposerView, String> {
     let (tx, rx) = oneshot::channel();
-    state.remove_waiting(handle, &request_id, tx);
+    match intent {
+        None => state.remove_waiting(handle, &request_id, tx),
+        Some(intent) => state.remove_waiting_intent(handle, &request_id, Some(intent), tx),
+    }
     rx.await.map_err(|_| BUSY.to_owned())?
 }
 
 impl Composers {
+    pub(super) fn skip_waiting_binding(&self, hub: &Hub) -> Option<SkipWaiting> {
+        let key = hub.open_key.as_ref()?;
+        let c = hub.composers.get(key)?;
+        let ctx = self.context(hub)?;
+        let head = c.outbox.first()?;
+        if hub.closed || !c.loaded || c.renaming || c.busy() || c.queue_writing || c.outbox_damaged
+            || c.storage_error.is_some() || c.outbox.len() < 2 || head.state != State::Unknown
+            || !ctx.online || ctx.awaiting_outbox_details || ctx.session.archived()
+            || ctx.session.subagent.is_some() || head.draft_key != *key
+            || head.catalog_key != ctx.session.key || head.target != target(&ctx)
+            || head.target.run_id.is_empty() || head.target.conversation_id.is_empty()
+            || ctx.row.name != head.target.name
+            || ctx.row.run_id.as_deref() != Some(head.target.run_id.as_str())
+            || ctx.row.conversation_id.as_deref() != Some(head.target.conversation_id.as_str())
+        {
+            return None;
+        }
+        Some(SkipWaiting {
+            handle: c.handle, key: key.clone(), target: head.target.clone(),
+            selection_epoch: hub.selection_epoch, route_revision: hub.outbox_route_revision,
+            queue_revision: c.outbox_revision,
+            queue: c.outbox.iter().map(|row| (row.request_id.clone(), row.state)).collect(),
+        })
+    }
+
     fn remove_waiting(
         &self,
         handle: u64,
         request_id: &str,
         done: oneshot::Sender<Result<super::ComposerView, String>>,
     ) {
+        self.remove_waiting_intent(handle, request_id, None, done);
+    }
+
+    fn remove_waiting_intent(
+        &self,
+        handle: u64,
+        request_id: &str,
+        intent: Option<WaitingRemovalIntent>,
+        done: oneshot::Sender<Result<super::ComposerView, String>>,
+    ) {
         let mut hub = self.lock();
+        if let Some(WaitingRemovalIntent::SkipUnknown { binding }) = intent {
+            // Check while holding the same lock that enters the durable removal.
+            // A stale Skip is refused, never retried as a generic removal.
+            if binding.handle != handle
+                || binding.queue.first().is_none_or(|(id, _)| id != request_id)
+                || self.skip_waiting_binding(&hub).as_ref() != Some(&binding)
+            {
+                let _ = done.send(Err(BUSY.into()));
+                return;
+            }
+        }
         let key = hub.open_key.clone();
         let Some(c) = Self::editable(&mut hub, handle)
             .filter(|c| key.as_ref() == Some(&c.key) && !reserved(c) && !c.queue_writing)
@@ -720,13 +1247,14 @@ impl Composers {
                 let reply = match result {
                     Ok(()) => {
                         c.outbox = entries;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                         c.queue_check_at = me.now() + CHECK_INTERVAL;
                         me.view_of(&hub, &key).ok_or_else(|| BUSY.into())
                     }
                     Err(error) => Err(error),
                 };
                 drop(hub);
-                me.changed();
+                me.outbox_changed();
                 let _ = done.send(reply);
             }
         });

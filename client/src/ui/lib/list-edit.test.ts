@@ -106,6 +106,27 @@ describe("native newline transaction", () => {
     expect(command).toHaveBeenLastCalledWith("insertText", false, "\n");
   });
 
+  it("handles a newline reported inside the native edit only once", () => {
+    const draft = "1. first\n2. second\n3. third";
+    const editor = field(draft);
+    let inserted = false;
+    command.mockImplementation((_name, _ui, text) => {
+      // A native command can report another newline before moving the caret.
+      if (!inserted) {
+        inserted = true;
+        input(editor);
+      }
+      editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, "end");
+      return true;
+    });
+    expect(input(editor).defaultPrevented).toBe(true);
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(editor.value).toBe(draft + "\n4. ");
+    editor.setRangeText("fourth", editor.selectionStart, editor.selectionEnd, "end");
+    input(editor);
+    expect(editor.value).toBe(draft + "\n4. fourth\n5. ");
+  });
+
   it("preserves selection if the native command refuses", () => {
     const editor = field("1. first\n2. "); command.mockReturnValue(false);
     expect(input(editor).defaultPrevented).toBe(false);

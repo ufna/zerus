@@ -60,6 +60,15 @@ pub fn apply(
     if detail["stage"].as_str() != Some(expected_stage) || detail["writable"] == false {
         return Err(CHANGED.into());
     }
+    if matches!(action, Action::Accept) && crate::task_quick_review::uses_report_review(&detail) {
+        return Err(CHANGED.into());
+    }
+    if matches!(action, Action::BackToTodo)
+        && (crate::task_quick_review::team_routed(&detail)
+            || detail["quick_review_status"] == "unresolved")
+    {
+        return Err(CHANGED.into());
+    }
     if let Action::SendToTeam { team } = action {
         // A card in Backlog or To do goes into the team's queue; the reply is
         // the queue's own, and a refusal is the team's reason in its words.

@@ -10,6 +10,8 @@ use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+pub(super) const RESPONSE_TOO_LARGE: &str = "Native response exceeds bounds; delivery uncertain";
+
 pub(crate) const MINIMUM: (u64, u64, u64) = (2, 0, 32);
 
 /// Method (lowercase), path template, request fields the adapter sends.
@@ -424,7 +426,7 @@ pub(super) fn request(
         }
         bytes.extend_from_slice(&chunk[..n]);
         if bytes.len() > 32 * 1024 * 1024 {
-            return Err("Native response exceeds bounds; delivery uncertain".into());
+            return Err(RESPONSE_TOO_LARGE.into());
         }
         if frame(&bytes)?.is_some() {
             break;
@@ -436,6 +438,7 @@ pub(super) fn request(
 pub(super) struct Service {
     pub reg: Registration,
     pub manual_compact: bool,
+    pub desktop_outbox: bool,
 }
 
 impl Service {
@@ -570,7 +573,7 @@ fn connect_from_until(
             MINIMUM.0, MINIMUM.1, MINIMUM.2
         )));
     }
-    let mut service = Service { reg, manual_compact: false };
+    let mut service = Service { reg, manual_compact: false, desktop_outbox: false };
     let compatibility = if listing {
         compatibility_in(
             &root().join("opencode/compat"),
@@ -594,6 +597,7 @@ fn connect_from_until(
         )));
     }
     service.manual_compact = compatibility.manual_compact;
+    service.desktop_outbox = compatibility.desktop_outbox;
     Ok(service)
 }
 
@@ -603,7 +607,7 @@ fn requirement_digest() -> String {
     format!(
         "{:x}",
         Sha256::digest(
-            json!([REQUIRED, "manual-compact-v2"])
+            json!([REQUIRED, "manual-compact-v2", "desktop-outbox-v1"])
                 .to_string()
                 .as_bytes()
         )
@@ -614,6 +618,7 @@ fn requirement_digest() -> String {
 pub(super) struct Compatibility {
     missing: Vec<String>,
     manual_compact: bool,
+    desktop_outbox: bool,
 }
 
 fn verdict(openapi: &Value) -> Result<Compatibility> {
@@ -623,6 +628,7 @@ fn verdict(openapi: &Value) -> Result<Compatibility> {
     Ok(Compatibility {
         missing: missing_operations(openapi),
         manual_compact: manual_compact_request(openapi),
+        desktop_outbox: desktop_outbox_request(openapi),
     })
 }
 
@@ -631,28 +637,53 @@ fn verdict(openapi: &Value) -> Result<Compatibility> {
 // elsewhere in the description cannot authorize what this operation accepts.
 fn manual_compact_request(openapi: &Value) -> bool {
     let operation = &openapi["paths"]["/api/session/{sessionID}/compact"]["post"];
+    operation["operationId"] == "session.compact"
+        && queue_request(openapi, operation, &["id", "delivery"])
+}
+
+fn desktop_outbox_request(openapi: &Value) -> bool {
+    let operation = &openapi["paths"]["/api/session/{sessionID}/prompt"]["post"];
+    let fields = &operation["requestBody"]["content"]["application/json"]["schema"]["properties"];
+    let files = &fields["files"];
+    // Follow this operation's actual file item. A similarly named component
+    // elsewhere in the description cannot authorize this request.
+    let item = &files["items"];
+    let file = item["$ref"].as_str()
+        .filter(|_| item.as_object().is_some_and(|o| o.len() == 1))
+        .and_then(|reference| reference.strip_prefix("#/components/schemas/"))
+        .map_or(item, |name| &openapi["components"]["schemas"][name]);
+    operation["operationId"] == "session.prompt"
+        && queue_request(openapi, operation, &["id", "delivery", "text"])
+        && plain_string(&fields["text"])
+        && files["type"] == "array"
+        && only_schema_keys(files, &["type", "items", "description"])
+        && file["type"] == "object"
+        && only_schema_keys(file, &["type", "properties", "required", "additionalProperties", "description"])
+        && required_within(file, &["uri", "name"])
+        && plain_string(&file["properties"]["uri"])
+        && plain_string(&file["properties"]["name"])
+}
+
+fn plain_string(schema: &Value) -> bool {
+    schema["type"] == "string" && only_schema_keys(schema, &["type", "description"])
+}
+
+fn only_schema_keys(schema: &Value, keys: &[&str]) -> bool {
+    schema.as_object().is_some_and(|object| object.keys().all(|key| keys.contains(&key.as_str())))
+}
+
+fn required_within(schema: &Value, keys: &[&str]) -> bool {
+    schema.get("required").is_none_or(|fields| fields.as_array().is_some_and(|list| {
+        list.iter().all(|field| field.as_str().is_some_and(|key| keys.contains(&key)))
+    }))
+}
+
+fn queue_request(openapi: &Value, operation: &Value, fields: &[&str]) -> bool {
     let schema = &operation["requestBody"]["content"]["application/json"]["schema"];
     let response = &operation["responses"]["200"]["content"]["application/json"]["schema"];
-    let allowed = |key: &str| matches!(key, "id" | "delivery");
-    let only_object_fields = schema.as_object().is_some_and(|object| {
-        object.keys().all(|key| {
-            matches!(
-                key.as_str(),
-                "type" | "properties" | "required" | "additionalProperties" | "description"
-            )
-        })
-    });
-    let required_fields_fit = schema.get("required").is_none_or(|required| {
-        required.as_array().is_some_and(|fields| {
-            fields
-                .iter()
-                .all(|field| field.as_str().is_some_and(allowed))
-        })
-    });
-    operation["operationId"] == "session.compact"
-        && schema["type"] == "object"
-        && only_object_fields
-        && required_fields_fit
+    schema["type"] == "object"
+        && only_schema_keys(schema, &["type", "properties", "required", "additionalProperties", "description"])
+        && required_within(schema, fields)
         && compact_string_field(openapi, &schema["properties"]["id"], CompactField::Id, 8)
         && compact_string_field(
             openapi,

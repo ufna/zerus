@@ -22,6 +22,12 @@ pub(super) fn for_rows(config: &Config, machines: &mut Machines, rows: &[Value])
                 }
             }
         }
+        let assignee = &row["quick_review"]["assignee"];
+        if assignee["machine"].as_str() == Some(&machines.here) {
+            if let Some(id) = assignee["session_id"].as_str() {
+                wanted.insert((String::new(), id.to_owned()));
+            }
+        }
     }
     if !wanted.is_empty() {
         machines.bindings =

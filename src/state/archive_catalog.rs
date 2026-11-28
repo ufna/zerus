@@ -259,11 +259,17 @@ pub(crate) fn revision() -> Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         _ => return Err(INCOMPLETE.into()),
     };
-    let legacy = format!("{directory}\n{published}");
-    Ok(query_hash(&match dsh::native_archives::revision()? {
-        Some(native) => format!("{legacy}\n{native}"),
-        None => legacy,
-    }))
+    let mut revision = format!("{directory}\n{published}");
+    for (provider, store) in native_stores() {
+        if let Some(stamp) = store.revision()? {
+            if provider == "dsh_archive" {
+                revision.push_str(&format!("\n{stamp}"));
+            } else {
+                revision.push_str(&format!("\n{provider}\n{stamp}"));
+            }
+        }
+    }
+    Ok(query_hash(&revision))
 }
 
 pub(crate) fn read_query() -> Result<Value> {
@@ -302,7 +308,7 @@ pub(crate) fn lookup(value: &Value) -> Result<Value> { lookup_scoped(value,false
 pub(crate) fn lookup_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
     let (name, id) = validate_lookup(value)?;
     let _guard = lock(None)?;
-    if !name.starts_with("dsh/") {
+    if native_archive_store::named(name).is_none() {
         let path = archive::path(id)?;
         if !fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_file() {
             return Err("archive record is not a regular file".into());
@@ -513,7 +519,10 @@ fn sessions_of(
             Some(taken) => journal::archive_summary(record, taken(name)),
             None => journal::summary(record, false),
         };
-        row.as_object_mut().ok_or("invalid archive summary")?.extend(json!({"name":name,"cmd":record["agent"],"project":parts.get(1),"tag":parts.get(2),"attached":0,"clients":[],"created":record["created"],"state":"archived","resumable":!string(record,"conversation_id").is_empty(),"archive_id":id,"archived_at":at}).as_object().unwrap().clone());
+        row.as_object_mut().ok_or("invalid archive summary")?.extend(json!({"name":name,"cmd":record["agent"],"project":parts.get(1),"tag":parts.get(2),"attached":0,"clients":[],"created":record["created"],"state":"archived","archive_id":id,"archived_at":at}).as_object().unwrap().clone());
+        if record["backend"] != "agy" {
+            row["resumable"] = json!(!string(record, "conversation_id").is_empty());
+        }
         if let Some(title) = record["title"].as_str() {
             row["title"] = json!(title.chars().take(1024).collect::<String>());
         }
@@ -574,6 +583,36 @@ pub(super) fn preview(marks: &Value, name_taken: Option<&dyn Fn(&str) -> bool>) 
     Ok(page)
 }
 
+fn native_stores() -> [(&'static str, native_archive_store::Store); 3] {
+    [
+        ("dsh_archive", dsh::native_archives::STORE),
+        ("opencode_archive", opencode::archives::STORE),
+        ("agy_archive", native_archive_store::RETIRED_AGY),
+    ]
+}
+
+/// One pinned view joins the bounded catalog pages without changing any
+/// legacy tables or mixing native providers into Windows mobile requests.
+fn attach_native(db: &Connection, mut catalog: String) -> Result<String> {
+    let mut select = String::from("SELECT id, name, at, search FROM main.archive_rows");
+    let mut changed = false;
+    for (alias, store) in native_stores() {
+        if let Some(id) = store.attach(db, alias)? {
+            select.push_str(&format!(" UNION ALL SELECT id, name, at, search FROM {alias}.archive_rows"));
+            catalog = if alias == "dsh_archive" && db.path().is_none_or(str::is_empty) {
+                id
+            } else {
+                query_hash(&format!("{catalog}\n{id}"))
+            };
+            changed = true;
+        }
+    }
+    if changed {
+        sql(db.execute_batch(&format!("CREATE TEMP VIEW archive_rows AS {select}")))?;
+    }
+    Ok(catalog)
+}
+
 fn page_with_bounds(
     value: &Value,
     bounds: Option<Bounds>,
@@ -591,11 +630,7 @@ fn page_with_bounds(
         |r| r.get(0),
     ))?;
     let catalog = if include_native {
-        match dsh::native_archives::attach(&db)? {
-            Some(id) if db.path().is_none_or(str::is_empty) => id,
-            Some(id) => query_hash(&format!("{catalog}\n{id}")),
-            None => catalog,
-        }
+        attach_native(&db, catalog)?
     } else { catalog };
     let cursor = if q.cursor.is_empty() {
         None

@@ -122,6 +122,24 @@ fn sends_twice_share_one_node_and_service_reads_the_document() {
         .any(|row| row.kind == "add_task" && row.actor["kind"] == "person"));
 }
 
+#[cfg(unix)]
+#[test]
+fn the_native_intake_model_selects_the_canonical_fixture_root() {
+    let h = Harness::new();
+    let reference = document(&h);
+    let aliases = tempfile::tempdir().unwrap();
+    let alias = aliases.path().join("state-alias");
+    std::os::unix::fs::symlink(h.temp.path(), &alias).unwrap();
+    let caller = Caller {
+        state: &alias,
+        ..caller(&h, &TaskActor::Person)
+    };
+    let reply = send(&caller, &reference, TEAM, None, None).unwrap();
+    let doc = task(&h, &reference);
+    assert_eq!(doc.team().unwrap().unwrap().team, TEAM);
+    assert_eq!(h.store.node(TEAM, reply.node.unwrap()).unwrap().unwrap().task, Some(reference));
+}
+
 #[test]
 fn admission_and_suggestions_use_the_verified_callers_binding() {
     let mut h = Harness::new();

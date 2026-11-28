@@ -667,12 +667,15 @@ class DeliveryFixture(Fixture):
 
     def as_agent(self, *args, text=None, ok=True):
         """`hgs task ARGS` run by the scripted agent of `self.name`, as its shell would."""
+        return self.run_as_agent(self.root, self.name, self.run_id, args, text, ok)
+
+    def run_as_agent(self, folder, name, run, args, text, ok):
         job = str(uuid.uuid4())
-        env = dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id)
-        request = self.root / "commands" / (job + ".tmp")
+        env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=run)
+        request = folder / "commands" / (job + ".tmp")
         request.write_text(json.dumps(dict(argv=[str(HGS), "task", *args], stdin=text or "", env=env)))
-        request.rename(self.root / "commands" / (job + ".json"))
-        result = self.root / "results" / (job + ".json")
+        request.rename(folder / "commands" / (job + ".json"))
+        result = folder / "results" / (job + ".json")
         for _ in range(1500):
             if result.exists():
                 done = json.loads(result.read_text())
@@ -710,7 +713,375 @@ class DeliveryFixture(Fixture):
         settings.update(changes)
         self.hgs("settings", "--project", "orchard", "--set", text=json.dumps(settings))
 
+
+class TechnicalReviewDelivery(DeliveryFixture):
+    """Use the ordinary report, owned desktop service and native reviewer CLI."""
+    reporter = "codex/technical-reporter"
+
+    def setUp(self):
+        super().setUp()
+        self.reporter_root = self.root / "reporter"
+        self.reporter_root.mkdir()
+        (self.reporter_root / "commands").mkdir()
+        (self.reporter_root / "results").mkdir()
+        self.reporter_run = str(uuid.uuid4())
+        self.tmux("new-session", "-d", "-s", self.reporter, "-x", "100", "-y", "30", "-e",
+                  "TASK_FIXTURE=" + str(self.reporter_root), "python3", str(self.root / "agent.py"))
+        pid_file = self.reporter_root / "agent-pid"
+        pid = self.eventually(lambda: int(pid_file.read_text()) if pid_file.is_file() and pid_file.stat().st_size else None)
+        pane = self.tmux("display-message", "-p", "-t", "=" + self.reporter + ":", "#{pane_id}").strip()
+        self.tmux("set-option", "-t", "=" + self.reporter + ":", "@hgs_run", self.reporter_run)
+        agent_record(self.state, self.env, self.reporter, self.reporter_run, pid=pid, pane=pane)
+
+    def as_reporter(self, *args, text=None, ok=True):
+        return self.run_as_agent(self.reporter_root, self.reporter, self.reporter_run, args, text, ok)
+
+    def stop_service(self, service):
+        if service.poll() is None:
+            service.terminate()
+        _, stderr = service.communicate(timeout=12)
+        self.assertEqual(service.returncode, 0, stderr)
+
+    def start_service(self, **overrides):
+        env = dict(self.env, **overrides)
+        env.update(DBUS_SESSION_BUS_ADDRESS="unix:path=" + str(self.root / "missing-bus"),
+                   XDG_RUNTIME_DIR=str(self.root), XDG_SESSION_TYPE="wayland",
+                   WAYLAND_DISPLAY="missing-wayland")
+        service = subprocess.Popen([str(HGS), "desktop", "serve", "--background"], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.stop_service, service)
+        def ready():
+            if service.poll() is not None:
+                self.fail(service.communicate()[1])
+            status = subprocess.run([str(HGS), "desktop", "status", "--json"], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            return status.returncode == 0 and json.loads(status.stdout).get("writers_enabled")
+        self.eventually(ready)
+        return service
+
+    def eventually(self, check):
+        until = time.monotonic() + 18
+        while time.monotonic() < until:
+            if value := check():
+                return value
+            time.sleep(0.08)
+        self.fail("The ordinary technical review operation did not settle.")
+
+    def detail(self, task):
+        return self.hgs("get", task["ref"], "--history-limit", "30", "--attachments", "metadata")["task"]
+
+    def enrollment(self, *legacy):
+        return json.dumps(dict(op="enable", reviewers=["run_id:" + self.run_id], legacy=legacy))
+
+    def enroll(self, *legacy):
+        return self.hgs("technical-review-policy", "--project", "orchard", "--json",
+                        text=self.enrollment(*legacy))
+
+    def submit_report(self, lane):
+        task = json.loads(self.as_reporter("add", "--project", "orchard", "--json",
+                                          text="Verify the requested behavior"))["task"]
+        self.hgs("review-owner", task["ref"], lane, text="The private native check sees the requested result.")
+        self.as_reporter("start", task["ref"], "--json")
+        return self.report_started_task(task)
+
+    def report_started_task(self, task):
+        report = json.loads(self.as_reporter("report", task["ref"], "--ready", "--json",
+                           text="The exact request passed its native check."))
+        self.assertTrue(report["moved_to_review"])
+        return self.detail(task)
+
+    def audits(self, task):
+        return [entry["technical_review"] for entry in self.detail(task)["log"] if "technical_review" in entry]
+
+    def wait_action(self, task, action):
+        return self.eventually(lambda: next((a for a in self.audits(task) if a["action"] == action), None))
+
+    def test_report_notifies_enrolled_reviewer_then_verifies_once_after_restart(self):
+        legacy = self.submit_report("technical")
+        proof = dict(op="set", history_revision=legacy["history_revision"], report_id=legacy["review_report_id"],
+                     disposition=dict(kind="ready", evidence="Verified the previous exact trace."))
+        self.as_agent("quick-review", legacy["ref"], "--json", text=json.dumps(proof))
+        legacy = self.detail(legacy)
+        decision = next(e for e in legacy["log"] if e["kind"] == "quick_review")
+        grant = dict(task_uuid=legacy["uuid"], history_revision=legacy["history_revision"],
+                     report_id=legacy["review_report_id"], decision_id=decision["id"],
+                     reviewer_session_id="run_id:" + self.run_id)
+        self.assertIn("Only the person", self.as_reporter("technical-review-policy", "--project", "orchard",
+                      "--json", text=self.enrollment(grant), ok=False))
+        self.enroll(grant)
+        service = self.start_service()
+        settled_legacy = self.wait_action(legacy, "legacy_verified")
+        self.assertEqual(settled_legacy["report_id"], grant["report_id"])
+        self.assertEqual(settled_legacy["decision_id"], grant["decision_id"])
+        self.assertEqual(self.detail(legacy)["stage"], "done")
+
+        criterion = "The exact fixture completes after the background service restarts."
+        args = ("add-technical", "--project", "orchard", "--start", "--json",
+                "--title", "Check the original fixture", "--request-id", str(uuid.uuid4()))
+        body = "Verify the requested behavior."
+        task = json.loads(self.as_reporter(*args, "--criterion", criterion, text=body))["task"]
+        self.assertEqual(task["stage"], "active")
+        self.assertEqual(task["session"]["session_id"], "run_id:" + self.reporter_run)
+        self.assertEqual(task["review_assignment"], dict(owner="technical", criterion=criterion))
+        repeat = json.loads(self.as_reporter(*args, "--criterion", criterion, text=body))["task"]
+        self.assertEqual((repeat["uuid"], repeat["history_revision"]),
+                         (task["uuid"], task["history_revision"]))
+        self.assertIn("another input", self.as_reporter(
+            *args, "--criterion", "A different criterion.", text=body, ok=False))
+        task = self.report_started_task(task)
+        personal = self.submit_report("person")
+        self.assertEqual(task["stage"], "review")
+        self.assertEqual(task["review_lane"], "technical")
+        notice = self.wait_action(task, "notified")
+        self.assertEqual(notice["report_id"], task["review_report_id"])
+        self.assertEqual(self.received().count("[Zerus technical review "), 1)
+        self.assertEqual(self.detail(personal)["quick_review_status"], "unclassified")
+        self.stop_service(service)
+        self.start_service()
+
+        exact = self.detail(task)
+        verdict = dict(op="verify", history_revision=exact["history_revision"], report_id=exact["review_report_id"],
+                       observation="I observed the original request pass in the isolated terminal.",
+                       evidence_reference="Immutable capture of the exact fixture.")
+        self.assertIn("not an enrolled", self.as_reporter("quick-review", exact["ref"], "--json",
+                      text=json.dumps(verdict), ok=False))
+        self.assertEqual(json.loads(self.as_agent("quick-review", exact["ref"], "--json",
+                         text=json.dumps(verdict)))["task"]["stage"], "done")
+        self.as_agent("quick-review", exact["ref"], "--json", text=json.dumps(verdict), ok=False)
+        self.assertEqual([a["action"] for a in self.audits(task)].count("verified"), 1)
+        self.assertEqual([a["action"] for a in self.audits(legacy)].count("legacy_verified"), 1)
+        self.assertEqual(self.received().count("[Zerus technical review "), 1)
+
+    def test_technical_intake_is_explicit_and_validates_before_creation(self):
+        args = ("add-technical", "--project", "orchard", "--start", "--json")
+        for bad in ((), ("--criterion", ""), ("--criterion", "first\nsecond"),
+                    ("--criterion", "x" * 513), ("--criterion", "Exact check", "--team", "team")):
+            self.as_reporter(*args, *bad, text="An ordinary request.", ok=False)
+        self.as_reporter("add-technical", "--project", "orchard", "--criterion",
+                         "Exact check", text="An ordinary request.", ok=False)
+        page = self.hgs("list", "--project", "orchard", "--stage", "active", "--limit", "5")
+        self.assertEqual(page["counts"]["active"], 0)
+
+        plain = json.loads(self.as_reporter("add", "--project", "orchard", "--start",
+                                          "--json", text="Unclassified work."))["task"]
+        self.assertIsNone(plain.get("review_assignment"))
+        task = json.loads(self.as_reporter(*args, "--criterion", "Exact check",
+                                         text="Technical work."))["task"]
+        self.assertEqual(task["review_assignment"], dict(owner="technical", criterion="Exact check"))
+
+    def test_unavailable_reviewer_is_visible_and_plain_ready_does_not_complete(self):
+        pending = self.submit_report("technical")
+        self.as_reporter("quick-review", pending["ref"], "--json", text=json.dumps(dict(
+            op="set", history_revision=pending["history_revision"], report_id=pending["review_report_id"],
+            disposition=dict(kind="ready", evidence="The reporter wrote Ready, without independent review."))))
+        self.enroll()
+        self.tmux("kill-session", "-t", "=" + self.name)
+        self.start_service()
+        next_task = self.submit_report("technical")
+        audit = self.wait_action(next_task, "reviewer_unavailable")
+        self.assertEqual(audit["report_id"], next_task["review_report_id"])
+        self.assertEqual(self.detail(next_task)["quick_review_status"], "check")
+        self.assertEqual(self.detail(pending)["quick_review_status"], "ready")
+        self.assertEqual(self.detail(pending)["stage"], "review")
+        self.assertNotIn("reserved", [entry["action"] for entry in self.audits(next_task)])
+
+    def test_replaced_check_cannot_deliver_its_reserved_notice(self):
+        self.enroll()
+        barrier = self.root / "notice-barrier"
+        barrier.mkdir()
+        self.start_service(HGS_TEST_ATTEMPT_PAUSE=str(barrier),
+                           HGS_TEST_ATTEMPT_PAUSE_AT="technical_review_notice")
+        self.addCleanup(lambda: (barrier / "release").touch())
+        task = self.submit_report("technical")
+        self.eventually(lambda: (barrier / "ready").is_file())
+        self.assertEqual((barrier / "ready").read_text(), task["uuid"])
+        check = self.detail(task)
+        self.assertEqual(check["quick_review_status"], "check")
+        self.hgs("review-owner", task["ref"], "person", "--expect-revision", check["history_revision"],
+                 text="Wait for the actual personal decision.")
+        (barrier / "release").touch()
+        self.eventually(lambda: self.detail(task)["review_lane"] == "person")
+        time.sleep(1)
+        self.assertNotIn("[Zerus technical review ", self.received())
+        self.assertEqual(self.detail(task)["stage"], "review")
+        self.assertNotIn("notified", [a["action"] for a in self.audits(task)])
+
 class TaskDelivery(DeliveryFixture):
+    def test_quick_review_pages_and_guarded_original_executor_reopen(self):
+        join(self.env, "project-1", self.name)
+
+        def get(task):
+            return self.hgs("get", task["ref"], "--history-limit", "15",
+                            "--attachments", "metadata")["task"]
+
+        def decide(task, disposition=None, report_id=None, ok=True):
+            request = dict(op="set" if disposition else "accept",
+                           history_revision=task["history_revision"],
+                           report_id=report_id or task["review_report_id"])
+            if disposition:
+                request["disposition"] = disposition
+            return self.hgs("quick-review", task["ref"], "--json",
+                            text=json.dumps(request), ok=ok)
+
+        def listing(*options, **kwargs):
+            return self.hgs("list", "--project", "orchard", "--stage", "review", "--limit", "1",
+                            *options, **kwargs)
+
+        ready, parked, checking = [
+            json.loads(self.as_agent("add", "--project", "orchard", "--json",
+                                     text=f"Review condition {n}"))["task"]
+            for n in range(3)
+        ]
+        for task in (ready, parked, checking):
+            report = json.loads(self.as_agent("report", task["ref"], "--json", text="Original result"))
+            self.assertTrue(report["moved_to_review"])
+            seen = get(task)
+            self.assertEqual(seen["quick_review_status"], "unclassified")
+            self.assertEqual(seen["review_report_id"],
+                             next(entry["id"] for entry in seen["log"] if entry["kind"] == "report"))
+
+        unresolved = json.loads(self.as_agent("add", "--project", "orchard", "--start", "--json",
+                                              text="Review condition needs reconciliation"))["task"]
+        self.hgs("cancel", unresolved["ref"], "--reason", "Executor stopped")
+        self.confirm()
+        self.assertEqual(get(unresolved)["quick_review_status"], "unresolved")
+
+        proof = dict(kind="ready", evidence="The existing smoke trace covers the original request.")
+        waiting = dict(kind="parked", reopen_when="Reevaluate if the next installed build reproduces.")
+        checking = get(checking)
+        assigned = dict(kind="check", criterion="Inspect the one observed refusal.",
+                        assignee={key: checking["session"][key] for key in ("machine", "session_id")})
+        ready = get(ready)
+        self.assertIn("does not belong", decide(ready, proof, checking["review_report_id"], ok=False))
+        result = decide(ready, proof)
+        self.assertEqual((result["op"], result["report_id"], result["task_uuid"], result["project_uuid"]),
+                         ("set", ready["review_report_id"], ready["uuid"], ready["project"]))
+        ready = result["task"]
+        parked = decide(get(parked), waiting)["task"]
+        checking = decide(checking, assigned)["task"]
+        self.assertEqual(checking["quick_review"]["assignee"]["session"], self.name)
+        before_refusal = get(checking)
+        peer = str(uuid.uuid4())
+        catalog = self.root / "config" / "swarm" / "catalog.json"
+        configuration = json.loads(catalog.read_text())
+        configuration.setdefault("bindings", {})["sample-peer"] = dict(id=peer, verified=True)
+        catalog.write_text(json.dumps(configuration))
+        invented = "launch_id:" + str(uuid.uuid4())
+        unborn = dict(assigned, assignee=dict(assigned["assignee"], session_id=invented))
+        self.assertIn("unavailable", decide(checking, unborn, ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(
+            checking, dict(unborn, assignee=dict(machine=peer, session_id=invented)), ok=False))
+        self.assertIn("Peer sessions cannot be verified", decide(checking, dict(
+            assigned, assignee=dict(assigned["assignee"], machine=peer)), ok=False))
+        self.assertEqual(get(checking), before_refusal)
+        self.assertIn("not ready", decide(parked, ok=False))
+
+        actionable = listing("--quick-review", "work", "--query", "review condition")
+        self.assertEqual(actionable["quick_review_lane"], "work")
+        self.assertEqual(actionable["page"]["total"], 1)
+        self.assertEqual(actionable["tasks"][0]["uuid"], checking["uuid"])
+        counts = dict(all=4, work=1, ready=1, parked=1, check=1, rework=0,
+                      unclassified=0, unresolved=1, team=0)
+        self.assertEqual(actionable["quick_review_counts"], counts)
+        history = listing("--quick-review", "unresolved")
+        self.assertEqual(history["tasks"][0]["uuid"], unresolved["uuid"])
+        self.assertNotIn("review_report_id", history["tasks"][0])
+        all_rows = listing("--quick-review", "all")
+        self.assertEqual(all_rows["page"]["total"], 4)
+        self.assertTrue(all_rows["page"]["next"])
+        self.assertIn("cursor", listing("--quick-review", "ready", "--after",
+                                        all_rows["page"]["next"], ok=False))
+        legacy = listing("--review-lane", "all")
+        self.assertEqual(legacy["review_counts"], dict(person=0, technical=0, triage=4, team=0))
+        self.assertEqual(legacy["quick_review_counts"], counts)
+        self.assertEqual(decide(ready)["task"]["stage"], "done")
+
+        task = self.reviewed("Retain the original managed executor")
+        defect = dict(kind="rework", defect="The example omits the second item.")
+        original = decide(task, defect)["task"]
+        paused = decide(original, waiting)["task"]
+        self.assertEqual(paused["dispatch_id"], original["dispatch_id"])
+        identity = str(uuid.uuid4())
+
+        def reopen(seen, request_id, ok=True):
+            return self.hgs("message-reviewed", seen["ref"], "--mode", "reopen",
+                            "--request-id", request_id, "--expect-dispatch", seen["dispatch_id"],
+                            "--expect-history-revision", seen["history_revision"],
+                            "--expect-report-id", seen["review_report_id"],
+                            text=defect["defect"], ok=ok)
+
+        before = self.received()
+        self.assertIn("Refresh", reopen(original, identity, ok=False))
+        self.assertIn("does not request rework", reopen(paused, identity, ok=False))
+        self.assertEqual(self.received(), before)
+        self.assertFalse(self.notes(task, identity))
+
+        frozen = decide(paused, defect)["task"]
+        release = self.held(
+            "message-reviewed", frozen["ref"], "--mode", "reopen",
+            "--request-id", identity, "--expect-dispatch", frozen["dispatch_id"],
+            "--expect-history-revision", frozen["history_revision"],
+            "--expect-report-id", frozen["review_report_id"], text=defect["defect"])
+        parked_again = decide(frozen, waiting)["task"]
+        self.assertEqual(parked_again["dispatch_id"], frozen["dispatch_id"])
+        code, _, err = release()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Refresh", err)
+        self.assertEqual(self.received(), before)
+        self.assertFalse(self.notes(task, identity))
+
+        selected = decide(parked_again, defect)["task"]
+        first = reopen(selected, identity)
+        self.assertEqual(first["task"]["stage"], "active")
+        self.assertEqual(first["task"]["session"], task["session"])
+        self.assertNotIn("quick_review_status", first["task"])
+        self.wait_received(defect["defect"])
+        self.confirm()
+        again = reopen(selected, identity)
+        self.assertEqual(again["attempt"]["id"], first["attempt"]["id"])
+        self.assertEqual(self.received().count(defect["defect"]), 1)
+
+        self.as_agent("report-attempt", task["ref"], "--attempt", identity,
+                      text="Applied the fixes and checked again.")
+        current = get(task)
+        self.assertEqual(current["quick_review_status"], "unclassified")
+        self.assertNotEqual(current["review_report_id"], selected["review_report_id"])
+        self.assertIn("exact settled", decide(current, proof, selected["review_report_id"], ok=False))
+        self.assertEqual([e["quick_review"]["disposition"]["kind"] for e in current["log"]
+                          if e["kind"] == "quick_review"], ["rework", "parked", "rework", "parked", "rework"])
+
+    def test_quick_review_recovers_unknown_reopen_without_reoffering(self):
+        task = self.reviewed("An uncertain reviewed reopen")
+        request = dict(op="set", history_revision=task["history_revision"],
+                       report_id=task["review_report_id"],
+                       disposition=dict(kind="rework", defect="Show the missing observation."))
+        selected = self.hgs("quick-review", task["ref"], "--json",
+                            text=json.dumps(request))["task"]
+
+        def deliver(identity, *extra, **kwargs):
+            return self.hgs(
+                "message-reviewed", task["ref"], "--mode", "reopen", "--request-id", identity,
+                "--expect-dispatch", selected["dispatch_id"],
+                "--expect-history-revision", selected["history_revision"],
+                "--expect-report-id", selected["review_report_id"], *extra,
+                text=request["disposition"]["defect"], **kwargs)
+
+        identity = str(uuid.uuid4())
+        receipts = self.state / "input_receipts"
+        receipts.chmod(0o500)
+        self.addCleanup(receipts.chmod, 0o700)
+        unknown = deliver(identity)
+        receipts.chmod(0o700)
+        self.assertEqual(unknown["attempt"]["state"], "uncertain")
+        current = self.hgs("get", task["ref"])["task"]
+        self.assertEqual(current["stage"], "review")
+        self.assertEqual(current["quick_review_status"], "unresolved")
+        self.assertNotIn("review_report_id", current)
+        self.assertEqual(deliver(identity, "--recover-only")["attempt"]["state"], "uncertain")
+        self.assertIn("Refresh", deliver(str(uuid.uuid4()), ok=False))
+        self.assertEqual(len(self.notes(task, identity)), 1)
+        self.assertEqual(self.received().count(request["disposition"]["defect"]), 0)
+
     def test_review_queue_classifies_the_exact_existing_report(self):
         join(self.env, "project-1", self.name)
         first, second = [
@@ -812,6 +1183,89 @@ class TaskDelivery(DeliveryFixture):
     def notes(self, task, identity):
         log = self.hgs("get", task["ref"])["task"]["log"]
         return [e for e in log if e["kind"] == "message" and e.get("request_id") == identity]
+
+    def direct_review_for_reopen(self):
+        started = json.loads(self.as_agent("add", "--project", "orchard", "--start", "--json",
+                                           text="Direct work with a missing example"))["task"]
+        self.assertTrue(started["execution"]["current"]["legacy"])
+        self.as_agent("report", started["ref"], "--ready", text="First result")
+        return self.set_rework(started)
+
+    def set_rework(self, task):
+        current = self.hgs("get", task["ref"])["task"]
+        self.hgs("quick-review", task["ref"], text=json.dumps(dict(
+            op="set", history_revision=current["history_revision"], report_id=current["review_report_id"],
+            disposition=dict(kind="rework", defect="Include the missing example."))))
+        return self.hgs("get", task["ref"])["task"]
+
+    def reviewed_reopen_args(self, task, identity, report=None):
+        return ("message-reviewed", task["ref"], "--mode", "reopen", "--request-id", identity,
+                "--expect-dispatch", task["dispatch_id"],
+                "--expect-history-revision", task["history_revision"],
+                "--expect-report-id", report or task["review_report_id"])
+
+    def task_replica_files(self, task):
+        directory = self.state / "replica" / hashlib.sha256(b"project-1").hexdigest() / "tasks"
+        return {path.suffix: path.read_bytes() for path in directory.glob(task["uuid"] + ".*")}
+
+    def test_first_reviewed_reopen_of_sealed_direct_start_sends_once(self):
+        task = self.direct_review_for_reopen()
+        self.assertIn(".cutover", self.task_replica_files(task))
+        self.assertNotIn(".managed", self.task_replica_files(task))
+        identity = str(uuid.uuid4())
+        args = self.reviewed_reopen_args(task, identity)
+        first = self.hgs(*args, text="Include the missing example.")
+        self.assertEqual(first["task"]["stage"], "active")
+        self.assertEqual(first["task"]["session"], task["session"])
+        self.assertEqual(first["attempt"]["id"], identity)
+        self.wait_received("Include the missing example.")
+        self.confirm()
+        repeated = self.hgs(*args, text="Include the missing example.")
+        self.assertEqual(repeated["attempt"]["id"], identity)
+        self.assertEqual(len(self.notes(task, identity)), 1)
+        self.assertEqual(self.received().count("Include the missing example."), 1)
+        self.assertEqual(self.received().count("\r"), 1)
+
+    def test_reviewed_reopen_with_replaced_report_writes_nothing(self):
+        task = self.direct_review_for_reopen()
+        first_id = str(uuid.uuid4())
+        # Settle a real next report using ordinary managed reopen.
+        self.hgs("message", task["ref"], "--mode", "reopen", "--request-id", first_id,
+                 "--expect-dispatch", task["dispatch_id"], text="Return a new result.")
+        self.wait_received("Return a new result.")
+        self.confirm()
+        self.as_agent("report-attempt", task["ref"], "--attempt", first_id, text="Second result")
+        current = self.set_rework(task)
+        self.assertNotEqual(current["review_report_id"], task["review_report_id"])
+        before = self.task_replica_files(task)
+        received = self.received()
+        identity = str(uuid.uuid4())
+        args = self.reviewed_reopen_args(current, identity, task["review_report_id"])
+        self.assertIn("exact settled", self.hgs(*args, text="Include the missing example.", ok=False))
+        self.assertEqual(self.task_replica_files(task), before)
+        self.assertEqual(self.hgs("get", task["ref"])["task"], current)
+        self.assertEqual(self.notes(task, identity), [])
+        self.assertEqual(self.received(), received)
+
+    def test_reviewed_reopen_does_not_floor_a_concurrently_edited_direct_start(self):
+        task = self.direct_review_for_reopen()
+        identity = str(uuid.uuid4())
+        release = self.held(*self.reviewed_reopen_args(task, identity),
+                            text="Include the missing example.")
+        self.hgs("rename", task["ref"], text="A different task title")
+        current = self.hgs("get", task["ref"])["task"]
+        self.assertNotEqual(current["history_revision"], task["history_revision"])
+        self.assertEqual(current["review_report_id"], task["review_report_id"])
+        self.assertEqual(current["dispatch_id"], task["dispatch_id"])
+        before = self.task_replica_files(task)
+        received = self.received()
+        code, _, err = release()
+        self.assertNotEqual(code, 0)
+        self.assertIn("Refresh", err)
+        self.assertEqual(self.task_replica_files(task), before)
+        self.assertEqual(self.hgs("get", task["ref"])["task"], current)
+        self.assertEqual(self.notes(task, identity), [])
+        self.assertEqual(self.received(), received)
 
     def test_a_managed_reopen_is_an_attempt_with_its_note(self):
         # desktop-u's (b): the person's text is a note bound to the reopen's

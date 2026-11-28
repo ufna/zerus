@@ -16,12 +16,14 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "unclassified",
       "review_assignment": {
         "criterion": "Check the fixture",
         "owner": "person"
       },
       "review_editable": true,
       "review_lane": "person",
+      "review_report_id": "cid:9@1:Map",
       "session": {
         "machine": "example-computer",
         "session": "codex/example/worker",
@@ -55,12 +57,14 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "unclassified",
       "review_assignment": {
         "criterion": "Check the fixture",
         "owner": "technical"
       },
       "review_editable": true,
       "review_lane": "technical",
+      "review_report_id": "cid:9@2:Map",
       "session": {
         "machine": "example-computer",
         "session": "codex/example/worker",
@@ -94,8 +98,10 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "unclassified",
       "review_editable": true,
       "review_lane": "triage",
+      "review_report_id": "cid:9@3:Map",
       "session": {
         "machine": "example-computer",
         "session": "codex/example/worker",
@@ -129,6 +135,7 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "team",
       "review_lane": "team",
       "session": {
         "machine": "example-computer",
@@ -193,6 +200,7 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "unresolved",
       "review_assignment": {
         "criterion": "Check the fixture",
         "owner": "person"
@@ -257,6 +265,7 @@
       "log": [],
       "log_total": 0,
       "project": "example-project",
+      "quick_review_status": "unresolved",
       "review_assignment": {
         "criterion": "Check the fixture",
         "owner": "person"
@@ -310,6 +319,7 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000000",
         "id": "T-aaaa00",
         "project": "example-project",
+        "quick_review_status": "unclassified",
         "rank": "U",
         "review_assignment": {
           "criterion": "Check the fixture",
@@ -317,6 +327,7 @@
         },
         "review_editable": true,
         "review_lane": "person",
+        "review_report_id": "cid:9@1:Map",
         "schema": 4,
         "session": {
           "machine": "example-computer",
@@ -345,6 +356,7 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000001",
         "id": "T-aaaa01",
         "project": "example-project",
+        "quick_review_status": "unclassified",
         "rank": "V",
         "review_assignment": {
           "criterion": "Check the fixture",
@@ -352,6 +364,7 @@
         },
         "review_editable": true,
         "review_lane": "technical",
+        "review_report_id": "cid:9@2:Map",
         "schema": 4,
         "session": {
           "machine": "example-computer",
@@ -380,9 +393,11 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000002",
         "id": "T-aaaa02",
         "project": "example-project",
+        "quick_review_status": "unclassified",
         "rank": "W",
         "review_editable": true,
         "review_lane": "triage",
+        "review_report_id": "cid:9@3:Map",
         "schema": 4,
         "session": {
           "machine": "example-computer",
@@ -411,6 +426,7 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000003",
         "id": "T-aaaa03",
         "project": "example-project",
+        "quick_review_status": "team",
         "rank": "X",
         "review_lane": "team",
         "schema": 4,
@@ -471,6 +487,7 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000004",
         "id": "T-aaaa04",
         "project": "example-project",
+        "quick_review_status": "unresolved",
         "rank": "Y",
         "review_assignment": {
           "criterion": "Check the fixture",
@@ -531,6 +548,7 @@
         "history_revision": "0000000000000000000000000000000000000000000000000000000000000005",
         "id": "T-aaaa05",
         "project": "example-project",
+        "quick_review_status": "unresolved",
         "rank": "Z",
         "review_assignment": {
           "criterion": "Check the fixture",
@@ -580,6 +598,7 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000000",
           "id": "T-aaaa00",
           "project": "example-project",
+          "quick_review_status": "unclassified",
           "rank": "U",
           "review_assignment": {
             "criterion": "Check the fixture",
@@ -587,6 +606,7 @@
           },
           "review_editable": true,
           "review_lane": "person",
+          "review_report_id": "cid:9@1:Map",
           "schema": 4,
           "session": {
             "machine": "example-computer",
@@ -615,6 +635,7 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000001",
           "id": "T-aaaa01",
           "project": "example-project",
+          "quick_review_status": "unclassified",
           "rank": "V",
           "review_assignment": {
             "criterion": "Check the fixture",
@@ -622,6 +643,7 @@
           },
           "review_editable": true,
           "review_lane": "technical",
+          "review_report_id": "cid:9@2:Map",
           "schema": 4,
           "session": {
             "machine": "example-computer",
@@ -650,9 +672,11 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000002",
           "id": "T-aaaa02",
           "project": "example-project",
+          "quick_review_status": "unclassified",
           "rank": "W",
           "review_editable": true,
           "review_lane": "triage",
+          "review_report_id": "cid:9@3:Map",
           "schema": 4,
           "session": {
             "machine": "example-computer",
@@ -681,6 +705,7 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000003",
           "id": "T-aaaa03",
           "project": "example-project",
+          "quick_review_status": "team",
           "rank": "X",
           "review_lane": "team",
           "schema": 4,
@@ -741,6 +766,7 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000004",
           "id": "T-aaaa04",
           "project": "example-project",
+          "quick_review_status": "unresolved",
           "rank": "Y",
           "review_assignment": {
             "criterion": "Check the fixture",
@@ -801,6 +827,7 @@
           "history_revision": "0000000000000000000000000000000000000000000000000000000000000005",
           "id": "T-aaaa05",
           "project": "example-project",
+          "quick_review_status": "unresolved",
           "rank": "Z",
           "review_assignment": {
             "criterion": "Check the fixture",

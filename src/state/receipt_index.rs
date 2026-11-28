@@ -21,7 +21,13 @@ mod pin;
 mod point;
 mod question;
 pub(super) use admission::Wait as QuestionAdmission;
-pub(super) use point::{delivery_binding, delivery_receipt, DeliveryBinding, DeliveryQuery};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use point::observe_claude_outbox;
+pub(super) use point::{
+    claude_outbox_prompt, claude_outbox_status, claude_prompt_uuid, delivery_binding, delivery_receipt,
+    dsh_outbox_original, terminal_outbox_status,
+    DeliveryBinding, DeliveryQuery,
+};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
 pub(crate) use question::{question_page, Coverage, QuestionReceiptPage, QuestionReceiptRow};
@@ -175,6 +181,11 @@ struct Binding {
     files: bool,
     fingerprint: String,
 }
+fn delivery_fingerprint(value: &Value, graph_target: &Value) -> String {
+    hash(&json!([value["request_id"], value["name"], value["run_id"], value["conversation_id"],
+        value["agent_id"], value["digest"], value["first_message"], graph_target]).to_string())
+}
+
 impl Binding {
     fn parse(source: Source, value: &Value, filename: &str) -> Result<Self> {
         let id = string(value, "request_id");
@@ -235,19 +246,7 @@ impl Binding {
                     .to_string(),
                 )
             } else {
-                hash(
-                    &json!([
-                        value["request_id"],
-                        value["name"],
-                        value["run_id"],
-                        value["conversation_id"],
-                        value["agent_id"],
-                        value["digest"],
-                        value["first_message"],
-                        value["graph_target"]
-                    ])
-                    .to_string(),
-                )
+                delivery_fingerprint(value, &value["graph_target"])
             },
         })
     }
@@ -267,6 +266,31 @@ struct CachedRow {
     files: i64,
 }
 impl CachedRow {
+    // The original writer admitted this exact typed negative under the input
+    // lock. A cache can already have its graphless, zero-time locator. Promote
+    // only that locator when the same original has a terminal submission.
+    fn precedes_native_submission(&self, binding: &Binding, value: &Value) -> bool {
+        let provider = binding.name.split_once('/').map(|(provider, _)| provider);
+        let target = &value["graph_target"];
+        value["terminal_native_after_refusal"] == true
+            && value["status"] == "submitted"
+            && value["transport"] == "terminal"
+            && match provider {
+                Some("claude") => value["claude_outbox"] == true
+                    && matches!(value["native"].as_str(), Some("queue" | "transcript")),
+                Some("kimi") => true,
+                _ => false,
+            }
+            && !binding.first && !binding.conversation.is_empty() && binding.at > 0.0
+            && target["schema"] == 1 && target["name"] == binding.name && target["run_id"] == binding.run
+            && target["endpoint"]["provider"].as_str() == provider
+            && target["endpoint"]["conversation"] == binding.conversation
+            && self.at == 0.0 && self.files == 0 && self.first == 0
+            && self.agent.is_empty() && binding.agent.is_empty()
+            && self.name == binding.name && self.run == binding.run && self.conversation == binding.conversation
+            && self.fingerprint == delivery_fingerprint(value, &Value::Null)
+    }
+
     fn matches(&self, binding: &Binding) -> bool {
         self.conversation == binding.conversation && self.matches_except_conversation(binding)
     }
@@ -361,6 +385,24 @@ impl PageFailure {
 pub(super) struct Page {
     pub(super) locators: Vec<Locator>,
     pub(super) metadata: Value,
+    position: Cursor,
+    cursor_secret: String,
+}
+
+impl Page {
+    /// End a projected page early without changing its authenticator, scope or original high-water.
+    pub(super) fn resume_after(&mut self, index: usize) -> Result<()> {
+        let last = self
+            .locators
+            .get(index)
+            .ok_or("Invalid receipt page boundary")?;
+        self.position.at = last.at;
+        self.position.id.clone_from(&last.id);
+        let token = encode_cursor(&self.cursor_secret, &self.position).map_err(|e| e.message())?;
+        self.metadata["has_more"] = json!(true);
+        self.metadata["next_cursor"] = json!(token);
+        Ok(())
+    }
 }
 
 pub(super) struct Catalog {
@@ -713,7 +755,9 @@ impl Catalog {
         let stamp = file_stamp(path)?;
         let mut proven_pin = false;
         if let Some(prior) = self.cached_row(source, &binding.id)? {
-            if prior.fingerprint != binding.fingerprint
+            let promoted = source == Source::Terminal && prior.fingerprint != binding.fingerprint
+                && prior.precedes_native_submission(&binding, value);
+            if (!promoted && prior.fingerprint != binding.fingerprint)
                 || (!prior.conversation.is_empty() && prior.conversation != binding.conversation)
             {
                 return self.error(source, filename, "binding_changed");
@@ -724,7 +768,7 @@ impl Catalog {
             // An empty cached conversation with an equally empty original is
             // unchanged: rewriting it would publish a change on every walk.
             let resolved = prior.conversation.is_empty();
-            if prior.stamp != stamp || !prior.matches(&binding) {
+            if promoted || prior.stamp != stamp || !prior.matches(&binding) {
                 let proof = if resolved && !binding.conversation.is_empty() {
                     let original = self.state.join(source.directory()).join(filename);
                     let Some(proof) = pin::ProvenPin::read(source, &original, &binding, &stamp)
@@ -738,8 +782,8 @@ impl Catalog {
                 let change = self.bump()?;
                 let write = || {
                     self.db.execute(
-                    "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=? WHERE source=? AND request=?",
-                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, source.key(), binding.id],
+                    "UPDATE receipt_rows SET name=?,run=?,conversation=?,agent=?,first_message=?,at=?,files=?,stamp=?,change=?,binding=? WHERE source=? AND request=?",
+                    params![binding.name, binding.run, binding.conversation, binding.agent, binding.first, binding.at, binding.files, stamp, change, binding.fingerprint, source.key(), binding.id],
                 )
                 };
                 if let Some(proof) = proof.filter(|_| prior.matches_except_conversation(&binding)) {
@@ -1003,9 +1047,22 @@ impl Catalog {
         Ok(Page {
             locators,
             metadata: json!({"schema":1,"state":if ready && errors==0 {"indexed"}else if errors>0 {"partial"}else{"building"},"coverage":"indexed_snapshot","absence_confirmed":false,"migration_complete":ready,"index_protocol_verified":protocol,"catalog_complete_at_snapshot":position.complete,"restart_required":restart,"indexed":indexed,"unattributed_errors":errors,"examined":scanned,"snapshot":position.snapshot,"has_more":more,"next_cursor":next}),
+            position,
+            cursor_secret: secret,
         })
     }
     pub(super) fn original(&self, locator: &Locator) -> std::result::Result<Value, &'static str> {
+        self.read_locator(locator, false)
+    }
+
+    /// For queue display only. A waiting refusal can be indexed before the
+    /// native offer adds its graph target. Historical rows retain that earlier
+    /// fingerprint. All original request and scope fields must still agree.
+    pub(super) fn codex_queue_original(&self, locator: &Locator) -> std::result::Result<Value, &'static str> {
+        self.read_locator(locator, true)
+    }
+
+    fn read_locator(&self, locator: &Locator, queue_display: bool) -> std::result::Result<Value, &'static str> {
         if locator.id.is_empty()
             || !bounded_identity(&locator.id, 128)
             || locator.id.contains(['/', '\\'])
@@ -1013,10 +1070,23 @@ impl Catalog {
             return Err("corrupt_index");
         }
         let filename = format!("{}.json", locator.id);
-        let value = read_original(&self.state.join(locator.source.directory()).join(&filename))?;
+        let path = self.state.join(locator.source.directory()).join(&filename);
+        let value = if queue_display {
+            read_indexable_original(&path, locator.source)
+        } else {
+            read_original(&path)
+        }?;
         let binding = Binding::parse(locator.source, &value, &filename).map_err(|_| "corrupt")?;
         if binding.fingerprint != locator.fingerprint {
-            return Err("binding_changed");
+            let target = &value["graph_target"];
+            if !(queue_display && locator.source == Source::Terminal && locator.at == 0.
+                && value["codex_outbox"] == true && value["transport"] == "codex_queue"
+                && value["status"] == "submitted" && value["first_message"] == false
+                && target["schema"] == 1 && target["name"] == value["name"] && target["run_id"] == value["run_id"]
+                && target["endpoint"]["provider"] == "codex" && target["endpoint"]["conversation"] == value["conversation_id"]
+                && delivery_fingerprint(&value, &Value::Null) == locator.fingerprint) {
+                return Err("binding_changed");
+            }
         }
         Ok(value)
     }
@@ -1622,6 +1692,18 @@ pub(super) fn changed(
 }
 
 fn read_original(path: &Path) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, false)
+}
+
+pub(super) fn read_codex_display_original(path: &Path) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, true)
+}
+
+fn read_indexable_original(path: &Path, source: Source) -> std::result::Result<Value, &'static str> {
+    read_scoped_original(path, source == Source::Terminal)
+}
+
+fn read_scoped_original(path: &Path, queue_display: bool) -> std::result::Result<Value, &'static str> {
     let mut options = OpenOptions::new();
     options.read(true);
     crate::platform::refuse_link(&mut options);
@@ -1641,13 +1723,34 @@ fn read_original(path: &Path) -> std::result::Result<Value, &'static str> {
         return Err("unreadable");
     }
     let mut bytes = Vec::new();
-    file.take(ORIGINAL_BYTES + 1)
+    // Queue originals contain both the person's 64 KiB text and the native
+    // submission with file references. JSON escaping can double both copies.
+    let limit = if queue_display {
+        384 * 1024
+    } else {
+        ORIGINAL_BYTES
+    };
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "unreadable")?;
-    if bytes.len() as u64 > ORIGINAL_BYTES {
+    if bytes.len() as u64 > limit {
         return Err("oversized");
     }
-    serde_json::from_slice(&bytes).map_err(|_| "corrupt")
+    if bytes.len() as u64 <= ORIGINAL_BYTES {
+        return serde_json::from_slice(&bytes).map_err(|_| "corrupt");
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "oversized")?;
+    if value["status"] == "submitted"
+        && value["transport"] == "codex_queue"
+        && value["codex_outbox"] == true
+        && value["text"].as_str().is_some_and(|text| text.len() <= 64 * 1024)
+        && value["submitted_text"].as_str().is_some_and(|text| text.len() <= 96 * 1024)
+        && value["attachments"].as_array().is_some_and(|files| files.len() <= 8)
+    {
+        Ok(value)
+    } else {
+        Err("oversized")
+    }
 }
 
 /// A receipt original's content stamp. A missing file still yields a locator
@@ -1704,9 +1807,12 @@ pub(super) fn page(
     cursor: &str,
     limit: usize,
 ) -> Result<(Catalog, Page)> {
+    scoped_page(record, agent, cursor, limit, true)
+}
+pub(super) fn scoped_page(record: &Value, agent: &str, cursor: &str, limit: usize, files: bool) -> Result<(Catalog, Page)> {
     let state = root();
     let catalog = Catalog::open(&state, false)?;
-    let page = catalog.page(&Scope::new(record, agent), cursor, limit, true)?;
+    let page = catalog.page(&Scope::new(record, agent), cursor, limit, files)?;
     if page.metadata["migration_complete"] != true || catalog.verification_due() {
         migration::request(&state);
     }

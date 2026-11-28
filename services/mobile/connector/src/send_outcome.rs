@@ -69,6 +69,32 @@ pub fn project(payload: &Value, answer: &Value, initial_negative: bool) -> Resul
 }
 
 impl<N: Native + 'static> Connector<N> {
+    /// A legacy phone can receive a definite failure from the same closed
+    /// native proof. Freeze its binding without changing the original stdin or
+    /// the legacy wire envelope. Without an exact route, keep the ordinary call.
+    pub(crate) fn legacy_claude_binding(&self, call: &Call, id: &str) -> Option<Value> {
+        if !self.send_outcome_supported() {
+            return None;
+        }
+        let selected = call.selected.as_ref()?;
+        let payload = call.payload.as_ref()?;
+        if !selected.name.starts_with("claude/")
+            || payload.get("agent_id").is_some()
+            || payload["request_id"] != id
+        {
+            return None;
+        }
+        let machine = self.send_outcome_machine()?;
+        let encoding = self.send_outcome_encoding();
+        let digest = contract::native_digest(payload, encoding).ok()?;
+        let binding = json!({"schema":2,"message_request_id":id,"computer_id":self.settings.binding,
+            "machine_id":machine,"session_id":selected.id,"session":selected.name,"provider":"claude",
+            "run_id":payload["expected_run_id"],"conversation_id":payload["expected_conversation_id"],
+            "native_encoding":encoding,"native_digest":digest});
+        contract::validate_binding(&binding).ok()?;
+        Some(json!({"request_id":id,"binding":binding}))
+    }
+
     pub(crate) async fn send_outcome_receipt(&self, payload: &Value) -> Result<Value, Failure> {
         // This original-only read never resolves a current label or repairs a
         // listing. The native receipt binds the historical machine/SID itself.

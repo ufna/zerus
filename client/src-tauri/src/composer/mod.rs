@@ -82,6 +82,7 @@ pub type Dispatch = Arc<dyn Fn(Target, Action, String) -> Result<Outcome, String
 pub(crate) type OutboxDispatch = Arc<
     dyn Fn(Target, Action, String, OutboxAdmission) -> Result<Option<Outcome>, String> + Send + Sync,
 >;
+pub(crate) type OutboxStatus = Arc<dyn Fn(&Target, &Action, &str) -> Option<Value> + Send + Sync>;
 pub(crate) use outbox::OutboxAdmission;
 
 const COMPOSERS: usize = 64;
@@ -352,6 +353,8 @@ pub struct ComposerView {
     pub delivery_pending: bool,
     pub status: String,
     pub status_error: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_notice_id: Option<String>,
     pub can_send: bool,
     /// Omitted in inspections that cannot observe the earlier-input guard.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -360,8 +363,14 @@ pub struct ComposerView {
     pub earlier_input_held: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_in_zerus: Vec<outbox::EntryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_waiting: Option<outbox::SkipWaiting>,
+    /// Exact transport acknowledgements without an identifiable native message.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terminal_only_outbox: Vec<outbox::TerminalReceiptView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub offers_outbox: bool,
+    pub offers_native_queue: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ordinary_send_block: Option<String>,
     /// Interface prose; the webview translates it (`client/src/text.ts`).
@@ -448,6 +457,8 @@ pub(crate) struct Composer {
     /// (zerus-le5s): its notice goes once the session moves on to work or
     /// readiness, or the kept draft is sent or cleared.
     pub(crate) gave_up: Option<GaveUp>,
+    /// The original timed-out compaction whose presentation can be dismissed.
+    timed_out_compaction: Option<String>,
     pub(crate) storage_error: Option<String>,
     pub(crate) removed: Option<(usize, Attachment)>,
     pub(crate) attaching: bool,
@@ -482,11 +493,13 @@ pub(crate) struct Composer {
     /// Any already-started inspection predates this hold.
     pub(crate) hold_after_inspect: u64,
     outbox: Vec<zerus_client_core::drafts::outbox::Entry>,
-    last_terminal_submission: Option<Target>,
+    terminal_only_outbox: VecDeque<(Target, outbox::TerminalReceiptView)>,
     outbox_damaged: bool,
     queue_editing: bool,
     queue_writing: bool,
     queue_check_at: f64,
+    /// In-memory generation for explicit Skip confirmations; not a dispatch permit.
+    outbox_revision: u64,
     /// The desktop service still reported this draft's send in progress:
     /// it is checked again, read-only (zerus-5wmh.66.4.4).
     pub(crate) handed: Option<handed::Handed>,
@@ -517,6 +530,7 @@ impl Composer {
             error: false,
             notice: String::new(),
             gave_up: None,
+            timed_out_compaction: None,
             storage_error: None,
             removed: None,
             attaching: false,
@@ -532,11 +546,12 @@ impl Composer {
             earlier_input_hold: None,
             hold_after_inspect: 0,
             outbox: Vec::new(),
-            last_terminal_submission: None,
+            terminal_only_outbox: VecDeque::new(),
             outbox_damaged: false,
             queue_editing: false,
             queue_writing: false,
             queue_check_at: 0.0,
+            outbox_revision: 0,
             handed: None,
             probed: false,
             offer: None,
@@ -601,6 +616,7 @@ impl Composer {
     pub(crate) fn show_error(&mut self, text: impl Into<String>) {
         // A newer error is not the given-up send's to dismiss.
         self.gave_up = None;
+        self.timed_out_compaction = None;
         self.notice = text.into();
         self.error = true;
     }
@@ -654,11 +670,17 @@ pub(crate) struct Followed {
 
 #[derive(Default)]
 pub(crate) struct Hub {
+    /// Saved queues are discovered without selecting their sessions.
+    outbox_scan: Option<drafts::outbox::Scan>,
+    outbox_scanning: bool,
+    outbox_rescan_at: Option<f64>,
     pub(crate) composers: HashMap<String, Composer>,
     /// Least recently opened first.
     order: VecDeque<String>,
     pub(crate) open: Option<SessionRef>,
     pub(crate) open_key: Option<String>,
+    /// Invalidates an outstanding Skip confirmation across selection round-trips.
+    selection_epoch: u64,
     next_handle: u64,
     last_view: Option<ComposerView>,
     /// The change counts the last view and the last draft keys were taken
@@ -759,6 +781,7 @@ pub(crate) struct Shared {
     /// lock is released; this callback only wakes its worker.
     pub(crate) draft_listener: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
     outbox_dispatch: std::sync::OnceLock<OutboxDispatch>,
+    outbox_status: std::sync::OnceLock<OutboxStatus>,
     /// Wakes the ticker, which sleeps while no composer is open.
     opened: Condvar,
     /// The selected desktop service's deferred send route, if any.
@@ -826,6 +849,7 @@ impl Composers {
             changes: AtomicU64::new(0),
             draft_listener: Default::default(),
             outbox_dispatch: Default::default(),
+            outbox_status: Default::default(),
             opened: Condvar::new(),
             deferred: Mutex::new(None),
             verified_send: Mutex::new(None),
@@ -892,6 +916,9 @@ impl Composers {
     pub fn open(&self, session: Option<SessionRef>) -> Option<ComposerView> {
         let mut hub = self.lock();
         let next = session.as_ref().map(session_draft_key);
+        if hub.open.as_ref() != session.as_ref() {
+            hub.selection_epoch = hub.selection_epoch.wrapping_add(1);
+        }
         self.push_selection(&mut hub, next.as_deref());
         let Some(session) = session else {
             hub.open = None;
@@ -1044,6 +1071,10 @@ impl Composers {
         composer.checkpoint = stored.checkpoint.map(|checkpoint| *checkpoint);
         composer.earlier_input_hold = stored.earlier_input_hold;
         composer.outbox = stored.outbox;
+        composer.outbox_revision = composer.outbox_revision.wrapping_add(1);
+        if composer.outbox.first().is_some_and(outbox::can_probe) {
+            self.0.opened.notify_all();
+        }
         composer.outbox_damaged = stored.outbox_damaged;
         composer.hold_after_inspect = inspection;
         if let Some(notice) = loaded.notice {
@@ -1201,6 +1232,12 @@ impl Composers {
             };
             let key = hub.order.remove(index).expect("found above");
             if let Some(gone) = hub.composers.remove(&key) {
+                if gone.outbox.first().is_some_and(outbox::can_probe) {
+                    // Reconsider evicted queues without retaining a list of
+                    // offline sessions or their attachment bytes.
+                    hub.outbox_rescan_at.get_or_insert_with(|| self.now() + 30.0);
+                    self.0.opened.notify_all();
+                }
                 hub.stored_keys.retain(|k| k != &key);
                 if gone.has_content() {
                     hub.stored_keys.push_front(key);
@@ -1358,7 +1395,6 @@ impl Composers {
         }
         composer.rev = rev;
         composer.draft.text = text;
-        composer.last_terminal_submission = None;
         composer.position = position;
         composer.anchor = anchor;
         // The webview took the offer, or typed its own text: either ends it.
@@ -1912,14 +1948,6 @@ impl Composers {
         if status.is_empty() && attachments_blocked {
             status = session.attachments_reason.clone();
         }
-        if status.is_empty()
-            && session.available
-            && !session.session_status_error
-            && !composer.has_content()
-            && context.as_ref().is_some_and(|ctx| ctx.terminal_submission_shown(composer))
-        {
-            status = outbox::TERMINAL_SUBMITTED.into();
-        }
         if status.is_empty() {
             status = if too_long {
                 "Message exceeds 64 KiB.".to_owned()
@@ -1985,6 +2013,7 @@ impl Composers {
             delivery_pending: composer.handed.is_some(),
             status,
             status_error,
+            compaction_notice_id: composer.compaction_notice_id().map(str::to_owned),
             can_send: composer.loaded
                 && session.available
                 && composer.has_content()
@@ -1993,12 +2022,23 @@ impl Composers {
                 && !locked
                 && !composer.uncertain
                 && !composer.outbox_blocks_send()
-                && session.previous_message_pending != Some(true)
+                && (session.previous_message_pending != Some(true)
+                    || matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)))
                 && !session.earlier_input_held,
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
             waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
-            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait)),
+            skip_waiting: (hub.open_key.as_deref() == Some(key))
+                .then(|| self.skip_waiting_binding(hub)).flatten(),
+            terminal_only_outbox: context.as_ref().map_or_else(Vec::new, |ctx| {
+                composer.terminal_only_outbox.iter().filter(|(target, _)| {
+                    target.computer == ctx.session.computer && target.name == ctx.session.name
+                        && ctx.row.run_id.as_ref() == Some(&target.run_id)
+                        && ctx.row.conversation_id.as_ref() == Some(&target.conversation_id)
+                }).map(|(_, receipt)| receipt.clone()).collect()
+            }),
+            offers_outbox: matches!(manual_send, Some(outbox::ManualSend::Wait | outbox::ManualSend::TryNativeQueue)),
+            offers_native_queue: matches!(manual_send, Some(outbox::ManualSend::TryNativeQueue)),
             ordinary_send_block: match manual_send {
                 Some(outbox::ManualSend::Blocked(reason)) => Some(reason),
                 _ => None,
@@ -2185,6 +2225,15 @@ pub fn composer_undo_remove(state: State<'_, Composers>, handle: u64) {
 #[tauri::command]
 pub fn composer_allow_retry(state: State<'_, Composers>, handle: u64) {
     state.allow_retry(handle);
+}
+
+#[tauri::command]
+pub fn composer_dismiss_compaction_notice(
+    state: State<'_, Composers>,
+    handle: u64,
+    request_id: String,
+) {
+    state.dismiss_compaction_notice(handle, &request_id);
 }
 
 /// Refresh in the composer's status line (Qt's `sessionRefreshRequested`).

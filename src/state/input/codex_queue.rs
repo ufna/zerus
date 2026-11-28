@@ -1,6 +1,8 @@
 //! Exact-thread native queue for a TUI that owns multiple independent tasks.
 //! It never types into whichever task happens to be visible in the terminal.
 use super::*;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use crate::platform::codex_image;
 use crate::state::codex_tasks::history::HistoryRoot;
 use std::io::{BufRead, BufReader, Read};
 use std::time::Instant;
@@ -19,6 +21,9 @@ pub(super) struct Queue {
     process: crate::platform::ProcessIdentity,
     conversation: String,
     until: Instant,
+    busy_outbox: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mac_queue: Option<(codex_image::Image, codex_image::Pending)>,
 }
 
 fn reply(stdout: &[u8], conversation: &str) -> Option<String> {
@@ -34,8 +39,44 @@ fn reply(stdout: &[u8], conversation: &str) -> Option<String> {
     Some(id.into())
 }
 
+#[cfg(target_os = "linux")]
+fn original_image(pid: u32, expected: crate::platform::FileIdentity) -> bool {
+    crate::platform::file_identity(Path::new(&format!("/proc/{pid}/exe"))) == Some(expected)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn original_image(_: u32, _: crate::platform::FileIdentity) -> bool {
+    // These platforms retain the original matched-version and executable-path checks.
+    true
+}
+
+/// Read the exact native thread's queue before selecting whether a fresh
+/// Desktop Send may steer. The input writer serializes this choice with
+/// previous Desktop admissions, including a head whose ACK has settled.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn has_earlier(record: &Value) -> Result<bool> {
+    let account = HistoryRoot::open(record)?;
+    let transcript = account.resolve_transcript(Path::new(string(record,"transcript")))?;
+    let pid = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok()).ok_or("Codex process identity unavailable")?;
+    if !process_alive(record) || !crate::platform::holds_open(pid, &transcript).unwrap_or(false) {
+        return Err("Could not verify the account of this Codex session".into());
+    }
+    let mut file = crate::platform::no_follow(OpenOptions::new().read(true)).open(&transcript)
+        .map_err(|_| "The Codex thread transcript is unavailable")?;
+    provider_messages::first_line(&mut file, "codex", string(record, "conversation_id"))?;
+    let earlier = codex_sqlite::has_queued_input(account.path(), string(record,"conversation_id"),
+        Instant::now() + Duration::from_millis(350))?;
+    account.verify()?;
+    Ok(earlier)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn has_earlier(_: &Value) -> Result<bool> {
+    Err("Ordered Codex Send is unavailable on this host".into())
+}
+
 impl Queue {
-    pub(super) fn prepare(record: &Value, text: &str) -> Result<Self> {
+    pub(super) fn prepare(record: &Value, text: &str, busy_outbox: bool) -> Result<Self> {
         let until = Instant::now() + Duration::from_secs(10);
         let conversation = string(record, "conversation_id");
         if !uuid::Uuid::parse_str(conversation)
@@ -67,6 +108,42 @@ impl Queue {
         let file = crate::platform::FileIdentity::with_metadata(&held)
             .map_err(|_| "Codex executable metadata is unavailable; no message was queued")?
             .0;
+        // A rollout header records the version that CREATED the thread. A
+        // resumed TUI may run a newer binary. Linux runs the held mapped file.
+        // Apple Silicon verifies the kernel's loaded code before any helper runs.
+        #[cfg(target_os = "linux")]
+        let pinned_image = busy_outbox;
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mac_image = if busy_outbox {
+            Some(codex_image::Image::read(pid).ok_or("The running Codex image could not be verified")?)
+        } else {
+            None
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let pinned_image = mac_image.is_some();
+        #[cfg(not(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))))]
+        let pinned_image = false;
+        if pinned_image && !original_image(pid, file) {
+            return Err("The queue executable differs from the running Codex image".into());
+        }
+        let run = || {
+            #[cfg(target_os = "linux")]
+            if pinned_image {
+                use std::os::{fd::AsRawFd, unix::process::CommandExt};
+                let mut command = std::process::Command::new(format!("/proc/self/fd/{}", held.as_raw_fd()));
+                command.arg0(&executable);
+                return command;
+            }
+            std::process::Command::new(&executable)
+        };
+        let probe_queue = |command: &mut std::process::Command, limits| {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Some(image) = &mac_image {
+                return codex_image::Pending::prepare(command, image, until)?
+                    .run(image, limits, until);
+            }
+            crate::platform::run_bounded(command, limits, until, &|| false)
+        };
         let account = HistoryRoot::open(record)?;
         let transcript = PathBuf::from(string(record, "transcript"));
         let resolved_transcript = account.resolve_transcript(&transcript)?;
@@ -100,7 +177,7 @@ impl Queue {
             return Err("Codex native task version is unavailable".into());
         }
         account.verify()?;
-        let mut probe = std::process::Command::new(&executable);
+        let mut probe = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -108,16 +185,16 @@ impl Queue {
         }
         probe.env("CODEX_HOME", account.path()).arg("--version");
         let (status, stdout, _) =
-            crate::platform::run_bounded(&mut probe, [1024, 4096], until, &|| false)
+            probe_queue(&mut probe, [1024, 4096])
                 .map_err(|_| "Codex queue version is unavailable".to_owned())?;
-        if !status.success()
-            || std::str::from_utf8(&stdout).ok().map(str::trim)
-                != Some(format!("codex-cli {version}").as_str())
-        {
+        let runtime = std::str::from_utf8(&stdout).ok().and_then(|line| line.trim().strip_prefix("codex-cli "));
+        let valid = runtime.is_some_and(|v| !v.is_empty() && v.len() <= 32 && v.as_bytes()[0].is_ascii_digit()
+            && v.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'+')));
+        if !status.success() || !valid || (!pinned_image && runtime != Some(version)) {
             return Err("The native queue version differs from the running Codex task".into());
         }
         account.verify()?;
-        let mut help = std::process::Command::new(&executable);
+        let mut help = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -126,7 +203,7 @@ impl Queue {
         help.env("CODEX_HOME", account.path())
             .args(["queue", "--help"]);
         let (status, output, _) =
-            crate::platform::run_bounded(&mut help, [16 << 10, 4096], until, &|| false)
+            probe_queue(&mut help, [16 << 10, 4096])
                 .map_err(|_| "Codex queue capability is unavailable".to_owned())?;
         let capability =
             std::str::from_utf8(&output).map_err(|_| "Codex queue help is unavailable")?;
@@ -143,7 +220,7 @@ impl Queue {
                     .into(),
             );
         }
-        let mut command = std::process::Command::new(&executable);
+        let mut command = run();
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
@@ -154,6 +231,17 @@ impl Queue {
             .current_dir(string(record, "cwd"));
         // No --resume: this operation cannot launch a daemon or a new model task.
         command.args(["queue", "--thread", conversation, "--message", text]);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let mac_queue = match mac_image {
+            Some(image) => {
+                // Check the actual offer's loaded image before the caller
+                // reserves the receipt. It stays suspended until offer().
+                let pending = codex_image::Pending::prepare(&command, &image, until)
+                    .map_err(|_| "The native queue helper image could not be verified")?;
+                Some((image, pending))
+            }
+            None => None,
+        };
         let queue = Self {
             command,
             executable,
@@ -168,6 +256,9 @@ impl Queue {
             process,
             conversation: conversation.into(),
             until,
+            busy_outbox,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            mac_queue,
         };
         queue.verify()?;
         Ok(queue)
@@ -181,6 +272,15 @@ impl Queue {
         {
             return Err("Codex native task history changed during queue preparation".into());
         }
+        if self.busy_outbox && (!original_image(self.pid, self.file)
+            || crate::platform::holds_open(self.pid, &self.resolved_transcript).ok() != Some(true))
+        {
+            return Err("The original Codex process no longer owns the queue image or thread".into());
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if self.mac_queue.as_ref().is_some_and(|(image, _)| !image.current()) {
+            return Err("The running Codex image changed during queue preparation".into());
+        }
         if crate::platform::process_identity(self.pid).as_ref() != Some(&self.process)
             || crate::platform::file_identity(&self.executable) != Some(self.file)
             || crate::platform::FileIdentity::with_metadata(&self.held)
@@ -193,13 +293,36 @@ impl Queue {
         Ok(())
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn client_id(&self, queue_id: &str) -> Option<String> {
+        let ids = [queue_id.to_owned()];
+        let mut clients = codex_sqlite::queued_clients(self.account.path(), &self.conversation, &ids,
+            Instant::now() + Duration::from_millis(120)).ok()?;
+        self.account.verify().ok()?;
+        clients.remove(queue_id)
+    }
+
     /// Once invoked, every failure is delivery-unknown. The caller reserved the
     /// original request first, so no caller can replay this native queue write.
     pub(super) fn offer(&mut self) -> Result<String> {
         self.verify()?;
+        let limits = [4096, 8192];
+        let mut run = || crate::platform::run_bounded(&mut self.command, limits, self.until, &|| false);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let queued = if self.busy_outbox {
+            let (image, pending) = self.mac_queue.take().ok_or("The original Codex queue helper is unavailable")?;
+            let result = pending.run(&image, limits, self.until);
+            if !image.current() {
+                return Err("The running Codex image changed during the native queue offer".into());
+            }
+            result
+        } else {
+            run()
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let queued = run();
         let (status, stdout, _) =
-            crate::platform::run_bounded(&mut self.command, [4096, 8192], self.until, &|| false)
-                .map_err(|_| "Codex native queue outcome is unknown".to_owned())?;
+            queued.map_err(|_| "Codex native queue outcome is unknown".to_owned())?;
         if !status.success() {
             return Err("Codex native queue did not confirm submission; do not replay it".into());
         }

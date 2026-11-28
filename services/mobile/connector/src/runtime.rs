@@ -418,6 +418,15 @@ impl<N: Native + 'static> Connector<N> {
         }
     }
 
+    pub(crate) fn send_outcome_machine(&self) -> Option<String> {
+        if self.peer {
+            return Some(self.settings.binding.clone());
+        }
+        LOCAL_MACHINE.try_with(Clone::clone).ok()
+            .or_else(|| ENCRYPTED_LOCAL_MACHINE.try_with(Clone::clone).ok())
+            .or_else(|| self.fleet.as_ref()?.local_id.borrow().clone())
+    }
+
     pub fn selection(
         &self,
         operation: &str,

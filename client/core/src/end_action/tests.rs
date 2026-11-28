@@ -422,3 +422,45 @@ fn an_answered_clear_is_uncertain_unless_its_receipt_matches() {
         }
     }
 }
+
+#[test]
+fn running_opencode_archive_requires_the_exact_fresh_native_offer() {
+    let mut captured = capture(Action::Archive);
+    captured.state = "running".into();
+    assert!(!captured.valid());
+    captured.target.name = "opencode/example/archive".into();
+    assert!(captured.valid());
+    let mut details = json!({
+        "name":captured.target.name,"run_id":captured.target.run_id,
+        "conversation_id":captured.target.conversation_id,"state":"running",
+        "runtime_state":"live","backend":"opencode","allowed_actions":["archive","forget"]
+    });
+    assert!(captured.matches(&details));
+    details["allowed_actions"] = json!(["forget"]);
+    assert!(!captured.matches(&details));
+    details["allowed_actions"] = json!(["archive"]);
+    details["conversation_id"] = json!("ses_changed");
+    assert!(!captured.matches(&details));
+
+    let invocation = captured.invocation(REQUEST).unwrap();
+    assert!(matches!(
+        captured.completed(&invocation, Exit::TimedOut),
+        Outcome::Uncertain { .. }
+    ));
+    let receipt = json!({
+        "request_id": REQUEST, "name": captured.target.name, "run_id": captured.target.run_id,
+        "conversation_id": captured.target.conversation_id, "status": "completed",
+        "result_target": {"name":captured.target.name,"run_id":captured.target.run_id,
+                          "conversation_id":captured.target.conversation_id,"archive_id":ARCHIVE}
+    });
+    assert!(matches!(
+        captured.completed(&invocation, exited(&receipt)),
+        Outcome::Done { .. }
+    ));
+    let mut wrong = receipt;
+    wrong["result_target"]["conversation_id"] = json!("ses_foreign");
+    assert!(matches!(
+        captured.completed(&invocation, exited(&wrong)),
+        Outcome::Uncertain { .. }
+    ));
+}

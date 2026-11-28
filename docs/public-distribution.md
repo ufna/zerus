@@ -401,45 +401,20 @@ Retrying an already sealed candidate needs neither re-preparation nor a new buil
 Like the ZIP, setup stays on GitHub and outside the v1 feed and mirror downloads.
 After explicit owner approval, deploy the updated `update_feed.py` before the
 first installer-bearing release; an older mirror
-rejects this additional sealed asset and retains its previous catalog. Winget
-continues to consume the portable ZIP and its existing layout.
+rejects this additional sealed asset and retains its previous catalog.
 
 <a id="winget"></a>
-Stable releases also reach the Windows Package Manager community repository as
-`ufna.Zerus`. After **Publish release** succeeds, its `winget` job runs
-`scripts/publish-winget.py`, which reads the published release, requires the zip's
-`SHA256SUMS` line to equal GitHub's asset digest, and proposes three manifests
-(`scripts/winget_manifest.py`, schema 1.12.0) to `microsoft/winget-pkgs` from the
-`winget-pkgs` fork of the token's account. The manifest installs the immutable
-GitHub asset as a portable zip whose `zerus-windows-x86_64` folder winget puts on
-`PATH` (`ArchiveBinariesDependOnPath`), keeping the adjacent CLI, connector and
-app-local runtime together. Zerus Next manifests declare the separately installed
-`Microsoft.EdgeWebView2Runtime` dependency. Keep the zip's top folder and executable names.
-A winget installation has no Start menu entry; start it with `hgs-tray`. Nightly and
-Dev builds are not published to winget. A version already in `winget-pkgs`, or
-already proposed there by anyone, is never proposed again, so rerunning the failed
-`winget` job is safe; a proposal closed without merging stops the job for a person
-to inspect. Moderators review new packages, and each version passes the
-repository's validation pipeline, so winget can list a release some time after
-GitHub. Without the `release` environment secret `WINGET_TOKEN` (a classic token
-with the `public_repo` scope of the account that owns the fork) the job only
-warns. Run `scripts/publish-winget.py --version VERSION --output DIR` to write the
-manifests of a published release locally without submitting them.
+Winget publication is retired. Zerus no longer submits package updates or CLA
+replies. Existing `ufna.Zerus` installations and previously published assets are
+unchanged. The tested portable ZIP remains on GitHub with the same
+`zerus-windows-x86_64/hgs-tray.exe` layout.
 
-The owner has standing personal Microsoft CLA consent for all `ufna.Zerus`
-proposals from `ufna`. The publisher checks the exact PR author, fork, version
-branch and three manifest paths, then posts
-`@microsoft-github-policy-service agree` once if `Needs-CLA` is present and the
-author has not already replied. New proposals wait up to one minute for the
-bot's label. Existing proposals are checked again on publication retries.
-The trusted-main **Confirm authorized winget CLA** workflow runs hourly and
-supports manual dispatch to reconcile later prompts with the same helper; it
-never opens or changes a proposal or its package files. Both paths serialize
-through `winget-cla-consent`, use only the existing `release/WINGET_TOKEN`, and
-never execute external PR code. Other accounts and corporate consent are not
-covered. A comment whose result is unknown requires inspection before a retry;
-an existing author agreement is not posted again. Moderator review and listing
-in winget remain independent of this confirmation.
+The dedicated CLA workflow was manually disabled on GitHub. Removing the
+workflows' winget code from `main` does not change runs from earlier revisions.
+Do not rerun pre-retirement publication or CLA jobs. Separately, the owner must
+check for and cancel any queued or running winget work and retire the dedicated
+credential (remove `release/WINGET_TOKEN` and revoke its token) to prevent old
+runs from using it.
 
 AUR versions are read from the published recipe archive, including epoch and
 package release. In particular `zerus-git` is a VCS recipe, not an invented copy
@@ -491,12 +466,11 @@ stable channel, because stable releases after 0.42.2 carry the same tested zip a
 nightlies, and links a newer stable release or nightly to its GitHub release page.
 Earlier portable builds saved Nightly as their default; that saved choice is kept.
 Stable 0.42.2 and earlier have no Windows build: they are never reported as an
-update, and the message points to the nightly channel. A zip that winget extracted
-(a folder under `WinGet\Packages\ufna.Zerus_<source>`) offers
-`winget upgrade --id ufna.Zerus --exact` on the stable channel instead of the
-download link. On Dev it reports that the channel has no
-Windows build and never reports an update. Updates never stop agents, tmux or
-resident adapters.
+update, and the message points to the nightly channel. A zip previously installed
+by winget (under `WinGet\Packages\ufna.Zerus_<source>`) is still recognized and
+uses the same GitHub release-page guidance as other portable installations.
+On Dev, Settings reports that the channel has no Windows build and never reports
+an update. Updates never stop agents, tmux or resident adapters.
 
 ## Desktop mobile-connection settings
 

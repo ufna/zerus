@@ -88,7 +88,10 @@ pub(crate) fn admit<R>(
 ) -> Result<Admission<R>> {
     match expected {
         None => admit_attempt(config, net, project, uuid, deadline, reserve),
-        Some(mode) => admit_matching(config, net, project, uuid, deadline, Some(mode), reserve),
+        Some(mode) => admit_matching(
+            config, net, project, uuid, deadline, AttemptKind::Start(mode),
+            |admitted, task, _| reserve(admitted, task),
+        ),
     }
 }
 

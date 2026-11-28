@@ -72,6 +72,28 @@ class WorkflowSecurityTests(unittest.TestCase):
             'needs': {key: SimpleNamespace(result=value) for key,value in results.items()},
         }))
 
+    def test_workflows_do_not_submit_winget_packages_or_cla_replies(self):
+        references = re.compile(
+            r"winget-pkgs|winget_token|publish[-_]winget|winget[-_]manifest|"
+            r"winget-cla|microsoft-github-policy-service|\bufna\.zerus\b|"
+            r"\b(?:wingetcreate|komac)\b", re.IGNORECASE,
+        )
+        # Read tracked working-tree sources, including extensionless helpers;
+        # ignored build outputs and untracked local files are not CI inputs.
+        paths = subprocess.check_output([
+            "git", "ls-files", "-z", "--", ".github/workflows", ".github/actions",
+            "scripts", "packaging",
+        ], cwd=ROOT).split(b"\0")
+        for name in filter(None, paths):
+            path = Path(os.fsdecode(name))
+            source = ROOT / path
+            if not source.is_file():
+                continue  # An unstaged deletion does not ship.
+            with self.subTest(path=path):
+                self.assertNotIn("winget", path.name.lower())
+                match = references.search(source.read_text(encoding="utf-8", errors="replace"))
+                self.assertIsNone(match, f"Retired winget publication reference: {match}")
+
     def test_dev_requires_exact_main_gate_without_inheriting_skipped_review(self):
         admitted = {'gate': 'success', 'qualification': 'success'}
         self.assertTrue(self.dev_selected(self.ci, 'dev-tail', admitted))

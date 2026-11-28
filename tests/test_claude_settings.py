@@ -45,7 +45,10 @@ def show():
         screen = '\x1b[2J\x1b[8;1H' + '▔' * 100 + '\r\n   Select model\r\n   ' + subtitle + '\r\n\r\n'
         for i, (label, description, _) in enumerate(ROWS):
             mark = label + (' ✔' if i == current else '')
-            screen += ('   ❯ ' if i == selected else '     ') + str(i + 1) + '. ' + mark.ljust(25) + description + '\r\n'
+            number = str(i + 1) + '.'
+            if (root / 'padded-model-list').exists():
+                number = number.ljust(3)
+            screen += ('   ❯ ' if i == selected else '     ') + number + ' ' + mark.ljust(25) + description + '\r\n'
         name = LEVELS[level]
         screen += '\r\n   ' + GLYPHS[name] + ' ' + ('xHigh' if name == 'xhigh' else name.title()) + ' effort'
         screen += '\r\n\r\n' if layout_327 else ' ←/→ to adjust\r\n\r\n'
@@ -76,7 +79,7 @@ def commit():
     name = ROWS[current][2] or 'Default'
     receipt('Set model to `' + name + '` for this session only' + (' with `' + effort + '` effort' if changed else ''))
 def key(value):
-    global text, stage, selected, level, dialog
+    global text, stage, selected, level, dialog, effort
     if stage == 'picker':
         if value == b'\x1b[B': selected = (selected + 1) % len(ROWS)
         elif value == b'\x1b[A': selected = (selected - 1) % len(ROWS)
@@ -92,6 +95,9 @@ def key(value):
         if value == b'\r' and dialog == 'cache': (root / 'dialog').unlink(); commit()
         elif value == b'\x1b': stage = 'picker'
     elif value == b'\r' and text == '/model':
+        if (root / 'padded-model-list').exists() and len(ROWS) == 4:
+            ROWS.insert(2, ('Fable 5.2', 'For your toughest challenges', 'Fable 5.2'))
+            effort = 'xhigh'
         stage = 'picker'; text = ''; selected = current; level = LEVELS.index(effort)
     elif value[:1] != b'\x1b' and value != b'\r':
         text += value.decode('utf8', 'replace')
@@ -237,6 +243,7 @@ class ClaudeSettings(unittest.TestCase):
     def test_model_missing_from_the_picker_cancels_without_applying(self):
         error = self.settings(self.payload('claude-fable-5-1', 'high'), success=False)
         self.assertIn('not offered', error)
+        self.assertIn('Visible labels:', error)
         received = self.received()
         self.assertTrue(received.startswith(b'/model\r'))
         self.assertTrue(received.endswith(b'\x1b'))
@@ -362,6 +369,20 @@ class ClaudeSettings327(ClaudeSettings):
     def setUp(self):
         super().setUp()
         (self.root / 'layout-2.1.327').write_text('')
+
+    def test_padded_picker_walks_to_fable_and_applies_medium_with_s(self):
+        (self.root / 'padded-model-list').touch()
+        catalog = self.home / 'cache/model-catalog/org-0123456789ab-cc.json'
+        data = json.loads(catalog.read_text())
+        models = data['catalog']['config']['models']
+        models.append(dict(models[0], id='claude-fable-5-2', name='Fable 5.2', short_name='Fable'))
+        catalog.write_text(json.dumps(data))
+        result = self.settings(self.payload('claude-fable-5-2', 'medium'))
+        self.assertEqual(result['status'], 'applied')
+        self.assertEqual(self.received(), b'/model\r' + b'\x1b[B' * 2 + b'\x1b[D' * 2 + b's')
+        info = self.inspect()
+        self.assertEqual((info['model'], info['effort']), ('claude-fable-5-2', 'medium'))
+        self.assertDefaultsUntouched()
 
 
 if __name__ == '__main__':

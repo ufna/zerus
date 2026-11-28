@@ -154,6 +154,19 @@ fn kimi(record: &Value) -> Option<Source> {
     source(&path, None)
 }
 
+// The native wire also contains prompts entered directly in the terminal.
+pub(super) fn kimi_outbox_floor(record: &Value) -> Option<u64> {
+    let wire = kimi(record)?;
+    let latest = wire.rows.iter().rev().find(|row|
+        row["type"] == "turn.prompt" && row["agentId"] == "main"
+            && row["origin"]["kind"] == "user")?;
+    let at = latest["time"].as_f64()? / 1000.0;
+    if !(at > 0.0 && at <= now()) || !wire.current() {
+        return None;
+    }
+    native_turn("kimi", latest)?.as_u64()
+}
+
 fn text<'a>(parts: &'a Value, kind: &str) -> Option<&'a str> {
     let parts = parts.as_array()?;
     let [part] = parts.as_slice() else {
@@ -315,6 +328,45 @@ pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
     stored_receipt(record)
 }
 
+/// Claim the first matching native hook while this exact guarded request
+/// still owns Terminal's input. A queued hook can reuse the current turn's
+/// Claude prompt ID, so that ID alone cannot identify the Activity row.
+pub(in crate::state) fn claim_claude_outbox_hook(
+    record: &mut Value,
+    event: &Value,
+    previously_seen: &Value,
+) -> Option<String> {
+    let request = super::input_typing(record)?;
+    let pending = record["input_pending_at"].as_f64()?;
+    let before = previously_seen.as_f64()?;
+    let after = record["input_seen_at"].as_f64()?;
+    if record["agent"] != "claude"
+        || event["hook_event_name"] != "UserPromptSubmit"
+        || event["session_id"] != record["conversation_id"]
+        || !string(event, "agent_id").is_empty()
+        || !receipt_index::claude_prompt_uuid(string(event, "prompt_id"))
+        || record["claude_outbox_hook_request"] == request
+        || before >= pending
+        || after <= pending
+    {
+        return None;
+    }
+    let receipt = pending_receipt_of(record)?;
+    if receipt["request_id"] != request
+        || receipt["claude_outbox"] != true
+        || receipt["status"] != "in_progress"
+        || receipt["conversation_id"] != record["conversation_id"]
+        || !event["prompt"].as_str().is_some_and(|prompt| {
+            super::settle::same(string(&receipt, "submitted_text"), &journal::pasted_text(prompt))
+        })
+    {
+        return None;
+    }
+    let request = request.to_owned();
+    record["claude_outbox_hook_request"] = json!(request);
+    Some(request)
+}
+
 /// The latest unaccepted Zerus submission, independent of Terminal's queue.
 /// The exact pending request locates its durable guarded-send receipt. A
 /// sender envelope is a declaration inside that receipt's original input.
@@ -406,6 +458,15 @@ pub(in crate::state) fn allows_hook(record: &Value, event: &Value) -> bool {
     ) {
         return true;
     }
+    // Kimi may deliver the previous prompt's callback after Terminal accepts
+    // the next paste. Only the ordered native turn can confirm this original.
+    if record["agent"] == "kimi" && input_unconfirmed(record)
+        && record["input_pending_kimi_outbox"].is_string()
+        && record["input_pending_kimi_outbox"] == record["input_pending_request"]
+        && matches!(string(event, "hook_event_name"), "UserPromptSubmit" | "UserPromptQueued")
+    {
+        return false;
+    }
     if string(record, "agent") == "kimi"
         && matches!(
             string(event, "hook_event_name"),
@@ -475,6 +536,23 @@ fn reconcile(record: &mut Value, publish: bool) -> Result<()> {
         || send_in_flight(record)
     {
         return Ok(());
+    }
+    // A native queue acknowledgement proves this exact registered input was
+    // accepted into the original thread, including its staged file references.
+    // It does not prove that the model has consumed or answered it.
+    if agent == "codex" {
+        if let Some(queued) = pending_receipt(record).filter(|original|
+            original["codex_outbox"] == true && original["transport"] == "codex_queue"
+                && original["status"] == "submitted" && original["conversation_id"] == record["conversation_id"]
+                && original["digest"] == record["input_pending_digest"])
+        {
+            let seen = now();
+            if seen > queued["submitted_at"].as_f64().unwrap_or(f64::INFINITY) {
+                record["input_seen_at"] = json!(seen);
+                if publish { write(record)?; }
+            }
+            return Ok(());
+        }
     }
     let Some(receipt) = receipt(record) else {
         return Ok(());

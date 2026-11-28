@@ -11,6 +11,16 @@ vi.hoisted(() => {
   vi.stubGlobal("window", { document: { addEventListener: () => {} }, addEventListener: () => {} });
 });
 vi.mock("../../bridge", () => ({
+  composerDismissCompactionNotice: vi.fn(async () => {}),
+  composerCheckDelivery: vi.fn(async () => {}),
+  terminalConnect: vi.fn(async () => {}),
+  terminalWrite: vi.fn(async () => {}),
+  terminalPasteImage: vi.fn(async () => {}),
+  terminalResize: vi.fn(async () => {}),
+  terminalAck: vi.fn(async () => {}),
+  terminalDisconnect: vi.fn(async () => {}),
+  terminalRetarget: vi.fn(async () => {}),
+  terminalShown: vi.fn(async () => {}),
   // The task store reads further board pages through this bridge call.
   readTaskPage: vi.fn(async () => ({ tasks: [], page: { next: null } })),
   // The native workspace store, loaded by the session entry points.
@@ -110,6 +120,20 @@ describe("the owner's compact session row menu", () => {
     expect(archive).toMatchObject({ disabled: false, icon: "archive" });
     expect(archive.danger).toBeFalsy();
     expect(menuItem("Forget saved session…", entries)).toMatchObject({ icon: "trash", danger: true });
+  });
+
+  it("offers Archive separately from Forget when a running OpenCode binding allows it", () => {
+    const row: ViewRow = {
+      name: "opencode/example/ready", agent: "opencode", state: "running", status: "ready",
+      run_id: "opencode-ready", conversation_id: "ses_fixture", allowed_actions: ["rename", "archive", "forget"],
+    };
+    const entries = (raw: ViewRow) => sessionMenu(toSession("", "run:opencode-ready", raw));
+    expect(menuItem("Archive", entries(row))).toMatchObject({ disabled: false, icon: "archive" });
+    expect(menuItem("Forget saved session…", entries(row))).toMatchObject({ icon: "trash", danger: true });
+    const busy = { ...row, allowed_actions: ["rename", "forget"] };
+    expect(labels(entries(busy))).not.toContain("Archive");
+    const reason = "OpenCode still has a running child session. End its work in OpenCode before archiving.";
+    expect(menuItem("Archive", entries({ ...busy, action_reasons: { archive: reason } }))).toMatchObject({ disabled: true, hint: reason });
   });
 
   it("Clear session checks an unselected row and opens the same dialog for it", async () => {
@@ -340,16 +364,12 @@ it("does not open a row that went offline after the menu opened", () => {
   expect(menuItem("Open terminal", sessionMenu(target))).toMatchObject({ disabled: true, hint: "Machine unavailable. Reconnect when it is online." });
 });
 
-it("offers only individually supported Antigravity lifecycle in the ordinary row menu", () => {
+it("offers no active lifecycle for a retired Antigravity record", () => {
   applyBatch({ ...emptyBatch(), computers: [{ computer: "", status: "live", attempt: 0 }] });
-  const row = { name: "agy/project/example", agent: "agy", state: "running", status: "ready", run_id: "run-agy",
-    conversation_id: "conversation-agy", resumable: true };
-  const entries = (r: ViewRow) => sessionMenu(toSession("", "run:run-agy", r))
+  const row = { name: "agy/project/example", agent: "agy", state: "stopped", status: "paused", run_id: "run-agy",
+    conversation_id: "conversation-agy", resumable: false, allowed_actions: [] };
+  const actions = sessionMenu(toSession("", "run:run-agy", row))
     .filter((entry): entry is Extract<MenuEntry, { label: string }> => "label" in entry);
-  const actions = entries({ ...row, allowed_actions: ["pause"] });
-  expect(actions.find(item => item.label === "Stop session…")).toMatchObject({ disabled: false, danger: true });
-  expect(actions.some(item => item.label === "Terminate session…" || item.label === "Archive")).toBe(false);
-  expect(entries(row).find(item => item.label === "Stop session…")).toMatchObject({ disabled: true });
-  expect(entries({ ...row, state: "paused", allowed_actions: ["resume"] }).find(item => item.label === "Resume session"))
-    .toMatchObject({ disabled: false });
+  expect(actions.some(item => ["Resume session", "Pause session", "Stop session…", "Terminate session…"].includes(item.label))).toBe(false);
+  expect(actions.find(item => item.label === "Forget saved session…")).toMatchObject({ disabled: true });
 });

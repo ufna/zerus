@@ -119,9 +119,6 @@
   .act-outbox { position: relative; }
   .act-outbox header { flex-wrap: wrap; row-gap: 2px; padding-inline-end: 30px; }
   .act-outbox-preview { margin: 0; overflow-wrap: anywhere; }
-  .act-outbox-files { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 4px 0 0; padding: 0; list-style: none; white-space: normal; }
-  .act-outbox-files li { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; color: var(--z-color-text-2); font-size: var(--fs-xs); overflow-wrap: anywhere; }
-  .act-outbox-files svg { flex: none; }
   .act-outbox-actions { margin-top: 2px; }
   .act-outbox-actions .icon-btn { position: absolute; inset-inline-end: 9px; inset-block-start: 5px; }
   .act-outbox-confirm { margin-top: 6px; font-size: var(--fs-sm); white-space: normal; }
@@ -358,6 +355,7 @@
   .file-reference-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .file-reference-row .field { flex: 1; min-width: 0; }
   .file-reference .dlg-detail.error { color: var(--z-color-danger); }
+
   .cmp-status { font-size: var(--fs-xs); color: var(--z-color-dim); }
   .cmp-model { gap: 4px; max-width: 330px; font-size: var(--fs-xs); }
   /* The status line's colours (MessageComposer updateControls 1224-1226): an
@@ -392,6 +390,8 @@
   /* A disabled Send shows the status at the field for 5 s (Qt's QToolTip there). */
   .cmp-draft-status { margin: 4px 12px; color: var(--z-color-muted); overflow-wrap: anywhere; }
   .cmp-draft-status.error { color: var(--z-color-danger); }
+  .cmp-draft-status.dismissible { display: flex; align-items: center; gap: 8px; }
+  .cmp-draft-status.dismissible button { flex: none; }
   .cmp-hint { position: absolute; z-index: 2; left: 12px; bottom: 46px; max-width: calc(100% - 24px); padding: 4px 8px; border-radius: var(--z-radius-sm);
     border: 1px solid var(--z-color-border); background: var(--z-color-raised); box-shadow: var(--z-shadow-popover); color: var(--z-color-text);
     font-size: var(--fs-xs); white-space: pre-line; pointer-events: none; animation: fadeIn var(--z-motion-fast) both; }

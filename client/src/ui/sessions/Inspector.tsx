@@ -31,6 +31,7 @@ import * as bridge from "../../bridge";
 import { eventTimeOf } from "../lib/dates";
 import { OpenCodeContextActions } from "./OpenCodeContextActions";
 import "../styles/inspector.css";
+import { InspectorQueue } from "./InspectorQueue";
 
 // Keep the always-visible badge eager; load the board only when its tab opens.
 const TasksPanel = lazy(() => import("../screens/Tasks").then((module) => ({ default: module.TasksPanel })));
@@ -105,6 +106,7 @@ function PlanAgents() {
   const s = selected, plan = createMemo(() => sessionPlan(raw())), goal = createMemo(() => sessionGoal(raw()));
   const online = () => !!s() && !computerOffline(s()!.computer);
   return <div class="insp-body">
+    <InspectorQueue />
     <Card id="plan-main" title={tr("Main agent")} aside={<span class="accent">{s() ? captionText(s()!.caption) : tr("Not reported")}</span>}><Row icon="activity" label={tr("status")}>{s() ? captionText(s()!.caption) : tr("Not reported")}</Row><Row icon="terminal" label={tr("action")} mono title={s()?.summary}>{s()?.summary || tr("Not reported")}</Row></Card>
     <Show when={goal().objective}><Card id="plan-goal" title={tr("Goal")} aside={<span class="muted">{goal().status === "active" ? tr("Pursuing goal") : goal().status}</span>}><p class="icard-text">{goal().objective}</p><Show when={goal().completion}><div class="hint">{tr("Reported by the agent. Completion: %1", goal().completion!)}</div></Show></Card></Show>
     <Show when={plan().length}><Card id="plan-tasks" title={tr("Tasks")} aside={<span class="dim">{tr("%1 of %2 completed (last recorded)", plan().filter((p) => p.status === "completed").length, plan().length)}</span>}><For each={plan()}>{(p) => <Row icon={p.status === "completed" ? "check" : "circle-dot"} label={p.status === "completed" ? tr("Done") : p.status === "in_progress" ? tr("In progress") : tr("To do")}>{p.title}</Row>}</For></Card></Show>

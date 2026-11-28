@@ -136,6 +136,9 @@ pub(super) fn dispatch_scoped(args: &[String], dry: bool, scope: Option<&session
         let mut record = archive::read_archive(old, id)?;
         terminating::check_mutation(&record)?;
         if let Some(scope)=scope {scope.check(&record)?;}
+        if record["backend"] == "opencode" {
+            return Err("Restore the OpenCode conversation before renaming it".into());
+        }
         if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
             return Err(dsh::retirement::RESTORE_PENDING.into());
         }

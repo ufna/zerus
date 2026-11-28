@@ -54,6 +54,21 @@ describe("session tree item names", () => {
     expect(sessionRowName(working)).toBe("Reviewer, Offline, project, Fixture PC");
   });
 
+  it("describes idle OpenCode availability separately from real work and pending attention", () => {
+    const native: Partial<Session> = {
+      title: "OpenCode fixture", cmd: "opencode", state: "running", processState: "running",
+      status: "ready", caption: "Ready", activity: "idle", phase: "idle",
+      runId: "run-a", conversationId: "ses_a", terminalAttachSupported: true,
+    };
+    expect(sessionRowName(card(native))).toContain("Available conversation");
+    expect(sessionRowName(card({ ...native, activity: "busy", phase: "working", status: "working", caption: "Working" }))).toContain("Working");
+    expect(sessionRowName(card({ ...native, activity: "attention", phase: "input", status: "attention", caption: "Needs input" }))).toContain("Needs input");
+    expect(sessionRowName(card({ ...native, draft: true }))).toContain("Draft");
+    expect(sessionRowName(card({ ...native, unread: true, caption: "New reply" }))).toContain("New reply");
+    mocks.online.mockReturnValue(false);
+    expect(sessionRowName(card(native))).toContain("Offline");
+  });
+
   it("includes the parent's child count in both compact and full rows", () => {
     for (const compactRow of [false, true]) expect(sessionRowName(card({}, { compactRow,
       team: { total: 8, working: 3, collapsed: true } }))).toContain("8 child sessions, collapsed");

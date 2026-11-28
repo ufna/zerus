@@ -20,6 +20,9 @@ describe("machineCounts (Qt populateBatchActions)", () => {
     expect(machineCounts([row(), row({ resumable: false })]).allIdle).toBe(false);
     expect(machineCounts([row(), row({ processState: "exited" })]).allIdle).toBe(false);
   });
+  it("skips retired Antigravity rows without enabling a batch or another provider's hint", () => {
+    expect(machineCounts([row({ cmd: "agy", bulkLifecycle: false })])).toEqual({ live: 0, saved: 0, allIdle: true, nativeControls: false });
+  });
   it("leaves an OpenCode row or one without bulk lifecycle out and notes it", () => {
     const c = machineCounts([row({ cmd: "opencode" }), row({ bulkLifecycle: false }), row()]);
     expect(c).toMatchObject({ live: 1, saved: 0, nativeControls: true });

@@ -77,12 +77,7 @@ fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
     {
         return Err("message contains terminal control characters".into());
     }
-    // A slash command's first token is /name. Absolute paths have another
-    // slash in that token and are ordinary message text, even /help/file.png.
-    let text = request.text.trim_start();
-    let first = text.split_whitespace().next().unwrap_or("");
-    let slash_command = first.strip_prefix('/').is_some_and(|name| !name.contains('/'));
-    if slash_command || text.starts_with('!') {
+    if zerus_client_core::send::is_terminal_command(&request.text) {
         return Err("use Terminal for slash commands and shell commands".into());
     }
     if request.attachments.len() > 8 {
@@ -181,7 +176,7 @@ pub(super) fn first_message_summary(record: &Value, live_pane: bool) -> Value {
 /// The record's checks before a task input, with their typed refusal
 /// (zerus-63rru.79).
 fn checked_record_gate(
-    name: &str, request: &Request, process: &mut ProcessCheck,
+    name: &str, request: &Request, process: &mut ProcessCheck, mode: SendMode,
 ) -> std::result::Result<Value, Gate> {
     let record = checked_input_gate(
         name,
@@ -191,11 +186,20 @@ fn checked_record_gate(
         process,
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
+    if mode == SendMode::DesktopNativeAccept && !supports_native_accept(&record) {
+        return Err("This session does not support guarded native terminal Send".into());
+    }
     if request.only_when_idle {
-        if !idle_reminder_ready(&record) {
+        if !mode.idle_input_ready(&record)
+            || (mode != SendMode::DesktopNativeAccept && record["agent"] == "claude"
+                && input_queue::claude_waiting(&record).unwrap_or(true))
+        {
             return Err(Gate::NotIdle);
         }
         if effort::pending_applies(&record) {
+            if mode == SendMode::DesktopNativeAccept {
+                return Err("Apply the pending model or effort settings before sending a queued message".into());
+            }
             return Err(Gate::Other("The agent is not idle; the team reminder was not sent.".into()));
         }
     }
@@ -204,6 +208,71 @@ fn checked_record_gate(
 
 fn idle_reminder_ready(record: &Value) -> bool {
     record["activity"] == "idle" && record["phase"] == "idle"
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendMode {
+    Ordinary,
+    TerminalOutcome,
+    DesktopOutbox,
+    CodexQueue,
+    CodexOrderedTurn,
+    DesktopNativeAccept,
+}
+
+pub(super) fn supports_native_accept(record: &Value) -> bool {
+    match string(record, "agent") {
+        "claude" => true,
+        // Kimi Code uses ordered session wires. Older Python kimi-cli
+        // bindings keep the existing idle-only command.
+        "kimi" => string(record, "conversation_id").strip_prefix("session_")
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+        _ => false,
+    }
+}
+
+impl SendMode {
+    fn check_send_gate(self, record: &Value) -> std::result::Result<(), Gate> {
+        // The native queue never types into the composer's current draft or dialog.
+        if self == Self::CodexQueue {
+            return Ok(());
+        }
+        if self == Self::DesktopNativeAccept && record["agent"] == "kimi" {
+            // Kimi gives a turn ID only after dequeue. An older native queue
+            // could otherwise prove a newer equal-text input as its first turn.
+            let terminal = backend::current();
+            let until = std::time::Instant::now() + Duration::from_millis(600);
+            return terminal_gate_with_capture(record, true, true, terminal, &|pane| {
+                terminal.capture_until(pane, backend::Capture::Styled, until, 512 * 1024)
+            }, true);
+        }
+        checked_send_gate(record)
+    }
+
+    fn idle_input_ready(self, record: &Value) -> bool {
+        if matches!(self, Self::CodexQueue | Self::CodexOrderedTurn) {
+            let busy = record["activity"] == "busy"
+                && matches!(record["phase"].as_str(), Some("working" | "tool" | "compacting"));
+            return record["agent"] == "codex" && (busy || idle_reminder_ready(record))
+                && !codex_tasks::unresolved(record)
+                && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
+                && input_queue::codex_waiting(record) == Ok(false);
+        }
+        if self == Self::DesktopNativeAccept {
+            return supports_native_accept(record);
+        }
+        if idle_reminder_ready(record) {
+            return true;
+        }
+        self == Self::DesktopOutbox
+            && record["agent"] == "codex"
+            && record["phase"] == "interrupted"
+            && record["activity"] == "unknown"
+            && !telemetry::work_remains(record)
+            && !codex_tasks::multiple(record)
+            && codex_questions::outbox_questions_clear(record, read_marks::question_budget()) == Ok(true)
+            && input_queue::codex_waiting(record) == Ok(false)
+    }
 }
 
 pub(super) fn checked_ready(name: &str, run_id: &str, conversation_id: &str) -> Result<Value> {
@@ -694,15 +763,15 @@ fn checked_bound_record_gate(
         idle_only(&record)?;
     }
     if ordinary_typing(&record).is_some() {
-        return Err("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into());
+        return Err(Gate::PendingInput("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into()));
     }
     if input_unconfirmed(&record) {
         // zerus-iitw8.6: a busy agent may hold it in its own queue until it
         // takes it, which only then confirms it.
         if string(&record, "activity") == "busy" {
-            return Err("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into());
+            return Err(Gate::PendingInput("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into()));
         }
-        return Err("previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus".into());
+        return Err(Gate::PendingInput("previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus".into()));
     }
     if settings_unconfirmed(&record) {
         return Err(SETTINGS_UNCONFIRMED.into());
@@ -737,13 +806,13 @@ const SETTINGS_UNCONFIRMED: &str = "the agent did not react to the last model se
 /// a user's existing draft. Never clear/edit the terminal's current draft.
 /// Reverse video marks the caret Claude draws itself (`claude_caret_placeholder`).
 #[derive(Clone, Copy, Default)]
-struct TerminalStyle {
-    dim: bool,
+pub(super) struct TerminalStyle {
+    pub(super) dim: bool,
     background: bool,
-    inverse: bool,
+    pub(super) inverse: bool,
 }
 
-fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, TerminalStyle)> {
+pub(super) fn styled_cells(row: &str, style: &mut TerminalStyle) -> Vec<(char, TerminalStyle)> {
     let mut chars = row.chars().peekable();
     let mut result = Vec::new();
     while let Some(ch) = chars.next() {
@@ -956,9 +1025,25 @@ fn codex_warning_footer(row: &str) -> bool {
         && matches!(tail, "warning · f2 to view" | "warnings · f2 to view")
 }
 
+// The live goal indicator uses a compact descending duration, e.g. 0s or 11h 51m.
+fn codex_active_goal(status: &str) -> bool {
+    let Some(elapsed) = status.strip_prefix("Pursuing goal (").and_then(|s| s.strip_suffix(')')) else {
+        return false;
+    };
+    let mut previous = 4;
+    elapsed.split(' ').all(|part| {
+        let Some((unit, digits)) = part.as_bytes().split_last() else { return false; };
+        let Some(rank) = b"smhd".iter().position(|u| u == unit) else { return false; };
+        let valid = rank < previous && !digits.is_empty()
+            && digits.len() <= 9 && digits.iter().all(u8::is_ascii_digit);
+        previous = rank;
+        valid
+    })
+}
+
 /// Native 0.167 adds an agent-picker hint; 0.169 uses a return-to-latest
 /// hint while its transcript is scrolled above the live composer. Accept only
-/// these fixed rows and the existing warning indicator, never arbitrary text.
+/// these fixed rows and the native goal and warning indicators.
 fn codex_shortcuts_footer(plain: &str) -> bool {
     let plain = plain.trim();
     if plain.starts_with("? for shortcuts") {
@@ -972,7 +1057,43 @@ fn codex_shortcuts_footer(plain: &str) -> bool {
     .find_map(|prefix| plain.strip_prefix(prefix)) else {
         return false;
     };
-    tail.is_empty() || (tail.starts_with(' ') && codex_warning_footer(tail))
+    if tail.is_empty() {
+        return true;
+    }
+    if !tail.starts_with(' ') {
+        return false;
+    }
+    let status = tail.trim_start();
+    if codex_warning_footer(status) {
+        return true;
+    }
+    let (goal, warning) = status.split_once(" · ").map_or((status, None), |(goal, tail)| (goal, Some(tail)));
+    (goal == "Goal paused (/goal resume)" || codex_active_goal(goal))
+        && warning.is_none_or(codex_warning_footer)
+}
+
+
+/// Codex 0.172 can shorten the navigation hints to make room for this
+/// passive goal state. It describes an earlier provider refusal and is not
+/// the native rate-limit or goal-resume choice dialog.
+fn codex_usage_limited_goal_footer(plain: &str) -> bool {
+    let Some(tail) = plain.strip_prefix("  ← for agents") else {
+        return false;
+    };
+    let tail = tail.strip_prefix(" · ? for shortcuts").unwrap_or(tail);
+    let Some(tail) = tail.strip_prefix(' ') else {
+        return false;
+    };
+    let Some(warning) = tail
+        .trim_start_matches(' ')
+        .strip_prefix("Goal hit usage limits (/goal resume)")
+    else {
+        return false;
+    };
+    warning.is_empty()
+        || warning
+            .strip_prefix(" · ")
+            .is_some_and(codex_warning_footer)
 }
 
 
@@ -1181,7 +1302,8 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
     if !prompt_empty(agent, row, previous, screen, cursor_x) {
         return false;
     }
-    let placeholder = styled_row(row)
+    let prompt_cells = styled_row(row);
+    let placeholder = prompt_cells
         .iter()
         .skip(cursor_x)
         .any(|(ch, dim)| !ch.is_whitespace() && *dim);
@@ -1260,8 +1382,25 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
                     && codex_status_row(&plain, model);
                 return input_background || single_line_footer
                     || lines.last().is_some_and(|line| {
-                        let plain: String = styled_row(line).iter().map(|(ch, _)| ch).collect();
-                        codex_shortcuts_footer(&plain)
+                        let footer: String = styled_row(line).iter().map(|(ch, _)| ch).collect();
+                        codex_shortcuts_footer(&footer)
+                            || (index == cursor_y + 2
+                                && index + 2 == lines.len()
+                                && exact_model
+                                && codex_status_row(&plain, model)
+                                && codex_usage_limited_goal_footer(&footer)
+                                && prompt_cells
+                                    .iter()
+                                    .skip(cursor_x)
+                                    .map(|(ch, _)| *ch)
+                                    .collect::<String>()
+                                    .trim_end()
+                                    == "Ask Codex to do anything"
+                                && styled_cells(line, &mut style)
+                                    .iter()
+                                    .all(|(ch, cell)| {
+                                        ch.is_whitespace() || (!cell.background && !cell.inverse)
+                                    }))
                     });
             }
         }
@@ -1282,7 +1421,7 @@ pub(super) fn checked_queue_terminal(
     if codex_tasks::multiple(record) {
         return Err("Codex has separate native tasks; this Terminal action cannot verify the selected conversation".into());
     }
-    terminal_gate_with_capture(record, true, false, backend::current(), &capture).map_err(Gate::reason)
+    terminal_gate_with_capture(record, true, false, backend::current(), &capture, false).map_err(Gate::reason)
 }
 
 /// The gate before a task input's first byte, with its typed refusal.
@@ -1340,19 +1479,20 @@ pub(crate) enum Gate {
         dialog: Option<Dialog>,
     },
     Other(String),
+    PendingInput(String),
     NotIdle,
 }
 impl Gate {
     pub(crate) fn reason(self) -> String {
         match self {
-            Gate::Waiting { reason, .. } | Gate::Other(reason) => reason,
+            Gate::Waiting { reason, .. } | Gate::Other(reason) | Gate::PendingInput(reason) => reason,
             Gate::NotIdle => "The agent is not idle; the team reminder was not sent.".into(),
         }
     }
     pub(crate) fn dialog(&self) -> Option<Dialog> {
         match self {
             Gate::Waiting { dialog, .. } => *dialog,
-            Gate::Other(_) | Gate::NotIdle => None,
+            Gate::Other(_) | Gate::PendingInput(_) | Gate::NotIdle => None,
         }
     }
 }
@@ -1442,7 +1582,7 @@ fn terminal_gate_on(
 ) -> std::result::Result<(), Gate> {
     terminal_gate_with_capture(record, empty, sending, terminal, &|pane| {
         terminal.capture(pane, backend::Capture::Styled)
-    })
+    }, false)
 }
 
 fn terminal_gate_with_capture(
@@ -1451,6 +1591,7 @@ fn terminal_gate_with_capture(
     sending: bool,
     terminal: &dyn backend::TerminalBackend,
     capture: &dyn Fn(&str) -> Result<Vec<u8>>,
+    require_empty_queue: bool,
 ) -> std::result::Result<(), Gate> {
     terminating::check_mutation(record)?;
     let pane = string(record, "pane");
@@ -1532,6 +1673,25 @@ fn terminal_gate_with_capture(
                 reason: DRAFT.into(),
                 dialog: None,
             });
+        }
+        if require_empty_queue {
+            if cursor_x != 5 {
+                return Err(Gate::Waiting {
+                    reason: "This Kimi terminal does not expose its busy input queue".into(),
+                    dialog: None,
+                });
+            }
+            // The boxed Kimi Code input row follows its top border. Only
+            // the hint directly above that border belongs to its queue.
+            if cursor_x == 5 && cursor_y.checked_sub(2)
+                .and_then(|index| screen.lines().nth(index))
+                .is_some_and(|row| input_queue::kimi_queue_hint(&settle::plain(row)))
+            {
+                return Err(Gate::Waiting {
+                    reason: "Kimi has an earlier native message waiting to start".into(),
+                    dialog: None,
+                });
+            }
         }
         // zerus-oz7cz: a pane too short for Claude's closing rule hides its
         // composer's rows under the prompt; no paste there can be proved.
@@ -1617,12 +1777,16 @@ pub(super) fn safe_filename(name: &str, index: usize) -> String {
 }
 
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
-    let terminal_outcome = args.len() == 3 && args[1] == "--delivery-outcome-v2" && args[2] == "--json";
-    let when_idle = args.len() == 3 && args[1] == "--when-idle" && args[2] == "--json";
-    if !terminal_outcome && !when_idle && (args.len() != 2 || args[1] != "--json") {
-        return Err("usage: hgs send <session> --json (JSON from stdin)".into());
-    }
-    dispatch_send(&args[0], terminal_outcome, when_idle, ProcessCheck::Legacy)
+    let mode = match args {
+        [_, json] if json == "--json" => SendMode::Ordinary,
+        [_, outcome, json] if outcome == "--delivery-outcome-v2" && json == "--json" => SendMode::TerminalOutcome,
+        [_, idle, json] if idle == "--when-idle" && json == "--json" => SendMode::DesktopOutbox,
+        [name, order, json] if name.starts_with("codex/") && order == "--codex-ordered-turn" && json == "--json" => SendMode::CodexOrderedTurn,
+        [name, queue, json] if name.starts_with("codex/") && queue == "--codex-queue" && json == "--json" => SendMode::CodexQueue,
+        [_, native, json] if native == "--when-native-accepts" && json == "--json" => SendMode::DesktopNativeAccept,
+        _ => return Err("usage: hgs send <session> --json (JSON from stdin)".into()),
+    };
+    dispatch_send(&args[0], mode, ProcessCheck::Legacy)
 }
 
 #[cfg(target_os = "linux")]
@@ -1634,7 +1798,7 @@ pub(super) fn dispatch_verified(
     } else {
         // Selection remains read-only until the ordinary send owns Root.
         super::resolve_label_unrepaired(name)?;
-        dispatch_send(name, false, false, ProcessCheck::Verify)
+        dispatch_send(name, SendMode::Ordinary, ProcessCheck::Verify)
     }
 }
 
@@ -1651,7 +1815,7 @@ pub(super) fn send_desktop_verified(permit: &crate::desktop::verified_send::Perm
             session_id::select_guarded_route(&plan.session, &intent.session_id, &plan.run_id,
                 &plan.conversation_id, storage::in_id_layout(&record));
             match submit_core(&plan.session, intent.send.original.as_bytes(), Origin::Person,
-                true, false, Some(&|| permit.intent().map(|_| ())), ProcessCheck::Verify)
+                true, SendMode::Ordinary, Some(&|| permit.intent().map(|_| ())), ProcessCheck::Verify)
             {
                 Ok(_) => Outcome::Submitted,
                 Err(Failure::NotOffered(witness)) => Outcome::Refused {
@@ -1666,7 +1830,7 @@ pub(super) fn send_desktop_verified(permit: &crate::desktop::verified_send::Perm
 }
 
 fn dispatch_send(
-    name: &str, terminal_outcome: bool, when_idle: bool, process: ProcessCheck,
+    name: &str, mode: SendMode, process: ProcessCheck,
 ) -> Result<i32> {
     let mut input = Vec::new();
     io::stdin()
@@ -1676,19 +1840,25 @@ fn dispatch_send(
     if input.len() > MAX_JSON {
         return Err("message payload exceeds 29 MiB".into());
     }
-    if when_idle {
+    if matches!(mode, SendMode::DesktopOutbox | SendMode::CodexQueue | SendMode::CodexOrderedTurn | SendMode::DesktopNativeAccept) {
         let request: Request = serde_json::from_slice(&input).map_err(|error| error.to_string())?;
         if !request.only_when_idle || request.expected_conversation_id.is_empty() {
-            return Err("Automatic Send requires an exact conversation and the idle guard".into());
+            return Err("Automatic Send requires an exact conversation and the original outbox request".into());
         }
-        let receipt = match submit_core(name, &input, Origin::Person, true, false, None, process) {
+        let receipt = match submit_core(name, &input, Origin::Person, true, mode, None, process) {
             Ok(receipt) => receipt,
-            Err(Failure::NotOffered(witness)) if witness.idle_refusal => json!({
-                "schema": 1, "status": "waiting_for_idle", "proof": "native_input_lock",
-                "request_id": witness.request_id, "name": witness.name, "run_id": witness.run_id,
-                "conversation_id": witness.conversation_id, "input_sha256": witness.digest,
-            }),
-            Err(Failure::NotOffered(witness)) => return Err(witness.reason),
+            Err(Failure::NotOffered(witness)) => {
+                let status = if witness.waits_for_idle_send() {
+                    "waiting_for_idle"
+                } else if mode == SendMode::DesktopNativeAccept || name.starts_with("codex/") || name.starts_with("kimi/") {
+                    "not_offered"
+                } else {
+                    return Err(witness.reason);
+                };
+                json!({"schema": 1, "status": status, "proof": "native_input_lock", "transport": "terminal",
+                    "request_id": witness.request_id, "name": witness.name, "run_id": witness.run_id,
+                    "conversation_id": witness.conversation_id, "input_sha256": witness.digest, "reason": witness.reason})
+            }
             Err(Failure::Unknown(error)) => return Err(error),
             Err(Failure::TerminalRefusal(_)) => return Err("Unexpected Send outcome".into()),
         };
@@ -1702,7 +1872,7 @@ fn dispatch_send(
             return Ok(0);
         }
     }
-    match submit_core(name, &input, Origin::Person, true, terminal_outcome, None, process) {
+    match submit_core(name, &input, Origin::Person, true, mode, None, process) {
         Ok(receipt) => { println!("{receipt}"); Ok(0) }
         Err(Failure::TerminalRefusal(value)) => {
             println!("{value}");
@@ -2020,6 +2190,7 @@ pub(super) fn submit(name: &str, input: &[u8], recovery_id: Option<&str>) -> Res
 enum Origin<'a> {
     Person,
     Answer,
+    TechnicalReview,
     Recovery(&'a str),
     KeepWarm(&'a str),
 }
@@ -2027,7 +2198,7 @@ enum Origin<'a> {
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
 /// tells a refusal before any input from a possibly delivered ping.
 pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission {
-    match submit_core(name, input, Origin::KeepWarm(id), false, false, None, ProcessCheck::Legacy) {
+    match submit_core(name, input, Origin::KeepWarm(id), false, SendMode::Ordinary, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2054,7 +2225,7 @@ fn submit_admitted(
     retain_refusal: bool,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
 ) -> Result<Value> {
-    submit_core(name, input, origin, retain_refusal, false, admit, ProcessCheck::Legacy).map_err(
+    submit_core(name, input, origin, retain_refusal, SendMode::Ordinary, admit, ProcessCheck::Legacy).map_err(
         |failure| match failure {
             Failure::NotOffered(witness) => witness.reason.clone(),
             Failure::Unknown(error) => error,
@@ -2085,6 +2256,7 @@ pub(crate) struct NotOffered {
     /// (`Gate::Waiting`; zerus-63rru.79).
     pub(crate) waiting: bool,
     idle_refusal: bool,
+    native_accept: bool,
     /// Which dialog the waiting terminal shows, when the refusal is a
     /// dialog's and a witness exists for it (zerus-63rru.83). The typed
     /// name, never read from a sentence.
@@ -2092,6 +2264,10 @@ pub(crate) struct NotOffered {
 }
 
 impl NotOffered {
+    fn waits_for_idle_send(&self) -> bool {
+        self.idle_refusal || (self.waiting && (self.name.starts_with("codex/") || self.name.starts_with("kimi/")))
+    }
+
     /// Whether this witness is for exactly this request, submitted to `name`
     /// with this run, conversation and payload digest.
     pub(crate) fn binds(
@@ -2113,6 +2289,19 @@ impl NotOffered {
     }
 }
 
+/// An automatic review notice only offers its own exact payload. It does
+/// not apply settings, cancel recovery or grant person-request authority.
+pub(super) fn technical_review_notice(
+    name: &str, input: &[u8], admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> Submission {
+    match submit_core(name, input, Origin::TechnicalReview, false, SendMode::Ordinary, Some(admit), ProcessCheck::Legacy) {
+        Ok(receipt) => Submission::Receipt(receipt),
+        Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
+        Err(Failure::Unknown(error)) => Submission::Unknown(error),
+        Err(Failure::TerminalRefusal(_)) => Submission::Unknown("Review notice result unavailable.".into()),
+    }
+}
+
 /// What one exact task submission came to.
 pub(crate) enum Submission {
     /// The request's exact submitted receipt.
@@ -2126,7 +2315,7 @@ pub(crate) enum Submission {
 /// `submit` for a task reply that must tell a refusal before any input from
 /// one that may have delivered it.
 pub(super) fn submit_witnessed(name: &str, input: &[u8]) -> Submission {
-    match submit_core(name, input, Origin::Person, false, false, None, ProcessCheck::Legacy) {
+    match submit_core(name, input, Origin::Person, false, SendMode::Ordinary, None, ProcessCheck::Legacy) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2295,10 +2484,11 @@ fn submit_core(
     input: &[u8],
     origin: Origin,
     retain_refusal: bool,
-    terminal_outcome: bool,
+    mode: SendMode,
     admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
     mut process: ProcessCheck,
 ) -> std::result::Result<Value, Failure> {
+    let terminal_outcome = mode == SendMode::TerminalOutcome;
     let unknown = Failure::Unknown;
     let request: Request =
         serde_json::from_slice(input).map_err(|e| unknown(format!("invalid send payload: {e}")))?;
@@ -2317,7 +2507,9 @@ fn submit_core(
             return Err(Failure::TerminalRefusal(value));
         }
     }
-    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {
+    let (existing, prior_refusal) =
+        refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);
+    match existing {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
         Existing::Unknown(error) => return Err(unknown(error)),
@@ -2336,6 +2528,7 @@ fn submit_core(
         reason,
         waiting,
         idle_refusal: false,
+        native_accept: mode == SendMode::DesktopNativeAccept,
         dialog,
     };
     let refused = |typed: bool, reason: String| remember_send_refusal(typed, witness(reason, false, None), retain_refusal, terminal_outcome);
@@ -2343,9 +2536,12 @@ fn submit_core(
     let gated = |typed: bool, gate: Gate| {
         let waiting = matches!(gate, Gate::Waiting { .. });
         let idle_refusal = matches!(gate, Gate::NotIdle);
+        let native_wait = mode == SendMode::DesktopNativeAccept
+            && (waiting || matches!(gate, Gate::PendingInput(_)));
         let dialog = gate.dialog().map(|d| d.name());
         let mut witness = witness(gate.reason(), waiting, dialog);
         witness.idle_refusal = idle_refusal;
+        witness.idle_refusal |= native_wait;
         remember_send_refusal(typed, witness, retain_refusal, terminal_outcome)
     };
     #[cfg(target_os = "linux")]
@@ -2354,7 +2550,7 @@ fn submit_core(
     {
         return Err(refused(typed, "Verified send accepts only an ordinary message".into()));
     }
-    let record = checked_record_gate(name, &request, &mut process).map_err(|gate| gated(typed, gate))?;
+    let record = checked_record_gate(name, &request, &mut process, mode).map_err(|gate| gated(typed, gate))?;
     // A writer acting at the person's request checks it here, under Root and
     // before anything is typed (zerus-46l1q, review D2): every revocation
     // comes before this send's admission (nothing is sent) or after it.
@@ -2367,6 +2563,9 @@ fn submit_core(
             "Codex task settings need a verified native task; no settings or input were sent"
                 .into(),
         ));
+    }
+    if matches!(origin, Origin::TechnicalReview) && effort::pending_applies(&record) {
+        return Err(refused(typed, "Review notice withheld while settings are pending.".into()));
     }
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
         return Err(refused(
@@ -2381,7 +2580,7 @@ fn submit_core(
     // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
     // before any pending settings key too; the gate after them stays.
     if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
-        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+        mode.check_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
@@ -2390,9 +2589,9 @@ fn submit_core(
     match origin {
         Origin::Recovery(id) => recovery::check_submission(&record, id).map_err(|e| refused(typed, e))?,
         Origin::KeepWarm(id) => keep_warm::check_submission(&record, id).map_err(|e| refused(typed, e))?,
-        Origin::Person | Origin::Answer => {}
+        Origin::Person | Origin::Answer | Origin::TechnicalReview => {}
     }
-    checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+    mode.check_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     let attachments_root = root.join("attachments");
     private_dir(&attachments_root).map_err(|e| refused(typed, e))?;
     let attachments = tempfile::Builder::new()
@@ -2452,7 +2651,7 @@ fn submit_core(
             return Err(refused(typed,"Session identity changed during pre-send compaction".into()));
         }
         kimi_expiry::release(&mut current, &request_id, &pre_send_compaction).map_err(unknown)?;
-        record = checked_record_gate(name,&request,&mut process).map_err(|gate| gated(typed,gate))?;
+        record = checked_record_gate(name,&request,&mut process,mode).map_err(|gate| gated(typed,gate))?;
         checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
     }
     // Claude and Kimi treat a trailing backslash plus the next Enter as line
@@ -2473,14 +2672,27 @@ fn submit_core(
     };
     let buffer = format!("hgs-input-{request_id}");
     let terminal = backend::current();
-    let mut queue = if codex_tasks::multiple(&record) {
+    // The original input lock still protects this decision from another
+    // Desktop Send. A matching duplicate returned its receipt before here.
+    let mode = if mode == SendMode::CodexOrderedTurn {
+        if codex_tasks::multiple(&record) {
+            return Err(refused(typed, "Codex task bindings changed before the ordered Send".into()));
+        }
+        match codex_queue::has_earlier(&record) {
+            Ok(true) => SendMode::CodexQueue,
+            Ok(false) => SendMode::CodexOrderedTurn,
+            Err(_) => return Err(gated(typed, Gate::NotIdle)),
+        }
+    } else { mode };
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
         if !matches!(origin, Origin::Person) {
             return Err(refused(
                 typed,
                 "This Codex native-task operation needs its exact native input route".into(),
             ));
         }
-        Some(codex_queue::Queue::prepare(&record, &text).map_err(|e| refused(typed, e))?)
+        Some(codex_queue::Queue::prepare(&record, &text, mode == SendMode::CodexQueue)
+            .map_err(|e| if mode == SendMode::CodexQueue { gated(typed, Gate::NotIdle) } else { refused(typed, e) })?)
     } else {
         None
     };
@@ -2503,19 +2715,33 @@ fn submit_core(
     };
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(gate) = checked_record_gate(name, &request, &mut process).and_then(|r| checked_send_gate(&r)) {
+    if let Err(gate) = checked_record_gate(name, &request, &mut process, mode).and_then(|r| mode.check_send_gate(&r)) {
         cleanup();
         return Err(gated(typed, gate));
     }
     let checked = match origin {
         Origin::Recovery(id) => read(name).and_then(|record| recovery::check_submission(&record, id)),
         Origin::KeepWarm(id) => read(name).and_then(|record| keep_warm::check_submission(&record, id)),
-        Origin::Person | Origin::Answer => Ok(()),
+        Origin::Person | Origin::Answer | Origin::TechnicalReview => Ok(()),
     };
     if let Err(error) = checked {
         cleanup();
         return Err(refused(typed, error));
     }
+    let kimi_turn_floor = if agent == "kimi" && mode == SendMode::DesktopNativeAccept {
+        match acceptance::kimi_outbox_floor(&record) {
+            Some(floor) => Some(floor),
+            None => {
+                cleanup();
+                return Err(gated(typed, Gate::Waiting {
+                    reason: "Kimi's earlier native turn could not be confirmed".into(),
+                    dialog: None,
+                }));
+            }
+        }
+    } else {
+        None
+    };
     let submitted_at = now();
     if matches!(origin, Origin::Person | Origin::Answer) {
         recovery::cancel_for_input(&record).map_err(unknown)?;
@@ -2525,6 +2751,20 @@ fn submit_core(
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
     if queued {
         receipt["transport"] = json!("codex_queue");
+    }
+    if mode == SendMode::CodexQueue { receipt["codex_outbox"] = json!(true); }
+    if agent == "claude" && request.only_when_idle {
+        receipt["claude_outbox"] = json!(true);
+    }
+    if prior_refusal && matches!(mode, SendMode::DesktopNativeAccept | SendMode::DesktopOutbox)
+        && matches!(agent, "claude" | "kimi")
+    {
+        receipt["terminal_native_after_refusal"] = json!(true);
+    }
+    if let Some(floor) = kimi_turn_floor {
+        receipt["kimi_outbox"] = json!(true);
+        receipt["kimi_activity_binding"] = json!(true);
+        receipt["kimi_turn_floor"] = json!(floor);
     }
     if pre_send_compaction.is_object() {
         receipt["pre_send_compaction"] = pre_send_compaction;
@@ -2554,6 +2794,9 @@ fn submit_core(
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
     record["input_pending_request"] = json!(request_id);
+    if receipt["kimi_outbox"] == true {
+        record["input_pending_kimi_outbox"] = json!(request_id);
+    }
     record["input_pending_digest"] = receipt["digest"].clone();
     record["input_pending_text_sha256"] = json!(format!("{:x}", Sha256::digest(string(&receipt, "submitted_text").as_bytes())));
     // From this send on the record follows the acceptance rule.
@@ -2587,6 +2830,10 @@ fn submit_core(
     let result: Result<()> = (|| {
         if let Some(queue) = &mut queue {
             let id = queue.offer()?;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if mode == SendMode::CodexQueue {
+                if let Some(client_id) = queue.client_id(&id) { receipt["codex_client_id"] = json!(client_id); }
+            }
             receipt["native_queued_message_id"] = json!(id);
             receipt["status"] = json!("submitted");
             receipt_index::persist(&receipt_path, &receipt)?;
@@ -2621,7 +2868,7 @@ fn submit_core(
                 return Err(error.into());
             }
         }
-        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+        if request.only_when_idle && !mode.idle_input_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be pasted.".into());
         }
         if process.pinned() {
@@ -2629,6 +2876,9 @@ fn submit_core(
             if !process.recheck(&record) {
                 return Err("agent changed before paste".into());
             }
+        }
+        if string(&record, "agent") == "kimi" && mode == SendMode::DesktopNativeAccept {
+            mode.check_send_gate(&record).map_err(Gate::reason)?;
         }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
@@ -2682,7 +2932,7 @@ fn submit_core(
         if process.pinned() && !process.recheck(&record) {
             return Err("agent changed after paste".into());
         }
-        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+        if request.only_when_idle && !mode.idle_input_ready(&read(name)?) {
             return Err("The agent began work before the team reminder could be submitted.".into());
         }
         terminal.send(pane, &[backend::Key::Named("Enter")])?;
@@ -3050,6 +3300,7 @@ mod tests {
             reason: "refused".into(),
             waiting: false,
             idle_refusal: false,
+            native_accept: false,
             dialog: None,
         };
         assert!(
@@ -3081,7 +3332,7 @@ mod tests {
             let witness = || NotOffered {
                 request_id: "id".into(), name: "n".into(), run_id: "r".into(),
                 conversation_id: "c".into(), digest: "d".into(), receipts: path.clone(),
-                reason: "terminal refused".into(), waiting: dialog.is_some(), idle_refusal: false, dialog,
+                reason: "terminal refused".into(), waiting: dialog.is_some(), idle_refusal: false, native_accept: false, dialog,
             };
             fs::write(&path, original.to_string()).unwrap();
             assert!(matches!(before_input(false, witness()), Failure::NotOffered(w)
@@ -3456,6 +3707,52 @@ mod tests {
             assert!(!composer_empty("codex", &screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", draft), 2, 1));
         }
         assert!(!composer_empty("codex", screen, 3, 1));
+    }
+
+    #[test]
+    fn codex_active_goal_shortcuts_keep_empty_input_and_protect_drafts() {
+        let footer = "← for agents · ? for shortcuts          Pursuing goal (11h 51m) · ⚠ 2 warnings · f2 to view";
+        let placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+        let screen = format!("Working\n\n› {placeholder}\n\n  GPT-6.2-Astra high · /project · Title · Main [default]\n  {footer}");
+        assert!(composer_empty("codex", &screen, 2, 2));
+        for elapsed in ["0s", "3s", "2m 7s", "1h", "1d 3h"] {
+            let line = format!("← for agents · ? for shortcuts   Pursuing goal ({elapsed})");
+            assert!(composer_empty("codex", &screen.replace(footer, &line), 2, 2));
+        }
+        for draft in ["draft", "\n  more input"] {
+            assert!(!composer_empty("codex", &screen.replace(placeholder, draft), 2, 2));
+        }
+        for change in ["11h 51m) draft", "11h approve", "1m 2h", "1h 2h", ""] {
+            assert!(!composer_empty("codex", &screen.replace("11h 51m", change), 2, 2));
+        }
+        assert!(!composer_empty("codex", &screen.replace("f2 to view", "enter to approve"), 2, 2));
+        assert!(!composer_empty("codex", &screen, 3, 2));
+    }
+
+    #[test]
+    fn codex_usage_limited_goal_footer_keeps_the_native_composer_boundary() {
+        // Codex 0.172.0, 94x52, with an unshaded prompt and the passive goal
+        // indicator occupying the shortcuts slot. Folder and title are synthetic.
+        let placeholder = "\x1b[2mAsk Codex to do anything\x1b[0m";
+        let footer = "  \x1b[1m←\x1b[0m for agents               \x1b[38;5;5mGoal hit usage limits (/goal resume)\x1b[39m · ⚠ \x1b[38;2;196;167;103m5 warnings\x1b[39m · \x1b[1mf2\x1b[0m to view";
+        let status = "  \x1b[38;2;246;226;183mGPT-6.2-Astra high\x1b[39m · /fixture/project-folder · Synthetic title in one row · Main [default]";
+        let screen = format!("{}\x1b[1m›\x1b[0m {placeholder}\n\n{status}\n{footer}", "\n".repeat(48));
+        let empty = |screen: &str| composer_empty_for_model("codex", screen, 2, 48, Some("gpt-6.2-astra"));
+        assert!(empty(&screen), "the usage-limit summary leaves the native composer empty");
+        for nonempty in [
+            screen.replace(placeholder, "genuine draft"),
+            screen.replace(placeholder, "\n  multiline draft"),
+            screen.replace(placeholder, "\x1b[2mResume paused goal?\x1b[0m\n  1. Resume goal\n  2. Leave paused"),
+            screen.replace("to view", "to approve"),
+            screen.replace("usage limits", "permissions"),
+            screen.replace("\x1b[38;5;5mGoal", "\x1b[7mGoal"),
+            screen.replace("Ask Codex to do anything", "imitated dim input"),
+            screen.replace("/fixture/project-folder", "not a directory"),
+        ] {
+            assert!(!empty(&nonempty));
+        }
+        assert!(!composer_empty_for_model("codex", &screen, 3, 48, Some("gpt-6.2-astra")));
+        assert!(!composer_empty_for_model("codex", &screen, 2, 48, Some("gpt-6.2-sol")));
     }
 
     #[test]

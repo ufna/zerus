@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { toSession } from "../../store/catalog";
 import {
-  canStartStopped, headerClearSlot, sessionIdentity, copyState, detailsFromInspection, freshCopy, freshEntry, freshStillValid, identityOk, notificationsState, notificationsStillAllowed, dialogReducer, menuItemActivates, menuState, renameParts, renameProblem, snapshotOf, tagProblem, terminal, terminateCopy, forgetCopy, forgetsBindingOnly, forgetOpening, forgetArchivedCopy, archiveNameOccupied, liveNameIndex, nameKey,
+  canStartStopped, headerClearSlot, sessionIdentity, copyState, detailsFromInspection, freshCopy, freshEntry, freshStillValid, identityOk, notificationsState, notificationsStillAllowed, dialogReducer, menuItemActivates, menuState, renameParts, renameProblem, snapshotOf, tagProblem, terminal, terminalAfterResume, terminateCopy, forgetCopy, forgetsBindingOnly, forgetOpening, forgetArchivedCopy, archiveNameOccupied, liveNameIndex, nameKey,
 } from "./actions-ui";
 import fixture from "../../../core/tests/fixtures/action-rows.json";
 import type { Details, ViewRow } from "../../types";
@@ -61,6 +61,23 @@ describe("menuState change", () => {
     expect(menuState(drifted({ stop: true }), false, false, inspected).stop.enabled).toBe(false);
     const replaced = menuState(drifted({ pause: true, stop: true, terminate: true }, "r2"), true, false, inspected);
     expect(replaced.change.enabled || replaced.stop.enabled || replaced.end.enabled).toBe(false);
+  });
+  it("keeps retired Antigravity records read-only", () => {
+    const native = { agent: "agy", name: "agy/project/example", terminal_supported: false, resumable: false, allowed_actions: [] };
+    const saved = menuState(row({ ...native, state: "stopped" }), true, false);
+    expect(saved.change.enabled).toBe(false);
+    expect(menuState(row({ ...native, state: "stopped", resumable: true, allowed_actions: undefined }), true, false).change.enabled).toBe(false);
+    expect(saved.archive.enabled).toBe(false);
+    expect(saved.end.enabled).toBe(false);
+    const archived = row({ ...native, state: "archived", archive_id: "a1", resumable: true });
+    const oldPeer = details({ allowed_actions: ["restore", "forget"], terminal_supported: true });
+    const archivedMenu = menuState(archived, true, false, oldPeer);
+    expect(archivedMenu.change.enabled).toBe(false);
+    expect(archivedMenu.end.enabled).toBe(false);
+    expect(copyState(archived, true, oldPeer)).toMatchObject({ command: { enabled: false }, reference: true });
+    const stale = row({ ...native, terminal_supported: true, terminal_attach_supported: true, terminal_attach_reported: true });
+    expect(terminal(stale)).toBe(false);
+    expect(terminalAfterResume(stale)).toBe(false);
   });
   it("resumes a paused resumable session", () => {
     expect(menuState(row({ state: "paused" }), true, false).change).toMatchObject({ label: "Resume session", enabled: true });

@@ -193,24 +193,24 @@ fn read_transcript(record: &Value) -> Result<Value> {
 /// One page of question receipts: a bounded call reads at most one, an
 /// unbounded call (an answer) reads every page (zerus-a4mub.8).
 const RECEIPTS_PER_CALL: usize = 64;
-// Work done by the calls of this test thread: transcript lines and receipt
-// files read.
+const MAX_QUESTION_LINE: usize = 1024 * 1024;
+// Work done by this test thread: bounded transcript chunks and receipt files read.
 #[cfg(test)]
 thread_local! {
     static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 #[cfg(test)]
-fn worked(lines: usize, receipts: usize) {
+fn worked(chunks: usize, receipts: usize) {
     WORK.with(|work| {
         let (l, r) = work.get();
-        work.set((l + lines, r + receipts));
+        work.set((l + chunks, r + receipts));
     });
 }
 #[cfg(not(test))]
 fn worked(_: usize, _: usize) {}
 /// Bring the question cache up to date with the transcript, then recover
 /// submissions from this run's question receipts. With a deadline, both
-/// phases stop once it passes (after at least one line or receipt) and save
+/// phases stop once it passes (after at least one chunk or receipt) and save
 /// their progress, so the next call resumes; the cache is returned only when
 /// both are complete, and an incomplete one is unknown, never empty. None
 /// also when another process holds the cache past the deadline.
@@ -250,13 +250,13 @@ fn index_with(
     let (identity, meta) =
         crate::platform::FileIdentity::with_metadata(&file).map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
-    let mut line = String::new();
+    let mut bytes = Vec::new();
     reader
         .by_ref()
         .take(256 * 1024)
-        .read_line(&mut line)
+        .read_until(b'\n', &mut bytes)
         .map_err(|e| e.to_string())?;
-    let header: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
+    let header: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     if header["type"] != "session_meta" || header["payload"]["id"] != id {
         return Err("Conversation transcript identity mismatch".into());
     }
@@ -283,6 +283,7 @@ fn index_with(
     if cache["scan_version"] != 3 {
         changed = true;
         cache["offset"] = json!(0);
+        cache.as_object_mut().unwrap().remove("oversized_scan");
         cache["scan_version"] = json!(3);
         cache["active_turn"] = Value::Null;
         // Re-establish native call scope and turn binding. Keep exact local skips,
@@ -295,59 +296,79 @@ fn index_with(
         }
     }
     let offset = cache["offset"].as_u64().unwrap_or(0);
-    reader
-        .seek(SeekFrom::Start(offset))
-        .map_err(|e| e.to_string())?;
-    changed |= cache["initialized"] != true;
-    // Initial tail can begin inside a JSON line; never interpret that fragment.
-    if cache.get("initialized").is_none() && offset > 0 {
-        line.clear();
-        reader.read_line(&mut line).map_err(|e| e.to_string())?;
+    // Older readers know only the complete-record offset. Resume a partial
+    // discard only if that same anchor is still current after another writer.
+    let scan = &cache["oversized_scan"];
+    let resume = scan["through"].as_u64().filter(|through| {
+        scan["from"] == offset && *through > offset && *through <= meta.len()
+    });
+    let mut cursor = resume.unwrap_or(offset);
+    let mut skipping = resume.is_some();
+    if !skipping && offset > 0 {
+        // A legacy cache could record EOF inside an unfinished oversized line.
+        reader.seek(SeekFrom::Start(offset - 1)).map_err(|e| e.to_string())?;
+        let mut previous = [0];
+        reader.read_exact(&mut previous).map_err(|e| e.to_string())?;
+        skipping = previous[0] != b'\n';
     }
+    reader.seek(SeekFrom::Start(cursor)).map_err(|e| e.to_string())?;
+    changed |= cache["initialized"] != true;
     let mut complete = true;
     loop {
-        let before = reader.stream_position().map_err(|e| e.to_string())?;
-        line.clear();
+        // Native appends beyond the captured length belong to the next inspection.
+        let remaining = meta.len().saturating_sub(cursor);
+        if remaining == 0 {
+            break;
+        }
+        bytes.clear();
         let count = reader
             .by_ref()
-            .take(1024 * 1024 + 1)
-            .read_line(&mut line)
+            .take(remaining.min((MAX_QUESTION_LINE + 1) as u64))
+            .read_until(b'\n', &mut bytes)
             .map_err(|e| e.to_string())?;
         if count == 0 {
             break;
         }
         worked(1, 0);
-        if !line.ends_with('\n') {
-            if count <= 1024 * 1024 {
-                cache["offset"] = json!(before);
-                break;
-            }
-            // An oversized line is skipped unparsed; it still counts against the deadline.
-            reader.skip_until(b'\n').map_err(|e| e.to_string())?;
-        }
-        cache["offset"] = json!(reader.stream_position().map_err(|e| e.to_string())?);
-        if count <= 1024 * 1024
-            && (line.contains("request_user_input_async")
+        if skipping || count > MAX_QUESTION_LINE {
+            // Discard one bounded chunk. Resume here even when the native writer
+            // has yet to append the newline that terminates this record.
+            skipping = !bytes.ends_with(b"\n");
+        } else if !bytes.ends_with(b"\n") {
+            // Keep an unfinished normal record from its start, including split UTF-8.
+            break;
+        } else {
+            let line = std::str::from_utf8(&bytes).map_err(|error| error.to_string())?;
+            if line.contains("request_user_input_async")
                 || line.contains("function_call_output")
                 || line.contains("\"user_message\"")
                 || line.contains("\"task_started\"") || line.contains("\"turn_started\"")
                 || line.contains("\"task_complete\"") || line.contains("\"turn_complete\"")
                 || line.contains("\"turn_aborted\"")
-                || line.contains("send_user_message_question_reply"))
-        {
-            if let Ok(event) = serde_json::from_str(&line) {
-                observe(record, &mut cache, &event);
+                || line.contains("send_user_message_question_reply")
+            {
+                if let Ok(event) = serde_json::from_str(line) {
+                    observe(record, &mut cache, &event);
+                }
             }
         }
-        // Lines appended while indexing do not count against the deadline.
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline)
-            && cache["offset"].as_u64().unwrap_or(0) < meta.len()
+        cursor += count as u64;
+        if !skipping {
+            cache["offset"] = json!(cursor);
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) && cursor < meta.len()
         {
             complete = false;
             break;
         }
     }
-    changed |= cache["offset"].as_u64().unwrap_or(0) != offset;
+    let scan = if skipping {
+        json!({"from": cache["offset"].as_u64().unwrap_or(0), "through": cursor})
+    } else {
+        Value::Null
+    };
+    changed |= cache["offset"].as_u64().unwrap_or(0) != offset || cache["oversized_scan"] != scan;
+    cache["oversized_scan"] = scan;
     let mut refused = None;
     if complete && recover {
         let root = root()?;
@@ -362,7 +383,7 @@ fn index_with(
             Err(error) => refused = Some(error),
         }
     }
-    // The offset is at a line boundary, also after a partial scan.
+    // The legacy offset stays at a record boundary throughout an oversized discard.
     cache["initialized"] = json!(true);
     if changed {
         atomic(cache_path, &cache.to_string())?;
@@ -385,6 +406,15 @@ pub(super) fn current_until(record: &Value, deadline: Instant) -> Result<Option<
     }
     Ok(index(record, &cache_path(record)?, Some(deadline))?.map(|cache| pending(record, &cache)))
 }
+/// Only an indexed, identified ordinary native transcript can admit a queued
+/// send after interruption. An unavailable source or a child returns an empty
+/// view to display callers but has no native question-absence authority.
+pub(super) fn outbox_questions_clear(record: &Value, deadline: Instant) -> Result<bool> {
+    Ok(index(record, &cache_path(record)?, Some(deadline))?.is_some_and(|cache| {
+        cache["initialized"] == true && pending(record, &cache).is_empty()
+    }))
+}
+
 fn pending(record: &Value, cache: &Value) -> Vec<Value> {
     cache["items"]
         .as_object()
@@ -1243,7 +1273,7 @@ mod tests {
         let held = Some(Instant::now() + Duration::from_millis(30));
         assert_eq!(bounded(&record, &cache, &root, &none, held), None);
     }
-    /// The work this thread did while `f` ran: transcript lines, receipts.
+    /// The work this thread did while `f` ran: transcript chunks, receipts.
     fn work<T>(f: impl FnOnce() -> T) -> (T, (usize, usize)) {
         let before = WORK.with(|work| work.get());
         let value = f();
@@ -1871,12 +1901,18 @@ mod tests {
         assert_eq!(pending[0]["question_id"], "codex-async:call_two:0");
     }
     #[test]
-    fn an_expired_deadline_stops_after_each_oversized_line() {
+    fn an_expired_deadline_stops_after_each_oversized_line_chunk() {
         let dir = tempfile::tempdir().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let transcript = dir.path().join(format!("rollout-{id}.jsonl"));
         // Lines over 1 MiB are skipped unparsed, but each still counts against the deadline.
-        let oversized = json!({"type":"event_msg","payload":{"type":"agent_message","message":"x".repeat(1024 * 1024)}});
+        let prefix = r#"{"payload":{"message":""#;
+        let padding = "x".repeat(1024 * 1024 - prefix.len());
+        // The (limit + 1)-byte probe ends inside the three-byte rune.
+        let oversized: Value = serde_json::from_str(&format!(
+            r#"{prefix}{padding}界","type":"agent_message"}},"type":"event_msg"}}"#
+        )).unwrap();
+        assert!(std::str::from_utf8(&oversized.to_string().as_bytes()[..1024 * 1024 + 1]).is_err());
         let accepted = json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call_one","output":"{\"accepted\":true}"}});
         let mut lines = vec![json!({"type":"session_meta","payload":{"id":id}})];
         lines.extend(std::iter::repeat_n(oversized, 3));
@@ -1894,21 +1930,85 @@ mod tests {
         let expired = Instant::now();
         let end = json!(fs::metadata(&transcript).unwrap().len());
         let mut calls = 0;
+        let mut last_offset = 0;
         loop {
             calls += 1;
-            assert!(calls <= lines.len(), "indexing made no progress");
+            assert!(calls <= lines.len() + 3, "indexing made no progress");
             assert_eq!(bounded(&record, &cache, &root, &none, Some(expired)), None);
             let saved: Value = serde_json::from_str(&fs::read_to_string(&cache).unwrap()).unwrap();
+            let offset = saved["oversized_scan"]["through"].as_u64()
+                .unwrap_or_else(|| saved["offset"].as_u64().unwrap());
+            assert!((1..=(MAX_QUESTION_LINE + 1) as u64).contains(&(offset - last_offset)));
+            last_offset = offset;
             if saved["offset"] == end {
                 break;
             }
         }
-        // Every line ended a call, each oversized line included.
-        assert_eq!(calls, lines.len());
+        // The expired reader stopped mid-record once for each of the three oversized lines.
+        assert_eq!(calls, lines.len() + 3);
         let budget = Some(Instant::now() + Duration::from_secs(30));
         let complete = bounded(&record, &cache, &root, &none, budget).unwrap();
         assert_eq!(pending(&record, &complete).len(), 2);
     }
+    #[test]
+    fn index_resumes_a_partial_rune_and_reports_real_corruption() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let record = closing_session(dir.path(), 0);
+        let cache = dir.path().join("cache.json");
+        let root = dir.path().join("state");
+        let rows = Rows::default();
+        let mut file = fs::OpenOptions::new().append(true)
+            .open(string(&record, "transcript")).unwrap();
+        let offset = file.metadata().unwrap().len();
+        let close = json!({"type":"event_msg","payload":{"type":"user_message","message":"界"}}).to_string();
+        let split = close.find('界').unwrap() + 1;
+        file.write_all(&close.as_bytes()[..split]).unwrap();
+        let partial = bounded(&record, &cache, &root, &rows, None).unwrap();
+        assert_eq!(partial["offset"], offset);
+        assert_eq!(pending(&record, &partial).len(), 1);
+        file.write_all(&close.as_bytes()[split..]).unwrap();
+        file.write_all(b"\n").unwrap();
+        let complete = bounded(&record, &cache, &root, &rows, None).unwrap();
+        assert!(pending(&record, &complete).is_empty());
+        file.write_all(b"{\"bad\":\"\xff\"}\n").unwrap();
+        assert!(try_bounded(&record, &cache, &root, &rows, None).is_err());
+    }
+
+    #[test]
+    fn an_oversized_append_skips_to_its_newline_across_inspections() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let record = closing_session(dir.path(), 0);
+        let cache = dir.path().join("cache.json");
+        let root = dir.path().join("state");
+        let rows = Rows::default();
+        let mut file = fs::OpenOptions::new().append(true)
+            .open(string(&record, "transcript")).unwrap();
+        let anchor = file.metadata().unwrap().len();
+        file.write_all(&vec![b'x'; 2 * MAX_QUESTION_LINE + 50]).unwrap();
+        let indexed = bounded(&record, &cache, &root, &rows, None).unwrap();
+        assert_eq!(indexed["offset"], anchor);
+        assert_eq!(indexed["oversized_scan"]["through"], file.metadata().unwrap().len());
+        let (_, (read, _)) = work(|| bounded(&record, &cache, &root, &rows, None));
+        assert_eq!(read, 0, "an unchanged partial record was rescanned");
+
+        // A pre-fix cache can already point at this same unterminated EOF.
+        let mut legacy = indexed;
+        legacy["offset"] = json!(file.metadata().unwrap().len());
+        fs::write(&cache, legacy.to_string()).unwrap();
+        let close = boundary("task_complete", "t2");
+        writeln!(file, "{close}").unwrap();
+        let suffix = bounded(&record, &cache, &root, &rows, None).unwrap();
+        assert!(suffix["oversized_scan"].is_null());
+        assert_eq!(pending(&record, &suffix).len(), 1, "parsed a discarded suffix as an event");
+        writeln!(file, "{close}").unwrap();
+        let next = bounded(&record, &cache, &root, &rows, None).unwrap();
+        assert!(pending(&record, &next).is_empty());
+    }
+
     /// zerus-cqkoh: a Skip whose key may have reached Codex never fails as
     /// a refusal; one that sent nothing does.
     #[test]

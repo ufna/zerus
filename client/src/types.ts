@@ -411,6 +411,13 @@ export const isEmptyBatch = (b: Batch) =>
 /** One Activity event as `inspect` returns it; unknown fields are kept. */
 export interface ActivityEvent {
   seq?: number;
+  claude_prompt_id?: string;
+  claude_outbox_request_id?: string;
+  claude_outbox?: boolean;
+  claude_queued_outbox?: boolean;
+  dsh_outbox?: boolean;
+  dsh_request_id?: string;
+  dsh_message_id?: string;
   type?: string;
   source?: string;
   detail?: string;
@@ -427,6 +434,12 @@ export interface ActivityEvent {
   sender?: string;
   activity_key?: string;
   message_id?: string;
+  /** Host-authored policy refusal observed in a verified local child. */
+  child_policy_advisory?: {
+    scope: "session";
+    child: { name: string; session_id: string; run_id: string; conversation_id: string };
+    event: { kind: "provider_policy"; source: string; event_id: string; turn_id: string; at: number };
+  };
   /** OpenCode's inbox: a waiting message is `queued`, and after Stop it stays `not_delivered` until it is sent or removed. */
   delivery_state?: string;
   /** Creation time of an exact current OpenCode inbox entry. */
@@ -701,7 +714,6 @@ export interface LaunchRepository {
 export interface LaunchForm {
   no_machine: boolean; can_enable_local_sessions: boolean; online: boolean; agent: string; name: string;
   account_count: number; account_selected: boolean; account_loading: boolean; account_preset: boolean;
-  native_launch_supported?: boolean;
   path: string; listed_folder: boolean; folder_online: boolean; prefill_pending: boolean;
   /** Qt's `m_catalogRequest`. */
   catalog_pending: boolean;
@@ -945,7 +957,31 @@ export interface WaitingMessage {
   state: "waiting" | "reserved" | "unknown" | "failed";
   target_changed?: boolean;
   can_check_terminal?: boolean;
+  can_check_delivery?: boolean;
+  delivery_in_composer?: boolean;
 }
+/** Native snapshot for explicit Skip only; never a retry or offer permit. */
+export interface SkipWaiting {
+  handle: number;
+  key: string;
+  target: Target;
+  selection_epoch: number;
+  route_revision: number;
+  queue_revision: number;
+  queue: [string, WaitingMessage["state"]][];
+}
+export type WaitingRemovalIntent = { kind: "skip_unknown"; binding: SkipWaiting };
+export type DeliveryObservation = "accepted" | "no_input" | "unresolved";
+export interface TerminalOutboxReceipt {
+  request_id: string;
+  run_id: string;
+  conversation_id: string;
+  queued_at?: number | null;
+  preview: string;
+  attachments: EventAttachment[];
+  delivery_in_composer?: boolean;
+}
+
 export interface ComposerView {
   handle: number; key: string; subagent?: { agent_id: string; send_supported: boolean; hint: string } | null; loaded: boolean; rev: number; text_epoch: number; text: string; position: number; anchor: number;
   attachments: AttachmentView[]; removed: string | null; attaching: boolean; sending: boolean; recording?: boolean; waiting: string | null; uncertain: boolean;
@@ -953,14 +989,17 @@ export interface ComposerView {
   delivery_pending?: boolean;
   /** Advisory only: matching text in loaded history is never receipt evidence. */
   history_text_match?: boolean;
-  status: string; status_error: boolean; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
+  status: string; status_error: boolean; compaction_notice_id?: string; can_send: boolean; send_label: Text; available: boolean; unavailable_reason: string; block_reason: string | null;
   /** Observed earlier-input guard for this exact conversation, when supported. */
   previous_message_pending?: boolean;
   /** A definite refusal is waiting for a fresh release of this exact target. */
   earlier_input_held?: boolean;
   offers_outbox?: boolean;
+  offers_native_queue?: boolean;
   ordinary_send_block?: string;
   waiting_in_zerus?: WaitingMessage[];
+  skip_waiting?: SkipWaiting;
+  terminal_only_outbox?: TerminalOutboxReceipt[];
   attachments_available: boolean; attachments_reason: string; session_status: string; session_status_error: boolean; session_blocks_input: boolean;
   /** The open session's last read failed (Qt's m_inspectError). */
   inspect_error: boolean;

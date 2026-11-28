@@ -120,6 +120,22 @@ mod writer {
                 )
                 .unwrap();
             }
+            if state == "review" {
+                let (before, ids) = doc.view_with_history_ids().unwrap();
+                assert_eq!(before.quick_review_status, Some(crate::quick_review::Status::Team));
+                assert!(before.review_report_id.is_none());
+                let actual_report = before.log.iter().position(|e| e.kind == "report").unwrap();
+                let id = &ids[actual_report];
+                let revision = doc.revision();
+                let decision = crate::quick_review::Disposition::Ready {
+                    evidence: "The holder's Team report".into(),
+                };
+                assert!(doc
+                    .set_quick_review(&revision, id, &decision, None, &actor("lead"), 7)
+                    .is_err());
+                assert!(doc.accept_quick_review(&revision, id, &Actor::Person, 8).is_err());
+                assert_eq!(doc.revision(), revision);
+            }
             let schema = doc.schema();
             let reports = doc
                 .view()

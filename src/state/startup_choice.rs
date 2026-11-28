@@ -1,8 +1,6 @@
-//! A supervised agent can stop before its conversation exists at a chooser no
-//! reviewed parser recognizes: a renamed option, an unreviewed update command,
-//! a panel for another folder or unknown launcher output around it. Activity
-//! still shows the wait: the visible panel verbatim, answered in Terminal.
-//! Zerus never sends keys to it.
+//! A supervised agent can stop before its conversation exists at a native
+//! notice or at a chooser no reviewed parser recognizes. Activity still shows
+//! the wait with a route to Terminal. This fallback never sends keys.
 //!
 //! Sandbox setup keeps this read-only fallback when its dedicated parser
 //! cannot verify the complete native frame. This generic path names the
@@ -17,6 +15,7 @@ struct Choice {
     title: String,
     body: String,
     options: Vec<String>,
+    tool_call_id: &'static str,
 }
 
 // Full-width rules and box edges bound a panel.
@@ -79,7 +78,7 @@ fn parse(screen: &str) -> Option<Choice> {
             return None;
         }
         let title = panel.iter().position(|row| !row.is_empty())?;
-        return Some(Choice { title: panel[title].into(), body: text(&panel[title + 1..]), options: Vec::new() });
+        return Some(Choice { title: panel[title].into(), body: text(&panel[title + 1..]), options: Vec::new(), tool_call_id: "" });
     }
     // Consecutive numbered options with exactly one highlighted. A row directly
     // below an option continues it; a blank row ends the list unless the next
@@ -118,6 +117,7 @@ fn parse(screen: &str) -> Option<Choice> {
         title: title.map_or_else(String::new, |title| panel[title].to_owned()),
         body: title.map_or_else(String::new, |title| text(&panel[title + 1..first])),
         options,
+        tool_call_id: "",
     })
 }
 
@@ -144,6 +144,51 @@ fn codex_sandbox(choice: &Choice) -> bool {
             .rsplit("\n\n")
             .next()
             .is_some_and(|prompt| words(prompt) == CODEX_SANDBOX)
+}
+
+const CLAUDE_SECURITY_TITLE: &str = "Security notes:";
+const CLAUDE_SECURITY_FOOTER: &str = "Press Enter to continue";
+const CLAUDE_SECURITY_BODY: &str = "1. Claude can make mistakes.
+    You're responsible for Claude's actions and should always review them, especially when running code.
+
+2. Due to prompt injection risks, only use it with code you trust
+    Learn more: https://code.claude.com/docs/en/security";
+const CLAUDE_SECURITY_NOTICE: &str = "claude_startup_security_notice";
+
+// The whole current Claude onboarding frame, not a substring search. Short
+// panes omit the art; its paint and wrapping do not identify the interaction.
+fn claude_security_notice(screen: &str) -> Option<Choice> {
+    let mut rows = screen.lines().map(str::trim).filter(|row| !row.is_empty());
+    let version = rows.next()?.strip_prefix("Welcome to Claude Code v")?;
+    let mut parts = version.split('.');
+    if !(0..3).all(|_| {
+        parts.next().is_some_and(|part| {
+            !part.is_empty() && part.len() <= 9 && part.bytes().all(|b| b.is_ascii_digit())
+        })
+    }) || parts.next().is_some()
+    {
+        return None;
+    }
+    loop {
+        let row = rows.next()?;
+        if row == CLAUDE_SECURITY_TITLE {
+            break;
+        }
+        if !row.chars().all(|ch| " .*█▓▒░▄▖▗".contains(ch)) {
+            return None;
+        }
+    }
+    if rows.next_back()? != CLAUDE_SECURITY_FOOTER
+        || !rows.flat_map(str::split_whitespace).eq(CLAUDE_SECURITY_BODY.split_whitespace())
+    {
+        return None;
+    }
+    Some(Choice {
+        title: CLAUDE_SECURITY_TITLE.into(),
+        body: format!("{CLAUDE_SECURITY_BODY}\n\n{CLAUDE_SECURITY_FOOTER}"),
+        options: Vec::new(),
+        tool_call_id: CLAUDE_SECURITY_NOTICE,
+    })
 }
 
 /// The session's native-input lock, keyed by its verified record (#1437
@@ -205,7 +250,7 @@ fn card(record: &Value, choice: &Choice) -> Option<Value> {
     let options: Vec<_> = choice.options.iter().enumerate()
         .map(|(i, label)| json!({"id":(i + 1).to_string(),"label":label})).collect();
     Some(json!({"question_id":format!("startup-choice:{hash}"),"question_hash":hash,
-        "tool_call_id":if sandbox { "codex_sandbox_setup" } else { "" },
+        "tool_call_id":if sandbox { "codex_sandbox_setup" } else { choice.tool_call_id },
         "agent_id":"main","run_id":record["run_id"],"conversation_id":record["conversation_id"],"created_at":0,
         "source":"startup_terminal_choice","can_answer":false,"answer_transport":"",
         "answer_unavailable_reason":if sandbox { CODEX_SANDBOX_REASON } else { "Answer this in Terminal." },
@@ -224,14 +269,20 @@ pub(super) fn current(record: &Value) -> Option<Value> {
     if let Some(theme) = claude_theme::card(&record, &screen) {
         return Some(theme);
     }
+    if string(&record, "agent") == "claude" && input::first_message_candidate(&record) {
+        if let Some(notice) = claude_security_notice(&screen) {
+            return card(&record, &notice);
+        }
+    }
     card(&record, &parse(&screen)?)
 }
 
 pub(super) fn detail(record: &Value, question: &Value) -> String {
-    if question["tool_call_id"] == "codex_sandbox_setup" {
-        return "Codex is waiting for its sandbox setup choice in Terminal".to_owned();
+    match question["tool_call_id"].as_str() {
+        Some("codex_sandbox_setup") => "Codex is waiting for its sandbox setup choice in Terminal".to_owned(),
+        Some(CLAUDE_SECURITY_NOTICE) => "Review Claude Code’s security notes in Terminal".to_owned(),
+        _ => format!("{} is waiting for a choice in Terminal", agent_name(record)),
     }
-    format!("{} is waiting for a choice in Terminal", agent_name(record))
 }
 
 #[cfg(test)]
@@ -347,7 +398,7 @@ mod tests {
             changed[field] = value;
             assert!(card(&changed, &choice).is_none());
         }
-        let untitled = Choice { title: String::new(), body: String::new(), options: vec!["A".into(), "B".into()] };
+        let untitled = Choice { title: String::new(), body: String::new(), options: vec!["A".into(), "B".into()], tool_call_id: "" };
         assert_eq!(card(&record("kimi"), &untitled).unwrap()["questions"][0]["question"], "Kimi is waiting for a choice");
     }
 }

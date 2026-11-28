@@ -1,0 +1,14 @@
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+  Select model
+  Your pick is the default for new sessions. For other models, use --model.
+
+  ❯ ▾   More models
+    6.  Fable 5.1                Most capable for your hardest and longest-running tasks
+    7.  Haiku 4.5                Fastest for quick answers
+    8.  Sonnet 5                 Efficient for routine tasks
+    9.  Opus 5                   Best for everyday, complex tasks
+    10. Fable 5                  Most capable for your hardest and longest-running tasks
+    11. Opus 4.8                 Best for everyday, complex tasks
+    ↓ 3 more
+
+  Enter to collapse · Esc to cancel

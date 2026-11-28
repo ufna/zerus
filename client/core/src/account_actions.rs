@@ -113,6 +113,9 @@ impl Binding {
             return Err(CHANGED.into());
         }
         let row = profile(catalog, id)?;
+        if id == "native-agy" || row["provider"] == "agy" {
+            return Err(launch::ANTIGRAVITY_RETIRED.into());
+        }
         let revision = text(catalog, "revision");
         if revision.is_empty() || revision.len() > 256 || text(row, "provider").is_empty() {
             return Err(CHANGED.into());

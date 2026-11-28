@@ -26,6 +26,7 @@ use crate::desktop_service::termination_outcome::programs::pipeline as programs;
 
 pub mod manual;
 mod presentation;
+mod stop_check;
 
 const LIMIT: usize = review::CLEANUP_TARGETS;
 const PREF: &str = "workspace/removeWorktreeAfterTermination";
@@ -83,6 +84,7 @@ struct Job {
     // program pipeline while its incomplete/unknown result still needs review.
     program_review_pending: bool,
     program_retirement: Option<ProgramRetirement>,
+    unconfirmed_stop: Option<stop_check::Unconfirmed>,
     // Set once a result that is not a reviewable refusal released its
     // physically retired program (zerus-1y897.5). The row stays for lookup;
     // it never offers Check again, Force or a removal consent.
@@ -371,6 +373,8 @@ pub struct Row {
     can_force: bool,
     force_revision: Option<u64>,
     program_retirement: Option<ProgramRetirement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    program_stop_check: Option<stop_check::Availability>,
     ready: bool,
     busy: bool,
     /// What the job is doing right now, separate from the entry's outcome.
@@ -527,6 +531,7 @@ impl Model {
             dismissed: false,
             program_review_pending: false,
             program_retirement: None,
+            unconfirmed_stop: None,
             lookup_only: false,
             physically_released: false,
             source: Some(target.clone()),
@@ -682,6 +687,12 @@ impl Model {
                         }
                     },
                     program_retirement: job.program_retirement,
+                    program_stop_check: job.unconfirmed_stop.as_ref().map(|stop| {
+                        stop_check::Availability {
+                            can_check: stop_check::check_entry(self, job).is_ok(),
+                            has_request: stop.original.is_some(),
+                        }
+                    }),
                     can_check: self.can_dismiss(job)
                         && !self.unknown_folder(job)
                         && !job.busy
@@ -1353,6 +1364,7 @@ pub async fn termination_cleanup_confirm(
                 dismissed: false,
                 program_review_pending: false,
                 program_retirement: None,
+                unconfirmed_stop: None,
                 lookup_only: false,
                 physically_released: false,
                 source: Some(capture.target.clone()),
@@ -1588,6 +1600,7 @@ pub(crate) fn assert_real_refused_check(stopped: programs::Stopped) -> serde_jso
         dismissed: false,
         program_review_pending: true,
         program_retirement: None,
+        unconfirmed_stop: None,
         lookup_only: false,
         physically_released: false,
         source: None,
@@ -1688,6 +1701,7 @@ pub(crate) fn assert_real_expired_release(stopped: programs::Stopped, force: boo
         dismissed: false,
         program_review_pending: true,
         program_retirement: None,
+        unconfirmed_stop: None,
         lookup_only: false,
         physically_released: false,
         source: None,
@@ -1809,6 +1823,7 @@ fn stopping_job() -> Job {
         dismissed: false,
         program_review_pending: true,
         program_retirement: None,
+        unconfirmed_stop: None,
         lookup_only: false,
         physically_released: false,
         source: None,
@@ -1935,13 +1950,13 @@ pub(crate) fn assert_real_unconfirmed_stops(
             |_, _, _| panic!("an unconfirmed stop was reviewed"),
         )
     }
-    fn assert_held(state: &TerminationCleanup, request_id: String, live: bool) {
+    fn assert_held(state: &TerminationCleanup, request_id: String, live: bool, has_request: bool) {
         assert_eq!(
             lock(&state.0.model).jobs[0]
                 .programs
                 .as_ref()
                 .map(|program| program.identity().0),
-            Some(request_id),
+            Some(request_id.clone()),
             "the unconfirmed stop was released"
         );
         assert!(check(state).is_err());
@@ -1955,6 +1970,15 @@ pub(crate) fn assert_real_unconfirmed_stops(
             );
             assert!(job.lookup_only);
             assert!(!job.busy);
+            assert_eq!(
+                job.unconfirmed_stop
+                    .as_ref()
+                    .unwrap()
+                    .original
+                    .as_ref()
+                    .map(|input| input.request_id.as_str()),
+                has_request.then_some(request_id.as_str()),
+            );
             assert_eq!(
                 job.program_retirement,
                 Some(ProgramRetirement::StopUnconfirmed)
@@ -2017,7 +2041,7 @@ pub(crate) fn assert_real_unconfirmed_stops(
     assert!(job.busy);
     let live = program_pipeline::record_stop(&mut job, program_pipeline::confirm_force(offer));
     lock(&state.0.model).jobs.push_back(job);
-    assert_held(&state, request_id, live);
+    assert_held(&state, request_id, live, false);
 
     for stopped in [incomplete, refused] {
         let state = TerminationCleanup::default();
@@ -2025,7 +2049,7 @@ pub(crate) fn assert_real_unconfirmed_stops(
         let (request_id, _, _) = stopped.identity();
         let live = program_pipeline::record_stop(&mut job, program_pipeline::settle(stopped));
         lock(&state.0.model).jobs.push_back(job);
-        assert_held(&state, request_id, live);
+        assert_held(&state, request_id, live, true);
     }
 
     // A refused original stop hands nothing back: only the lookup-only row.
@@ -2033,7 +2057,10 @@ pub(crate) fn assert_real_unconfirmed_stops(
     let mut job = stopping_job();
     assert!(!program_pipeline::record_stop(
         &mut job,
-        Err(program_pipeline::Unconfirmed { held: None }),
+        Err(program_pipeline::Unconfirmed {
+            held: None,
+            original: None
+        }),
     ));
     lock(&state.0.model).jobs.push_back(job);
     assert!(check(&state).is_err());
@@ -2749,6 +2776,7 @@ pub async fn termination_cleanup_inspect(
     id: String,
     file: String,
     offset: usize,
+    check_stop: Option<bool>,
 ) -> Result<Value, String> {
     if crate::actions::blocked() {
         return Err(crate::actions::REPLAY_NEEDS_HGS.into());
@@ -2756,7 +2784,24 @@ pub async fn termination_cleanup_inspect(
     if file.len() > 4096 || file.chars().any(char::is_control) || offset > 1_000_000 {
         return Err(STATE_CHANGED.into());
     }
+    if check_stop.is_some() && (!file.is_empty() || offset != 0) {
+        return Err(STATE_CHANGED.into());
+    }
     let _read = state.0.read()?;
+    if let Some(recover) = check_stop {
+        let inner = state.0.clone();
+        return tauri::async_runtime::spawn_blocking(move || {
+            stop_check::inspect(
+                &inner,
+                &id,
+                recover,
+                stop_check::status,
+                crate::worktree_cleanup::inspect_stop_blockers,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     let (host, machine, path, common) = {
         let m = lock(&state.0.model);
         let j = m.jobs.iter().find(|j| j.id == id).ok_or(STATE_CHANGED)?;
@@ -3348,6 +3393,7 @@ fn check_blocking<A: Send + 'static>(
             dismissed: false,
             program_review_pending: false,
             program_retirement: None,
+            unconfirmed_stop: None,
             lookup_only: false,
             physically_released: false,
             source: None,

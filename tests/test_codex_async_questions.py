@@ -174,6 +174,19 @@ class CodexAsync(unittest.TestCase):
         finally:
             if child.poll() is None:child.terminate();child.wait(timeout=5)
 
+    def test_interrupted_outbox_waits_for_an_outstanding_native_question(self):
+        self.request()
+        fixtures.InputTransport.interrupted_turn(self)
+        self.assertEqual(len(self.inspect()['pending_questions']), 1)
+        payload = {
+            'only_when_idle': True, 'request_id': str(uuid.uuid4()), 'text': 'queued',
+            'expected_run_id': self.run_id, 'expected_conversation_id': self.conversation_id}
+        result = subprocess.run([str(fixtures.HGS), 'send', self.name, '--when-idle', '--json'],
+                                env=self.env, input=json.dumps(payload), text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['status'], 'waiting_for_idle')
+        self.assertEqual(self.received(), b'')
+
     def test_an_exact_answer_receipt_remains_readable_when_priority_is_unavailable(self):
         card=self.request()
         result,payload=self.answer(card)

@@ -90,7 +90,7 @@ export function notificationsStillAllowed(live: ActionRow, shown: ActionRow, onl
 }
 
 export interface MenuState {
-  change: { label: "Pause session" | "Stop session…" | "Retry start" | "Resume session" | "Restore session" | "Updating…"; enabled: boolean; reason?: string };
+  change: { label: "Pause session" | "Resume session" | "Restore session" | "Updating…"; enabled: boolean; reason?: string };
   rename: boolean;
   archive: { visible: boolean; enabled: boolean; reason?: string };
   end: {
@@ -132,15 +132,17 @@ export function lifecycleReady(s: LifecycleRow, op: "stop" | "pause" | "terminat
 
 /** Exact native lifecycle capabilities supplement the reported actions for the verified operation. */
 export function allowedOp(s: LifecycleRow & Pick<ActionRow, "allowed"> & Partial<Pick<ActionRow, "processState">>, op: string, details?: Details): boolean {
+  if (s.cmd === "agy") return false;
   if ((op === "pause" || op === "terminate") && lifecycleReady(s, op)) return true;
   if (op === "terminate" && s.processState === "unverified") return false;
   if (details?.allowed_actions) return details.allowed_actions.includes(op);
   if (s.allowed !== undefined) return s.allowed.split(" ").includes(op);
-  return s.cmd !== "agy" && (s.cmd !== "opencode" || op === "rename" || op === "forget");
+  return s.cmd !== "opencode" || op === "rename" || op === "forget";
 }
 
 const reasonFor = (s: ActionRow, op: "archive" | "terminate" | "forget" | "restore", details?: Details) =>
-  (op === "terminate" && s.processState === "unverified" ? trNoop("Session availability unverified") : undefined)
+  (s.cmd === "agy" ? trNoop("Antigravity integration has been retired from Zerus.") : undefined)
+  || (op === "terminate" && s.processState === "unverified" ? trNoop("Session availability unverified") : undefined)
   || details?.action_reasons?.[op]
   || (op === "archive" ? s.archiveReason : op === "terminate" ? s.terminateReason : op === "restore" ? s.restoreReason : s.forgetReason)
   || NO_REASON;
@@ -166,11 +168,8 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   // native Pause capability may offer its existing exact-process stop path.
   const firstTurnPause = !s.conversationId && !details?.conversation_id
     && (details?.allowed_actions != null ? details.allowed_actions.includes("pause") : s.allowed?.split(" ").includes("pause") === true);
-  const antigravity = s.cmd === "agy";
-  const retryStart = antigravity && !s.conversationId && (details?.startup_retry_available ?? s.startupRetryAvailable) === true;
-  const canPause = running && (lifecycleReady(s, "pause") || (processMayBeLive(s.processState) && (antigravity
-    ? !!s.runId
-    : firstTurnPause || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)))));
+  const canPause = running && (lifecycleReady(s, "pause") || (processMayBeLive(s.processState)
+    && (firstTurnPause || (s.resumable && idle && (!details || details.expected_id === "" || details.resume_message_can_send)))));
   // Restore (Qt canChange 5302-5304). The client's right-click selects the row
   // first, so its context menu is Qt's selected-row case, which reuses the
   // header's m_changeAction (5360). It also follows the computer's restore
@@ -180,7 +179,7 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
   const change = archived
     ? available && s.resumable && !!s.archiveId && (!options.occupied || !!s.restorePending) && restorable
     : available && ((canPause && allowedOp(s, "pause", details))
-      || (!running && s.resumable && (!antigravity || (!!s.runId && (!!s.conversationId || retryStart))) && allowedOp(s, "resume", details)));
+      || (!running && s.resumable && allowedOp(s, "resume", details)));
   const [agent, project] = s.name.split("/", 2);
 
   const archives = archivesOnTerminate(s);
@@ -197,25 +196,27 @@ export function menuState(s: ActionRow, online: boolean, updating: boolean, deta
 
   // Stop follows the inspected turn (Qt's m_details); without details it stays off.
   const phase = details?.phase || s.phase || "";
-  const working = WORKING.includes(phase) && running && (s.processState !== "unverified" || lifecycleReady(s, "stop"));
+  const working = s.cmd !== "agy" && WORKING.includes(phase) && running && (s.processState !== "unverified" || lifecycleReady(s, "stop"));
   const interruptible = !!details?.interrupt_supported;
   const stop: MenuState["stop"] = {
     visible: working,
     enabled: working && online && interruptible && !options.interrupting,
     reason: options.interrupting ? trNoop("Interrupt is being sent…") : !online ? trNoop("Machine is offline")
-      : !interruptible ? (s.cmd === "agy" ? NO_REASON : trNoop("Interrupt is unavailable. Open Terminal to stop this turn.")) : undefined,
+      : !interruptible ? trNoop("Interrupt is unavailable. Open Terminal to stop this turn.") : undefined,
   };
 
   return {
     change: {
-      label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? (antigravity ? trNoop("Stop session…") : trNoop("Pause session")) : retryStart ? trNoop("Retry start") : trNoop("Resume session"),
+      label: updating || (options.batchRunning && !options.context) ? trNoop("Updating…") : archived ? trNoop("Restore session") : running ? trNoop("Pause session") : trNoop("Resume session"),
       enabled: change,
-      reason: archived && !restorable ? reasonFor(s, "restore", details)
-        : antigravity && !change ? details?.action_reasons?.[running ? "pause" : "resume"] || NO_REASON : undefined,
+      reason: archived && !restorable ? reasonFor(s, "restore", details) : undefined,
     },
     rename: allowedOp(s, "rename", details) && available && !!agent && !!project && (!archived || !!s.archiveId),
     archive: {
-      visible: s.cmd !== "deepseek" && (s.cmd !== "agy" || allowedOp(s, "archive", details)) && (s.state === "paused" || s.state === "stopped"),
+      visible: s.cmd === "opencode"
+        ? !archived && (allowedOp(s, "archive", details)
+          || reasonFor(s, "archive", details) === trNoop("OpenCode still has a running child session. End its work in OpenCode before archiving."))
+        : s.cmd !== "deepseek" && s.cmd !== "agy" && (s.state === "paused" || s.state === "stopped"),
       enabled: (!options.context || online) && !updating && !options.batchRunning && allowedOp(s, "archive", details),
       reason: reasonFor(s, "archive", details),
     },
@@ -362,26 +363,28 @@ export function detailsFromInspection(value: unknown): Details | undefined {
 
 /** NativeSessionCapabilities::terminal: whether the session has a terminal to attach to. */
 export function terminal(s: Pick<ActionRow, "cmd" | "terminalSupported" | "terminalReported" | "terminalAttachSupported" | "terminalAttachReported">, details?: Details): boolean {
+  if (s.cmd === "agy") return false;
   if (s.cmd === "dsh" || s.cmd === "deepseek") return false;
   if (s.cmd === "opencode") {
     if (typeof details?.terminal_attach_supported === "boolean") return details.terminal_attach_supported;
     if (s.terminalAttachReported) return s.terminalAttachSupported;
   }
   if (typeof details?.terminal_supported === "boolean") return details.terminal_supported;
-  if ((s.cmd === "opencode" || s.cmd === "agy") && !s.terminalReported) return false;
+  if (s.cmd === "opencode" && !s.terminalReported) return false;
   return s.terminalSupported;
 }
 
 /**
  * Whether a saved session's agent gives a terminal once it runs again: the
  * CLI reports `terminal_supported` only for a live pane, never for a paused
- * or stopped row (zerus-5o1ns). The native DeepSeek adapters have none,
- * OpenCode attaches by its own capability, and every other agent does; the
- * resumed row's own `terminal` check runs before anything opens.
+ * or stopped row (zerus-5o1ns). DeepSeek and retired Antigravity records have
+ * none, OpenCode attaches by its own capability, and every other agent does;
+ * the resumed row's own `terminal` check runs before anything opens.
  */
 export function terminalAfterResume(s: Pick<ActionRow, "cmd" | "terminalAttachSupported" | "terminalAttachReported">, details?: Details): boolean {
+  if (s.cmd === "agy") return false;
   if (s.cmd === "dsh" || s.cmd === "deepseek") return false;
-  if (s.cmd === "opencode" || s.cmd === "agy") {
+  if (s.cmd === "opencode") {
     if (typeof details?.terminal_attach_supported === "boolean") return details.terminal_attach_supported;
     return s.terminalAttachReported && s.terminalAttachSupported;
   }
@@ -413,7 +416,7 @@ export function copyState(s: ActionRow, online: boolean, details?: Details): Cop
   const archived = s.state === "archived";
   const path = details?.cwd ?? s.cwdPath;
   return {
-    command: { label: archived ? trNoop("Copy restore command") : trNoop("Copy connect command"), enabled: (archived || terminal(s)) && (!archived || !!s.archiveId) },
+    command: { label: archived ? trNoop("Copy restore command") : trNoop("Copy connect command"), enabled: s.cmd !== "agy" && (archived ? !!s.archiveId : terminal(s)) },
     reference: online && !!s.runId,
     folder: { enabled: path !== "", path },
   };
@@ -476,12 +479,12 @@ export function forgetOpening(menuRow: ActionRow, live: ActionRow, details?: Det
   return { row, bound: { binding, run: details ? details.run_id : row.runId ?? "", conversation: details ? details.conversation_id : row.conversationId ?? "" } };
 }
 
-export type DialogKind = "rename" | "stop_antigravity" | "terminate" | "fresh" | "forget" | "batch" | "fork" | "resume_terminal";
+export type DialogKind = "rename" | "terminate" | "fresh" | "forget" | "batch" | "fork" | "resume_terminal";
 /** What a forget dialog named: whether it forgets an OpenCode binding, and the run and conversation then in view. */
 export interface ForgetScope { binding: boolean; run: string; conversation: string }
 export type DialogOpen =
   | { kind: "fork"; row: ActionRow; details: Details }
-  | { kind: "rename" | "stop_antigravity" | "terminate" | "fresh" | "archive"; row: ActionRow }
+  | { kind: "rename" | "terminate" | "fresh" | "archive"; row: ActionRow }
   | { kind: "forget"; row: ActionRow; bound: ForgetScope }
   /** A selection's Forget or Terminate: `answer` gets true for the confirm button, false otherwise. */
   | { kind: "batch"; copy: BatchConfirmation; answer: (confirmed: boolean) => void }

@@ -1,12 +1,12 @@
 //! Drafts waiting in Zerus to enter a particular native conversation.
 use super::{
-    MAX_MANIFEST, atomic_write, folder, not_saved, private, prune_blobs, read_attachments,
-    read_bounded, write_attachments,
+    atomic_write, folder, not_saved, private, prune_blobs, read_attachments, read_bounded,
+    write_attachments, MAX_MANIFEST,
 };
-use crate::Target;
 use crate::attachments::{Attachment, MAX_TOTAL_BYTES};
+use crate::Target;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,8 @@ pub struct Entry {
     pub request_id: String,
     /// Unix seconds from the desktop's original enqueue, absent for older entries.
     pub queued_at: Option<f64>,
+    /// The original's presentation is chosen before saving or drawing it.
+    pub delivery_in_composer: bool,
     pub target: Target,
     pub catalog_key: String,
     /// If a draft move leaves two copies during recovery, only the original
@@ -86,6 +88,9 @@ pub(super) struct Queue {
 fn queue_dir(root: &Path, key: &str) -> PathBuf {
     folder(&root.join("outbox"), key)
 }
+
+mod discovery;
+pub use discovery::Scan;
 
 fn read_manifest(path: &Path, key: &str) -> Result<Option<Value>, ()> {
     let bytes = match read_bounded(&path.join("queue.json"), MAX_MANIFEST) {
@@ -188,6 +193,7 @@ fn encode(path: &Path, entries: &[Entry], retained: &mut HashSet<String>) -> Res
                 "catalog_key": entry.catalog_key, "draft_key": entry.draft_key, "text": entry.text,
                 "attachments": files, "state": entry.state,
             });
+            row["delivery_in_composer"] = json!(entry.delivery_in_composer);
             if let Some(queued_at) = entry.queued_at {
                 row["queued_at"] = json!(queued_at);
             }
@@ -221,10 +227,14 @@ pub(super) fn decode(path: &Path, value: &Value) -> Option<Vec<Entry>> {
             return None;
         }
         let state = serde_json::from_value(row["state"].clone()).ok()?;
+        let target: Target = serde_json::from_value(row["target"].clone()).ok()?;
         entries.push(Entry {
+            delivery_in_composer: row["delivery_in_composer"]
+                .as_bool()
+                .unwrap_or_else(|| target.name.starts_with("codex/")),
             request_id: row["request_id"].as_str()?.into(),
             queued_at: row["queued_at"].as_f64().and_then(enqueue_time),
-            target: serde_json::from_value(row["target"].clone()).ok()?,
+            target,
             catalog_key: row["catalog_key"].as_str()?.into(),
             draft_key: row["draft_key"].as_str()?.into(),
             text: row["text"].as_str()?.into(),
@@ -244,20 +254,24 @@ pub(super) fn decode(path: &Path, value: &Value) -> Option<Vec<Entry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drafts::{StoredDraft, load_once, save_editable};
+    use crate::drafts::{load_once, save_editable, StoredDraft};
 
     const KEY: &str = "\ncodex/example";
     const ID: &str = "a0000000-0000-4000-8000-000000000001";
 
+    pub(super) struct Scratch(pub(super) PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    pub(super) fn scratch() -> Scratch {
+        Scratch(std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()))
+    }
+
     #[test]
     fn only_a_committed_queue_claim_consumes_the_exact_editor_snapshot() {
-        struct Scratch(PathBuf);
-        impl Drop for Scratch {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let root = Scratch(std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()));
+        let root = scratch();
         let draft = StoredDraft {
             draft: crate::attachments::Draft {
                 text: "same".into(),
@@ -268,6 +282,7 @@ mod tests {
         let entry = Entry {
             request_id: ID.into(),
             queued_at: Some(1_793_000_000.0),
+            delivery_in_composer: false,
             target: Target {
                 computer: String::new(),
                 name: "codex/example".into(),
@@ -290,6 +305,7 @@ mod tests {
         let (loaded, valid) = load_once(&root.0, KEY);
         assert!(valid);
         assert_eq!(loaded.outbox[0].request_id, ID);
+        assert!(!loaded.outbox[0].delivery_in_composer);
         assert!(loaded.draft.text.is_empty());
 
         // A later same-text edit is independent, as is an old writer's

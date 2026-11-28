@@ -160,6 +160,54 @@ fn accounted_read_guard_with_input(input: Vec<u8>) {
     });
 }
 
+#[test]
+fn explicit_claude_receipt_requires_admitted_local_route() {
+    let _process = crate::PROCESS_TREE.read().unwrap();
+    tauri::async_runtime::block_on(async {
+        let f = fixture(json!({"details":true}));
+        let (service, _cache) = connected(&f).await;
+        let computer = ComputerId::local();
+        let machine = "00000000-0000-4000-8000-000000000009";
+        eventually("local receipt route", || {
+            service.notification_scope("").is_some()
+                && service.shared.pump.live_machine(&computer).is_some_and(|card| {
+                    card.ok == Some(true) && card.machine_id.as_deref() == Some(machine)
+                })
+        }).await;
+        let scope = service.notification_scope("").unwrap();
+        let source = (scope.epoch, scope.incarnation, scope.generation);
+        let target = Target { computer: String::new(), name: "claude/example/original".into(),
+            run_id: "original-run".into(), conversation_id: "original-conversation".into() };
+        let read = |target, source| {
+            let service = service.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                check_claude_delivery(service, &target, &Action::SendWhenIdle {
+                    text: "original".into(), attachments: vec![],
+                }, "00000000-0000-4000-8000-000000000011", &source)
+            })
+        };
+        let mut peer = target.clone();
+        peer.computer = "unverified-peer".into();
+        assert!(read(peer, source.clone()).await.unwrap().is_none());
+        let mut stale = source.clone();
+        stale.2 += 1;
+        assert!(read(target.clone(), stale).await.unwrap().is_none());
+        let path = f.0.join("explicit-claude-read");
+        assert!(!path.exists());
+        let proof = read(target, source).await.unwrap().unwrap_or_else(|| {
+            panic!("read refused: calls={:?}, receipt query logged={}", f.calls(), path.exists())
+        });
+        assert_eq!(proof["proof"], "native_claude_receipt");
+        let queries: Vec<Value> = std::fs::read_to_string(path).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0]["expected_machine_id"], machine);
+        assert_eq!(queries[0]["expected_run_id"], "original-run");
+        assert!(effects(&calls(&f)).is_empty());
+        service.join().await.unwrap();
+    });
+}
+
 fn write_termination_image(f: &Fixture) {
     crate::write_executable(
         &f.0.join("hgs"),

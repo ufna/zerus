@@ -885,7 +885,9 @@ mod tests {
             assert!(matches!(cache.prepare_with_mode(request.clone(), mode),
                 Err(err) if err.kind() == io::ErrorKind::PermissionDenied));
         }
-        assert!(cache.prepare_with_mode(request, Some(Mode::Service)).is_ok());
+        assert!(cache
+            .prepare_with_mode(request, Some(Mode::Service))
+            .is_ok());
     }
 
     #[test]

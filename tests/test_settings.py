@@ -16,12 +16,15 @@ AGENT = AGENT.replace("'\\x1b[28;1H   \\x1b[49m\\x1b[29;1H  GPT-6-Astra ' + effo
 AGENT = AGENT.replace("    os.write(1, screen.encode())", r'''
     if stage:
         names = ['GPT-6-Astra', 'GPT-6-Sol'] if stage == 'model' else ['Low', 'Medium', 'High', 'Extra high', 'More reasoning…']
+        if stage == 'model' and (root / 'model-description-prefix').exists(): names = ['GPT-6-Astra', 'GPT-6-Astra Mini']
         if stage == 'advanced': names = ['Max', 'Ultra']
         selected = choice if stage == 'model' else effort_choice
         title = 'Select Model and Effort' if stage == 'model' else 'Select Reasoning Level for GPT-6-Sol'
         if stage == 'advanced': title = 'Advanced Reasoning'
         screen = '\x1b[2J\x1b[10;1H  ' + title + '\r\n\r\n'
-        for i, n in enumerate(names): screen += ('› ' if i == selected else '  ') + str(i+1) + '. ' + n + '\r\n'
+        for i, n in enumerate(names):
+            detail = '  GPT-6-Sol compatible' if stage == 'model' and i == 0 and (root / 'model-description-prefix').exists() else ''
+            screen += ('› ' if i == selected else '  ') + str(i+1) + '. ' + n + detail + '\r\n'
         screen += '\r\n  enter select · esc back' if stage == 'model' else '\r\n  enter default · s session · esc back'
     os.write(1, screen.encode())''')
 AGENT = AGENT.replace("        if agent=='codex' and key in", "        if stage and key == b'\\x1b[B':\n          if stage=='model': choice=(choice+1)%2\n          elif stage=='advanced': effort_choice=(effort_choice+1)%2\n          else: effort_choice=(effort_choice+1)%5\n          show()\n        elif agent=='codex' and key in")
@@ -90,6 +93,13 @@ class SessionSettings(test_effort.EffortTransport):
         p['model']='gpt-6-astra';self.assertIn('already used',self.settings(p,False))
         self.assertEqual(self.cache.read_bytes(),before)
         self.assertFalse((self.root/'.codex/config.toml').exists())
+
+    def test_description_prefix_never_applies_a_different_model(self):
+        (self.root/'model-description-prefix').touch()
+        p=self.payload('low');p['model']='gpt-6-sol'
+        result=self.settings(p,success=False)
+        self.assertIn('not offered',result)
+        self.assertNotIn(b's',self.received())
 
     def fresh(self):
         self.conversation_id=''
@@ -217,6 +227,53 @@ class SessionSettings(test_effort.EffortTransport):
         retry=self.payload('low');retry['expected_pending_id']=first['request_id']
         self.assertIn('not safe to retry',self.settings(retry,False))
         self.assertEqual(self.received(),b'')
+
+    def test_send_retires_only_its_spent_pending_settings_after_terminal_is_ready(self):
+        self.record.update(activity='busy', phase='working')
+        self.write_record()
+        pending = self.payload('low')
+        self.assertEqual(self.settings(pending)['status'], 'scheduled')
+        self.record = json.loads(self.record_path.read_text())
+        self.record.update(activity='idle', phase='idle', settings_unconfirmed_at=1, last_event_at=2)
+        self.write_record()
+        receipt = self.state / 'settings_receipts' / f"{pending['request_id']}.json"
+        original = json.loads(receipt.read_text())
+        original['status'] = 'in_progress'
+
+        def send():
+            message = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                           expected_conversation_id=self.conversation_id, text='new input')
+            return subprocess.run([str(test_input.HGS), 'send', self.name, '--json'], env=self.env,
+                                  input=json.dumps(message), text=True, capture_output=True, timeout=10)
+
+        receipt.unlink()
+        self.assertNotEqual(send().returncode, 0)
+        foreign = receipt.with_name('foreign.json')
+        foreign.write_text(json.dumps(original))
+        receipt.symlink_to(foreign)
+        self.assertNotEqual(send().returncode, 0)
+        receipt.unlink()
+        for mismatch in ({'model': 'gpt-6-sol'}, {'effort': 'high'}, {'scope': 'global'},
+                         {'request_id': str(uuid.uuid4())}, {'conversation_id': 'another'}):
+            receipt.write_text(json.dumps(original | mismatch))
+            self.assertNotEqual(send().returncode, 0, mismatch)
+            self.assertEqual(self.received(), b'')
+            self.assertEqual(self.inspect()['pending_settings_id'], pending['request_id'])
+        receipt.write_text(json.dumps(original))
+        before = receipt.read_bytes()
+        self.record['settings_unconfirmed_at'] = 3
+        self.write_record()
+        self.assertIn('did not react', send().stderr)
+        self.assertEqual(self.received(), b'')
+        self.assertEqual(self.inspect()['pending_settings_id'], pending['request_id'])
+        self.record['settings_unconfirmed_at'] = 1
+        self.write_record()
+        result = send()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: self.received().endswith(b'\r'))
+        self.assertEqual(self.received(), b'\x1b[200~new input\x1b[201~\r')
+        self.assertFalse(self.inspect()['pending_settings_id'])
+        self.assertEqual(receipt.read_bytes(), before)
 
     def test_pending_settings_survive_multiple_renames(self):
         import hashlib

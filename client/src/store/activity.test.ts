@@ -17,6 +17,67 @@ function setup() {
 }
 
 describe("activity store", () => {
+  it("pages accepted messages by exact run and drops late pages after changing selection", async () => {
+    const selected = { ...target, runId: "a", conversationId: "first" };
+    const base = { run_id: "a", conversation_id: "first", codex_queued_messages: [{ request_id: "new" }],
+      codex_queue_projection: { has_more: true, next_cursor: "c1" } };
+    let reply!: (value: Record<string, unknown>) => void;
+    const receiptPage = vi.fn(() => new Promise<Record<string, unknown>>(resolve => { reply = resolve; }));
+    const store = createActivity({ follow: async () => {}, unfollow: async () => {}, receiptPage });
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    const first = store.loadEarlierReceipts();
+    expect(receiptPage).toHaveBeenCalledWith(selected, "c1");
+    reply({ ...base, codex_queued_messages: [{ request_id: "new" }, { request_id: "old" }],
+      codex_queue_projection: { has_more: true, next_cursor: "c2" } });
+    await first;
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "new" }, { request_id: "old" }]);
+    expect(store.nextReceiptCursor()).toBe("c2");
+    const late = store.loadEarlierReceipts();
+    store.follow({ ...target, id: "another", key: "run:b", runId: "b", conversationId: "second" });
+    reply(base);
+    await late;
+    expect(store.hasReceiptPage()).toBe(false);
+    expect(store.nextReceiptCursor()).toBeUndefined();
+    store.follow(undefined);
+  });
+
+  it("keeps current Codex queue state live and treats a loaded earlier receipt page as history", async () => {
+    const selected = { ...target, runId: "a", conversationId: "conversation" };
+    const binding = { run_id: "a", conversation_id: "conversation" };
+    const live = { request_id: "current", native_queue_state: "queued" };
+    const old = { request_id: "older", native_queue_state: "queued" };
+    const consumed = { request_id: "consumed", native_queue_state: "consumed" };
+    const base = { ...binding, codex_queued_messages: [live],
+      codex_queue_projection: { has_more: true, next_cursor: "earlier" } };
+    const store = createActivity({ follow: async () => {}, unfollow: async () => {},
+      receiptPage: async () => ({ ...binding, codex_queued_messages: [live, old, consumed] }) });
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    await store.loadEarlierReceipts();
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live, { request_id: "older" }, consumed]);
+    expect(base.codex_queued_messages).toEqual([live]);
+    store.follow(undefined);
+  });
+
+  it("retires Codex queue state across reconnect and rejects an out-of-scope fresh status", () => {
+    const { store } = setup();
+    const selected = { ...target, runId: "a", conversationId: "conversation" };
+    const live = { request_id: "current", native_queue_state: "queued" };
+    const base = { run_id: "a", conversation_id: "conversation", codex_queued_messages: [live] };
+    store.follow(selected);
+    store.applyActivity([out("state", { value: base, rev: 1 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live]);
+    store.applyActivity([out("connection", { pending: true })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "current" }]);
+    store.applyActivity([out("connection", { ready: true })]);
+    store.applyActivity([out("state", { value: { ...base, run_id: "different" }, rev: 1 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([{ request_id: "current" }]);
+    store.applyActivity([out("state", { value: base, rev: 2 })]);
+    expect(store.transcriptSummary()?.codex_queued_messages).toEqual([live]);
+    store.follow(undefined);
+  });
+
   it("keeps one OpenCode user row through a late snapshot and preserves another with equal text and time", () => {
     const { store } = setup();
     store.follow(target);

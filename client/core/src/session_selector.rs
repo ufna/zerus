@@ -4,7 +4,7 @@
 //! acts only while the name still belongs to that session. Reads, polls,
 //! history, status, watch, terminal input and read marks keep their name and
 //! run form until an O(1) label index exists.
-use crate::actions::{Action, Exit, Invocation, Target, invocation, prepend_alias};
+use crate::actions::{invocation, prepend_alias, Action, Exit, Invocation, Target};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -54,6 +54,10 @@ pub fn selects(action: &Action) -> bool {
     match action {
         Action::Send { .. }
         | Action::SendWhenIdle { .. }
+        | Action::SendToCodexQueue { .. }
+        | Action::SendToOrderedCodexTurn { .. }
+        | Action::SendToNativeQueue { .. }
+        | Action::SendWhenNativeAccepts { .. }
         | Action::SendNow { .. }
         | Action::Answer { .. }
         | Action::RemoveQueued { .. }
@@ -63,6 +67,7 @@ pub fn selects(action: &Action) -> bool {
         | Action::Settings { .. }
         | Action::Pause
         | Action::Resume
+        | Action::ResumeNativeForSend
         | Action::StartFresh => true,
         Action::Rename { archive_id, .. } | Action::Fork { archive_id, .. } => {
             archive_id.as_deref().unwrap_or_default().is_empty()
@@ -73,8 +78,17 @@ pub fn selects(action: &Action) -> bool {
 
 /// Where `--session-id` goes: right after the session's name, which follows
 /// the command and, on a peer, its `@alias`.
-fn after_name(target: &Target) -> usize {
-    usize::from(!target.computer.is_empty()) + 2
+fn after_name(target: &Target, call: &Invocation) -> usize {
+    let command = usize::from(!target.computer.is_empty());
+    let outbox = call
+        .args
+        .get(command)
+        .is_some_and(|word| word == "delivery")
+        && call
+            .args
+            .get(command + 1)
+            .is_some_and(|word| word == "outbox-offer");
+    command + 2 + usize::from(outbox)
 }
 
 /// [`invocation`], selecting the session by its ID as well. `session_id` is
@@ -104,7 +118,7 @@ pub fn selected_invocation(
     }
     let mut call = invocation(target, action, request_id)?;
     if let Some(id) = id {
-        let at = after_name(target);
+        let at = after_name(target, &call);
         if call.args.get(at - 1) == Some(&target.name) {
             call.args
                 .splice(at..at, ["--session-id".to_owned(), id.to_owned()]);
@@ -116,7 +130,7 @@ pub fn selected_invocation(
 /// The session ID a call for `target` selects by, as [`selected_invocation`]
 /// placed it.
 pub fn selected_id<'a>(target: &Target, call: &'a Invocation) -> Option<&'a str> {
-    let at = after_name(target);
+    let at = after_name(target, call);
     (call.args.get(at - 1) == Some(&target.name)
         && call.args.get(at).is_some_and(|flag| flag == "--session-id"))
     .then(|| call.args.get(at + 1).map(String::as_str))
@@ -235,8 +249,8 @@ impl Answers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Outcome;
     use crate::actions::classify;
+    use crate::Outcome;
     use serde_json::Value;
 
     const ID: &str = "3f2a9c1d-0b4e-4d6a-9c1d-2e3f4a5b6c7d";
@@ -339,6 +353,55 @@ mod tests {
             question: Value::Null,
             answers: vec![]
         }));
+    }
+
+    #[test]
+    fn native_resume_for_send_keeps_the_negotiated_id_and_exact_receipt() {
+        let t = Target {
+            name: "dsh/project/session".into(),
+            ..target("mac")
+        };
+        let action = Action::ResumeNativeForSend;
+        let call = selected_invocation(&t, &action, "req-1", Some(ID)).unwrap();
+        assert_eq!(selected_id(&t, &call), Some(ID));
+        assert_eq!(
+            selected_id(
+                &t,
+                &selected_invocation(&t, &action, "req-1", None).unwrap()
+            ),
+            None
+        );
+        let input: Value = serde_json::from_slice(call.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(input["action"], "resume");
+        assert_eq!(input["expected_run_id"], t.run_id);
+        assert_eq!(input["expected_conversation_id"], t.conversation_id);
+        let mut receipt = serde_json::json!({
+            "request_id":"req-1", "name":t.name, "run_id":t.run_id,
+            "conversation_id":t.conversation_id, "status":"completed",
+            "result_target":{"name":t.name, "run_id":"run-2", "conversation_id":t.conversation_id},
+        });
+        let classify_receipt = |receipt: &Value| {
+            classify(
+                &t,
+                &action,
+                &call,
+                exit(0, &serde_json::to_vec(receipt).unwrap(), ""),
+            )
+        };
+        assert!(matches!(classify_receipt(&receipt), Outcome::Done { .. }));
+        receipt["status"] = serde_json::json!("uncertain");
+        receipt["result_target"] = Value::Null;
+        assert!(matches!(
+            classify_receipt(&receipt),
+            Outcome::Uncertain { .. }
+        ));
+        receipt["status"] = serde_json::json!("failed");
+        assert!(matches!(classify_receipt(&receipt), Outcome::Failed { .. }));
+        receipt["status"] = serde_json::json!("completed");
+        assert!(matches!(
+            classify_receipt(&receipt),
+            Outcome::Uncertain { .. }
+        ));
     }
 
     /// Reads, read marks, archived conversations and other calls never select

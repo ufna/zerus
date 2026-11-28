@@ -15,10 +15,13 @@ pub(crate) fn send(
     if !matches!(caller.actor, TaskActor::Person) {
         return super::send(caller, task, team, role, pipeline);
     }
+    // Match native configuration selection before the no-symlink receipt
+    // reader. macOS temp roots commonly arrive through /var -> /private/var.
+    let state = crate::platform::canonical(caller.state).map_err(storage)?;
     let config = Config {
-        home: caller.state.display().to_string(),
-        dir: caller.state.join("native-intake-model-config"),
-        state: caller.state.to_owned(),
+        home: state.display().to_string(),
+        dir: state.join("native-intake-model-config"),
+        state,
         selves: vec![],
         peers: vec![],
         base_peers: vec![],

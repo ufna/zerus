@@ -492,6 +492,8 @@ fn run_agent<C: supervisor::ChildStatus>(
     }
     let mut spawned = spawn(&base, &name, &token)?;
     let child_id = spawned.child.id();
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let policy_activity = parent_link::policy_activity::start(&token, child_id);
     // The same in-memory ticket survives a definite early resume failure. Once
     // a submission is attempted, even a refusal can never authorize a replay.
     let status = if let Some(ticket) = theme.as_mut() {
@@ -499,6 +501,8 @@ fn run_agent<C: supervisor::ChildStatus>(
         } else {
             kimi_launch::wait(&mut spawned.child, &name, &token, launch_prompt.as_mut())?
         };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    drop(policy_activity);
     supervisor::finish(&name, &token, child_id, status)?;
     Ok(ExitInfo::of(status).exit_code())
 }
@@ -775,6 +779,7 @@ pub(super) fn pause_scoped(names: &[String], dry: bool, scope: Option<&session_a
         // In label order, as the terminal names were.
         let mut names: Vec<String> = records()?
             .iter()
+            .filter(|record| !retired_agy::identity(record))
             .filter(|record| terminal_live(&snapshot, record).unwrap_or(true))
             .map(|record| string(record, "name").to_owned())
             .collect();
@@ -1159,6 +1164,9 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     if archived["backend"] == "dsh" {
         return dsh::retirement::restore(&archived, dry, scope);
     }
+    if archived["backend"] == "opencode" {
+        return opencode::archives::restore(&archived, dry, scope);
+    }
     let source = archive_source::Source::capture(&archived);
     if let Some(fields) = archived.as_object_mut() {
         fields.remove("layout");
@@ -1260,7 +1268,8 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
     let names = if names == ["--all"] {
         let mut stopped = Vec::new();
         for record in records()? {
-            if !string(&record, "conversation_id").is_empty()
+            if !retired_agy::identity(&record)
+                && !string(&record, "conversation_id").is_empty()
                 && !archive::equivalent(&record, &archived)
                 && !already_live(&record, &snapshot)?
             {

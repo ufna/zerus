@@ -9,6 +9,8 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+mod picker_list;
+
 // Original ID Effort/Settings custody. The borrowed facade remains separate;
 // legacy controllers keep their existing native behavior.
 #[cfg(unix)]
@@ -997,10 +999,17 @@ thread_local! {
     /// Whether this settings attempt sent keys, and whether the agent has yet to
     /// visibly react to the last of them; a reaction proves it read the earlier ones.
     static ATTEMPT_KEYS: std::cell::Cell<(bool, bool)> = const { std::cell::Cell::new((false, false)) };
+    /// Set only by this attempt's verified Kimi picker after its session-only key.
+    static KIMI_EFFORT_HANDOFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn start_attempt() {
     ATTEMPT_KEYS.with(|keys| keys.set((false, false)));
+    KIMI_EFFORT_HANDOFF.with(|handoff| handoff.set(false));
+}
+
+fn take_kimi_effort_handoff() -> bool {
+    KIMI_EFFORT_HANDOFF.with(|handoff| handoff.replace(false))
 }
 
 fn sent_keys() {
@@ -1174,6 +1183,24 @@ fn kimi_command_ready(record: &Value) -> Result<bool> {
         && row.chars().skip(12).collect::<String>().trim() == "│")
 }
 
+fn kimi_effort_confirmation(screen: &str, from: &str, to: &str) -> bool {
+    let title = format!("Switch effort from {from} to {to}?");
+    let lines: Vec<_> = screen.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    // Match the last bordered panel, including its continuation controls. The
+    // same text may also be present in scrollback or in a previous response.
+    let border = |line: &str| !line.is_empty() && line.chars().all(|ch| ch == '─');
+    let Some(end) = lines.iter().rposition(|line| border(line)) else {
+        return false;
+    };
+    matches!(lines[..=end].last_chunk::<6>(),
+        Some([top, heading, "↑↓ navigate · Enter select · Esc cancel", confirm, cancel, bottom])
+        if top == bottom && *heading == title
+            && matches!(*confirm, "❯ Confirm switch" | "Confirm switch")
+            && (confirm.starts_with('❯') != cancel.starts_with('❯'))
+            && cancel.strip_prefix('❯').unwrap_or(cancel).split_whitespace()
+                .eq(["Cancel", "Stay", "on", "the", "current", "effort"]))
+}
+
 fn kimi_change(name: &str, request: &Request, current: &Settings) -> Result<()> {
     let record = checked(name, request, true)?;
     if visible_effort(&record, &current.model, &capture(&record)?).as_deref()
@@ -1221,6 +1248,10 @@ fn kimi_change(name: &str, request: &Request, current: &Settings) -> Result<()> 
     wait_until(|| {
         let record = checked(name, request, false)?;
         let screen = capture(&record)?;
+        if kimi_effort_confirmation(&screen, &current.effort, &request.effort) {
+            KIMI_EFFORT_HANDOFF.with(|handoff| handoff.set(true));
+            return Err("Kimi is waiting for your effort choice in Terminal".into());
+        }
         Ok((kimi_picker(&screen).is_none()
             && visible_effort(&record, &current.model, &screen).as_deref()
                 == Some(request.effort.as_str()))
@@ -1287,18 +1318,20 @@ fn open_model_tracked(name: &str, request: &Request, opened: Option<&std::cell::
     send_key(&record, "Enter")
 }
 
-fn selected_codex(screen: &str) -> Option<String> {
-    let mut selected = screen.lines().filter_map(|line| {
-        let line = line.trim().strip_prefix('›')?.trim();
-        let (number, rest) = line.split_once(". ")?;
-        number.parse::<usize>().ok()?;
-        Some(rest.to_owned())
-    });
-    let row = selected.next()?;
-    selected.next().is_none().then_some(row)
+fn selected_codex(screen: &str, title: &str) -> Option<(picker_list::List, bool)> {
+    let lines: Vec<_> = screen.lines().collect();
+    let title = lines.iter().rposition(|line| line.trim() == title)?;
+    let below = &lines[title + 1..];
+    let legend = picker_legend(below)?.to_ascii_lowercase();
+    let keys = |key: &str| legend.split_whitespace().any(|word| word == key);
+    if !keys("esc") || !keys("enter") {
+        return None;
+    }
+    let list = picker_list::List::read(below.iter().copied(), picker_list::Layout::Numbered)?;
+    Some((list, legend.contains("s session")))
 }
 
-fn row_is(row: &str, label: &str) -> bool {
+fn footer_row_is(row: &str, label: &str) -> bool {
     row.strip_prefix(label).is_some_and(|tail| {
         tail.is_empty()
             || tail.starts_with("  ")
@@ -1307,31 +1340,36 @@ fn row_is(row: &str, label: &str) -> bool {
     })
 }
 
-fn codex_select_row(name: &str, request: &Request, title: &str, label: &str) -> Result<String> {
+fn codex_select_row(name: &str, request: &Request, title: &str, label: &str) -> Result<bool> {
     let mut visited = Vec::new();
+    let mut seen = picker_list::Seen::default();
     for _ in 0..256 {
         let record = checked(name, request, false)?;
         let screen = capture(&record)?;
         if !screen.lines().any(|l| l.trim() == title) {
             return Err("model settings dialog changed; inspect Terminal".into());
         }
-        let selected =
-            selected_codex(&screen).ok_or("model selection is not visible; enlarge Terminal")?;
-        if row_is(&selected, label) {
-            return Ok(screen);
+        let (list, session_only) = selected_codex(&screen, title)
+            .ok_or("model selection is not visible; enlarge Terminal")?;
+        seen.observe(&list);
+        if list.selected_matches(label)? {
+            return Ok(session_only);
         }
-        if visited.contains(&selected) {
-            return Err("requested choice is unavailable in the native model picker".into());
+        let selected = &list.selected().position;
+        if visited.contains(selected) {
+            return Err(seen.refusal("requested choice is not offered in the native model picker"));
         }
         visited.push(selected.clone());
         send_key(&record, "Down")?;
         wait_until(|| {
             let r = checked(name, request, false)?;
             let s = capture(&r)?;
-            Ok((selected_codex(&s).as_deref() != Some(selected.as_str())).then_some(()))
+            let moved = selected_codex(&s, title)
+                .is_some_and(|(next, _)| next.selected().position != *selected);
+            Ok(moved.then_some(()))
         })?;
     }
-    Err("model picker exceeded the supported catalog size".into())
+    Err(seen.refusal("model picker exceeded the supported catalog size"))
 }
 
 fn effort_label(value: &str) -> &str {
@@ -1361,7 +1399,7 @@ fn target_footer(record: &Value, model: &ModelOption, screen: &str) -> Option<St
                 let line = line.trim().to_ascii_lowercase();
                 [&model.id, &model.label]
                     .iter()
-                    .any(|id| row_is(&line, &id.to_ascii_lowercase()))
+                    .any(|id| footer_row_is(&line, &id.to_ascii_lowercase()))
             })
             .then(String::new);
     }
@@ -1383,8 +1421,7 @@ fn codex_model(name: &str, request: &Request, model: &ModelOption) -> Result<()>
     })?;
     if screen.lines().any(|l| l.trim() == "Select Model") {
         if model.id.starts_with("codex-auto-") {
-            let s = codex_select_row(name, request, "Select Model", &model.label)?;
-            if !s.contains("s session") {
+            if !codex_select_row(name, request, "Select Model", &model.label)? {
                 return Err(
                     "model picker does not offer a session-only action; use Terminal".into(),
                 );
@@ -1411,8 +1448,8 @@ fn codex_model(name: &str, request: &Request, model: &ModelOption) -> Result<()>
                 .then_some(()))
         })?;
     }
-    let screen = codex_select_row(name, request, "Select Model and Effort", &model.label)?;
-    if model.efforts.len() <= 1 && screen.contains("s session") {
+    let session_only = codex_select_row(name, request, "Select Model and Effort", &model.label)?;
+    if model.efforts.len() <= 1 && session_only {
         send_key(&checked(name, request, false)?, "s")?;
     } else {
         // This Enter opens the reasoning subdialog, it does not apply defaults.
@@ -1428,7 +1465,7 @@ fn codex_model(name: &str, request: &Request, model: &ModelOption) -> Result<()>
                 .any(|l| l.trim() == title)
                 .then_some(()))
         })?;
-        let final_screen = if ["max", "ultra"].contains(&request.effort.as_str()) {
+        let session_only = if ["max", "ultra"].contains(&request.effort.as_str()) {
             codex_select_row(name, request, &title, "More reasoning…")?;
             send_key(&checked(name, request, false)?, "Enter")?;
             wait_until(|| {
@@ -1451,7 +1488,7 @@ fn codex_model(name: &str, request: &Request, model: &ModelOption) -> Result<()>
         } else {
             codex_select_row(name, request, &title, effort_label(&request.effort))?
         };
-        if !final_screen.contains("s session") {
+        if !session_only {
             return Err(
                 "reasoning picker does not offer a session-only action; use Terminal".into(),
             );
@@ -1468,36 +1505,45 @@ fn codex_model(name: &str, request: &Request, model: &ModelOption) -> Result<()>
     input::checked_terminal(&checked(name, request, false)?, true)
 }
 
-fn kimi_model_row(screen: &str) -> Option<String> {
-    if !screen
-        .lines()
-        .any(|l| l.trim().starts_with("Select a model"))
-        || !screen.contains("Alt+S session-only")
+fn kimi_model_list(screen: &str) -> Option<picker_list::List> {
+    let lines: Vec<_> = screen.lines().collect();
+    let title = lines
+        .iter()
+        .rposition(|line| line.trim().starts_with("Select a model"))?;
+    let below = &lines[title + 1..];
+    let legend = below
+        .iter()
+        .position(|line| line.contains("Alt+S session-only"))?;
+    if below[..legend]
+        .iter()
+        .any(|line| line.trim().starts_with("Thinking"))
     {
         return None;
     }
-    let mut rows = screen
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("❯ ").map(str::to_owned));
-    let row = rows.next()?;
-    rows.next().is_none().then_some(row)
+    let below = &below[legend + 1..];
+    let first = below.iter().position(|line| !line.trim().is_empty())?;
+    let thinking = below
+        .iter()
+        .position(|line| line.trim().starts_with("Thinking"))?;
+    let rows = below.get(first..thinking)?;
+    // The provider tab strip can sit directly above the choices.
+    let skip_provider = lines[title + 1..=title + 1 + legend]
+        .iter()
+        .any(|line| line.contains("Tab toggle provider"))
+        && rows.first().is_some_and(|line| {
+            line.split_whitespace()
+                .next()
+                .is_some_and(|word| word.eq_ignore_ascii_case("All"))
+        });
+    picker_list::List::read(
+        rows.iter().copied().skip(usize::from(skip_provider)),
+        picker_list::Layout::Kimi,
+    )
 }
 
 /// Whether the selected picker row is visibly the first and the last model row.
-/// Model names on unselected rows start where the selected row's name starts.
 fn kimi_model_edges(screen: &str) -> (bool, bool) {
-    let lines: Vec<_> = screen.lines().collect();
-    let Some(selected) = lines.iter().position(|l| l.trim_start().starts_with("❯ ")) else {
-        return (false, false);
-    };
-    let column = lines[selected].chars().position(|c| c == '❯').unwrap_or(0) + 2;
-    let row = |index: Option<usize>| {
-        index.and_then(|i| lines.get(i)).is_some_and(|line| {
-            let indent = line.chars().take_while(|c| *c == ' ').count();
-            indent == column && line.chars().count() > column
-        })
-    };
-    (!row(selected.checked_sub(1)), !row(Some(selected + 1)))
+    kimi_model_list(screen).map_or((false, false), |list| list.edges())
 }
 
 fn kimi_thinking(screen: &str) -> Option<String> {
@@ -1520,10 +1566,11 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
     open_model(name, request)?;
     wait_until(|| {
         let r = checked(name, request, false)?;
-        Ok(kimi_model_row(&capture(&r)?))
+        Ok(kimi_model_list(&capture(&r)?).is_some().then_some(()))
     })?;
     let mut visited = Vec::new();
     let mut tabs = Vec::new();
+    let mut seen = picker_list::Seen::default();
     // Older pickers wrap around; Kimi 2.1 stops at either end, so a key that
     // does not move the selection turns the walk around once per provider.
     let mut down = true;
@@ -1531,13 +1578,15 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
     for _ in 0..256 {
         let record = checked(name, request, false)?;
         let screen = capture(&record)?;
-        let row = kimi_model_row(&screen).ok_or("model picker changed; inspect Terminal")?;
-        if row_is(&row, &model.label) {
+        let list = kimi_model_list(&screen).ok_or("model picker changed; inspect Terminal")?;
+        seen.observe(&list);
+        if list.selected_matches(&model.label)? {
             break;
         }
-        if visited.contains(&row) {
-            if !screen.contains("Tab toggle provider") || tabs.contains(&row) {
-                return Err("model is not available in the native picker".into());
+        let row = &list.selected().position;
+        if visited.contains(row) {
+            if !screen.contains("Tab toggle provider") || tabs.contains(row) {
+                return Err(seen.refusal("model is not offered in the native picker"));
             }
             tabs.push(row.clone());
             visited.clear();
@@ -1545,7 +1594,9 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
             send_key(&record, "Tab")?;
             wait_until(|| {
                 let r = checked(name, request, false)?;
-                Ok((kimi_model_row(&capture(&r)?).as_deref() != Some(row.as_str())).then_some(()))
+                let moved = kimi_model_list(&capture(&r)?)
+                    .is_some_and(|next| next.selected().position != *row);
+                Ok(moved.then_some(()))
             })?;
             continue;
         }
@@ -1555,7 +1606,7 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
         let deadline = picker_scope::deadline(deadline)?;
         let moved = loop {
             let r = checked(name, request, false)?;
-            if kimi_model_row(&capture(&r)?).as_deref() != Some(row.as_str()) {
+            if kimi_model_list(&capture(&r)?).is_some_and(|next| next.selected().position != *row) {
                 break true;
             }
             if Instant::now() >= deadline {
@@ -1564,7 +1615,7 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
             std::thread::sleep(Duration::from_millis(50));
         };
         if moved {
-            visited.push(row);
+            visited.push(row.clone());
             continue;
         }
         // Turn only at a visible end of the list. A key that does not move the
@@ -1575,7 +1626,7 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
             (down, turned) = (false, true);
             visited.clear();
         } else if !down && top {
-            visited.push(row);
+            visited.push(row.clone());
         } else {
             return Err("model picker selection did not move; inspect Terminal".into());
         }
@@ -1583,7 +1634,8 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
     for _ in 0..16 {
         let record = checked(name, request, false)?;
         let screen = capture(&record)?;
-        if !kimi_model_row(&screen).is_some_and(|r| row_is(&r, &model.label)) {
+        let list = kimi_model_list(&screen).ok_or("model picker changed; inspect Terminal")?;
+        if !list.selected_matches(&model.label)? {
             return Err("requested model is not selected".into());
         }
         let effort =
@@ -1617,10 +1669,10 @@ fn kimi_model(name: &str, request: &Request, model: &ModelOption) -> Result<()> 
     Err("native model effort did not settle".into())
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 struct ClaudePicker {
     /// A selected model row or a section with its advertised expansion action.
-    row: String,
+    rows: picker_list::List,
     section: Option<ClaudeSection>,
     /// The shown effort; empty when the model has none, None when not visible.
     effort: Option<String>,
@@ -1644,7 +1696,7 @@ fn claude_panel_rule(line: &str) -> bool {
 
 /// A panel's key legend: its last block of lines below a blank line, joined
 /// where a narrow terminal wraps it.
-fn claude_legend(below: &[&str]) -> Option<String> {
+fn picker_legend(below: &[&str]) -> Option<String> {
     let end = below.iter().rposition(|line| !line.trim().is_empty())? + 1;
     let start = below[..end]
         .iter()
@@ -1674,7 +1726,7 @@ fn claude_model_panel(screen: &str) -> Option<Vec<&str>> {
         return None;
     }
     let below = &lines[title + 1..];
-    claude_legend(below)?
+    picker_legend(below)?
         .contains("Esc to cancel")
         .then(|| below.to_vec())
 }
@@ -1683,17 +1735,8 @@ fn claude_model_panel(screen: &str) -> Option<Vec<&str>> {
 /// name and description), the effort adjusted with ←/→, and the key legend.
 fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     let below = claude_model_panel(screen)?;
-    let legend = claude_legend(&below)?;
-    let mut rows = below.iter().filter_map(|line| {
-        let row = line.trim_start().strip_prefix("❯ ")?.trim_end();
-        let (number, _) = row.split_once(". ")?;
-        number.parse::<usize>().ok()?;
-        Some(row.to_owned())
-    });
-    let selected = rows.next();
-    if rows.next().is_some() {
-        return None;
-    }
+    let legend = picker_legend(&below)?;
+    let rows = picker_list::List::read(below.iter().copied(), picker_list::Layout::Claude)?;
     let section = if legend.contains("Enter to expand") {
         Some(ClaudeSection::Collapsed)
     } else if legend.contains("Enter to collapse") {
@@ -1701,28 +1744,15 @@ fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     } else {
         None
     };
-    let row = if let Some(section) = section {
-        // Only an explicit expansion/collapse legend permits Enter. A model
-        // row with Enter's save-as-default action never takes this branch.
-        if selected.is_some() {
-            return None;
-        }
-        let marker = match section {
-            ClaudeSection::Collapsed => '▸',
-            ClaudeSection::Expanded => '▾',
-        };
-        let mut sections = below.iter().filter_map(|line| {
-            let row = line.trim_start().strip_prefix("❯ ")?;
-            row.starts_with(marker).then(|| row.trim_end().to_owned())
-        });
-        let row = sections.next()?;
-        if sections.next().is_some() {
-            return None;
-        }
-        row
-    } else {
-        selected?
+    // Only the corresponding explicit legend permits a section action.
+    let marker = match section {
+        Some(ClaudeSection::Collapsed) => Some('▸'),
+        Some(ClaudeSection::Expanded) => Some('▾'),
+        None => None,
     };
+    if rows.selected().position.section != marker {
+        return None;
+    }
     // "◐ Medium effort (default)", maybe followed by " · Ultracode on (/effort)".
     // Its "←/→ to adjust" hint follows the label until 2.1.326 and is in the
     // legend since 2.1.327; either way the arrows must be offered.
@@ -1743,32 +1773,11 @@ fn claude_picker(screen: &str) -> Option<ClaudePicker> {
     // saves a default and is never pressed on a model row.
     let session_only = legend.contains("s to use this session only");
     Some(ClaudePicker {
-        row,
+        rows,
         section,
         effort,
         session_only,
     })
-}
-
-/// Whether a picker row shows this model: its description starts with the name.
-fn claude_row_is(row: &str, name: &str) -> bool {
-    let Some((_, rest)) = row.split_once(". ") else {
-        return false;
-    };
-    // The label column ("Opus", "Haiku ✔") ends at the first double space.
-    let Some((label, description)) = rest.split_once("  ") else {
-        return false;
-    };
-    if label.trim_end().trim_end_matches('✔').trim_end() == "Default (recommended)" {
-        return false;
-    }
-    // Served catalogs put the full model name in the label column; the
-    // compiled picker uses an alias and repeats the name in its description.
-    if label.trim_end().trim_end_matches('✔').trim_end() == name {
-        return true;
-    }
-    let description = description.trim_start();
-    description == name || description.starts_with(&format!("{name} · "))
 }
 
 #[derive(Debug, PartialEq)]
@@ -1895,37 +1904,40 @@ fn claude_model_opened(
             return Err("Claude's model picker does not offer a session-only choice; use Terminal".into());
         }
         let mut visited = Vec::new();
+        let mut seen = picker_list::Seen::default();
         loop {
             // The checked observation that found this row supplies its next
             // key's fresh turn. Reprobing it doubled native reads and could
             // exhaust the original host deadline before failure cleanup.
             let (record, picker) = observed;
-            if claude_row_is(&picker.row, &model.label) {
+            seen.observe(&picker.rows);
+            if picker.rows.selected_matches(&model.label)? {
                 break;
             }
             // The list wraps around: a repeated row means every row was seen.
-            let position = (picker.row.clone(), picker.section);
-            if visited.contains(&position) || visited.len() >= 64 {
-                return Err("model is not offered by Claude's model picker".into());
+            let position = &picker.rows.selected().position;
+            if visited.contains(position) || visited.len() >= 64 {
+                return Err(seen.refusal("model is not offered by Claude's model picker"));
             }
-            visited.push(position);
+            visited.push(position.clone());
             let key = if picker.section == Some(ClaudeSection::Collapsed) { "Enter" } else { "Down" };
             send_key(&record, key)?;
             observed = wait_until(|| {
                 let record = checked(name, request, false)?;
                 Ok(claude_picker(&capture(&record)?)
-                    .filter(|next| next.row != picker.row || next.section != picker.section)
+                    .filter(|next| next.rows.selected().position != *position)
                     .map(|next| (record, next)))
             })?;
         }
         for _ in 0..=model.efforts.len() {
             let record = checked(name, request, false)?;
-            let picker = claude_picker(&capture(&record)?).ok_or("model picker changed; inspect Terminal")?;
+            let screen = capture(&record)?;
+            let picker = claude_picker(&screen).ok_or("model picker changed; inspect Terminal")?;
             // In search mode `s` would be typed into the filter instead.
             if !picker.session_only {
                 return Err("Claude's model picker does not offer a session-only choice; use Terminal".into());
             }
-            if !claude_row_is(&picker.row, &model.label) {
+            if !picker.rows.selected_matches(&model.label)? {
                 return Err("model picker selection changed; inspect Terminal".into());
             }
             let shown = picker.effort.ok_or("Claude's effort selection is not visible; enlarge Terminal")?;
@@ -2273,7 +2285,14 @@ fn apply_settings(
         }
     };
     if let Err(error) = result {
-        mark_unconfirmed(&mut record);
+        if take_kimi_effort_handoff()
+            && string(&record["pending_settings"], "request_id") == request.request_id
+        {
+            retire_pending_settings(&mut record);
+            write(&mut record)?;
+        } else {
+            mark_unconfirmed(&mut record);
+        }
         return Err(format!("settings change not confirmed: {error}"));
     }
     let latest = history(&record);
@@ -2398,7 +2417,7 @@ pub(super) fn dispatch_settings(args: &[String]) -> Result<i32> {
         if immediate {
             receipt["status"] = json!("in_progress");
             atomic(&receipt_path, &receipt.to_string())?;
-            apply_pending(name, record)?;
+            apply_pending_settings(name, record, false)?;
             receipt["status"] = json!("applied");
         } else {
             receipt["pending_settings_id"] = json!(pending_id);
@@ -2469,6 +2488,22 @@ pub(super) fn pending_applies(record: &Value) -> bool {
 }
 
 pub(super) fn apply_pending(name: &str, record: Value) -> Result<Value> {
+    apply_pending_settings(name, record, true)
+}
+
+fn retire_pending_settings(record: &mut Value) {
+    let pending = &record["pending_settings"];
+    let resume_matches = record["resume_settings"]
+        == json!({"model":pending["model"],"effort":pending["effort"]});
+    if let Some(object) = record.as_object_mut() {
+        object.remove("pending_settings");
+        if resume_matches {
+            object.remove("resume_settings");
+        }
+    }
+}
+
+fn apply_pending_settings(name: &str, record: Value, new_send: bool) -> Result<Value> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if picker_entered() {
         return picker_refuse("Legacy pending application is forbidden in the original picker keeper".into());
@@ -2491,29 +2526,68 @@ pub(super) fn apply_pending(name: &str, record: Value) -> Result<Value> {
         effort: Some(string(pending, "effort").into()),
         expected_pending_id: None,
     };
-    let (model, effort) = requested_model(&record, &request)?;
     let id = uuid::Uuid::parse_str(&request.request_id)
         .map_err(|_| "invalid pending settings ID")?
         .to_string();
     let path = absolute_root()?
         .join("settings_receipts")
         .join(format!("{id}.json"));
-    let mut receipt: Value =
-        serde_json::from_str(&fs::read_to_string(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    if string(&receipt, "status") != "scheduled"
-        || string(&receipt, "name") != string(pending, "receipt_name")
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let original = guarded_recovery::Original::read_existing(&path, 16 * 1024)?
+        .ok_or("Original settings receipt is missing")?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let bytes = original.bytes();
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let contents = fs::read(&path).map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let bytes = contents.as_slice();
+    let mut receipt: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if string(&receipt, "name") != string(pending, "receipt_name")
         || string(&receipt, "run_id") != string(pending, "receipt_run_id")
         || string(&receipt, "conversation_id") != request.expected_conversation_id
     {
         return Err("pending settings are not safe to retry; inspect Terminal".into());
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if new_send
+        && matches!(string(&record, "agent"), "codex" | "kimi")
+        && receipt["status"] == "in_progress"
+        && receipt["scope"] == "session"
+        && receipt["request_id"] == id
+        && pending["request_id"] == id
+        && receipt["model"] == pending["model"]
+        && receipt["effort"] == pending["effort"]
+        && safe_model(string(&receipt, "model"))
+        && receipt["effort"].is_string()
+        && !string(&receipt, "name").is_empty()
+        && !string(&receipt, "run_id").is_empty()
+        && input::native_send::cid_matches(&receipt["conversation_id"], &request.expected_conversation_id)
+        && input::native_send::cid_matches(&pending["conversation_id"], &request.expected_conversation_id)
+    {
+        // A separate Send can retire the old attempt after the ordinary input
+        // floor proves a ready composer. The spent Settings receipt is retained
+        // verbatim, including when a native event settled its unread-key marker.
+        input::checked_terminal(&record, true)?;
+        original.verify()?;
+        let mut record = record;
+        retire_pending_settings(&mut record);
+        write(&mut record)?;
+        return Ok(record);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = new_send;
+    if receipt["status"] != "scheduled" {
+        return Err("pending settings are not safe to retry; inspect Terminal".into());
+    }
+    let (model, effort) = requested_model(&record, &request)?;
     let native = Request {
         request_id: id,
         expected_run_id: request.expected_run_id,
         expected_conversation_id: request.expected_conversation_id,
         effort,
     };
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    original.verify()?;
     apply_settings(name, &native, &model, &path, &mut receipt)
 }
 
@@ -2614,6 +2688,34 @@ pub(super) fn resume_argv(record: &Value, mut args: Vec<String>) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ClaudePicker {
+        fn row(&self) -> &str {
+            &self.rows.selected().raw
+        }
+    }
+
+    impl PartialEq for ClaudePicker {
+        fn eq(&self, other: &Self) -> bool {
+            self.rows.selected().position == other.rows.selected().position
+                && self.section == other.section
+                && self.effort == other.effort
+                && self.session_only == other.session_only
+        }
+    }
+
+    fn row_is(row: &str, label: &str) -> bool {
+        picker_list::row_matches(row, picker_list::Layout::Kimi, label)
+    }
+
+    fn claude_row_is(row: &str, label: &str) -> bool {
+        picker_list::row_matches(row, picker_list::Layout::Claude, label)
+    }
+
+    fn kimi_model_row(screen: &str) -> Option<String> {
+        kimi_model_list(screen).map(|list| list.selected().raw.clone())
+    }
+
     /// #1317 R6: a failed settings receipt writes the previous record back
     /// with the session ID the first write gave a record an older hgs wrote.
     /// The fixture runs in a child process with a private state directory.
@@ -3103,16 +3205,16 @@ mod tests {
     #[test]
     fn claude_picker_rows_effort_and_session_only_legend() {
         let picker = claude_picker(CLAUDE_PICKER).unwrap();
-        assert!(picker.row.starts_with("1. Default (recommended) ✔"));
+        assert!(picker.row().starts_with("1. Default (recommended) ✔"));
         assert_eq!(picker.effort.as_deref(), Some("medium"));
         assert!(picker.session_only);
         // The default row describes the default model; it is not that model's row.
-        assert!(!claude_row_is(&picker.row, "Opus 5.5"));
+        assert!(!claude_row_is(picker.row(), "Opus 5.5"));
         assert!(!claude_row_is("1. Default (recommended) ✔  Opus 5.5 · Best for everyday tasks", "Opus 5.5"));
         let opus = CLAUDE_PICKER.replace("   ❯ 1. Default", "     1. Default").replace("     2. Opus", "   ❯ 2. Opus");
         let picker = claude_picker(&opus).unwrap();
-        assert!(claude_row_is(&picker.row, "Opus 5.5"));
-        assert!(!claude_row_is(&picker.row, "Opus 5"));
+        assert!(claude_row_is(picker.row(), "Opus 5.5"));
+        assert!(!claude_row_is(picker.row(), "Opus 5"));
         assert!(claude_row_is("5. Haiku ✔                Haiku 5.5 · Fastest for quick answers", "Haiku 5.5"));
         assert!(claude_row_is("3. Fable                    Fable 5.1 · Most capable for your hardest and", "Fable 5.1"));
         assert!(claude_row_is("6. Fable 5.2                Most capable for your hardest tasks", "Fable 5.2"));
@@ -3138,9 +3240,9 @@ mod tests {
             .replace("Enter to set as default · s to use this session only", "Enter to expand");
         let picker = claude_picker(&section).unwrap();
         assert_eq!(picker.section, Some(ClaudeSection::Collapsed));
-        assert_eq!(picker.row, "▸ More models");
+        assert_eq!(picker.row(), "▸ More models");
         assert!(!picker.session_only);
-        assert!(!claude_row_is(&picker.row, "More models"));
+        assert!(!claude_row_is(picker.row(), "More models"));
         let expanded = section.replace('▸', "▾").replace("Enter to expand", "Enter to collapse");
         assert_eq!(claude_picker(&expanded).unwrap().section, Some(ClaudeSection::Expanded));
         assert!(claude_model_panel(&section).is_some());
@@ -3176,18 +3278,155 @@ mod tests {
         include_str!("../../tests/fixtures/claude-model-picker-served-2.1.326.txt");
     const CLAUDE_SERVED_327: &str =
         include_str!("../../tests/fixtures/claude-model-picker-served-2.1.327.txt");
+    const CLAUDE_PADDED: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-padded-2.1.327.txt");
+    const CLAUDE_PADDED_EXPANDED: &str =
+        include_str!("../../tests/fixtures/claude-model-picker-padded-expanded-2.1.327.txt");
+    const CODEX_MODEL_LIST: &str = "Select Model and Effort\n\n  › 1. GPT-6-Sol (current)  Workhorse\n    2. GPT-6-Sol Mini  Lightweight\n\n  enter select · s session · esc back";
+    const KIMI_MODEL_LIST: &str = "Select a model\n  Tab toggle provider · ↑↓ navigate · Enter select · Alt+S session-only · Esc cancel\n\n  All   provider\n  ❯ K3  Long context\n    K3 Pro  More context\n\n  Thinking\n  [ High ]";
     // 2.1.327's /effort panel shows the model picker's exact key legend.
     const CLAUDE_EFFORT_327: &str =
         include_str!("../../tests/fixtures/claude-effort-panel-2.1.327.txt");
+
+    #[test]
+    fn claude_parses_padded_main_and_expanded_model_lists() {
+        let main = claude_picker(CLAUDE_PADDED).unwrap();
+        assert!(main.row().starts_with("1.  Default (recommended) ✔"));
+        assert_eq!(main.effort.as_deref(), Some("xhigh"));
+        assert!(main.session_only);
+        assert_eq!(main.rows.selected_matches("Opus 5.5"), Ok(false));
+        assert!(!claude_row_is(main.row(), "Default (recommended)"));
+
+        let with_selected = |screen: &str, old: &str, new: &str| {
+            let screen = screen.replace(old, &format!("    {}", &old["  ❯ ".len()..]));
+            claude_picker(&screen.replace(&format!("    {new}"), &format!("  ❯ {new}"))).unwrap()
+        };
+        for (ordinal, name) in [("2.", "Opus 5.5"), ("3.", "Fable 5.2")] {
+            let picker = with_selected(CLAUDE_PADDED, "  ❯ 1.", ordinal);
+            assert_eq!(picker.rows.selected_matches(name), Ok(true));
+        }
+
+        let expanded = claude_picker(CLAUDE_PADDED_EXPANDED).unwrap();
+        assert_eq!(expanded.section, Some(ClaudeSection::Expanded));
+        assert!(!expanded.session_only);
+        let screen = CLAUDE_PADDED_EXPANDED.replace("Enter to collapse", "Enter to save");
+        let tenth = with_selected(&screen, "  ❯ ▾", "10.");
+        assert_eq!(tenth.rows.selected_matches("Fable 5"), Ok(true));
+        assert_eq!(tenth.rows.selected_matches("Fable 5.1"), Ok(false));
+        assert_eq!(tenth.rows.selected_matches("Fable 5.2"), Ok(false));
+        assert!(!claude_row_is(
+            "6.  Fable  Fable 5.1 · Description",
+            "Fable 5"
+        ));
+        assert!(!claude_row_is(
+            "9.  Fable  Fable 5.2 · Description",
+            "Fable 5"
+        ));
+    }
+
+    #[test]
+    fn native_picker_layout_changes_preserve_selection_and_matching() {
+        let claude = CLAUDE_PADDED
+            .replace("  ❯ 1.", "    1.")
+            .replace("    3.", "  ❯ 3.");
+        let original_claude = claude_picker(&claude).unwrap();
+        let (original_codex, _) =
+            selected_codex(CODEX_MODEL_LIST, "Select Model and Effort").unwrap();
+        let original_kimi = kimi_model_list(KIMI_MODEL_LIST).unwrap();
+        let original_section = claude_picker(CLAUDE_PADDED_EXPANDED).unwrap();
+        let gaps: Vec<_> = (2..=20)
+            .map(|width| " ".repeat(width))
+            .chain(["\t".into(), "\u{a0}".repeat(4)])
+            .collect();
+        for padding in [" ", "  ", "   ", "\t", "\u{a0}\u{a0}"] {
+            for gap in &gaps {
+                for glyph in ['❯', '›', '>', '▶'] {
+                    for badge in ["", " ✔", " ✓", " ●", " ◉", " (CURRENT)", " (default)"] {
+                        let claude_variant = claude.replace(
+                            "  ❯ 3.  Fable 5.2                For your toughest challenges",
+                            &format!("  {glyph}{padding}3.{padding}fable\u{a0}5.2{badge}{gap}For your toughest challenges  "),
+                        );
+                        let picker = claude_picker(&claude_variant).unwrap();
+                        assert_eq!(picker, original_claude, "{claude_variant}");
+                        assert_eq!(picker.rows.selected_matches("Fable 5.2"), Ok(true));
+                        assert_eq!(picker.rows.selected_matches("Fable 5"), Ok(false));
+
+                        let section_variant = CLAUDE_PADDED_EXPANDED.replace(
+                            "  ❯ ▾   More models",
+                            &format!("  {glyph}{padding}▾{gap}MORE models"),
+                        );
+                        assert_eq!(claude_picker(&section_variant).unwrap(), original_section);
+
+                        let codex_variant = CODEX_MODEL_LIST.replace(
+                            "  › 1. GPT-6-Sol (current)  Workhorse",
+                            &format!(
+                                "  {glyph}{padding}1.{padding}gpt-6-SOL{badge}{gap}Workhorse  "
+                            ),
+                        );
+                        let (list, session_only) =
+                            selected_codex(&codex_variant, "Select Model and Effort").unwrap();
+                        assert!(session_only);
+                        assert_eq!(list.selected().position, original_codex.selected().position);
+                        assert_eq!(list.selected_matches("GPT-6-Sol"), Ok(true));
+                        assert_eq!(list.selected_matches("GPT-6-Sol Mini"), Ok(false));
+
+                        let kimi_variant = KIMI_MODEL_LIST.replace(
+                            "  ❯ K3  Long context",
+                            &format!("\t{glyph}{padding}k3{badge}{gap}Long context  "),
+                        );
+                        let list = kimi_model_list(&kimi_variant).unwrap();
+                        assert_eq!(list.selected().position, original_kimi.selected().position);
+                        assert_eq!(list.selected_matches("K3"), Ok(true));
+                        assert_eq!(list.selected_matches("K3 Pro"), Ok(false));
+                        assert_eq!(kimi_model_edges(&kimi_variant), (true, false));
+                        assert_eq!(kimi_thinking(&kimi_variant).as_deref(), Some("high"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_picker_refuses_duplicate_matches_and_unscoped_rows() {
+        let duplicate = CLAUDE_PADDED.replace("Sonnet 5.5", "Fable 5.2 ✔");
+        let picker = claude_picker(&duplicate).unwrap();
+        assert!(picker.rows.selected_matches("Fable 5.2").is_err());
+        let duplicate = CODEX_MODEL_LIST.replace("GPT-6-Sol Mini", "gpt-6-sol ✓");
+        let (codex, _) = selected_codex(&duplicate, "Select Model and Effort").unwrap();
+        assert!(codex.selected_matches("GPT-6-Sol").is_err());
+        let duplicate = KIMI_MODEL_LIST.replace("K3 Pro", "k3");
+        assert!(kimi_model_list(&duplicate)
+            .unwrap()
+            .selected_matches("K3")
+            .is_err());
+
+        let description_only = CODEX_MODEL_LIST
+            .replace("GPT-6-Sol (current)  Workhorse", "GPT-6-Astra  GPT-6-Sol compatible")
+            .replace("GPT-6-Sol Mini", "GPT-6-Astra Mini");
+        let (codex, _) = selected_codex(&description_only, "Select Model and Effort").unwrap();
+        assert_eq!(codex.selected_matches("GPT-6-Sol"), Ok(false));
+        assert!(!claude_row_is("3. Fable  Fable 5.2 is fastest", "Fable 5.2"));
+        assert!(claude_row_is("3. Fable  Fable 5.2 · Most capable", "Fable 5.2"));
+
+        let quoted = "● The list was:\n    2.  Opus 5.5  Complex tasks\n  ▶ 3.  Fable 5.2  Tough challenges\n\n❯ ";
+        assert!(claude_picker(quoted).is_none());
+        assert!(selected_codex(quoted, "Select Model and Effort").is_none());
+        assert!(kimi_model_list(quoted).is_none());
+        let screen = format!("{quoted}\n{KIMI_MODEL_LIST}");
+        assert_eq!(
+            kimi_model_list(&screen).unwrap().selected_matches("K3"),
+            Ok(true)
+        );
+    }
 
     #[test]
     fn claude_picker_of_2_1_326_and_2_1_327_is_recognized_by_its_title_rows_and_keys() {
         for screen in [CLAUDE_PICKER_326, CLAUDE_PICKER_327] {
             let picker = claude_picker(screen).unwrap_or_else(|| panic!("{screen}"));
             assert!(
-                picker.row.starts_with("1. Default (recommended) ✔"),
+                picker.row().starts_with("1. Default (recommended) ✔"),
                 "{}",
-                picker.row
+                picker.row()
             );
             assert_eq!(picker.section, None);
             assert_eq!(picker.effort.as_deref(), Some("medium"));
@@ -3195,8 +3434,8 @@ mod tests {
         }
         for screen in [CLAUDE_SERVED_326, CLAUDE_SERVED_327] {
             let picker = claude_picker(screen).unwrap_or_else(|| panic!("{screen}"));
-            assert!(claude_row_is(&picker.row, "Fable 5.2"), "{}", picker.row);
-            assert!(!claude_row_is(&picker.row, "Fable 5"));
+            assert!(claude_row_is(picker.row(), "Fable 5.2"), "{}", picker.row());
+            assert!(!claude_row_is(picker.row(), "Fable 5"));
             assert_eq!(picker.section, None);
             assert_eq!(picker.effort.as_deref(), Some("xhigh"));
             assert!(picker.session_only);

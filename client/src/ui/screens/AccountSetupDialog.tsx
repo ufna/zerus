@@ -5,25 +5,22 @@ import {Icon,AgentGlyph} from "../lib/icons";
 import {agentKind} from "../../store/catalog";
 import {providerName} from "../lib/usage";
 import type {SetupPrompt} from "../../store/accountSetup";
-import {copyText,type AccountSetupValues} from "../../bridge";
+import type {AccountSetupValues} from "../../bridge";
 import { tr } from "../../i18n";
-
-const AGY_LOGIN = "agy acp --login";
 
 /** Approved SettingsDialogs AddAccountDialog / ApiKeyDialog; Qt saved profiles. */
 export default function AccountSetupDialog(props:{prompt:SetupPrompt;busy:boolean;close(handle:string):void;confirm(values:AccountSetupValues,handle:string):void}) {
  const view=props.prompt;
  const first=view.hosts.find(h=>h.key===(view.kind==="key"?view.host:view.preferredHost))??view.hosts.find(h=>h.key==="")??view.hosts[0];
  const [host,setHost]=createSignal(first?.key??""),[provider,setProvider]=createSignal(view.provider),[saved,setSaved]=createSignal(""),[name,setName]=createSignal(""),[api,setApi]=createSignal(view.kind==="key"),[key,setKey]=createSignal("");
- const [copyState,setCopyState]=createSignal<"copied"|"error">();
- const antigravity=()=>provider()==="agy"&&!api();
  const machine=()=>view.hosts.find(h=>h.key===host());
+ const providers=()=>machine()?.providers.filter(p=>p!=="agy")??[];
  const savedFor=(p=provider())=>machine()?.saved.filter(s=>s.provider===p)??[];
- const chooseAgent=(p:string)=>{setProvider(p);setSaved(savedFor(p)[0]?.id??"");setCopyState(undefined);};
- const chooseHost=(h:string)=>{setHost(h);const p=machine()?.providers.includes(provider())?provider():machine()?.providers[0]??"codex";chooseAgent(p);};
+ const chooseAgent=(p:string)=>{setProvider(p);setSaved(savedFor(p)[0]?.id??"");};
+ const chooseHost=(h:string)=>{setHost(h);const p=providers().includes(provider())?provider():providers()[0]??"codex";chooseAgent(p);};
  chooseHost(host());
- const reuse=()=>!!saved(),ocListed=()=>machine()?.listed.includes("native-opencode"),canAgent=(p:string)=>p!=="opencode"||savedFor(p).length>0;
- const tabAgent=()=>machine()?.providers.find(p=>p===provider()&&canAgent(p))??machine()?.providers.find(canAgent);
+ const reuse=()=>!!saved(),ocListed=()=>machine()?.listed.includes("native-opencode"),canAgent=(p:string)=>p!=="agy"&&(p!=="opencode"||savedFor(p).length>0);
+ const tabAgent=()=>providers().find(p=>p===provider()&&canAgent(p))??providers().find(canAgent);
  const stepAgent=(event:KeyboardEvent&{currentTarget:HTMLDivElement})=>{
   if(event.altKey||event.ctrlKey||event.metaKey)return;
   const rows=[...event.currentTarget.querySelectorAll<HTMLButtonElement>(".acct-agent:not(:disabled)")];
@@ -37,37 +34,24 @@ export default function AccountSetupDialog(props:{prompt:SetupPrompt;busy:boolea
   if(row.getAttribute("aria-selected")!=="true")row.click();
   row.focus();
  };
- const detail=(p:string)=>p==="agy"?(machine()?.antigravity_installed?tr("Native Google sign-in"):tr("Not installed on %1", machine()?.machine ?? "")):p==="opencode"?(savedFor(p).length?tr("Add the native configuration again"):ocListed()?tr("Native configuration, already added"):tr("Not installed on %1", machine()?.machine ?? "")):p==="dsh"?(savedFor(p).length?tr("Saved API key or a new one"):tr("DeepSeek API key")):savedFor(p).length?tr("Saved account or a new profile"):tr("New profile with its own sign-in");
+ const detail=(p:string)=>p==="opencode"?(savedFor(p).length?tr("Add the native configuration again"):ocListed()?tr("Native configuration, already added"):tr("Not installed on %1", machine()?.machine ?? "")):p==="dsh"?(savedFor(p).length?tr("Saved API key or a new one"):tr("DeepSeek API key")):savedFor(p).length?tr("Saved account or a new profile"):tr("New profile with its own sign-in");
  const hint=()=>!machine()?.online?`${machine()?.machine??"Machine"} is offline.`:reuse()&&provider()==="opencode"?tr("Use OpenCode's native configuration on %1 for new sessions again.", machine()?.machine ?? ""):reuse()?tr("Use the saved sign-in on %1. The account will be available for new sessions again.", machine()?.machine ?? ""):provider()==="dsh"?tr("Configure a DeepSeek API key on the selected machine."):tr("Create a separate account profile on the selected machine, then sign in.");
- const can=()=>!!machine()?.online&&(antigravity()?!!machine()?.antigravity_sign_in:api()?!!key().trim():canAgent(provider())&&(reuse()||!!name().trim()));
- const copySignIn=async()=>{
-  const selected=host();
-  const result=await copyText(AGY_LOGIN).then(()=>"copied" as const,()=>"error" as const);
-  if(host()===selected&&antigravity())setCopyState(result);
- };
+ const can=()=>!!machine()?.online&&(api()?!!key().trim():canAgent(provider())&&(reuse()||!!name().trim()));
  let dialog!:HTMLDialogElement;let keyInput:HTMLInputElement|undefined;
  onMount(()=>{dialog.showModal();queueMicrotask(()=>dialog.querySelector<HTMLElement>(api()?"input":'[role="combobox"]')?.focus());});
  onCleanup(()=>{setKey("");dialog.close();if(view.origin.isConnected)view.origin.focus();});
- const submit=(e:Event)=>{e.preventDefault();if(!can()||props.busy)return;if(antigravity()){props.confirm({host:host(),provider:"agy"},view.handle);return;}if(!api()&&!reuse()&&provider()==="dsh"&&machine()?.deepseek_installed){setApi(true);queueMicrotask(()=>keyInput?.focus());return;}props.confirm({host:host(),provider:provider(),saved:saved(),label:view.kind==="key"?view.label:name().trim(),api_key:key().trim()},view.handle);setKey("");};
+ const submit=(e:Event)=>{e.preventDefault();if(!can()||props.busy)return;if(!api()&&!reuse()&&provider()==="dsh"&&machine()?.deepseek_installed){setApi(true);queueMicrotask(()=>keyInput?.focus());return;}props.confirm({host:host(),provider:provider(),saved:saved(),label:view.kind==="key"?view.label:name().trim(),api_key:key().trim()},view.handle);setKey("");};
  const titleId=()=>api()?"accounts-api-key-title":"accounts-add-title";
  return <dialog ref={dialog} class="dlg" style={{width:api()?"460px":"520px"}} aria-labelledby={titleId()} onCancel={e=>{e.preventDefault();if(!props.busy)props.close(view.handle);}} onClose={()=>props.close(view.handle)}><form onSubmit={submit}>
   <div class="dlg-head"><Icon name={api()?"key-round":"user-round-cog"} size={18} class="accent"/><h2 id={titleId()}>{api()?`DeepSeek API key on ${machine()?.machine}`:tr("Add agent account")}</h2><span class="grow"/><button type="button" class="icon-btn" aria-label={tr("Close")} disabled={props.busy} onClick={()=>props.close(view.handle)}><Icon name="x" size={16}/></button></div>
   <div class="dlg-body"><Show when={api()} fallback={<>
    <div class="form-row"><label for="aa-host">{tr("Machine")}</label><Dropdown id="aa-host" class="field" value={host()} onChange={(value) =>chooseHost(value)} options={[...((view.hosts) ?? []).map((h) => ({ value: h.key, label: `${h.label}${h.online ? "" : " (offline)"}` }))]} /></div>
-   <div class="form-row acct-agents-row"><label>{tr("Agent")}</label><div class="acct-agents" role="listbox" aria-label={tr("Agent")} onKeyDown={stepAgent}><For each={machine()?.providers}>{p=><button type="button" role="option" class="acct-agent" classList={{on:provider()===p}} aria-selected={provider()===p} tabIndex={p===tabAgent()?0:-1} disabled={!canAgent(p)} title={p==="opencode"?(ocListed()?tr("Configure providers, models and permissions with OpenCode on %1. Zerus uses that native configuration.", machine()?.machine ?? ""):tr("Install OpenCode on %1, then refresh Accounts.", machine()?.machine ?? "")):undefined} style={{"--agent":`var(--z-agent-${agentKind(p)})`}} onClick={()=>chooseAgent(p)}><AgentGlyph agent={agentKind(p)} size={16}/><span class="col"><b>{providerName(p)}</b><span class="muted">{detail(p)}</span></span></button>}</For></div></div>
-   <Show when={antigravity()} fallback={<>
+   <div class="form-row acct-agents-row"><label>{tr("Agent")}</label><div class="acct-agents" role="listbox" aria-label={tr("Agent")} onKeyDown={stepAgent}><For each={providers()}>{p=><button type="button" role="option" class="acct-agent" classList={{on:provider()===p}} aria-selected={provider()===p} tabIndex={p===tabAgent()?0:-1} disabled={!canAgent(p)} title={p==="opencode"?(ocListed()?tr("Configure providers, models and permissions with OpenCode on %1. Zerus uses that native configuration.", machine()?.machine ?? ""):tr("Install OpenCode on %1, then refresh Accounts.", machine()?.machine ?? "")):undefined} style={{"--agent":`var(--z-agent-${agentKind(p)})`}} onClick={()=>chooseAgent(p)}><AgentGlyph agent={agentKind(p)} size={16}/><span class="col"><b>{providerName(p)}</b><span class="muted">{detail(p)}</span></span></button>}</For></div></div>
+   <>
     <div class="form-row"><label for="aa-saved">{tr("Account")}</label><Dropdown id="aa-saved" class="field" value={saved()} disabled={savedFor().length+(provider()==="opencode"?0:1)<2} onChange={(value) =>setSaved(value)} options={[...((savedFor()) ?? []).map((s) => ({ value: s.id, label: s.label })), ...(provider()!=="opencode" ? [{ value: "", label: tr("New account") }] : [])]} /></div>
     <div class="form-row"><label for="aa-name">{tr("Account name")}</label><TextInput id="aa-name" class="field" maxLength={160} placeholder={tr("Work, Personal, Team…")} disabled={reuse()} value={reuse()?"":name()} onInput={e=>setName(e.currentTarget.value)}/></div>
-   </>}>
-    <div class="form-row"><label>{tr("Sign-in")}</label><div class="col">
-     <Show when={machine()?.antigravity_installed} fallback={<span>{tr("Install Antigravity CLI on %1, then refresh Accounts.", machine()?.machine ?? "")}</span>}>
-      <span>{tr("Complete Google sign-in in a terminal on %1. Zerus uses that machine's native Antigravity account.", machine()?.machine ?? "")}</span>
-      <div class="row"><code>{AGY_LOGIN}</code><button type="button" class="btn small" onClick={()=>void copySignIn()}>{tr("Copy sign-in command")}</button></div>
-      <Show when={copyState()}><span role="status">{copyState()==="copied"?tr("Copied"):tr("Could not copy the command.")}</span></Show>
-     </Show>
-    </div></div>
-   </Show>
+   </>
   </>}><p>Save an API key on {machine()?.machine}. DeepSeek on that machine will use this key.</p><div class="form-row"><label for="ak-key">{tr("API key")}</label><TextInput ref={keyInput} disabled={props.busy} id="ak-key" class="field" type="password" maxLength={4096} autocomplete="off" value={key()} onInput={e=>setKey(e.currentTarget.value)}/></div></Show></div>
-  <div class="dlg-foot"><Show when={!api()&&(!antigravity()||!machine()?.online)}><span class="hint">{antigravity()?tr("%1 is offline.",machine()?.machine??""):hint()}</span></Show><span class="spacer"/><button type="button" class="btn" disabled={props.busy} onClick={()=>props.close(view.handle)}>{tr("Cancel")}</button><Show when={!antigravity()||machine()?.antigravity_sign_in}><button type="submit" class="btn primary" classList={{"acct-add-btn":!api()}} disabled={!can()||props.busy}>{antigravity()?tr("Sign in on %1…",machine()?.machine??""):api()?(props.busy?tr("Saving on %1…", machine()?.machine ?? ""):tr("Save on %1", machine()?.machine ?? "")):reuse()?tr("Add account"):provider()==="dsh"?tr("Enter API key…"):tr("Create and sign in")}</button></Show></div>
+  <div class="dlg-foot"><Show when={!api()}><span class="hint">{hint()}</span></Show><span class="spacer"/><button type="button" class="btn" disabled={props.busy} onClick={()=>props.close(view.handle)}>{tr("Cancel")}</button><button type="submit" class="btn primary" classList={{"acct-add-btn":!api()}} disabled={!can()||props.busy}>{api()?(props.busy?tr("Saving on %1…", machine()?.machine ?? ""):tr("Save on %1", machine()?.machine ?? "")):reuse()?tr("Add account"):provider()==="dsh"?tr("Enter API key…"):tr("Create and sign in")}</button></div>
  </form></dialog>;
 }

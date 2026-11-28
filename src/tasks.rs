@@ -33,6 +33,8 @@ mod phone;
 mod sessions;
 mod messages;
 mod history;
+mod quick_review;
+pub(crate) mod technical_review;
 mod index;
 mod teams;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -69,7 +71,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] [--review-lane all|person|technical|triage|team] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | review-owner REF person|technical|unspecified [--expect-revision R] | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] [--query TEXT] [--review-lane all|person|technical|triage|team] [--quick-review work|all|ready|check|rework|parked|unclassified|unresolved] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | add-technical --start --criterion TEXT [--project P] [--title TITLE [--request-id UUID]] | edit REF | review-owner REF person|technical|unspecified [--expect-revision R] | quick-review REF --json (guard JSON on stdin) | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | team-planned --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-attempt REF --attempt UUID [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | message-reviewed REF --request-id UUID --mode reopen --expect-dispatch ID --expect-history-revision REV --expect-report-id ID [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -502,12 +504,13 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
 }
 
 fn view(task: &TaskDoc, project_name: &str, with_log: bool, machines: &Machines) -> Result<Value> {
-    let task_view = task.view().map_err(fail)?;
+    let mut task_view = task.view().map_err(fail)?;
     if !with_log {
         return label_view(row(task_view, task.revision())?, project_name, false, &[], machines);
     }
     let (dispatch_id, lane, editable) =
         (task_view.execution_id(), task_view.review_lane(), task_view.review_editable());
+    quick_review::scope_reports(&mut task_view);
     let mut value = serde_json::to_value(task_view).map_err(fail)?;
     set_review_projection(&mut value, lane, editable, task.revision());
     value["dispatch_id"] = json!(dispatch_id);
@@ -522,7 +525,8 @@ fn row(mut task_view: zerus_replica::TaskView, history_revision: String) -> Resu
         .collect::<std::result::Result<Vec<_>, _>>().map_err(fail)?;
     let (dispatch_id, lane, editable) =
         (task_view.execution_id(), task_view.review_lane(), task_view.review_editable());
-    task_view.log = Vec::new();
+    task_view.log.clear();
+    quick_review::scope_reports(&mut task_view);
     let mut value = serde_json::to_value(task_view).map_err(fail)?;
     value.as_object_mut().expect("a task view is an object").remove("log");
     value["dispatch_id"] = json!(dispatch_id);
@@ -562,6 +566,12 @@ fn label_view(mut value: Value, project_name: &str, with_log: bool, files: &[Val
             }
         }
     };
+    let assignee_name = value.as_object_mut().expect("task view is an object")
+        .remove("quick_review_assignee_name").unwrap_or_else(|| json!(""));
+    if let Some(assignee) = value.get_mut("quick_review").and_then(|review| review.get_mut("assignee")) {
+        assignee["session"] = assignee_name;
+        name(assignee);
+    }
     for key in ["target", "session", "author"] { name(&mut value[key]); }
     if value["target"]["parent"].is_object() { name(&mut value["target"]["parent"]); }
     if value["worker"]["parent"].is_object() { name(&mut value["worker"]["parent"]); }
@@ -776,9 +786,10 @@ fn execute(config: &Config, args: &[String]) -> Result<Value> {
             };
             Ok(json!({"project": {"id": r.project.0, "name": r.project.1}, "task": value}))
         }
-        "add" => add(config, args),
+        "add" => add(config, args, None),
+        "add-technical" => add_technical(config, args),
         "attachment" => history::attachment(config, args),
-        "message" => messages::execute(config, args),
+        "message" | "message-reviewed" => messages::execute(config, args, action == "message-reviewed"),
         "report-attempt" => reports::execute(config, args),
         "cancel-attempt" => cancel_attempt::execute(config, args),
         "cancel-execution" => {
@@ -786,10 +797,11 @@ fn execute(config: &Config, args: &[String]) -> Result<Value> {
             change_guarded(config, "cancel", args, None, Some(&guard))
         }
         "start-plan" | "start-deliver" => dispatch::execute(config, action, args),
-        "edit" | "rename" | "move" | "stage" | "target" | "comment" | "report" | "start" | "send" | "handoff" | "cancel" | "worker" | "review-owner" => {
+        "edit" | "rename" | "move" | "stage" | "target" | "comment" | "report" | "start" | "send" | "handoff" | "cancel" | "worker" | "review-owner" | "quick-review" => {
             change(config, action, args)
         }
         "settings" => settings(config, args),
+        "technical-review-policy" => technical_review::configure(config, args),
         "cutover" => cutover::cutover(config, args),
         "review-copy" => copy_review::execute(config, args),
         // The phone's exchange through the relay; both take exactly --json.
@@ -833,6 +845,7 @@ fn list(config: &Config, args: &[String]) -> Result<Value> {
         "--session",
         "--query",
         "--review-lane",
+        "--quick-review",
     ] {
         if option(args, paging)?.is_some() {
             return Err(fail(format!("{paging} needs --stage and --limit")));
@@ -918,10 +931,16 @@ fn paged(
         .or_else(|| session.as_ref().map(|(scope, _)| scope));
     let review_lane = option(args, "--review-lane")?
         .map(index::ReviewLane::parse).transpose()?;
-    if review_lane.is_some() && stage != Stage::Review {
-        return Err(fail("--review-lane needs --stage review"));
+    let quick_review_lane = option(args, "--quick-review")?
+        .map(index::QuickReviewLane::parse).transpose()?;
+    if review_lane.is_some() && quick_review_lane.is_some() {
+        return Err(fail("Choose either --review-lane or --quick-review."));
     }
-    let review_scope = review_lane.map(|lane| index::Scope::review(filter.cloned(), lane));
+    if (review_lane.is_some() || quick_review_lane.is_some()) && stage != Stage::Review {
+        return Err(fail("Review queues need --stage review."));
+    }
+    let review_scope = review_lane.map(|lane| index::Scope::review(filter.cloned(), lane))
+        .or_else(|| quick_review_lane.map(|lane| index::Scope::quick_review(filter.cloned(), lane)));
     let filter = review_scope.as_ref().or(filter);
     let cursor_project = filter.map_or_else(|| id.to_owned(), |scope| scope.cursor_project(id));
     let anchor = match (option(args, "--after")?, option(args, "--before")?) {
@@ -948,7 +967,7 @@ fn paged(
     });
     let mut out = match indexed {
         Some(out) => out,
-        None if review_lane.is_some() => return Err(fail("The review queues are temporarily unavailable.")),
+        None if review_lane.is_some() || quick_review_lane.is_some() => return Err(fail("The review queues are temporarily unavailable.")),
         None => documents_page_in(&store, stage, limit, &anchor, wanted, filter)?,
     };
     if let Some((_, echo)) = session {
@@ -1002,15 +1021,29 @@ fn indexed_page_in(index: &mut index::Index, stage: Stage, limit: usize, anchor:
     let page = index.page_in(stage, limit, anchor, filter)?;
     let revision = index.revision()?;
     let review = filter.and_then(|scope| scope.review_lane().map(|lane| (scope, lane)));
-    let revision = match review {
-        Some((scope, _)) => scope.review_revision(&revision),
-        None => revision,
+    let quick_lane = filter.and_then(index::Scope::quick_review_lane);
+    let revision = match filter {
+        Some(scope) if review.is_some() || quick_lane.is_some() => scope.review_revision(&revision),
+        _ => revision,
     };
     if wanted == Some(revision.as_str()) {
         return Ok(json!({"unchanged": true, "revision": revision}));
     }
     let mut counts = index.counts_in(filter)?;
     let damaged = index.damaged()?;
+    let quick_counts = if stage == Stage::Review {
+        let project = index::Scope::project();
+        let lanes = index.quick_review_counts(filter.unwrap_or(&project))?;
+        if lanes["all"] + lanes["team"] != counts.get("review").copied().unwrap_or_default() {
+            return Err(index::Failure::Damaged);
+        }
+        if let Some(lane) = quick_lane {
+            counts.insert("review".into(), lanes[lane.as_str()]);
+        }
+        Some(lanes)
+    } else {
+        None
+    };
     let review_counts = match review {
         Some((scope, lane)) => {
             let lanes = index.review_counts(scope)?;
@@ -1029,6 +1062,12 @@ fn indexed_page_in(index: &mut index::Index, stage: Stage, limit: usize, anchor:
     if let Some((lane, lanes)) = review_counts {
         reply["review_lane"] = json!(lane.as_str());
         reply["review_counts"] = json!(lanes);
+    }
+    if let Some(lanes) = quick_counts {
+        reply["quick_review_counts"] = json!(lanes);
+        if let Some(lane) = quick_lane {
+            reply["quick_review_lane"] = json!(lane.as_str());
+        }
     }
     Ok(reply)
 }
@@ -1239,12 +1278,52 @@ fn position_index(args: &[String]) -> Result<Option<usize>> {
         .transpose()
 }
 
-fn add(config: &Config, args: &[String]) -> Result<Value> {
+/// A separate verb makes older helpers refuse before creating a plain task.
+fn add_technical(config: &Config, args: &[String]) -> Result<Value> {
+    const USAGE: &str = "usage: hgs task add-technical --start --criterion TEXT [--project P] [--title TITLE [--request-id UUID]] [--json] [--content-json]";
+    let mut seen = std::collections::BTreeSet::new();
+    let mut ordinary = Vec::with_capacity(args.len());
+    let mut review = None;
+    let mut args = args.iter();
+    while let Some(argument) = args.next() {
+        if !seen.insert(argument.as_str()) {
+            return Err(fail(USAGE));
+        }
+        match argument.as_str() {
+            "--start" | "--json" | "--content-json" => ordinary.push(argument.clone()),
+            "--project" | "--title" | "--request-id" | "--criterion" => {
+                let value = args
+                    .next()
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| fail(USAGE))?;
+                if argument == "--criterion" {
+                    review = Some(
+                        ReviewAssignment::new(ReviewOwner::Technical, value.trim().into())
+                            .map_err(fail)?,
+                    );
+                } else {
+                    ordinary.push(argument.clone());
+                    ordinary.push(value.clone());
+                }
+            }
+            _ => return Err(fail(USAGE)),
+        }
+    }
+    let review = review
+        .filter(|_| seen.contains("--start"))
+        .ok_or_else(|| fail(USAGE))?;
+    add(config, &ordinary, Some(&review))
+}
+
+fn add(config: &Config, args: &[String], review: Option<&ReviewAssignment>) -> Result<Value> {
     let team = teams::add(config, args)?;
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
     let author = teams::actor(config, &machines, args, false, team.is_some())?;
+    if review.is_some() && !matches!(&author, Actor::Agent(_)) {
+        return Err(fail("start is for an agent working in its own session"));
+    }
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
@@ -1284,11 +1363,28 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let authority = recheck_held(filed_for.as_ref(), &id, person_deadline())?;
     let request = option(args, "--request-id")?;
     let (mut task, created) = placed(&store, |placement| if let Some(title) = title {
-        store.new_named_task_placed(placement, title, &text, content.attachments.as_deref().unwrap_or_default(), stage, target, author.clone(), &position, &name, now(), request, flag(args, "--start")).map_err(fail)
+        store.new_named_task_placed(
+            placement,
+            title,
+            &text,
+            content.attachments.as_deref().unwrap_or_default(),
+            stage,
+            target,
+            author.clone(),
+            &position,
+            &name,
+            now(),
+            request,
+            flag(args, "--start"),
+            review,
+        ).map_err(fail)
     } else {
         if request.is_some() { return Err(fail("--request-id requires --title")); }
         let mut task = store.new_task_placed(placement, &text, stage, target, author.clone(), &position, &name, now()).map_err(fail)?;
         if let Some(files) = &content.attachments { task.set_attachments(files, &author, now()).map_err(fail)?; }
+        if let Some(review) = review {
+            task.set_review_assignment(Some(review), &author, now()).map_err(fail)?;
+        }
         Ok((task, true))
     })?;
     if created {
@@ -1365,6 +1461,11 @@ fn change_guarded(
     wait: Option<std::time::Duration>,
     guard: Option<&cancellation::Guard>,
 ) -> Result<Value> {
+    let quick_review = if action == "quick-review" {
+        Some(quick_review::read()?)
+    } else {
+        None
+    };
     let review_revision = if action == "review-owner" {
         option(args, "--expect-revision")?
     } else {
@@ -1421,6 +1522,8 @@ fn change_guarded(
         matches!(action, "send" | "handoff" | "cancel"),
         team.is_some(),
     )?;
+    let assignee_name = quick_review.as_ref()
+        .map(|review| review.assignee_name(&machines)).transpose()?.flatten();
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() {
             agent_text(text, action, &who)?;
@@ -1448,6 +1551,9 @@ fn change_guarded(
         }
     };
     let mut task = find(&store, &r.task)?;
+    if let Some(review) = &quick_review {
+        review.precheck(&task, project_id)?;
+    }
     if let Some(revision) = review_revision {
         if task.revision() != revision {
             return Err(fail("The task changed. Refresh before choosing a reviewer."));
@@ -1560,6 +1666,18 @@ fn change_guarded(
     };
     if action == "edit" && text.as_deref() == Some("") && task.title().is_empty() {
         agent_text("", action, &who)?;
+    }
+    if let Some(review) = &quick_review {
+        let mut admitted = store.admit_until(deadline)
+            .ok_or_else(|| fail("The task is currently busy. Refresh its report and try again."))?;
+        let mut reported = admitted.load_complete(task.uuid()).map_err(fail)?;
+        let (op, report_id) = review.apply(config, &mut reported, &r.project, &who, assignee_name.as_deref())?;
+        admitted.save(&mut reported).map_err(fail)?;
+        drop(admitted);
+        return Ok(json!({
+            "op": op, "report_id": report_id, "project_uuid": project_id,
+            "task_uuid": reported.uuid(), "task": view(&reported, project_name, false, &machines)?
+        }));
     }
     if let Some(revision) = review_revision {
         let mut admitted = store.admit_until(deadline)

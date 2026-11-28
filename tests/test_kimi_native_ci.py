@@ -270,7 +270,7 @@ class KimiNativeCI(unittest.TestCase):
                 ci.target(*pair)
         self.assertEqual(ci.checked_methods(), ci.METHODS)
         self.assertEqual(len(ci.METHODS), len(set(ci.METHODS)))
-        self.assertEqual(len(ci.METHODS), 30)
+        self.assertEqual(len(ci.METHODS), 36)
         self.assertIn('test_kimi_native.NativeKimi.test_exact_native_wire_repairs_a_lost_acceptance_write_without_replay', ci.METHODS)
         self.assertIn('test_kimi_native.NativeKimi.test_native_refusal_has_an_opted_in_terminal_outcome', ci.METHODS)
         for method in ('test_short_question_exact_identity_and_receipt_prevent_replay',
