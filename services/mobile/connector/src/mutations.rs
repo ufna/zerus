@@ -717,13 +717,21 @@ impl<N: Native + 'static> Connector<N> {
     }
 
     async fn write(&self, call: Call, started: &Cell<bool>) -> Result<Value, Failure> {
+        self.write_native(call, started, false).await
+    }
+
+    async fn write_native(
+        &self,
+        call: Call,
+        started: &Cell<bool>,
+        require_outcome_proof: bool,
+    ) -> Result<Value, Failure> {
         self.begin(started)?;
-        let negotiated = crate::send_outcome::negotiated(&call);
         match self.native(call).await {
             Ok(output) => Ok(output.json()),
             // The CLI refused the selected session ID before any effect, so
             // no write began: a definite failure, never retried.
-            Err(NativeError::SessionChanged) if !negotiated => {
+            Err(NativeError::SessionChanged) if !require_outcome_proof => {
                 started.set(false);
                 Err(Failure::text(crate::session_selector::CHANGED))
             }
@@ -1090,7 +1098,7 @@ impl<N: Native + 'static> Connector<N> {
             other => other,
         };
         let call = Call::new([command, session, "--json"]).payload(payload.clone());
-        let call = if let Some(wrapper) = negotiated {
+        let mut call = if let Some(wrapper) = negotiated {
             let binding = &wrapper["binding"];
             if binding["native_encoding"] != self.send_outcome_encoding() {
                 return Err(Failure::text(crate::send_outcome::MISMATCH));
@@ -1109,7 +1117,15 @@ impl<N: Native + 'static> Connector<N> {
         } else {
             self.selected(operation, session, payload, call)
         };
-        let result = self.write(call, started).await?;
+        let legacy = if negotiated.is_none() && operation == "send" {
+            self.legacy_claude_binding(&call, request_id)
+        } else {
+            None
+        };
+        if legacy.is_some() {
+            call.argv.insert(call.argv.len() - 1, "--delivery-outcome-v2".into());
+        }
+        let result = self.write_native(call, started, negotiated.is_some()).await?;
         if let Some(wrapper) = negotiated {
             if result["status"] == "not_offered" {
                 return crate::send_outcome::project(wrapper, &result, true);
@@ -1118,6 +1134,14 @@ impl<N: Native + 'static> Connector<N> {
             // acknowledgement. Never resend to recover a lost answer.
             let original = self.call(crate::send_outcome::call(wrapper)?).await?;
             return crate::send_outcome::project(wrapper, &original, false);
+        }
+        if let Some(binding) = legacy.as_ref().filter(|_| result["status"] == "not_offered") {
+            let proof = crate::send_outcome::project(binding, &result, true)?;
+            let reason = proof["reason"].as_str().ok_or(Failure::Generic)?;
+            // The input-lock proof decides this receipt. A timeout, missing
+            // proof or changed binding still leaves the journal uncertain.
+            started.set(false);
+            return Err(Failure::text(reason));
         }
         let object = result.as_object();
         let identity = |object: &Map<String, Value>| {
