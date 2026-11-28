@@ -761,13 +761,16 @@ pub(super) fn reopen(
 ) -> Result<Option<Value>> {
     pause(id);
     let detail = std::cell::RefCell::new(String::new());
-    let admission = admit(config, &project.0, uuid, deadline, |admitted, task| {
+    let reserve = |admitted: &mut zerus_replica::Admitted<'_>,
+                   task: &mut TaskDoc,
+                   reviewed_revision: Option<&str>| {
         let refuse = |reason, why: String| {
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
         if let Some(guard) = review {
-            if let Err(error) = guard.check(task, &project.0) {
+            let revision = reviewed_revision.unwrap_or(guard.revision);
+            if let Err(error) = guard.check_revision(task, &project.0, revision) {
                 return refuse("changed", error.message);
             }
         }
@@ -849,7 +852,22 @@ pub(super) fn reopen(
         admitted.save(task)?;
         drop(authority);
         Ok(Ok(()))
-    })?;
+    };
+    let admission = match review {
+        Some(guard) => fence::admit_reviewed_reopen(
+            config,
+            &fence::Ssh(config),
+            &project.0,
+            uuid,
+            deadline,
+            guard.revision,
+            |admitted, task, revision| reserve(admitted, task, Some(revision)),
+        )
+        .map_err(|error| fail(format!("{error:#}")))?,
+        None => admit(config, &project.0, uuid, deadline, |admitted, task| {
+            reserve(admitted, task, None)
+        })?,
+    };
     let (state, error) = match admission {
         Admission::Reserved { .. } => match deliver(config, &project.0, uuid, id, to, frozen) {
             Delivered::Submitted(_) => ("submitted", String::new()),
