@@ -185,6 +185,35 @@ fn native_record(
     owner.adopt_record(staged.commit(&fence)?)
 }
 
+// Kimi consumed the settings keys and now owns an explicit Terminal choice.
+// Retire the pending intent without settling its receipt or admitting input.
+// The chooser may already have been answered while the record was staged.
+fn retire_kimi_handoff(
+    owner: &Arc<owner::Owner>,
+    mut record: Value,
+    prior: Option<Value>,
+    confirmation: &Confirmation,
+) -> Result<()> {
+    retire_pending_settings(&mut record);
+    match prior {
+        Some(value) => record["settings_unconfirmed_at"] = value,
+        None => {
+            record.as_object_mut()
+                .ok_or("Invalid pending Settings record")?
+                .remove("settings_unconfirmed_at");
+        }
+    }
+    record["updated"] = json!(now());
+    let staged = stage_record(owner, &record)?;
+    checked(
+        string(&owner.control.frame().binding, "name"),
+        &confirmation.request,
+        false,
+    )?;
+    let fence = publication::CommitFence::native(owner, &staged)?;
+    owner.adopt_record(staged.commit(&fence)?)
+}
+
 fn scheduled(
     owner: &Arc<owner::Owner>,
     mut receipt: Value,
@@ -358,6 +387,22 @@ pub(super) fn execute(owner: &Arc<owner::Owner>) -> Result<Vec<u8>> {
     // and each new key requires its own completed native observation turn.
     let result = apply_native(name, &record, &confirmation);
     if let Err(error) = result {
+        if take_kimi_effort_handoff() {
+            let record = owner.snapshot()?.0;
+            let prior = {
+                let reservation = owner.reservation.lock()
+                    .map_err(|_| "Settings reservation unavailable")?;
+                reservation.as_ref().and_then(|held| {
+                    let pending = held.pending.as_ref()?;
+                    (record["pending_settings"] == pending.pending
+                        && record["settings_unconfirmed_at"] == held.marker)
+                        .then(|| held.prior.clone())
+                })
+            };
+            if let Some(prior) = prior {
+                retire_kimi_handoff(owner, record, prior, &confirmation)?;
+            }
+        }
         return owner.refuse(format!("settings change not confirmed: {error}"));
     }
     record = owner.snapshot()?.0;
@@ -461,7 +506,18 @@ pub(super) fn apply_pending_step(owner: &Arc<owner::Owner>, step: send::PendingS
     let confirmation=Confirmation {request:native,model,transcript};
     start_attempt();
     let name=string(&owner.control.frame().binding,"name");
-    apply_native(name,&record,&confirmation).map_err(|e|format!("settings change not confirmed: {e}"))?;
+    if let Err(error) = apply_native(name, &record, &confirmation) {
+        if take_kimi_effort_handoff() {
+            send::settings_key_ready(owner)?;
+            retire_kimi_handoff(
+                owner,
+                owner.snapshot()?.0,
+                send::child_prior(owner)?,
+                &confirmation,
+            )?;
+        }
+        return Err(format!("settings change not confirmed: {error}"));
+    }
     record=owner.snapshot()?.0;
     let latest=history(&record);
     record["model"]=json!(confirmation.model.id);record["effort"]=json!(confirmation.request.effort);
