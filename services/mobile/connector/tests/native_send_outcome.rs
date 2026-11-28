@@ -216,6 +216,108 @@ mod journal_controls {
             other => panic!("{other:?}"),
         }
     }
+
+    const CLAUDE: &str = "claude/example/send";
+    const DRAFT: &str = "terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt";
+
+    struct LegacyClaude {
+        change: Option<&'static str>,
+        calls: Rc<RefCell<Vec<Call>>>,
+    }
+
+    impl Native for LegacyClaude {
+        async fn call(&self, call: Call) -> NativeResult {
+            let payload = call.payload.as_ref().unwrap();
+            let mut answer = json!({"schema":2,"request_id":ORIGINAL,"name":CLAUDE,
+                "machine_id":MACHINE,"session_id":SID,"provider":"claude","run_id":"run",
+                "conversation_id":"conversation","native_digest":contract::native_digest(payload,"python_default").unwrap(),
+                "status":"not_offered","proof":"native_input_lock","reason":DRAFT});
+            match self.change {
+                Some("native_digest") => answer["native_digest"] = json!("e".repeat(64)),
+                Some("machine_id") => answer["machine_id"] = json!(SID),
+                Some("session_id") => answer["session_id"] = json!(MACHINE),
+                Some("request_id") => answer["request_id"] = json!(READ),
+                _ => {}
+            }
+            let result = match self.change {
+                Some("timeout") => Err(NativeError::Failed("native command timed out")),
+                Some("selector") => Err(NativeError::SessionChanged),
+                Some("submitted") => Ok(Output::Json(json!({"status":"submitted",
+                    "request_id":ORIGINAL,"name":CLAUDE,"run_id":"run",
+                    "conversation_id":"conversation","submitted_at":EPOCH}))),
+                _ => interpret(&call, false, serde_json::to_vec(&answer).unwrap()),
+            };
+            self.calls.borrow_mut().push(call);
+            result
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn legacy_phone_claude_draft_refusal_survives_only_with_exact_native_proof() {
+        for (capable, routed, selected, change) in [
+            (true, true, true, None),
+            (true, true, true, Some("native_digest")),
+            (true, true, true, Some("machine_id")),
+            (true, true, true, Some("session_id")),
+            (true, true, true, Some("request_id")),
+            (true, true, true, Some("timeout")),
+            (true, true, true, Some("selector")),
+            (true, true, true, Some("submitted")),
+            (false, true, true, None),
+            (true, false, true, None),
+            (true, true, false, None),
+        ] {
+            let s = Scratch::new("legacy-phone-claude");
+            let calls = Rc::new(RefCell::new(vec![]));
+            let n = Connector::new(
+                LegacyClaude { change, calls: calls.clone() },
+                Journal::open(&s.path("journal"), "fixture", EPOCH).unwrap(),
+                Settings {interval: 5.0, binding: "fixture".into(), default_timeout: 45.0, clock_scale: 1.0},
+                Box::new(|| EPOCH),
+            );
+            let help = "session-id-selector-v1\nmobile-peer-session-id-v1";
+            n.flags.set(Flags::from_help(&if capable {
+                format!("{help}\nnative-send-outcome-v2\ndelivery-receipt-v1\nmobile-peer-send-outcome-v2")
+            } else { help.into() }));
+            n.state.borrow_mut().sessions.insert(CLAUDE.into());
+            if routed {
+                *n.fleet.as_ref().unwrap().local_id.borrow_mut() = Some(MACHINE.into());
+            }
+            if selected {
+                n.state.borrow_mut().session_ids.insert("run".into(), SID.into());
+            }
+            let payload = wrapper(true)["payload"].clone();
+            let request = json!({"operation":"send","request_id":ORIGINAL,"computer_id":"fixture",
+                "session":CLAUDE,"payload":payload});
+            let reply = finished(n.execute(request.clone()).await.unwrap());
+            let opted_in = capable && routed && selected;
+            match change {
+                None if opted_in => {
+                    assert_eq!(reply["state"], "failed", "{reply}");
+                    assert_eq!(reply["error"], DRAFT, "{reply}");
+                }
+                Some("selector") => {
+                    assert_eq!(reply["state"], "failed", "{reply}");
+                    assert_eq!(reply["error"], zerus_mobile_connector::session_selector::CHANGED);
+                }
+                Some("submitted") => {
+                    assert_eq!(reply["state"], "completed", "{reply}");
+                    assert_eq!(reply["result"]["request_id"], ORIGINAL, "{reply}");
+                    assert_eq!(reply["result"]["status"], "submitted", "{reply}");
+                }
+                _ => {
+                    assert_eq!(reply["state"], "uncertain", "{reply}");
+                    assert_ne!(reply["error"], DRAFT, "{reply}");
+                }
+            }
+            assert_eq!(n.execute(request).await.unwrap(), Outcome::Replayed);
+            let calls = calls.borrow();
+            assert_eq!(calls.len(), 1, "one original and no retry or fallback Send");
+            assert_eq!(calls[0].payload.as_ref(), Some(&payload));
+            assert_eq!(calls[0].argv.iter().any(|arg| arg == "--delivery-outcome-v2"), opted_in);
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn closed_negative_journals_once_and_recovery_is_a_separate_read() {
         for files in [false, true] {
@@ -345,11 +447,26 @@ fn private_native_connector_refusal() {
         );
         n.flags.set(flags);
         n.state.borrow_mut().sessions.insert(name);
+        let legacy = request["operation"] == "send";
+        if legacy {
+            let binding = &input["binding"];
+            *n.fleet.as_ref().unwrap().local_id.borrow_mut() =
+                Some(binding["machine_id"].as_str().unwrap().into());
+            n.state.borrow_mut().session_ids.insert(
+                binding["run_id"].as_str().unwrap().into(),
+                binding["session_id"].as_str().unwrap().into(),
+            );
+        }
         let Outcome::Finished(first) = n.execute(request.clone()).await.unwrap() else {
             panic!("no new receipt")
         };
         assert_eq!(first["state"], "failed", "{first}");
-        assert_eq!(first["result"]["status"], "not_offered", "{first}");
+        if legacy {
+            assert!(first["result"].is_null(), "{first}");
+            assert_eq!(first["error"], input["reason"], "{first}");
+        } else {
+            assert_eq!(first["result"]["status"], "not_offered", "{first}");
+        }
         assert_eq!(n.execute(request).await.unwrap(), Outcome::Replayed);
         std::fs::write(
             input["output"].as_str().unwrap(),
