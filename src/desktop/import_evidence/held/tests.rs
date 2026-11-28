@@ -444,6 +444,9 @@ pub(in crate::desktop) struct Pending {
     pub owned: std::path::PathBuf,
     pub import_id: String,
     peer: Option<Stream>,
+    // A descriptor copied by an unrelated fork can survive the caller's close
+    // until exec. Keep the same native endpoint alive to exercise that case.
+    _inherited_peer: Stream,
     release: mpsc::SyncSender<()>,
     worker: std::thread::JoinHandle<Result<()>>,
     _serial: std::sync::MutexGuard<'static, ()>,
@@ -451,7 +454,11 @@ pub(in crate::desktop) struct Pending {
 #[cfg(target_os = "linux")]
 impl Pending {
     pub fn disconnect(&mut self) {
-        self.peer = None;
+        if let Some(peer) = self.peer.take() {
+            // Close the connection, including a descriptor copied during an
+            // unrelated fork, before the finalizer is allowed to respond.
+            crate::desktop::transport::shutdown(&peer);
+        }
     }
     pub fn finish_connected(mut self) -> Value {
         self.release.send(()).unwrap();
@@ -490,6 +497,7 @@ pub(in crate::desktop) fn pending(location: &Location, owner: Arc<Owner>) -> Pen
         "configuration":location.configuration,"op":OP,"request":request}))
     .unwrap();
     let (peer, stream) = std::os::unix::net::UnixStream::pair().unwrap();
+    let inherited_peer = peer.try_clone().unwrap();
     let (send, receive) = mpsc::sync_channel(1);
     let (started, observed) = mpsc::sync_channel(1);
     let (release, wait) = mpsc::sync_channel(1);
@@ -535,6 +543,7 @@ pub(in crate::desktop) fn pending(location: &Location, owner: Arc<Owner>) -> Pen
         owned,
         import_id,
         peer: Some(peer),
+        _inherited_peer: inherited_peer,
         release,
         worker,
         _serial: serial,

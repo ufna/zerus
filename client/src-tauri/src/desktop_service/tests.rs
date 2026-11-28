@@ -1768,15 +1768,24 @@ fn temporary_rpc_admission_pressure_retries_follow_without_halting_the_view() {
         let held: Vec<_> = (0..4)
             .map(|_| service.shared.rpc.admit(Role::Fleet).unwrap())
             .collect();
+        let refused = Arc::new(AtomicBool::new(false));
+        let observed = refused.clone();
+        let calls = fixture.0.join("calls");
+        service.shared.details.lock().unwrap().admission_refused = Some(Box::new(move || {
+            // The real pre-spawn refusal, rather than the test caller's
+            // scheduling, decides when this temporary pressure clears.
+            assert!(!fs::read_to_string(calls).unwrap_or_default().lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|call| call["value"]["op"] == "detail_follow"));
+            observed.store(true, Ordering::Release);
+            drop(held);
+        }));
         service
             .follow_detail("", detail_spec("activity", None))
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(!fixture
-            .calls()
-            .iter()
-            .any(|c| c["value"]["op"] == "detail_follow"));
-        drop(held);
+        // Model a descheduled caller while the service's original retry
+        // timer keeps running. Production retry counts/deadlines stay intact.
+        std::thread::sleep(injected_delay("ZERUS_TEST_DETAIL_PRESSURE_POLL_DELAY_MS"));
         eventually("one admitted follow after pressure clears", || {
             fixture
                 .calls()
@@ -1784,9 +1793,13 @@ fn temporary_rpc_admission_pressure_retries_follow_without_halting_the_view() {
                 .any(|c| c["value"]["op"] == "detail_follow")
         })
         .await;
+        assert!(refused.load(Ordering::Acquire), "the original follow encountered capacity");
         assert!(service.snapshot().connected);
         assert_eq!(watch_calls(&fixture.calls()), 1);
         service.join().await.unwrap();
+        assert_eq!(fixture.calls().iter()
+            .filter(|call| call["value"]["op"] == "detail_follow").count(), 1,
+            "the original read follows once, without a duplicate helper");
     });
 }
 #[test]
