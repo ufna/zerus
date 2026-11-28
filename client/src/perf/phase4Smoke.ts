@@ -1291,6 +1291,58 @@ async function imagePasteStep() {
   document.querySelector(".att-pop")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 }
 
+async function sentImageStep() {
+  const row = await select(API);
+  const marker = "Synthetic sent PNG";
+  // A distinct 160×100 grayscale PNG, not the already-warm history fixture.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkAQAAAAApzQYiAAAAHklEQVR4nGNYhQUwjAqOCo4KjgqOCo4KjgqOCqICAKqsMGxddEMEAAAAAElFTkSuQmCC";
+  type(marker);
+  await composer.pasteImage(new Blob([Uint8Array.from(atob(png), (char) => char.charCodeAt(0))], { type: "image/png" }));
+  await until(() => composer.view()?.attachments.length === 1 && composer.sendEnabled(), 5000, "the PNG is not ready to send");
+  const baseline = (await calls("send")).length;
+  document.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click();
+  const sent = (await waitCall("send", baseline + 1)).at(-1)!;
+  const request = JSON.parse(sent.stdin);
+  if (request.expected_run_id !== row.runId || request.expected_conversation_id !== row.conversationId
+    || request.attachments?.[0]?.data_base64 !== png) throw new Error("Send changed the PNG or its bound identity");
+  const message = () => [...document.querySelectorAll<HTMLElement>(".act-msg.k-user")]
+    .find((node) => node.querySelector(".act-body")?.textContent?.includes(marker));
+  const decoded = (node: HTMLElement | undefined) => {
+    const image = node?.querySelector<HTMLImageElement>(".att-thumb img");
+    return !!image && image.complete && image.naturalWidth === 160 && image.naturalHeight === 100;
+  };
+  await until(() => composer.view()?.local.some((item) => item.id === request.request_id && item.status === "sent") === true,
+    5000, "the attached send did not settle on its local row");
+  await until(() => decoded(message()), 5000, "the pasted PNG did not decode after Send")
+    .catch((error) => { throw new Error(`${error.message}: ${message()?.querySelector(".att-card")?.outerHTML}`); });
+  const original = message();
+  const target = activity.target()!;
+  const seq = Math.max(...activity.events().map((event) => event.seq ?? 0)) + 1;
+  const local = composer.view()!.local.find((item) => item.id === request.request_id)!;
+  const attachment = { request_id: request.request_id, index: 0, name: "pasted-image.png", mime: "image/png", bytes: 87, reference: "[Image #1]" };
+  const echo: ActivityEvent = { seq, at: local.submitted_at, type: "UserPromptSubmit", source: "claude_transcript",
+    detail: request.text, message_id: "synthetic-native-image", attachment_request_id: request.request_id, attachments: [attachment],
+    run_id: row.runId, conversation_id: row.conversationId };
+  const publish = (...events: ActivityEvent[]) => activity.applyActivity([{ computer: target.computer, key: target.key, kind: "events", payload: { events } }]);
+  publish(echo);
+  await until(() => activity.events().some((event) => event.seq === seq) && message() === original && decoded(original),
+    5000, "the native echo replaced the row or lost its PNG");
+  await select(PAGINATION);
+  await select(API);
+  // Reopen from the recorded echo without the original composer's local copy.
+  const view = composer.view()!;
+  composer.receive({ ...view, local: view.local.filter((item) => item.id !== request.request_id) });
+  publish(echo);
+  await until(() => message() !== original && decoded(message()), 5000, "the reopened Activity did not decode the pasted PNG");
+  const missingId = "00000000-0000-4000-8000-000000000901";
+  publish({ ...echo, seq: seq + 1, detail: "Synthetic missing PNG", message_id: "synthetic-missing-image", attachment_request_id: missingId,
+    attachments: [{ ...attachment, request_id: missingId }] });
+  await untilAsync(async () => (await calls("attachment")).some(({ argv }) => argv.includes(missingId)), 5000, "the missing PNG was not requested");
+  const missing = [...document.querySelectorAll<HTMLElement>(".act-msg.k-user")].find((node) => node.textContent?.includes("Synthetic missing PNG"));
+  if (!missing?.querySelector(".att-caption") || missing.querySelector(".att-thumb img")) throw new Error("the unavailable PNG left an empty or broken img");
+  if ((await calls("send")).length !== baseline + 1) throw new Error("the original Send was replayed");
+}
+
 async function clearCloseOrderStep() {
   await select(API);
   composer.openClear();
@@ -1445,6 +1497,7 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     ["approval", approvalStep],
     ["queue", queueStep],
     ["image-paste", imagePasteStep],
+    ["sent-image", sentImageStep],
     ["clear-close-order", clearCloseOrderStep],
     ["send-follow", sendFollowStep],
     ["subagent", subagentStep],
@@ -1467,8 +1520,8 @@ export async function phase4Smoke(allowed: boolean, smokeFile?: string) {
     // reproduce a state an earlier step leaves for a later one.
     const only = new URLSearchParams(location.search).get("phase4-only")?.split(",").filter(Boolean);
     if (only?.some((wanted) => !steps.some(([name]) => name === wanted))) throw new Error("Unknown phase4 step");
-    // These steps need separate fixture setups and run individually.
-    for (const [name, run] of steps.filter(([name]) => only ? only.includes(name) : !["start-late-listing", "start-poll", "resume-history", "resume-status"].includes(name))) {
+    // These steps need separate fixture setups or a fresh draft.
+    for (const [name, run] of steps.filter(([name]) => only ? only.includes(name) : !["start-late-listing", "start-poll", "resume-history", "resume-status", "sent-image"].includes(name))) {
       current = name;
       await run();
       log(`phase4-smoke ${name}: done`);

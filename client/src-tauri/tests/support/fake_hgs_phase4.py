@@ -130,6 +130,20 @@ if args[:1] == ["attachment"] and "--request" in args:
     request_id = args[args.index("--request") + 1]
     index = int(args[args.index("--index") + 1])
     attachment = config["attachments"].get(request_id, config.get("attachment"))
+    if attachment is None and index == 0 and args[1] == "claude/sample-project/api-refactor":
+        # Only serve the bytes from the matching synthetic send, not a default
+        # that could hide a wrong request, conversation or index in the smoke.
+        with open(os.path.join(here, "log.ndjson"), encoding="utf-8") as handle:
+            for line in handle:
+                entry = json.loads(line)
+                if entry["argv"][:2] != ["send", args[1]]:
+                    continue
+                sent = json.loads(entry["stdin"])
+                conversation = args[args.index("--conversation") + 1]
+                if (sent["request_id"] == request_id and sent["expected_conversation_id"] == conversation
+                        and sent["text"].startswith("Synthetic sent PNG") and len(sent.get("attachments", [])) == 1):
+                    attachment = sent["attachments"][0]
+                    break
     if attachment is None:
         raise SystemExit(2)
     emit({"request_id": request_id, "index": index, "name": attachment["name"], "mime": attachment["mime"],
