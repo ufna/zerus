@@ -174,8 +174,8 @@ it.each([
 });
 
 it.each([
-  ["en", "Your decision", "Coordinator or reviewer next", "Coordinator to triage", "Team review"],
-  ["ru", "Вам на решение", "Дальше проверяет координатор или ревьюер", "Координатору нужно уточнить, что дальше", "Проверка командой"],
+  ["en", "Review needed", "Review needed", "History reconciliation", "Team review"],
+  ["ru", "Нужна проверка", "Нужна проверка", "Сверка истории", "Проверка командой"],
 ] as const)("uses projected execution across the normal board and bounded search in %s", async (locale, person, technical, triage, team) => {
   const { stream, search } = (await import("./fixtures/task-review-projected.json")).default;
   expect(search.tasks[4].execution?.conflict).toBe(true);
@@ -195,7 +195,7 @@ it.each([
   await tick();
   host.querySelector<HTMLButtonElement>('[data-filter="review"]')!.click();
   const labels = () => [...host.querySelectorAll(".tk-card")].map((card) => card.querySelector(".tk-review-owner")?.textContent);
-  const expected = [person, technical, triage, team, triage, triage];
+  const expected = [person, technical, person, team, triage, triage];
   expect(labels()).toEqual(expected);
   expect(f.read).not.toHaveBeenCalled();
 
@@ -296,7 +296,7 @@ it("stream reconnect waits for retained window pages before showing their next-r
   expect(tail()).toBeNull();
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(1);
   resolveReview(search); await tick();
-  expect(tail()?.textContent).toBe("Coordinator or reviewer next");
+  expect(tail()?.textContent).toBe("Review needed");
   expect(host.querySelectorAll(".tk-review-owner")).toHaveLength(6);
 });
 
@@ -328,7 +328,7 @@ it.each(["older first", "newer first"] as const)("bounds retained tail rereads a
   tasks.apply([{ ...windowed, payload: { ...windowed.payload, digest: "current" } }]);
   await tick();
   expect(waiting.map(({ after, limit }) => [after, limit])).toEqual([[null, 6], [null, 6]]);
-  expect(label(0)).toBe("Your decision");
+  expect(label(0)).toBe("Review needed");
   expect(label(1)).toBeUndefined();
   if (order === "older first") {
     waiting[0].reply(search); await tick();
@@ -340,13 +340,13 @@ it.each(["older first", "newer first"] as const)("bounds retained tail rereads a
   expect(label(1)).toBeUndefined();
   waiting[2].reply({ ...search, tasks: [search.tasks[4]] });
   await tick();
-  expect(label(1)).toBe("Coordinator or reviewer next");
-  expect(label(4)).toBe("Coordinator to triage");
+  expect(label(1)).toBe("Review needed");
+  expect(label(4)).toBe("History reconciliation");
   expect(host.querySelectorAll(".tk-card")).toHaveLength(3);
   if (order === "newer first") {
     waiting[0].reply(search); await tick();
     expect(host.querySelectorAll(".tk-card")).toHaveLength(3);
-    expect(label(1)).toBe("Coordinator or reviewer next");
+    expect(label(1)).toBe("Review needed");
     expect(label(5)).toBeUndefined();
   }
 });
@@ -381,13 +381,13 @@ it.each(["project window", "scoped search"] as const)("Show more preserves the r
     await vi.advanceTimersByTimeAsync(200); await tick();
   }
   const labels = () => [...host.querySelectorAll(".tk-card")].map((card) => card.querySelector(".tk-review-owner")?.textContent);
-  const expectedHead = ["Your decision", "Coordinator or reviewer next", "Coordinator to triage", "Team review"];
+  const expectedHead = ["Review needed", "Review needed", "Review needed", "Team review"];
   expect(labels().slice(0, 4)).toEqual(expectedHead);
   expect(host.querySelectorAll(".tk-card")).toHaveLength(first.length);
   host.querySelector<HTMLButtonElement>(".tk-more")!.click(); await tick();
   if (mode === "scoped search") {
     expect(host.querySelectorAll(".tk-card")).toHaveLength(2);
-    expect(labels()).toEqual(["Coordinator to triage", "Coordinator to triage"]);
+    expect(labels()).toEqual(["History reconciliation", "History reconciliation"]);
     host.querySelector<HTMLButtonElement>(".tasks-navigation button")!.click();
     expect(host.querySelectorAll(".tk-card")).toHaveLength(50);
   } else {

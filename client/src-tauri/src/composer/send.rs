@@ -84,7 +84,7 @@ const TICK: Duration = Duration::from_secs(1);
 const POLL: f64 = 2.5;
 /// The composer's availability while Send can start a stopped session
 /// (`SessionsWindow.cpp:3987-3988`).
-const CONTINUE: &str = crate::source!("Send asks how to continue this session.");
+const CONTINUE: &str = zerus_client_core::source!("Send asks how to continue this session.");
 
 /// The session's state for the composer view.
 #[derive(Clone, Debug, Default, PartialEq)]

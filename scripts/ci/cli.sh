@@ -10,7 +10,8 @@ mkdir -p artifacts/test-results
 # canonical paths as native configuration, not a system alias. Tests still
 # construct their own symlink/refusal cases; production readers stay strict.
 if [ "$(uname -s)" = Darwin ]; then
-    export TMPDIR="$(python3 -c 'from pathlib import Path; import tempfile; print(Path(tempfile.gettempdir()).resolve(strict=True))')"
+    TMPDIR="$(python3 -c 'from pathlib import Path; import tempfile; print(Path(tempfile.gettempdir()).resolve(strict=True))')"
+    export TMPDIR
 fi
 # Tests launched from an agent must not inherit its account/run selection.
 while IFS= read -r variable; do
