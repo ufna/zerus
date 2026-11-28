@@ -228,7 +228,7 @@ it("reads one bounded older page at a time and stops as soon as an own message i
   const previous = nav(view.host, "Previous"); previous.click(); await settle();
   expect(view.loadOlder).toHaveBeenCalledExactlyOnceWith();
   expect(previous.disabled).toBe(true); expect(previous.getAttribute("aria-busy")).toBe("true");
-  expect(previous.title).toContain("Reading earlier messages"); expect(view.host.querySelector("[role=status]")?.textContent).toContain("Reading earlier messages");
+  expect(previous.title).toContain("Reading earlier messages"); expect([...view.host.querySelectorAll("[role=status]")].map(status => status.textContent)).toContain("Reading earlier messages…");
   batch(() => { view.setRows([...events(20), ...events(40)]); view.setLoadingOlder(false); }); await settle();
   expect(view.loadOlder).toHaveBeenCalledTimes(2);
   batch(() => { view.setRows([own(19), ...events(20), ...events(40)]); view.setLoadingOlder(false); }); await settle();
