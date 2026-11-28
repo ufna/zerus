@@ -10,6 +10,8 @@ import supplement from "./i18n.next-ru.json";
 // trNoop() tables or from literal component props, never from session text,
 // agent output, identities or file names.
 const DYNAMIC_FILES: Record<string, string> = {
+  "./ui/sessions/OpenCodeContextActions.tsx": "the backend compaction reason, like the other action dialogs; unknown prose stays verbatim",
+  "./ui/teams/TeamLeadAvailability.tsx": "the closed lead recovery status and reason table built with tr()",
   "./store/phase-controls.ts": "the closed product/Core phase-control reasons registered in its trNoop table; unknown prose stays verbatim",
   "./ui/teams/TeamCatalogEditor.tsx": "the core closed phase-one schema labels registered in LABELS, CHOICES and NOTICES, plus its own tab table",
   "./ui/components/Rail.tsx": "its own screen table",

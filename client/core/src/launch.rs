@@ -88,7 +88,8 @@ pub const LAUNCH_ANYWAY: &str = "Launch anyway";
 /// joins them.
 pub const AGENTS: [&str; 5] = ["codex", "claude", "kimi", "dsh", "opencode"];
 
-pub const ANTIGRAVITY_RETIRED: &str = crate::source!("Antigravity integration has been retired from Zerus.");
+pub const ANTIGRAVITY_RETIRED: &str =
+    crate::source!("Antigravity integration has been retired from Zerus.");
 
 /// Whether the agent starts detached (`-d`): every one but DeepSeek, which
 /// opens in Native UI, and OpenCode, which runs through its server.

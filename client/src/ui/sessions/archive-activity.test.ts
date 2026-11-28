@@ -12,6 +12,11 @@ vi.hoisted(() => {
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }));
 });
 vi.mock("../../bridge", () => ({
+  composerRemoveWaiting: vi.fn(async () => {}),
+  composerDismissCompactionNotice: vi.fn(async () => {}),
+  composerCheckDelivery: vi.fn(async () => {}),
+  composerSkipWaiting: vi.fn(async () => {}),
+  terminalShown: vi.fn(async () => {}),
   // The task store reads further board pages through this bridge call.
   readTaskPage: vi.fn(async () => ({ tasks: [], page: { next: null } })),
   // The session entry points also initialize the bounded creation-card store.

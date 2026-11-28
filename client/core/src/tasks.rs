@@ -116,7 +116,12 @@ pub fn checked_queried_page(
 
 const REVIEW_GROUPS: [&str; 4] = ["person", "technical", "triage", "team"];
 
-pub fn add_review_lane(call: &mut TaskCall, stage: &str, lane: &str, before: Option<&str>) -> Result<(), String> {
+pub fn add_review_lane(
+    call: &mut TaskCall,
+    stage: &str,
+    lane: &str,
+    before: Option<&str>,
+) -> Result<(), String> {
     if stage != "review" || lane != "all" && !REVIEW_GROUPS.contains(&lane) {
         return Err("Invalid review queue.".into());
     }
@@ -127,7 +132,9 @@ pub fn add_review_lane(call: &mut TaskCall, stage: &str, lane: &str, before: Opt
 
 fn add_review_cursor(call: &mut TaskCall, before: Option<&str>) -> Result<(), String> {
     if let Some(before) = before {
-        if before.is_empty() || before.len() > 512 || before.chars().any(char::is_control)
+        if before.is_empty()
+            || before.len() > 512
+            || before.chars().any(char::is_control)
             || call.args.iter().any(|argument| argument == "--after")
         {
             return Err("Invalid review queue cursor.".into());
@@ -137,11 +144,22 @@ fn add_review_cursor(call: &mut TaskCall, before: Option<&str>) -> Result<(), St
     Ok(())
 }
 
-const QUICK_REVIEW_LANES: [&str; 8] =
-    ["all", "work", "ready", "check", "rework", "parked", "unclassified", "unresolved"];
+const QUICK_REVIEW_LANES: [&str; 8] = [
+    "all",
+    "work",
+    "ready",
+    "check",
+    "rework",
+    "parked",
+    "unclassified",
+    "unresolved",
+];
 
 pub fn add_quick_review_lane(
-    call: &mut TaskCall, stage: &str, lane: &str, before: Option<&str>
+    call: &mut TaskCall,
+    stage: &str,
+    lane: &str,
+    before: Option<&str>,
 ) -> Result<(), String> {
     if stage != "review" || !QUICK_REVIEW_LANES.contains(&lane) {
         return Err("Invalid quick review queue.".into());
@@ -158,20 +176,29 @@ pub fn add_quick_review_counts(reply: &Map<String, Value>, page: &mut Value) -> 
         return false;
     };
     let count = |lane| counts.get(lane).and_then(Value::as_u64);
-    if !QUICK_REVIEW_LANES.iter().all(|lane| count(*lane).is_some_and(|n| n <= (1u64 << 53) - 1))
-        || count("check").and_then(|n| n.checked_add(count("rework")?))
-            .and_then(|n| n.checked_add(count("unclassified")?)) != count("work")
+    if !QUICK_REVIEW_LANES
+        .iter()
+        .all(|lane| count(*lane).is_some_and(|n| n < (1u64 << 53)))
+        || count("check")
+            .and_then(|n| n.checked_add(count("rework")?))
+            .and_then(|n| n.checked_add(count("unclassified")?))
+            != count("work")
     {
         return false;
     }
-    page["quick_review_counts"] = Value::Object(QUICK_REVIEW_LANES.into_iter()
-        .map(|lane| (lane.to_owned(), counts[lane].clone()))
-        .collect());
+    page["quick_review_counts"] = Value::Object(
+        QUICK_REVIEW_LANES
+            .into_iter()
+            .map(|lane| (lane.to_owned(), counts[lane].clone()))
+            .collect(),
+    );
     true
 }
 
 pub fn check_quick_review_lane(
-    reply: &Map<String, Value>, mut page: Value, lane: &str
+    reply: &Map<String, Value>,
+    mut page: Value,
+    lane: &str,
 ) -> Result<Value, String> {
     let invalid = || "Invalid quick review queue response.".to_owned();
     if reply.get("quick_review_lane").and_then(Value::as_str) != Some(lane)
@@ -179,29 +206,44 @@ pub fn check_quick_review_lane(
     {
         return Err(invalid());
     }
-    let total = page["quick_review_counts"][lane].as_u64().ok_or_else(invalid)?;
+    let total = page["quick_review_counts"][lane]
+        .as_u64()
+        .ok_or_else(invalid)?;
     let position = page["page"]["position"].as_u64().ok_or_else(invalid)?;
     let rows = page["tasks"].as_array().ok_or_else(invalid)?;
     if page["page"]["total"] != total
         || !page["page"]["previous"].is_null() && !page["page"]["previous"].is_string()
-        || position.checked_add(rows.len() as u64).is_none_or(|end| end > total)
+        || position
+            .checked_add(rows.len() as u64)
+            .is_none_or(|end| end > total)
         || rows.iter().any(|row| {
-            !row["team"].is_null() || row["team_invalid"] == true || row["review_lane"] == "team"
+            !row["team"].is_null()
+                || row["team_invalid"] == true
+                || row["review_lane"] == "team"
                 || !match lane {
-                    "all" => row["quick_review_status"].as_str().is_some_and(
-                        crate::task_quick_review::ordinary_status
-                    ),
-                    "work" => matches!(row["quick_review_status"].as_str(),
-                        Some("check" | "rework" | "unclassified")) && row["review_report_id"].is_string(),
+                    "all" => row["quick_review_status"]
+                        .as_str()
+                        .is_some_and(crate::task_quick_review::ordinary_status),
+                    "work" => {
+                        matches!(
+                            row["quick_review_status"].as_str(),
+                            Some("check" | "rework" | "unclassified")
+                        ) && row["review_report_id"].is_string()
+                    }
                     kind => row["quick_review_status"] == kind,
                 }
         })
-        || !page["revision"].as_str().is_some_and(|rev| !rev.is_empty() && rev.len() <= 128)
+        || !page["revision"]
+            .as_str()
+            .is_some_and(|rev| !rev.is_empty() && rev.len() <= 128)
     {
         return Err(invalid());
     }
     page["quick_review_lane"] = json!(lane);
-    page["damaged_total"] = json!(reply.get("damaged_total").and_then(Value::as_u64).ok_or_else(invalid)?);
+    page["damaged_total"] = json!(reply
+        .get("damaged_total")
+        .and_then(Value::as_u64)
+        .ok_or_else(invalid)?);
     Ok(page)
 }
 
@@ -226,19 +268,26 @@ pub fn check_review_lane(
     let rows = page["tasks"].as_array().ok_or_else(invalid)?;
     if page["page"]["total"].as_u64() != Some(total)
         || !page["page"]["previous"].is_null() && !page["page"]["previous"].is_string()
-        || position.checked_add(rows.len() as u64).is_none_or(|end| end > total)
+        || position
+            .checked_add(rows.len() as u64)
+            .is_none_or(|end| end > total)
         || rows.iter().any(|row| {
             !row["review_lane"].as_str().is_some_and(|group| {
                 REVIEW_GROUPS.contains(&group) && (lane == "all" || lane == group)
             })
         })
-        || !page["revision"].as_str().is_some_and(|rev| !rev.is_empty() && rev.len() <= 128)
+        || !page["revision"]
+            .as_str()
+            .is_some_and(|rev| !rev.is_empty() && rev.len() <= 128)
     {
         return Err(invalid());
     }
     page["review_counts"] = counts.clone();
     page["review_lane"] = json!(lane);
-    page["damaged_total"] = json!(reply.get("damaged_total").and_then(Value::as_u64).ok_or_else(invalid)?);
+    page["damaged_total"] = json!(reply
+        .get("damaged_total")
+        .and_then(Value::as_u64)
+        .ok_or_else(invalid)?);
     Ok(page)
 }
 
@@ -563,7 +612,10 @@ mod tests {
     fn review_lane_requires_echo_and_uses_the_selected_scope_total() {
         let mut call = queried_page_call("p1", "review", 1, None, None, None).unwrap();
         add_review_lane(&mut call, "review", "person", Some("previous")).unwrap();
-        assert_eq!(&call.args[call.args.len() - 4..], ["--before", "previous", "--review-lane", "person"]);
+        assert_eq!(
+            &call.args[call.args.len() - 4..],
+            ["--before", "previous", "--review-lane", "person"]
+        );
         let page = json!({
             "revision": "r1", "tasks": [{"stage": "review", "review_lane": "person"}],
             "page": {"position": 0, "total": 85, "next": "n", "previous": null},
@@ -572,10 +624,17 @@ mod tests {
         assert!(check_review_lane(&response, page.clone(), "person").is_err());
         response.extend([
             ("review_lane".into(), json!("person")),
-            ("review_counts".into(), json!({"person": 85, "technical": 10, "triage": 311, "team": 1})),
+            (
+                "review_counts".into(),
+                json!({"person": 85, "technical": 10, "triage": 311, "team": 1}),
+            ),
             ("damaged_total".into(), json!(0)),
         ]);
-        assert_eq!(check_review_lane(&response, page.clone(), "person").unwrap()["review_counts"]["triage"], 311);
+        assert_eq!(
+            check_review_lane(&response, page.clone(), "person").unwrap()["review_counts"]
+                ["triage"],
+            311
+        );
         response.get_mut("review_counts").unwrap()["person"] = json!(1);
         assert!(check_review_lane(&response, page, "person").is_err());
     }

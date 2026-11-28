@@ -443,15 +443,24 @@ fn running_opencode_archive_requires_the_exact_fresh_native_offer() {
     assert!(!captured.matches(&details));
 
     let invocation = captured.invocation(REQUEST).unwrap();
-    assert!(matches!(captured.completed(&invocation, Exit::TimedOut), Outcome::Uncertain { .. }));
+    assert!(matches!(
+        captured.completed(&invocation, Exit::TimedOut),
+        Outcome::Uncertain { .. }
+    ));
     let receipt = json!({
         "request_id": REQUEST, "name": captured.target.name, "run_id": captured.target.run_id,
         "conversation_id": captured.target.conversation_id, "status": "completed",
         "result_target": {"name":captured.target.name,"run_id":captured.target.run_id,
                           "conversation_id":captured.target.conversation_id,"archive_id":ARCHIVE}
     });
-    assert!(matches!(captured.completed(&invocation, exited(&receipt)), Outcome::Done { .. }));
+    assert!(matches!(
+        captured.completed(&invocation, exited(&receipt)),
+        Outcome::Done { .. }
+    ));
     let mut wrong = receipt;
     wrong["result_target"]["conversation_id"] = json!("ses_foreign");
-    assert!(matches!(captured.completed(&invocation, exited(&wrong)), Outcome::Uncertain { .. }));
+    assert!(matches!(
+        captured.completed(&invocation, exited(&wrong)),
+        Outcome::Uncertain { .. }
+    ));
 }

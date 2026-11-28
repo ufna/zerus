@@ -342,7 +342,11 @@ pub fn refs(fleet: &[FleetEntry], state: &AccountsState) -> Vec<(UsageRef, bool)
         };
         for raw in items(data, "profiles").iter().take(PROFILES_PER_HOST) {
             let r = usage_ref(&entry.computer, raw);
-            if r.id != "native-agy" && flag(raw, "installed") && !r.id.is_empty() && launchable(entry, &r.provider) {
+            if r.id != "native-agy"
+                && flag(raw, "installed")
+                && !r.id.is_empty()
+                && launchable(entry, &r.provider)
+            {
                 out.push((r, reachable(entry)));
             }
         }
@@ -795,7 +799,9 @@ pub fn host_profiles(
     let mut out = Vec::new();
     for provider in &providers {
         for raw in &rows {
-            if text(raw, "provider") != *provider || matches!(text(raw, "id").as_str(), "" | "native-agy") {
+            if text(raw, "provider") != *provider
+                || matches!(text(raw, "id").as_str(), "" | "native-agy")
+            {
                 continue;
             }
             let mut p = profile(entry, raw, state);

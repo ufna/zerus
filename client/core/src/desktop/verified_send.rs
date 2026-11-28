@@ -133,10 +133,16 @@ pub(super) mod tests {
         let normal = intent(&vec![b'x'; 64 << 10]);
         assert!(normal.send.original.len() > zerus_watch_protocol::CONTROL_LINE_BYTES);
         assert_eq!(normal.verify().unwrap().conversation_id, "conversation-one");
-        assert!(matches!(normal.send.verify(), Err("deferred_send_original_too_large")));
+        assert!(matches!(
+            normal.send.verify(),
+            Err("deferred_send_original_too_large")
+        ));
 
         let oversized = intent(&vec![b'x'; ENVELOPE_BYTES]);
         assert!(oversized.send.original.len() > ENVELOPE_BYTES);
-        assert_eq!(oversized.verify().unwrap_err(), "invalid_verified_send_intent");
+        assert_eq!(
+            oversized.verify().unwrap_err(),
+            "invalid_verified_send_intent"
+        );
     }
 }

@@ -4,7 +4,7 @@
 //! acts only while the name still belongs to that session. Reads, polls,
 //! history, status, watch, terminal input and read marks keep their name and
 //! run form until an O(1) label index exists.
-use crate::actions::{Action, Exit, Invocation, Target, invocation, prepend_alias};
+use crate::actions::{invocation, prepend_alias, Action, Exit, Invocation, Target};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -80,8 +80,14 @@ pub fn selects(action: &Action) -> bool {
 /// the command and, on a peer, its `@alias`.
 fn after_name(target: &Target, call: &Invocation) -> usize {
     let command = usize::from(!target.computer.is_empty());
-    let outbox = call.args.get(command).is_some_and(|word| word == "delivery")
-        && call.args.get(command + 1).is_some_and(|word| word == "outbox-offer");
+    let outbox = call
+        .args
+        .get(command)
+        .is_some_and(|word| word == "delivery")
+        && call
+            .args
+            .get(command + 1)
+            .is_some_and(|word| word == "outbox-offer");
     command + 2 + usize::from(outbox)
 }
 
@@ -243,8 +249,8 @@ impl Answers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Outcome;
     use crate::actions::classify;
+    use crate::Outcome;
     use serde_json::Value;
 
     const ID: &str = "3f2a9c1d-0b4e-4d6a-9c1d-2e3f4a5b6c7d";
@@ -351,11 +357,20 @@ mod tests {
 
     #[test]
     fn native_resume_for_send_keeps_the_negotiated_id_and_exact_receipt() {
-        let t = Target { name: "dsh/project/session".into(), ..target("mac") };
+        let t = Target {
+            name: "dsh/project/session".into(),
+            ..target("mac")
+        };
         let action = Action::ResumeNativeForSend;
         let call = selected_invocation(&t, &action, "req-1", Some(ID)).unwrap();
         assert_eq!(selected_id(&t, &call), Some(ID));
-        assert_eq!(selected_id(&t, &selected_invocation(&t, &action, "req-1", None).unwrap()), None);
+        assert_eq!(
+            selected_id(
+                &t,
+                &selected_invocation(&t, &action, "req-1", None).unwrap()
+            ),
+            None
+        );
         let input: Value = serde_json::from_slice(call.stdin.as_deref().unwrap()).unwrap();
         assert_eq!(input["action"], "resume");
         assert_eq!(input["expected_run_id"], t.run_id);
@@ -365,17 +380,28 @@ mod tests {
             "conversation_id":t.conversation_id, "status":"completed",
             "result_target":{"name":t.name, "run_id":"run-2", "conversation_id":t.conversation_id},
         });
-        let classify_receipt = |receipt: &Value| classify(
-            &t, &action, &call, exit(0, &serde_json::to_vec(receipt).unwrap(), ""),
-        );
+        let classify_receipt = |receipt: &Value| {
+            classify(
+                &t,
+                &action,
+                &call,
+                exit(0, &serde_json::to_vec(receipt).unwrap(), ""),
+            )
+        };
         assert!(matches!(classify_receipt(&receipt), Outcome::Done { .. }));
         receipt["status"] = serde_json::json!("uncertain");
         receipt["result_target"] = Value::Null;
-        assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
+        assert!(matches!(
+            classify_receipt(&receipt),
+            Outcome::Uncertain { .. }
+        ));
         receipt["status"] = serde_json::json!("failed");
         assert!(matches!(classify_receipt(&receipt), Outcome::Failed { .. }));
         receipt["status"] = serde_json::json!("completed");
-        assert!(matches!(classify_receipt(&receipt), Outcome::Uncertain { .. }));
+        assert!(matches!(
+            classify_receipt(&receipt),
+            Outcome::Uncertain { .. }
+        ));
     }
 
     /// Reads, read marks, archived conversations and other calls never select

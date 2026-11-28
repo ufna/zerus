@@ -436,7 +436,10 @@ pub fn invocation(
     request_id: &str,
 ) -> Result<Invocation, String> {
     if target.name.starts_with("agy/")
-        && !matches!(action, Action::MarkRead { .. } | Action::PauseAll { .. } | Action::ResumeAll { .. })
+        && !matches!(
+            action,
+            Action::MarkRead { .. } | Action::PauseAll { .. } | Action::ResumeAll { .. }
+        )
     {
         return Err(crate::launch::ANTIGRAVITY_RETIRED.into());
     }
@@ -608,12 +611,23 @@ pub fn invocation(
                 return Err("Queued input needs an exact conversation.".into());
             }
             let flag = match action {
-                Action::SendToCodexQueue { .. } if target.name.starts_with("codex/") => "--codex-queue",
-                Action::SendToOrderedCodexTurn { .. } if target.name.starts_with("codex/") => "--codex-ordered-turn",
-                Action::SendToCodexQueue { .. } | Action::SendToOrderedCodexTurn { .. } => return Err("The native queue needs a Codex session.".into()),
+                Action::SendToCodexQueue { .. } if target.name.starts_with("codex/") => {
+                    "--codex-queue"
+                }
+                Action::SendToOrderedCodexTurn { .. } if target.name.starts_with("codex/") => {
+                    "--codex-ordered-turn"
+                }
+                Action::SendToCodexQueue { .. } | Action::SendToOrderedCodexTurn { .. } => {
+                    return Err("The native queue needs a Codex session.".into())
+                }
                 Action::SendWhenNativeAccepts { .. }
-                    if target.name.starts_with("claude/") || target.name.starts_with("kimi/") => "--when-native-accepts",
-                Action::SendWhenNativeAccepts { .. } => return Err("Expected a native terminal Send target.".into()),
+                    if target.name.starts_with("claude/") || target.name.starts_with("kimi/") =>
+                {
+                    "--when-native-accepts"
+                }
+                Action::SendWhenNativeAccepts { .. } => {
+                    return Err("Expected a native terminal Send target.".into())
+                }
                 _ => "--when-idle",
             };
             let mut input = send_value(target, text, attachments, None, None, request_id)?;
@@ -629,17 +643,17 @@ pub fn invocation(
                 } else {
                     return Err("Native queue admission is unavailable for this provider.".into());
                 };
-                vec!["delivery".into(), "outbox-offer".into(), name, queue.into(), "--json".into()]
+                vec![
+                    "delivery".into(),
+                    "outbox-offer".into(),
+                    name,
+                    queue.into(),
+                    "--json".into(),
+                ]
             } else {
                 vec!["send".into(), name, flag.into(), "--json".into()]
             };
-            (
-                args,
-                Some(input),
-                30,
-                45,
-                Some(request_id.to_owned()),
-            )
+            (args, Some(input), 30, 45, Some(request_id.to_owned()))
         }
         Action::StopProcess {
             process_id,
@@ -752,7 +766,9 @@ pub fn invocation(
         }
         Action::CompactContext => {
             if target.run_id.is_empty() || target.conversation_id.is_empty() {
-                return Err("Refresh the session before compacting its context.".into());
+                return Err(
+                    crate::source!("Refresh the session before compacting its context.").into(),
+                );
             }
             let input = json!({
                 "request_id": request_id,
@@ -793,7 +809,9 @@ pub fn invocation(
                 Some(request_id.to_owned()),
             )
         }
-        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode")) => {
+        Action::Restore { archive_id }
+            if matches!(target.name.split('/').next(), Some("opencode")) =>
+        {
             if !crate::creation::canonical_uuid(archive_id) || target.conversation_id.is_empty() {
                 return Err("Missing exact archive identity".into());
             }
@@ -1331,13 +1349,13 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
             );
             match &outcome {
                 Outcome::Done { receipt, .. } if receipt["status"] == "uncertain" => {
-                    uncertain("OpenCode compaction is unconfirmed. Check this conversation before trying again.")
+                    uncertain(crate::source!("OpenCode compaction is unconfirmed. Check this conversation before trying again."))
                 }
                 Outcome::Done { receipt, .. } if receipt["status"] == "failed" => {
-                    failed("OpenCode refused this compaction.")
+                    failed(crate::source!("OpenCode refused this compaction."))
                 }
                 Outcome::Done { receipt, .. } if receipt["status"] == "cancelled" => {
-                    failed("OpenCode cancelled this compaction.")
+                    failed(crate::source!("OpenCode cancelled this compaction."))
                 }
                 _ => outcome,
             }
@@ -1361,10 +1379,16 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Send { agent_id, .. } => {
             classify_send(target, invocation, agent_id.as_deref(), exit)
         }
-        Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
-        | Action::SendToOrderedCodexTurn { .. } | Action::SendWhenNativeAccepts { .. } | Action::SendToNativeQueue { .. } => {
-            classify_idle_send(target, invocation, exit, matches!(action, Action::SendToCodexQueue { .. }))
-        }
+        Action::SendWhenIdle { .. }
+        | Action::SendToCodexQueue { .. }
+        | Action::SendToOrderedCodexTurn { .. }
+        | Action::SendWhenNativeAccepts { .. }
+        | Action::SendToNativeQueue { .. } => classify_idle_send(
+            target,
+            invocation,
+            exit,
+            matches!(action, Action::SendToCodexQueue { .. }),
+        ),
         Action::StopProcess { process_id, .. } => classify_stop(target, process_id, exit),
         Action::SendNow { queue_id } => classify_send_now(target, invocation, queue_id, exit),
         Action::RemoveQueued { .. } => classify_remove_queued(target, invocation, exit),
@@ -1378,7 +1402,9 @@ pub fn classify(target: &Target, action: &Action, invocation: &Invocation, exit:
         Action::Pause if invocation.request_id.is_some() => {
             classify_scoped_lifecycle(target, invocation, exit, "The session was not paused.")
         }
-        Action::Restore { archive_id } if matches!(target.name.split('/').next(), Some("opencode")) => {
+        Action::Restore { archive_id }
+            if matches!(target.name.split('/').next(), Some("opencode")) =>
+        {
             classify_archive_lifecycle(target, invocation, exit, Some(archive_id))
         }
         Action::ForgetBinding => {
@@ -1783,7 +1809,10 @@ fn classify_recovery(
 }
 
 pub(crate) fn native_resume_result_run<'a>(
-    receipt: &'a Value, name: &str, original_run: &str, conversation: &str,
+    receipt: &'a Value,
+    name: &str,
+    original_run: &str,
+    conversation: &str,
 ) -> Option<&'a str> {
     let result = &receipt["result_target"];
     let run = field(result, "run_id");
@@ -1795,11 +1824,21 @@ pub(crate) fn native_resume_result_run<'a>(
         .then_some(run)
 }
 
-fn classify_native_resume_for_send(target: &Target, invocation: &Invocation, exit: Exit) -> Outcome {
-    let unknown = || uncertain("Resume was not confirmed. Check the session before trying again.");
+fn classify_native_resume_for_send(
+    target: &Target,
+    invocation: &Invocation,
+    exit: Exit,
+) -> Outcome {
+    let unknown = || {
+        uncertain(crate::source!(
+            "Resume was not confirmed. Check the session before trying again."
+        ))
+    };
     match exit {
         Exit::StartFailed(error) => failed(error),
-        Exit::Code { code: 0, stdout, .. } => {
+        Exit::Code {
+            code: 0, stdout, ..
+        } => {
             let result: Value = serde_json::from_slice(&stdout).unwrap_or(Value::Null);
             if invocation.request_id.is_none()
                 || result["request_id"].as_str() != invocation.request_id.as_deref()
@@ -1811,14 +1850,27 @@ fn classify_native_resume_for_send(target: &Target, invocation: &Invocation, exi
                 return unknown();
             }
             match field(&result, "status") {
-                "completed" if native_resume_result_run(
-                    &result, &target.name, &target.run_id, &target.conversation_id,
-                ).is_some() => done(result, None),
+                "completed"
+                    if native_resume_result_run(
+                        &result,
+                        &target.name,
+                        &target.run_id,
+                        &target.conversation_id,
+                    )
+                    .is_some() =>
+                {
+                    done(result, None)
+                }
                 "failed" if result["result_target"].is_null() => {
-                    let reason = result["error"].as_str().map(str::trim).filter(|text| !text.is_empty());
-                    failed(reason
-                        .map(|text| text.chars().take(STDERR_CHARS).collect::<String>())
-                        .unwrap_or_else(|| "The session change did not complete.".into()))
+                    let reason = result["error"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty());
+                    failed(
+                        reason
+                            .map(|text| text.chars().take(STDERR_CHARS).collect::<String>())
+                            .unwrap_or_else(|| "The session change did not complete.".into()),
+                    )
                 }
                 _ => unknown(),
             }
@@ -1933,76 +1985,120 @@ fn classify_send(
 /// A positive pre-input refusal comes from this opt-in invocation's exact
 /// native input-lock witness. An older helper or a generic refusal supplies
 /// no permission for the queue to reoffer.
-fn classify_idle_send(target: &Target, invocation: &Invocation, exit: Exit, codex_queue: bool) -> Outcome {
+fn classify_idle_send(
+    target: &Target,
+    invocation: &Invocation,
+    exit: Exit,
+    codex_queue: bool,
+) -> Outcome {
     use sha2::{Digest, Sha256};
 
     let opencode = target.name.starts_with("opencode/");
     let claude = target.name.starts_with("claude/");
     let dsh = target.name.starts_with("dsh/");
-    let ordered = invocation.args.iter().any(|arg| arg == "--codex-ordered-turn");
+    let ordered = invocation
+        .args
+        .iter()
+        .any(|arg| arg == "--codex-ordered-turn");
     let native_kimi = target.name.starts_with("kimi/")
-        && invocation.args.iter().any(|flag| flag == "--when-native-accepts");
-    if let Exit::Code { code: 0, stdout, .. } = &exit {
+        && invocation
+            .args
+            .iter()
+            .any(|flag| flag == "--when-native-accepts");
+    if let Exit::Code {
+        code: 0, stdout, ..
+    } = &exit
+    {
         let receipt: Value = serde_json::from_slice(stdout).unwrap_or(Value::Null);
         let exact_pre_offer = receipt["schema"] == 1
-            && receipt["proof"] == if opencode {
-                "native_opencode_queue"
-            } else if dsh {
-                "native_dsh_idle_guard"
-            } else {
-                "native_input_lock"
-            }
-            && receipt["request_id"].as_str().zip(invocation.request_id.as_deref()).is_some_and(|(actual, expected)| actual == expected)
+            && receipt["proof"]
+                == if opencode {
+                    "native_opencode_queue"
+                } else if dsh {
+                    "native_dsh_idle_guard"
+                } else {
+                    "native_input_lock"
+                }
+            && receipt["request_id"]
+                .as_str()
+                .zip(invocation.request_id.as_deref())
+                .is_some_and(|(actual, expected)| actual == expected)
             && receipt["name"] == target.name
             && receipt["run_id"] == target.run_id
             && receipt["conversation_id"] == target.conversation_id
             && invocation.stdin.as_deref().is_some_and(|input| {
                 receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
             });
-        if exact_pre_offer && receipt["status"] == "waiting_for_idle"
+        if exact_pre_offer
+            && receipt["status"] == "waiting_for_idle"
             && (!(codex_queue || ordered) || terminal_outbox_refusal(target, &receipt))
         {
             return done(receipt, None);
         }
         if let (true, Some(reason)) = (
-            exact_pre_offer && (dsh || terminal_outbox_refusal(target, &receipt)) && receipt["status"] == "not_offered",
-            receipt["reason"].as_str().filter(|reason| !reason.trim().is_empty()),
+            exact_pre_offer
+                && (dsh || terminal_outbox_refusal(target, &receipt))
+                && receipt["status"] == "not_offered",
+            receipt["reason"]
+                .as_str()
+                .filter(|reason| !reason.trim().is_empty()),
         ) {
             return failed(reason);
         }
         if opencode
             && (receipt["transport"] != "native_opencode"
-                || !receipt["native_message_id"].as_str().is_some_and(native_message_id)
+                || !receipt["native_message_id"]
+                    .as_str()
+                    .is_some_and(native_message_id)
                 || invocation.args.iter().any(|arg| arg == "--opencode-queue")
-                    && !(receipt["outbox_guarded"] == true && invocation.stdin.as_deref().is_some_and(|input| {
-                        receipt["outbox_input_sha256"] == format!("{:x}", Sha256::digest(input))
-                    })))
+                    && !(receipt["outbox_guarded"] == true
+                        && invocation.stdin.as_deref().is_some_and(|input| {
+                            receipt["outbox_input_sha256"] == format!("{:x}", Sha256::digest(input))
+                        })))
         {
             return uncertain("The original OpenCode Send is unconfirmed.");
         }
-        if ordered && (!matches!(receipt["transport"].as_str(), Some("terminal" | "codex_queue"))
-            || !invocation.stdin.as_deref().is_some_and(|input|
-                receipt["digest"] == format!("{:x}", Sha256::digest(input)))) {
+        if ordered
+            && (!matches!(
+                receipt["transport"].as_str(),
+                Some("terminal" | "codex_queue")
+            ) || !invocation
+                .stdin
+                .as_deref()
+                .is_some_and(|input| receipt["digest"] == format!("{:x}", Sha256::digest(input))))
+        {
             return uncertain("The ordered Codex Send receipt is unconfirmed.");
         }
-        if (codex_queue || ordered && receipt["transport"] == "codex_queue") && !(codex_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
-            receipt["digest"] == format!("{:x}", Sha256::digest(input))
-        })) {
+        if (codex_queue || ordered && receipt["transport"] == "codex_queue")
+            && !(codex_outbox_submitted(&receipt)
+                && invocation.stdin.as_deref().is_some_and(|input| {
+                    receipt["digest"] == format!("{:x}", Sha256::digest(input))
+                }))
+        {
             return uncertain("The original Codex queue submission is unconfirmed.");
         }
-        if claude && !(claude_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
-            receipt["digest"] == format!("{:x}", Sha256::digest(input))
-        })) {
+        if claude
+            && !(claude_outbox_submitted(&receipt)
+                && invocation.stdin.as_deref().is_some_and(|input| {
+                    receipt["digest"] == format!("{:x}", Sha256::digest(input))
+                }))
+        {
             return uncertain("The original Claude Send is unconfirmed.");
         }
-        if dsh && !(dsh_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
-            receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
-        })) {
+        if dsh
+            && !(dsh_outbox_submitted(&receipt)
+                && invocation.stdin.as_deref().is_some_and(|input| {
+                    receipt["input_sha256"] == format!("{:x}", Sha256::digest(input))
+                }))
+        {
             return uncertain("The original DeepSeek Send is unconfirmed.");
         }
-        if native_kimi && !(kimi_outbox_submitted(&receipt) && invocation.stdin.as_deref().is_some_and(|input| {
-            receipt["digest"] == format!("{:x}", Sha256::digest(input))
-        })) {
+        if native_kimi
+            && !(kimi_outbox_submitted(&receipt)
+                && invocation.stdin.as_deref().is_some_and(|input| {
+                    receipt["digest"] == format!("{:x}", Sha256::digest(input))
+                }))
+        {
             return uncertain("The original Kimi Send is unconfirmed.");
         }
     }
@@ -2021,66 +2117,113 @@ pub fn outbox_status(
 ) -> Result<Invocation, String> {
     use sha2::{Digest, Sha256};
 
-    if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"].iter().any(|prefix| target.name.starts_with(prefix))
-        || !matches!(action, Action::SendWhenIdle { .. } | Action::SendToCodexQueue { .. }
-            | Action::SendToOrderedCodexTurn { .. } | Action::SendWhenNativeAccepts { .. } | Action::SendToNativeQueue { .. })
+    if !["opencode/", "claude/", "dsh/", "codex/", "kimi/"]
+        .iter()
+        .any(|prefix| target.name.starts_with(prefix))
+        || !matches!(
+            action,
+            Action::SendWhenIdle { .. }
+                | Action::SendToCodexQueue { .. }
+                | Action::SendToOrderedCodexTurn { .. }
+                | Action::SendWhenNativeAccepts { .. }
+                | Action::SendToNativeQueue { .. }
+        )
     {
         return Err("Expected an original outbox request.".into());
     }
     let original = invocation(target, action, request_id)?;
-    let input = original.stdin.ok_or("The original outbox input is unavailable.")?;
-    let mut args = vec!["delivery".into(), "outbox-status".into(), target.name.clone(), "--json".into()];
+    let input = original
+        .stdin
+        .ok_or("The original outbox input is unavailable.")?;
+    let mut args = vec![
+        "delivery".into(),
+        "outbox-status".into(),
+        target.name.clone(),
+        "--json".into(),
+    ];
     let remote = prepend_alias(&mut args, &target.computer);
     let query = json!({"request_id": request_id, "expected_run_id":target.run_id,
         "expected_conversation_id":target.conversation_id, "input_sha256":format!("{:x}", Sha256::digest(input))});
     Ok(Invocation {
-        args, stdin: Some(serde_json::to_vec(&query).map_err(|e| e.to_string())?),
-        timeout: Duration::from_secs(if remote { 10 } else { 3 }), request_id: Some(request_id.into()),
+        args,
+        stdin: Some(serde_json::to_vec(&query).map_err(|e| e.to_string())?),
+        timeout: Duration::from_secs(if remote { 10 } else { 3 }),
+        request_id: Some(request_id.into()),
     })
 }
 
 pub fn codex_outbox_submitted(receipt: &Value) -> bool {
-    receipt["codex_outbox"] == true && receipt["transport"] == "codex_queue" && receipt["status"] == "submitted"
-        && receipt["native_queued_message_id"].as_str().is_some_and(crate::creation::canonical_uuid)
+    receipt["codex_outbox"] == true
+        && receipt["transport"] == "codex_queue"
+        && receipt["status"] == "submitted"
+        && receipt["native_queued_message_id"]
+            .as_str()
+            .is_some_and(crate::creation::canonical_uuid)
 }
 
 fn claude_outbox_submitted(receipt: &Value) -> bool {
-    receipt["claude_outbox"] == true && receipt["transport"] == "terminal"
+    receipt["claude_outbox"] == true
+        && receipt["transport"] == "terminal"
         && matches!(receipt["native"].as_str(), Some("transcript" | "queue"))
 }
 
 pub fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
-    if !claude_outbox_submitted(receipt) || receipt["native"] != "transcript"
-        || !receipt["native_input"]["uuid"].as_str().is_some_and(crate::creation::canonical_uuid)
+    if !claude_outbox_submitted(receipt)
+        || receipt["native"] != "transcript"
+        || !receipt["native_input"]["uuid"]
+            .as_str()
+            .is_some_and(crate::creation::canonical_uuid)
     {
         return None;
     }
-    receipt["native_input"]["prompt_id"].as_str().filter(|id| crate::creation::canonical_uuid(id))
+    receipt["native_input"]["prompt_id"]
+        .as_str()
+        .filter(|id| crate::creation::canonical_uuid(id))
 }
 
 pub(crate) fn dsh_outbox_submitted(receipt: &Value) -> bool {
-    receipt["schema"] == 1 && receipt["status"] == "submitted"
-        && receipt["proof"] == "native_dsh_receipt" && receipt["transport"] == "native_dsh"
+    receipt["schema"] == 1
+        && receipt["status"] == "submitted"
+        && receipt["proof"] == "native_dsh_receipt"
+        && receipt["transport"] == "native_dsh"
         && receipt["native_message_id"].as_str().is_some_and(|id| {
-            !id.is_empty() && id.len() <= 128
-                && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
         })
 }
 
 pub fn terminal_outbox_refusal(target: &Target, receipt: &Value) -> bool {
-    (target.name.starts_with("codex/") || target.name.starts_with("kimi/") || target.name.starts_with("claude/"))
-        && receipt["schema"] == 1 && receipt["proof"] == "native_input_lock"
+    (target.name.starts_with("codex/")
+        || target.name.starts_with("kimi/")
+        || target.name.starts_with("claude/"))
+        && receipt["schema"] == 1
+        && receipt["proof"] == "native_input_lock"
         && receipt["transport"] == "terminal"
-        && matches!(receipt["status"].as_str(), Some("waiting_for_idle" | "not_offered"))
+        && matches!(
+            receipt["status"].as_str(),
+            Some("waiting_for_idle" | "not_offered")
+        )
 }
 
 fn kimi_outbox_submitted(receipt: &Value) -> bool {
-    receipt["kimi_outbox"] == true && receipt["status"] == "submitted" && receipt["transport"] == "terminal"
+    receipt["kimi_outbox"] == true
+        && receipt["status"] == "submitted"
+        && receipt["transport"] == "terminal"
 }
 
 pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option<Value> {
-    let Exit::Code { code: 0, stdout, .. } = exit else { return None };
-    if stdout.len() > 8192 { return None; }
+    let Exit::Code {
+        code: 0, stdout, ..
+    } = exit
+    else {
+        return None;
+    };
+    if stdout.len() > 8192 {
+        return None;
+    }
     let receipt: Value = serde_json::from_slice(&stdout).ok()?;
     let input: Value = serde_json::from_slice(query.stdin.as_deref()?).ok()?;
     let terminal_refusal = terminal_outbox_refusal(target, &receipt);
@@ -2093,14 +2236,20 @@ pub fn outbox_receipt(target: &Target, query: &Invocation, exit: Exit) -> Option
     } else if target.name.starts_with("dsh/") {
         dsh_outbox_submitted(&receipt)
     } else {
-        target.name.starts_with("opencode/") && receipt["proof"] == "native_opencode_receipt"
+        target.name.starts_with("opencode/")
+            && receipt["proof"] == "native_opencode_receipt"
             && receipt["transport"] == "native_opencode"
-            && receipt["native_message_id"].as_str().is_some_and(native_message_id)
+            && receipt["native_message_id"]
+                .as_str()
+                .is_some_and(native_message_id)
     };
-    ((terminal_refusal || (provider && receipt["status"] == "submitted")) && receipt["schema"] == 1
+    ((terminal_refusal || (provider && receipt["status"] == "submitted"))
+        && receipt["schema"] == 1
         && receipt["request_id"].as_str() == query.request_id.as_deref()
-        && query.request_id.is_some() && receipt["input_sha256"] == input["input_sha256"]
-        && receipt["name"] == target.name && receipt["run_id"] == target.run_id
+        && query.request_id.is_some()
+        && receipt["input_sha256"] == input["input_sha256"]
+        && receipt["name"] == target.name
+        && receipt["run_id"] == target.run_id
         && receipt["conversation_id"] == target.conversation_id)
         .then_some(receipt)
 }
@@ -2146,11 +2295,16 @@ pub(crate) fn classify_archive_lifecycle(
     exit: Exit,
     restored_archive: Option<&str>,
 ) -> Outcome {
-    const UNKNOWN: &str = "The archive action is unconfirmed. Refresh the session and Archive before trying again.";
+    const UNKNOWN: &str = crate::source!(
+        "The archive action is unconfirmed. Refresh the session and Archive before trying again."
+    );
     if let Exit::StartFailed(error) = exit {
         return failed(error);
     }
-    let Exit::Code { code: 0, stdout, .. } = exit else {
+    let Exit::Code {
+        code: 0, stdout, ..
+    } = exit
+    else {
         return uncertain(UNKNOWN);
     };
     if stdout.len() > 64 * 1024 {
@@ -2169,7 +2323,11 @@ pub(crate) fn classify_archive_lifecycle(
         return uncertain(UNKNOWN);
     }
     if receipt["status"] == "failed" {
-        return failed(receipt["error"].as_str().unwrap_or("The session refused this action."));
+        return failed(
+            receipt["error"]
+                .as_str()
+                .unwrap_or("The session refused this action."),
+        );
     }
     let result = &receipt["result_target"];
     let exact_result = result["name"] == target.name
@@ -2177,9 +2335,13 @@ pub(crate) fn classify_archive_lifecycle(
         && if restored_archive.is_some() {
             result["archive_id"].is_null()
                 && result["run_id"] != target.run_id
-                && result["run_id"].as_str().is_some_and(crate::creation::canonical_uuid)
+                && result["run_id"]
+                    .as_str()
+                    .is_some_and(crate::creation::canonical_uuid)
         } else {
-            result["archive_id"].as_str().is_some_and(crate::creation::canonical_uuid)
+            result["archive_id"]
+                .as_str()
+                .is_some_and(crate::creation::canonical_uuid)
                 && result["run_id"] == target.run_id
         };
     if receipt["status"] == "completed" && exact_result {
@@ -2366,8 +2528,14 @@ mod tests {
         let mut target = target("fixture-peer");
         target.name = "kimi/sample/terminal".into();
         let text = "same original prompt".to_owned();
-        let action = Action::SendWhenNativeAccepts { text: text.clone(), attachments: vec![] };
-        let legacy = Action::SendWhenIdle { text, attachments: vec![] };
+        let action = Action::SendWhenNativeAccepts {
+            text: text.clone(),
+            attachments: vec![],
+        };
+        let legacy = Action::SendWhenIdle {
+            text,
+            attachments: vec![],
+        };
         let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
         let native = invocation(&target, &action, request).unwrap();
         let idle = invocation(&target, &legacy, request).unwrap();
@@ -2383,12 +2551,18 @@ mod tests {
             "run_id":target.run_id,"conversation_id":target.conversation_id,
             "input_sha256":hash,"digest":hash,"kimi_outbox":true});
         let response = |value: &Value| exit(0, value.to_string().as_bytes(), "");
-        assert!(matches!(classify(&target, &action, &native, response(&receipt)), Outcome::Done { .. }));
+        assert!(matches!(
+            classify(&target, &action, &native, response(&receipt)),
+            Outcome::Done { .. }
+        ));
         assert!(outbox_receipt(&target, &legacy_query, response(&receipt)).is_some());
         receipt["input_sha256"] = json!("wrong original");
         assert!(outbox_receipt(&target, &legacy_query, response(&receipt)).is_none());
         receipt["kimi_outbox"] = json!(false);
-        assert!(matches!(classify(&target, &action, &native, response(&receipt)), Outcome::Uncertain { .. }));
+        assert!(matches!(
+            classify(&target, &action, &native, response(&receipt)),
+            Outcome::Uncertain { .. }
+        ));
     }
 
     #[test]
@@ -2397,14 +2571,24 @@ mod tests {
 
         let mut target = target("");
         target.name = "codex/sample/terminal".into();
-        let action = Action::SendWhenIdle { text: "queued prompt".into(), attachments: vec![] };
+        let action = Action::SendWhenIdle {
+            text: "queued prompt".into(),
+            attachments: vec![],
+        };
         let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
         let inv = invocation(&target, &action, request).unwrap();
         let mut refusal = json!({"schema":1,"transport":"terminal","proof":"native_input_lock",
             "status":"not_offered","reason":"target changed","request_id":request,"name":target.name,
             "run_id":target.run_id,"conversation_id":target.conversation_id,
             "input_sha256":format!("{:x}", Sha256::digest(inv.stdin.as_deref().unwrap()))});
-        let result = |value: &Value| classify(&target, &action, &inv, exit(0, value.to_string().as_bytes(), ""));
+        let result = |value: &Value| {
+            classify(
+                &target,
+                &action,
+                &inv,
+                exit(0, value.to_string().as_bytes(), ""),
+            )
+        };
         assert!(matches!(result(&refusal), Outcome::Failed { .. }));
         refusal["input_sha256"] = json!("b".repeat(64));
         assert!(matches!(result(&refusal), Outcome::Uncertain { .. }));
@@ -2416,12 +2600,23 @@ mod tests {
 
         let mut target = target("");
         target.name = "codex/sample/review".into();
-        let action = Action::SendToCodexQueue { text: "queued text".into(), attachments: vec![] };
+        let action = Action::SendToCodexQueue {
+            text: "queued text".into(),
+            attachments: vec![],
+        };
         let request = "11111111-1111-4111-8111-111111111111";
         let inv = invocation(&target, &action, request).unwrap();
         let query = outbox_status(&target, &action, request).unwrap();
         let digest = format!("{:x}", Sha256::digest(inv.stdin.as_deref().unwrap()));
-        let old = invocation(&target, &Action::SendWhenIdle { text: "queued text".into(), attachments: vec![] }, request).unwrap();
+        let old = invocation(
+            &target,
+            &Action::SendWhenIdle {
+                text: "queued text".into(),
+                attachments: vec![],
+            },
+            request,
+        )
+        .unwrap();
         assert_eq!(old.stdin, inv.stdin);
         assert!(inv.args.iter().any(|arg| arg == "--codex-queue"));
         assert!(old.args.iter().any(|arg| arg == "--when-idle"));
@@ -2430,27 +2625,53 @@ mod tests {
             "request_id":request,"name":target.name,"run_id":target.run_id,
             "conversation_id":target.conversation_id,"input_sha256":digest,"digest":digest});
         let reply = |value: &Value| exit(0, value.to_string().as_bytes(), "");
-        let accepted = |value: &Value| matches!(classify(&target, &action, &inv, reply(value)), Outcome::Done { .. });
+        let accepted = |value: &Value| {
+            matches!(
+                classify(&target, &action, &inv, reply(value)),
+                Outcome::Done { .. }
+            )
+        };
         let recovered = |value: &Value| outbox_receipt(&target, &query, reply(value)).is_some();
         assert!(accepted(&receipt) && recovered(&receipt));
-        let ordered = Action::SendToOrderedCodexTurn { text:"queued text".into(), attachments:vec![] };
+        let ordered = Action::SendToOrderedCodexTurn {
+            text: "queued text".into(),
+            attachments: vec![],
+        };
         let ordered_inv = invocation(&target, &ordered, request).unwrap();
-        assert!(ordered_inv.args.iter().any(|arg| arg == "--codex-ordered-turn"));
+        assert!(ordered_inv
+            .args
+            .iter()
+            .any(|arg| arg == "--codex-ordered-turn"));
         assert_eq!(ordered_inv.stdin, inv.stdin);
-        let ordered_accepts = |value: &Value| matches!(classify(&target,&ordered,&ordered_inv,reply(value)),Outcome::Done{..});
+        let ordered_accepts = |value: &Value| {
+            matches!(
+                classify(&target, &ordered, &ordered_inv, reply(value)),
+                Outcome::Done { .. }
+            )
+        };
         assert!(ordered_accepts(&receipt));
         let mut terminal = receipt.clone();
         terminal["transport"] = json!("terminal");
         terminal.as_object_mut().unwrap().remove("codex_outbox");
-        terminal.as_object_mut().unwrap().remove("native_queued_message_id");
+        terminal
+            .as_object_mut()
+            .unwrap()
+            .remove("native_queued_message_id");
         assert!(ordered_accepts(&terminal));
         terminal["digest"] = json!("0".repeat(64));
         assert!(!ordered_accepts(&terminal));
         for (field, value) in [
-            ("native_queued_message_id", Value::Null), ("transport", json!("terminal")), ("codex_outbox", Value::Null),
-            ("native_queued_message_id", json!("00000000-0000-0000-0000-000000000000")),
-            ("status", json!("in_progress")), ("conversation_id", json!("other")),
-            ("run_id", json!("other")), ("request_id", json!("other")),
+            ("native_queued_message_id", Value::Null),
+            ("transport", json!("terminal")),
+            ("codex_outbox", Value::Null),
+            (
+                "native_queued_message_id",
+                json!("00000000-0000-0000-0000-000000000000"),
+            ),
+            ("status", json!("in_progress")),
+            ("conversation_id", json!("other")),
+            ("run_id", json!("other")),
+            ("request_id", json!("other")),
         ] {
             let mut wrong = receipt.clone();
             wrong[field] = value;
@@ -2473,23 +2694,62 @@ mod tests {
         use sha2::{Digest, Sha256};
 
         let request = "11111111-1111-4111-8111-111111111111";
-        let legacy = Action::SendWhenIdle { text: "queued text".into(), attachments: vec![] };
-        let action = Action::SendToNativeQueue { text: "queued text".into(), attachments: vec![] };
+        let legacy = Action::SendWhenIdle {
+            text: "queued text".into(),
+            attachments: vec![],
+        };
+        let action = Action::SendToNativeQueue {
+            text: "queued text".into(),
+            attachments: vec![],
+        };
         for (name, flag, transport, proof) in [
-            ("opencode/sample/review", "--opencode-queue", "native_opencode", "native_opencode_receipt"),
-            ("dsh/sample/review", "--deepseek-queue", "native_dsh", "native_dsh_receipt"),
+            (
+                "opencode/sample/review",
+                "--opencode-queue",
+                "native_opencode",
+                "native_opencode_receipt",
+            ),
+            (
+                "dsh/sample/review",
+                "--deepseek-queue",
+                "native_dsh",
+                "native_dsh_receipt",
+            ),
         ] {
             let mut target = target("");
             target.name = name.into();
             let offer = invocation(&target, &action, request).unwrap();
             let previous = invocation(&target, &legacy, request).unwrap();
             assert_eq!(offer.stdin, previous.stdin);
-            assert_eq!(offer.args, ["delivery", "outbox-offer", name, flag, "--json"]);
-            let peer = Target { computer: "fixture-peer".into(), ..target.clone() };
+            assert_eq!(
+                offer.args,
+                ["delivery", "outbox-offer", name, flag, "--json"]
+            );
+            let peer = Target {
+                computer: "fixture-peer".into(),
+                ..target.clone()
+            };
             let id = "22222222-2222-4222-8222-222222222222";
-            let selected = crate::session_selector::selected_invocation(&peer, &action, request, Some(id)).unwrap();
-            assert_eq!(selected.args, ["@fixture-peer", "delivery", "outbox-offer", name, "--session-id", id, flag, "--json"]);
-            assert_eq!(crate::session_selector::selected_id(&peer, &selected), Some(id));
+            let selected =
+                crate::session_selector::selected_invocation(&peer, &action, request, Some(id))
+                    .unwrap();
+            assert_eq!(
+                selected.args,
+                [
+                    "@fixture-peer",
+                    "delivery",
+                    "outbox-offer",
+                    name,
+                    "--session-id",
+                    id,
+                    flag,
+                    "--json"
+                ]
+            );
+            assert_eq!(
+                crate::session_selector::selected_id(&peer, &selected),
+                Some(id)
+            );
             assert_eq!(selected.stdin, offer.stdin);
             let query = outbox_status(&target, &legacy, request).unwrap();
             let digest = format!("{:x}", Sha256::digest(offer.stdin.as_deref().unwrap()));
@@ -2498,11 +2758,17 @@ mod tests {
                 "input_sha256":digest,"outbox_guarded":true,"outbox_input_sha256":digest,
                 "native_message_id":"msg_exact"});
             let result = |receipt: &Value| exit(0, receipt.to_string().as_bytes(), "");
-            assert!(matches!(classify(&target, &action, &offer, result(&receipt)), Outcome::Done { .. }));
+            assert!(matches!(
+                classify(&target, &action, &offer, result(&receipt)),
+                Outcome::Done { .. }
+            ));
             assert!(outbox_receipt(&target, &query, result(&receipt)).is_some());
             receipt["input_sha256"] = json!("0".repeat(64));
             receipt["outbox_input_sha256"] = receipt["input_sha256"].clone();
-            assert!(matches!(classify(&target, &action, &offer, result(&receipt)), Outcome::Uncertain { .. }));
+            assert!(matches!(
+                classify(&target, &action, &offer, result(&receipt)),
+                Outcome::Uncertain { .. }
+            ));
             assert!(outbox_receipt(&target, &query, result(&receipt)).is_none());
         }
         assert!(serde_json::from_value::<Action>(serde_json::to_value(&action).unwrap()).is_err());
@@ -2518,39 +2784,72 @@ mod tests {
             run_id: "run".into(),
             conversation_id: "conversation".into(),
         };
-        let action = Action::SendWhenIdle { text: "same prompt".into(), attachments: vec![] };
+        let action = Action::SendWhenIdle {
+            text: "same prompt".into(),
+            attachments: vec![],
+        };
         let request = "99b76a8f-a69b-4fd4-ba38-062ae5dd1bb1";
         let invocation = invocation(&target, &action, request).unwrap();
         let input = invocation.stdin.as_deref().unwrap();
         let digest = format!("{:x}", Sha256::digest(input));
         let accepted = |digest: &str| Exit::Code {
-            code: 0, stderr: String::new(),
+            code: 0,
+            stderr: String::new(),
             stdout: serde_json::to_vec(&json!({"claude_outbox":true,"transport":"terminal",
               "native":"queue","status":"submitted","request_id":request,"name":target.name,
-              "run_id":target.run_id,"conversation_id":target.conversation_id,"digest":digest})).unwrap(),
+              "run_id":target.run_id,"conversation_id":target.conversation_id,"digest":digest}))
+            .unwrap(),
         };
-        assert!(matches!(classify(&target, &action, &invocation, accepted(&digest)), Outcome::Done { .. }));
-        assert!(matches!(classify(&target, &action, &invocation, accepted(&"0".repeat(64))), Outcome::Uncertain { .. }));
+        assert!(matches!(
+            classify(&target, &action, &invocation, accepted(&digest)),
+            Outcome::Done { .. }
+        ));
+        assert!(matches!(
+            classify(&target, &action, &invocation, accepted(&"0".repeat(64))),
+            Outcome::Uncertain { .. }
+        ));
     }
 
     #[test]
     fn native_restore_names_the_archive_and_classifies_only_the_original_receipt() {
         let mut target = target("fixture-peer");
         target.name = "opencode/example/restore".into();
-            let archive_id = "22222222-2222-4222-8222-222222222222";
+        let archive_id = "22222222-2222-4222-8222-222222222222";
         let request = "11111111-1111-4111-8111-111111111111";
-        let action = Action::Restore { archive_id: archive_id.into() };
+        let action = Action::Restore {
+            archive_id: archive_id.into(),
+        };
         let inv = invocation(&target, &action, request).unwrap();
-        assert_eq!(inv.args, ["@fixture-peer", "session-action", target.name.as_str(), "--json"]);
-        assert_eq!(serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(),
+        assert_eq!(
+            inv.args,
+            [
+                "@fixture-peer",
+                "session-action",
+                target.name.as_str(),
+                "--json"
+            ]
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(inv.stdin.as_deref().unwrap()).unwrap(),
             json!({"action":"restore","archive_id":archive_id,"request_id":request,
-                   "expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id}));
+                   "expected_run_id":target.run_id,"expected_conversation_id":target.conversation_id})
+        );
         let receipt = json!({"request_id":request,"status":"completed","name":target.name,
             "run_id":target.run_id,"conversation_id":target.conversation_id,"archive_id":archive_id,
             "result_target":{"name":target.name,"run_id":"33333333-3333-4333-8333-333333333333",
             "conversation_id":target.conversation_id}});
-        let outcome = |value: &Value| classify(&target, &action, &inv,
-            Exit::Code {code:0,stdout:value.to_string().into_bytes(),stderr:String::new()});
+        let outcome = |value: &Value| {
+            classify(
+                &target,
+                &action,
+                &inv,
+                Exit::Code {
+                    code: 0,
+                    stdout: value.to_string().into_bytes(),
+                    stderr: String::new(),
+                },
+            )
+        };
         assert!(matches!(outcome(&receipt), Outcome::Done { .. }));
         let mut wrong = receipt;
         wrong["archive_id"] = json!("44444444-4444-4444-8444-444444444444");
@@ -2566,15 +2865,41 @@ mod tests {
         let result = |id: &str, status: &str| {
             let receipt = json!({"status":status,"request_id":id,"name":target.name,
                 "run_id":target.run_id,"conversation_id":target.conversation_id});
-            classify(&target, &action, &invocation, exit(0, receipt.to_string().as_bytes(), ""))
+            classify(
+                &target,
+                &action,
+                &invocation,
+                exit(0, receipt.to_string().as_bytes(), ""),
+            )
         };
-        assert!(matches!(result("original", "submitted"), Outcome::Done { .. }));
-        assert!(matches!(result("original", "completed"), Outcome::Done { .. }));
-        assert!(matches!(result("original", "cancelled"), Outcome::Failed { .. }));
-        assert!(matches!(result("original", "failed"), Outcome::Failed { .. }));
-        assert!(matches!(result("original", "uncertain"), Outcome::Uncertain { .. }));
-        assert!(matches!(result("other", "submitted"), Outcome::Uncertain { .. }));
-        assert!(matches!(result("other", "completed"), Outcome::Uncertain { .. }));
+        assert!(matches!(
+            result("original", "submitted"),
+            Outcome::Done { .. }
+        ));
+        assert!(matches!(
+            result("original", "completed"),
+            Outcome::Done { .. }
+        ));
+        assert!(matches!(
+            result("original", "cancelled"),
+            Outcome::Failed { .. }
+        ));
+        assert!(matches!(
+            result("original", "failed"),
+            Outcome::Failed { .. }
+        ));
+        assert!(matches!(
+            result("original", "uncertain"),
+            Outcome::Uncertain { .. }
+        ));
+        assert!(matches!(
+            result("other", "submitted"),
+            Outcome::Uncertain { .. }
+        ));
+        assert!(matches!(
+            result("other", "completed"),
+            Outcome::Uncertain { .. }
+        ));
     }
 
     #[test]
@@ -2646,7 +2971,6 @@ mod tests {
                 .ends_with(&["settings".into(), t.name, "--json".into()]));
         }
     }
-
 
     #[test]
     fn settings_receipts_must_echo_every_requested_field() {
@@ -3722,21 +4046,36 @@ mod tests {
         assert_eq!(fork_texts::forking("studio"), "Forking session on studio…");
     }
 
-
-
     #[test]
     fn retired_antigravity_cannot_write_even_when_an_old_peer_reports_actions() {
-        let t = Target { name: "agy/project/session".into(), ..target("old-peer") };
-        let row = ViewRow { name: t.name.clone(), agent: "agy".into(), ..ViewRow::default() };
+        let t = Target {
+            name: "agy/project/session".into(),
+            ..target("old-peer")
+        };
+        let row = ViewRow {
+            name: t.name.clone(),
+            agent: "agy".into(),
+            ..ViewRow::default()
+        };
         let details = json!({"allowed_actions":["resume","restore","terminate"]});
         assert!(!allowed_with(&row, &details, "resume"));
         for action in [
             Action::Pause,
             Action::Resume,
-            Action::Restore { archive_id: "22222222-2222-4222-8222-222222222222".into() },
-            Action::Send { text: "keep draft".into(), attachments: vec![], agent_id: None, expected_compaction_id: None },
+            Action::Restore {
+                archive_id: "22222222-2222-4222-8222-222222222222".into(),
+            },
+            Action::Send {
+                text: "keep draft".into(),
+                attachments: vec![],
+                agent_id: None,
+                expected_compaction_id: None,
+            },
         ] {
-            assert_eq!(invocation(&t, &action, "request").unwrap_err(), crate::launch::ANTIGRAVITY_RETIRED);
+            assert_eq!(
+                invocation(&t, &action, "request").unwrap_err(),
+                crate::launch::ANTIGRAVITY_RETIRED
+            );
         }
     }
 

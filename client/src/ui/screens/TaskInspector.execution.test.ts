@@ -314,7 +314,7 @@ it.each(["en", "ru"] as const)("shows native Team facts only from the selected T
   expect(active.textContent).toContain("fixture-current-holder");
   expect(active.textContent).not.toContain("past-holder");
   expect(active.textContent).toContain(locale === "en" ? "Team stage: Submitted" : "Этап команды:");
-  expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Руководитель команды");
+  expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Лид команды");
   expect(active.textContent).not.toContain(locale === "en" ? "Accept result" : "Принять результат");
   state.setTeamFailure(true); await tick();
   expect(active.textContent).not.toContain("fixture-current-holder");

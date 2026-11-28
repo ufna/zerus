@@ -19,9 +19,12 @@ pub fn checked<'a>(detail: &Value, delivery: &'a Delivery) -> Result<&'a str, St
         "note" => matches!(stage, "todo" | "backlog" | "active" | "review" | "done"),
         "queue" => matches!(stage, "todo" | "backlog"),
         "send" => stage == "active",
-        "reopen" => matches!(stage, "review" | "done")
-            && !crate::task_quick_review::team_routed(detail)
-            && (delivery.review.is_some() || !crate::task_quick_review::uses_report_review(detail)),
+        "reopen" => {
+            matches!(stage, "review" | "done")
+                && !crate::task_quick_review::team_routed(detail)
+                && (delivery.review.is_some()
+                    || !crate::task_quick_review::uses_report_review(detail))
+        }
         _ => false,
     };
     if !valid

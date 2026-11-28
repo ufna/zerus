@@ -100,9 +100,17 @@ fn stopped_and_archived_task_keys_clear_in_every_stage_without_ending_work() {
             let mut expected = before;
             expected.team = None;
             expected.log = after.log.clone();
+            if stage == Stage::Review {
+                // The same report leaves the Team lane when routing clears.
+                // Its report and execution remain, now awaiting classification.
+                assert_eq!(after.quick_review_status, Some(zerus_replica::quick_review::Status::Unclassified));
+                assert!(after.review_report_id.is_some());
+                expected.quick_review_status = after.quick_review_status;
+                expected.review_report_id = after.review_report_id.clone();
+            }
             assert_eq!(
                 after, expected,
-                "Clearing must only remove routing and add its history"
+                "Clearing only removes routing, reprojects its review lane and adds history"
             );
             assert_eq!(doc.attempt(&f.body.id).unwrap(), records);
             assert_eq!(f.sessions(), sessions);

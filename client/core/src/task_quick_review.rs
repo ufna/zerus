@@ -1,7 +1,7 @@
 //! Report-bound ordinary task review commands and bounded renderer data.
 use crate::{creation::canonical_uuid, tasks::valid_project, tasks_write::TaskCall};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 const REPORT_BYTES: usize = 512;
 const DETAIL_BYTES: usize = 1024;
@@ -332,29 +332,23 @@ mod tests {
         });
         result["task"]["quick_review"]["assignee"]["session"] = json!("codex/reviewer");
         result["task"]["quick_review"]["assignee"]["host"] = json!("arch");
-        assert!(
-            change
-                .check_reply(result.as_object().unwrap(), PROJECT, TASK)
-                .is_ok()
-        );
-        assert!(
-            serde_json::from_value::<Change>(json!({
-                "op": "set", "history_revision": "a".repeat(64), "report_id": REPORT,
-                "disposition": result["task"]["quick_review"]
-            }))
-            .is_err()
-        );
+        assert!(change
+            .check_reply(result.as_object().unwrap(), PROJECT, TASK)
+            .is_ok());
+        assert!(serde_json::from_value::<Change>(json!({
+            "op": "set", "history_revision": "a".repeat(64), "report_id": REPORT,
+            "disposition": result["task"]["quick_review"]
+        }))
+        .is_err());
         present(result["task"].as_object_mut().unwrap(), true, false);
         assert_eq!(
             result["task"]["quick_review"]["assignee"]["session"],
             "codex/reviewer"
         );
         result["task"]["quick_review"]["assignee"]["session_id"] = json!("run_id:different");
-        assert!(
-            change
-                .check_reply(result.as_object().unwrap(), PROJECT, TASK)
-                .is_err()
-        );
+        assert!(change
+            .check_reply(result.as_object().unwrap(), PROJECT, TASK)
+            .is_err());
     }
 
     #[test]
@@ -399,17 +393,13 @@ mod tests {
             "task_uuid":TASK, "project_uuid":PROJECT, "report_id":REPORT, "op":"accept",
             "task":{"uuid":TASK,"project":PROJECT,"stage":"done"}
         });
-        assert!(
-            accept
-                .check_reply(reply.as_object().unwrap(), PROJECT, TASK)
-                .is_ok()
-        );
+        assert!(accept
+            .check_reply(reply.as_object().unwrap(), PROJECT, TASK)
+            .is_ok());
         reply["report_id"] = json!("different-report");
-        assert!(
-            accept
-                .check_reply(reply.as_object().unwrap(), PROJECT, TASK)
-                .is_err()
-        );
+        assert!(accept
+            .check_reply(reply.as_object().unwrap(), PROJECT, TASK)
+            .is_err());
     }
 
     #[test]
