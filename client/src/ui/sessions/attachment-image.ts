@@ -14,20 +14,34 @@ export function fittedImage(size: ImageSize | undefined) {
   return { width: `${size.width * scale}px`, height: `${size.height * scale}px` };
 }
 
-/** A source handoff keeps the visible copy until its replacement is decoded.
- * A stale or failed read never blanks a working local preview. */
+/** Publish only decoded sources. A failed recorded copy never replaces a
+ * working local preview, even when both copies use the same cache URL. */
 export function createImageHandoff(decode: (url: string) => Promise<void>) {
   const [url, setUrl] = createSignal<string>();
-  let requested: string | undefined, revision = 0;
-  onCleanup(() => { revision++; });
+  let localRevision = 0, remoteRevision = 0;
+  onCleanup(() => { localRevision++; remoteRevision++; });
   return {
     url,
-    local(value: string | undefined) { if (value && !url()) setUrl(value); },
-    async remote(value: string | undefined) {
-      if (!value || value === requested || value === url()) return;
-      requested = value; const ticket = ++revision;
-      try { await decode(value); if (ticket === revision) setUrl(value); }
-      catch { if (ticket === revision) requested = undefined; }
+    async local(value: string | undefined) {
+      const ticket = ++localRevision;
+      if (!value || url()) return;
+      try {
+        await decode(value);
+        if (ticket === localRevision && !url()) setUrl(value);
+      } catch { /* The guarded history read may restore this same URL. */ }
+    },
+    async remote(value: string | undefined, failed?: () => void) {
+      const ticket = ++remoteRevision;
+      if (!value || value === url()) return;
+      try {
+        await decode(value);
+        if (ticket === remoteRevision) setUrl(value);
+      } catch { if (ticket === remoteRevision) failed?.(); }
+    },
+    broken(value: string, current: () => boolean): boolean {
+      if (url() !== value || !current()) return false;
+      setUrl(undefined);
+      return true;
     },
   };
 }

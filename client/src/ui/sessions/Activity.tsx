@@ -405,31 +405,47 @@ const openAttachment = createOpen({
 function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }) {
   const target = createMemo(() => cardTarget(props.file, props.scope), undefined, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
   // An image's thumbnail reads its file while the card shows (ActivityView.cpp:2126-2131).
-  createEffect(on(target, (now) => {
-    if (!now || !props.file.image) return;
+  const isImage = () => props.file.image;
+  createEffect(on([target, isImage], ([now, image]) => {
+    if (!now || !image) return;
     previews.show(now.computer, now.ref);
     onCleanup(() => previews.hide(now.computer, now.ref));
   }));
   const handoff = createImageHandoff(async (url) => {
     const image = new Image(); image.src = url; await image.decode();
   });
-  const localPath = () => props.file.preview_path;
+  const localPath = () => isImage() ? props.file.preview_path : undefined;
   createEffect(on(localPath, (path) => {
-    if (!path) return;
-    // Retain the immutable local copy while this row is visible, including
-    // after its native local-message record has reconciled away.
+    if (!path) { void handoff.local(undefined); return; }
+    // Retain the immutable local copy while this row shows it.
     attachmentPin(path);
-    handoff.local(convertFileSrc(path, "zerus-file"));
+    void handoff.local(convertFileSrc(path, "zerus-file"));
     onCleanup(() => attachmentUnpin(path));
   }));
-  const remote = () => { const now=target(); return now && props.file.image ? previews.state(now.computer,now.ref) : undefined; };
-  createEffect(() => { const state=remote(); if(state?.kind === "ready") void handoff.remote(state.url); });
-  const size = () => props.file.image_size ?? (remote()?.kind === "ready" ? (remote() as Extract<ReturnType<typeof previews.state>,{kind:"ready"}>).fetched.image_size ?? undefined : undefined);
+  const remote = () => {
+    const now = target();
+    return now && isImage() ? previews.state(now.computer, now.ref) : undefined;
+  };
+  createEffect(on([target, remote], ([now, state]) => {
+    void handoff.remote(state?.kind === "ready" ? state.url : undefined, () => {
+      if (now && target() === now && remote() === state) previews.failed(now.computer, now.ref);
+    });
+  }));
+  const size = () => {
+    const state = remote();
+    return props.file.image_size ?? (state?.kind === "ready" ? state.fetched.image_size ?? undefined : undefined);
+  };
+  const thumbnailError = (url: string, image: HTMLImageElement) => {
+    if (!handoff.broken(url, () => image.isConnected)) return;
+    const now = target(), state = remote();
+    if (now && state?.kind === "ready" && state.url === url) previews.failed(now.computer, now.ref);
+  };
   return <button type="button" class="att-card" aria-disabled={!target()} tabindex={target() ? 0 : -1}
     title={target() ? props.file.caption : tr("Attachment: %1", props.file.name)} onClick={() => { const now=target(); if(now) void openAttachment(now.computer,now.ref); }}>
     <Show when={props.file.image}>
-      <span class="att-thumb"><img src={handoff.url()} style={fittedImage(size())} alt=""
-        onError={() => { const now=target(); if(now)previews.failed(now.computer,now.ref); }} /></span>
+      <span class="att-thumb"><Show when={handoff.url()} keyed>{(url) =>
+        <img src={url} style={fittedImage(size())} alt="" onError={(event) => thumbnailError(url, event.currentTarget)} />
+      }</Show></span>
     </Show>
     <span class="att-caption">{props.file.caption}</span>
     <span class="dim">{props.file.meta}</span>
