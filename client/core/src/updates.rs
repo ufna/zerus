@@ -603,11 +603,7 @@ pub fn is_arch_linux(data: &[u8]) -> bool {
 
 pub fn update_command(installation: &Installation, channel: Channel) -> String {
     if installation.kind == "portable" {
-        return if installation.package == WINGET && channel == Channel::Stable {
-            "winget upgrade --id ufna.Zerus --exact".to_owned()
-        } else {
-            String::new()
-        };
+        return String::new();
     }
     if installation.kind == "homebrew-cask" {
         let wanted = match channel {
@@ -715,16 +711,6 @@ pub fn installation_guide(
         return guide;
     }
     if windows_build(installation) {
-        if installation.package != WINGET {
-            return guide;
-        }
-        if value.is_empty() {
-            guide.instructions = Some(crate::text!("winget carries stable releases only. Choose the stable channel for its update command."));
-            return guide;
-        }
-        guide.command = Some(crate::text!("winget: %1", value));
-        guide.copy_name = Some(crate::text!("Copy winget command"));
-        guide.instructions = Some(crate::text!("Quit Zerus from its notification area menu, then run this in PowerShell or Command Prompt. winget lists a release once its manifest is accepted, which can take a while after GitHub. Agents and local sessions keep running."));
         return guide;
     }
     let optional = installation.kind != "package";
@@ -1002,17 +988,10 @@ pub fn comparison_message(
         }
         if stable_version(&feed.version) {
             if portable_update_available(app_version, feed) {
-                return if installation.package == WINGET {
-                    crate::text!(
-                        "Zerus %1 is available. Quit Zerus, then update it with winget.",
-                        feed.version.clone()
-                    )
-                } else {
-                    crate::text!(
-                        "Zerus %1 is available. Download its Windows zip from the release page.",
-                        feed.version.clone()
-                    )
-                };
+                return crate::text!(
+                    "Zerus %1 is available. Download its Windows zip from the release page.",
+                    feed.version.clone()
+                );
             }
             if !stable_has_windows_build(&feed.version)
                 && plain_stable_is_newer(app_version, &feed.version)

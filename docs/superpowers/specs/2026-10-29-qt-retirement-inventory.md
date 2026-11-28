@@ -4,6 +4,10 @@
 **Source baseline:** `251ff068071604bc2478d740c687ff591b018c59` (`integrate/client-webui` at final UI-parity review)
 **Epic:** `zerus-5wmh.66`; inventory task `zerus-5wmh.66.1`
 
+The winget publication requirements below describe the original baseline. The
+2026-11-17 owner decision retired new submissions; the portable layout and
+support for existing installations remain. See [current distribution](../../public-distribution.md#winget).
+
 ## Goal and retirement rule
 
 Remove the Qt GUI completely without losing a user-visible responsibility or leaving work that depends on a Qt process or file. Zerus Next owns interactive UI. `hgs` or one of its durable services owns every behavior and every piece of state that must survive closing the client window. Existing CLI commands, `HGS_*` variables, state/config paths and application/service identifiers remain compatible. The macOS switch (`zerus-5wmh.13`) is only the first platform step; Linux and Windows must reach the same retirement state.

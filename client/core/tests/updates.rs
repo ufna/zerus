@@ -370,31 +370,6 @@ fn installation_rules_match_qt() {
         update_command(&cask, Channel::Nightly),
         "brew uninstall --cask zerus && brew install --cask ufna/zerus/zerus@nightly"
     );
-    let winget = Installation {
-        kind: "portable".into(),
-        package: "ufna.Zerus".into(),
-        version: String::new(),
-        arch: false,
-        helper: String::new(),
-    };
-    assert_eq!(
-        update_command(&winget, Channel::Stable),
-        "winget upgrade --id ufna.Zerus --exact"
-    );
-    assert_eq!(update_command(&winget, Channel::Nightly), "");
-    let guide = installation_guide(&winget, Channel::Stable, &feed, "0.36.2");
-    assert_eq!(
-        guide.command.as_ref().map(|t| t.english()).as_deref(),
-        Some("winget: winget upgrade --id ufna.Zerus --exact")
-    );
-    assert_eq!(
-        guide.copy_name.as_ref().map(|t| t.english()).as_deref(),
-        Some("Copy winget command")
-    );
-    assert!(guide
-        .instructions
-        .as_ref()
-        .is_some_and(|t| t.english().contains("keep running")));
     let nightly = parse_feed(
         &bytes(&nightly_raw("0.38.0.r10.gaaaaaaa.n5")),
         Channel::Nightly,
@@ -403,7 +378,6 @@ fn installation_rules_match_qt() {
     assert!(!portable_update_available("0.38.0", &nightly));
     assert!(stable_has_windows_build("0.42.3"));
     assert!(!stable_has_windows_build("0.42.2"));
-    assert_eq!(comparison_message(&winget, &nightly, "0.37.0", 0, false, "windows").english(), "Zerus nightly 0.38.0.r10.gaaaaaaa.n5 is available. Download its Windows zip from the release page.");
     assert_eq!(automatic_interval(Channel::Dev), 15 * 60);
     assert_eq!(automatic_interval(Channel::Stable), 24 * 60 * 60);
     assert!(is_update_token("zerus-update:v2:dev:12345"));
@@ -417,6 +391,27 @@ fn installation_rules_match_qt() {
         ),
         "zerus-update:v2:dev:12345"
     );
+}
+
+#[test]
+fn winget_installations_use_the_portable_release_page() {
+    let winget = Installation {
+        kind: "portable".into(),
+        package: "ufna.Zerus".into(),
+        ..Default::default()
+    };
+    let installed = "0.47.0";
+    for (channel, catalog, expected) in [
+        (Channel::Stable, stable_raw("0.48.0"), "Zerus 0.48.0 is available. Download its Windows zip from the release page."),
+        (Channel::Nightly, nightly_raw("0.48.0.r10.gaaaaaaa.n5"), "Zerus nightly 0.48.0.r10.gaaaaaaa.n5 is available. Download its Windows zip from the release page."),
+    ] {
+        let feed = parse_feed(&bytes(&catalog), channel);
+        assert_eq!(comparison_message(&winget, &feed, installed, 0, false, "windows").english(), expected);
+        assert!(update_command(&winget, channel).is_empty());
+        let guide = installation_guide(&winget, channel, &feed, installed);
+        assert!(guide.ownership.english().contains("ufna.Zerus"));
+        assert!(guide.command.is_none() && guide.copy_name.is_none() && guide.instructions.is_none());
+    }
 }
 
 #[test]

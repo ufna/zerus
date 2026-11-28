@@ -696,12 +696,56 @@ mod tests {
         None
     };
 "#,
-            "    if let Some(floor) = kimi_turn_floor {\n        receipt[\"kimi_outbox\"] = json!(true);\n        receipt[\"kimi_turn_floor\"] = json!(floor);\n    }\n",
+            "    if let Some(floor) = kimi_turn_floor {\n        receipt[\"kimi_outbox\"] = json!(true);\n        receipt[\"kimi_activity_binding\"] = json!(true);\n        receipt[\"kimi_turn_floor\"] = json!(floor);\n    }\n",
             "    if receipt[\"kimi_outbox\"] == true {\n        record[\"input_pending_kimi_outbox\"] = json!(request_id);\n    }\n",
             "        if string(&record, \"agent\") == \"kimi\" && mode == SendMode::DesktopNativeAccept {\n            mode.check_send_gate(&record).map_err(Gate::reason)?;\n        }\n",
         ] {
             assert_eq!(original.matches(addition).count(), 1, "native terminal route changed");
             original = original.replacen(addition, "", 1);
+        }
+        // Check the exact later admissions before projecting back to the
+        // original body. The pending-settings refusal stays before any key,
+        // and the ordered decision stays immediately before queue preparation.
+        for (current, previous) in [
+            (
+                r#"    if matches!(origin, Origin::TechnicalReview) && effort::pending_applies(&record) {
+        return Err(refused(typed, "Review notice withheld while settings are pending.".into()));
+    }
+    if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
+"#,
+                "    if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {\n",
+            ),
+            (
+                "        Origin::Person | Origin::Answer | Origin::TechnicalReview => {}\n",
+                "        Origin::Person | Origin::Answer => {}\n",
+            ),
+            (
+                "        Origin::Person | Origin::Answer | Origin::TechnicalReview => Ok(()),\n",
+                "        Origin::Person | Origin::Answer => Ok(()),\n",
+            ),
+            (
+                r#"    let terminal = backend::current();
+    // The original input lock still protects this decision from another
+    // Desktop Send. A matching duplicate returned its receipt before here.
+    let mode = if mode == SendMode::CodexOrderedTurn {
+        if codex_tasks::multiple(&record) {
+            return Err(refused(typed, "Codex task bindings changed before the ordered Send".into()));
+        }
+        match codex_queue::has_earlier(&record) {
+            Ok(true) => SendMode::CodexQueue,
+            Ok(false) => SendMode::CodexOrderedTurn,
+            Err(_) => return Err(gated(typed, Gate::NotIdle)),
+        }
+    } else { mode };
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
+"#,
+                r#"    let terminal = backend::current();
+    let mut queue = if mode == SendMode::CodexQueue || codex_tasks::multiple(&record) {
+"#,
+            ),
+        ] {
+            assert_eq!(original.matches(current).count(), 1, "{current}");
+            original = original.replacen(current, previous, 1);
         }
         let retained_admission = r#"    let (existing, prior_refusal) =
         refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal);

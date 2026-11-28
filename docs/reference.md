@@ -8973,9 +8973,9 @@ not close it, and passes it the right to come to the front.
 after 0.42.2 and nightly releases carry the same tested zip. A portable
 installation starts on the stable channel; choose Nightly to hear about nightly
 builds too. Earlier portable builds saved Nightly as their default, and that saved
-choice is kept. A zip that winget installed as `ufna.Zerus` offers its
-`winget upgrade` command on the stable channel instead of the download link;
-winget carries stable releases only. Settings → Updates reports
+choice is kept. Existing `ufna.Zerus` installations are still recognized, but
+get the same GitHub release-page guidance as other portable installations.
+Settings → Updates reports
 a stable release or nightly with a newer product version than the running app and
 links to its release page; nightlies of the same product version cannot be told
 apart. Stable 0.42.2 and earlier have no Windows build and are never reported as

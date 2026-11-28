@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Actual supervisor/CLI cosmetic-theme controls, private scripted native TUI.
+"""Actual supervisor/CLI startup controls with a private scripted Claude TUI.
 
 This is not official Claude compatibility evidence. The fake never emits native
-hooks or a conversation and implements only the reviewed theme and manual login.
+hooks or a conversation.
 """
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
 import unittest
+import uuid
 
 import test_pause
 
@@ -17,7 +20,7 @@ Base = type('ThemeFixture', (unittest.TestCase,), {
     if name not in ('__dict__', '__weakref__') and not name.startswith('test_')})
 
 AGENT = r'''#!PYTHON
-import os, pathlib, select, sys, termios, tty
+import os, pathlib, signal, sys, termios, tty
 root=pathlib.Path.home()
 if sys.argv[1:]==['--help']:
     print('Usage: claude [options] [prompt]');sys.exit(0)
@@ -26,7 +29,10 @@ if sys.argv[1:]==['--version']:
 fd=sys.stdin.fileno();original=termios.tcgetattr(fd);tty.setraw(fd)
 def draw(text):
     os.write(1,('\x1b[?2004h\x1b[2J\x1b[H'+text.replace('\n','\r\n')).encode())
-draw((root/'theme-screen').read_text())
+def repaint(*_):
+    draw((root/'theme-screen').read_text())
+repaint()
+signal.signal(signal.SIGUSR1, repaint)
 (root/'theme-agent-ready').touch()
 try:
     while True:
@@ -57,8 +63,10 @@ class ClaudeTheme(Base):
 
     def launch(self, tag='theme', width=80, height=24):
         self.name='claude/p/'+tag
-        # Bootstrap reads the private .tmux.conf before creating its server.
-        (self.root/'.tmux.conf').write_text(f'set -g default-size {width}x{height}\n')
+        config = self.root/'.tmux.conf'
+        config.write_text(f'set -g exit-empty off\nset -g default-size {width}x{height}\n')
+        subprocess.run([test_pause.TMUX, '-S', self.socket, '-f', str(config), 'start-server'],
+                       env=self.env, capture_output=True, check=True, timeout=5)
         self.hgs('claude','p','-n',tag,'-d')
         self.wait(lambda:(self.root/'theme-agent-ready').exists())
         self.wait(lambda:self.binding(self.name).get('pid'))
@@ -83,6 +91,92 @@ class ClaudeTheme(Base):
         self.assertTrue(all(not q.get('can_answer') for q in cards),cards)
         self.assertEqual(self.received(),b'')
         self.assertEqual(self.claims(),[])
+
+    def test_security_notes_fit_the_default_compact_terminal_without_art(self):
+        screen = (test_pause.REPO/'tests/fixtures/claude-security-notes-first-run.txt').read_text()
+        header, _, rest = screen.partition('\n')
+        compact = header + '\n\n Security notes:' + rest.split(' Security notes:', 1)[1]
+        (self.root/'theme-screen').write_text(compact)
+        record = self.launch('compact-security-notes')
+        state = json.loads(self.hgs('inspect', self.name))
+        card, = state['pending_questions']
+        self.assertEqual(card['questions'][0]['question'], 'Security notes:')
+        self.assertEqual(card['run_id'], record['run_id'])
+        self.assertFalse(state['first_message_can_send'])
+        self.assertEqual(self.received(), b'')
+
+    def test_security_notes_are_one_manual_card_until_the_live_screen_advances(self):
+        screen = (test_pause.REPO/'tests/fixtures/claude-security-notes-first-run.txt').read_text()
+        (self.root/'theme-screen').write_text(screen)
+        record = self.launch('security-notes', height=40)
+
+        def inspect():
+            return json.loads(self.hgs('inspect', self.name))
+
+        def repaint(frame, marker):
+            (self.root/'theme-screen').write_text(frame)
+            os.kill(record['pid'], signal.SIGUSR1)
+            self.wait(lambda: marker in subprocess.check_output(
+                [test_pause.TMUX, '-S', self.socket, 'capture-pane', '-p', '-t', record['pane']],
+                env=self.env, text=True, timeout=5))
+
+        def notice(state):
+            return [card for card in state['pending_questions']
+                    if card['questions'][0]['question'] == 'Security notes:']
+
+        first = inspect()
+        self.assertEqual(len(first['pending_questions']), 1, first['pending_questions'])
+        card, = notice(first)
+        self.assertEqual(card['run_id'], record['run_id'])
+        self.assertEqual((card['source'], card['can_answer'], card['answer_transport']),
+                         ('startup_terminal_choice', False, ''))
+        self.assertEqual(card['questions'][0]['id'], 'terminal')
+        self.assertEqual(card['questions'][0]['options'], [])
+        self.assertEqual((first['phase'], first['attention_id']), ('input', card['question_id']))
+        self.assertFalse(first['first_message_can_send'])
+        self.assertTrue(first['terminal_supported'])
+        answer = subprocess.run(
+            [str(test_pause.HGS), 'answer', self.name, '--json'], env=self.env,
+            input=json.dumps(dict(request_id=str(uuid.uuid4()), expected_run_id=record['run_id'],
+                                  expected_conversation_id='', question_id=card['question_id'],
+                                  expected_question_hash=card['question_hash'], answers=[])),
+            text=True, capture_output=True, timeout=5)
+        self.assertNotEqual(answer.returncode, 0, answer.stdout)
+        self.assertIn('refresh before answering', answer.stderr)
+        self.assertEqual(self.received(), b'')
+        listing = json.loads(self.hgs('ls', '--local', '--json'))
+        row = next(row for row in listing['sessions'] if row['name'] == self.name)
+        self.assertEqual((row['phase'], row['attention_id']), ('input', card['question_id']))
+
+        # Repaint artwork and wrap the same words at a different column.
+        redraw = screen.replace('█████▓▓░', '░░░░')
+        redraw = redraw.replace('only use it with code you trust', 'only use it with\n    code you trust')
+        repaint(redraw, '\n    code you trust')
+        self.assertEqual(notice(inspect()), [card])
+
+        # Lookalikes before a conversation: even the whole notice embedded in
+        # a log, a different footer, or a login page must not mint this card.
+        for frame, marker in [
+            ('Previous terminal output:\n'+screen, 'Previous terminal output:'),
+            (screen.replace('Learn more:', 'Unrelated:'), 'Unrelated:'),
+            (screen.replace('Press Enter to continue', 'Press Enter to open settings'), 'open settings'),
+            ('Welcome to Claude Code v2.1.332\n\nSelect login method:\n\n❯ 1. Claude account\n  2. Anthropic Console',
+             'Select login method:'),
+        ]:
+            repaint(frame, marker)
+            self.assertEqual(notice(inspect()), [], marker)
+
+        # The old notice can remain visible above a real empty composer. It
+        # is no longer the active frame, and a verified composer is Ready.
+        rule = '─' * 60
+        composer = f'\n{rule}\n❯ \n{rule}\n  ? for shortcuts\x1b[2A\x1b[3G'
+        repaint(screen+composer, '? for shortcuts')
+        after = inspect()
+        self.assertEqual(notice(after), [])
+        self.assertNotEqual(after.get('attention_id'), card['question_id'])
+        self.assertTrue(after['first_message_can_send'], after.get('first_message_reason'))
+        self.assertEqual(self.received(), b'')
+        self.assertEqual(self.claims(), [])
 
     def test_original_supervisor_confirms_dark_once_then_leaves_login_manual(self):
         before=self.launch()
