@@ -32,6 +32,7 @@ pub(super) fn for_rows(config: &Config, machines: &mut Machines, rows: &[Value])
     if !wanted.is_empty() {
         machines.bindings =
             crate::state::task_binding_rows(&config.state, &wanted).map_err(fail)?;
+        machines.bindings_complete = true;
     }
     Ok(())
 }
@@ -52,7 +53,7 @@ impl Machines {
         name: &str,
         args: &[String],
     ) -> Result<SessionKey> {
-        let mut key = SessionKey {
+        let key = SessionKey {
             machine,
             session: name.into(),
             session_id: option(args, "--session-id")?.unwrap_or_default().into(),
@@ -60,24 +61,37 @@ impl Machines {
         if key.session_id.len() > 200 || key.session_id.chars().any(char::is_control) {
             return Err(fail("invalid task session identity"));
         }
-        if let Some(current) = self.resolve(&key) {
-            key = current;
-        } else {
-            return Err(fail("the selected session identity is no longer available"));
-        }
-        Ok(key)
+        self.resolve_key(&key, true)
+            .ok_or_else(|| fail("the selected session identity is no longer available"))
     }
     /// Unknown remote bindings remain hints for that computer to resolve. A
     /// known local ID with no unique binding refuses rather than using its name.
     pub(super) fn resolve(&self, key: &SessionKey) -> Option<SessionKey> {
+        self.resolve_key(key, false)
+    }
+
+    fn resolve_key(&self, key: &SessionKey, selecting_current: bool) -> Option<SessionKey> {
         if key.machine != self.here {
             return Some(key.clone());
         }
+        let by_name = key.session_id.is_empty();
+        if by_name && !self.bindings_complete {
+            return None;
+        }
+        let current_name = |row: &Value| row["name"].as_str() == Some(&key.session);
+        // An explicit request may select the current holder of a label. An
+        // existing name-only reference has no such evidence of intent. A
+        // current holder and a different historical holder make it ambiguous.
+        let current_only = by_name && selecting_current && self.bindings.iter().any(current_name);
         let matches = |row: &&Value| {
-            if !key.session_id.is_empty() {
+            if !by_name {
                 identity(row) == key.session_id
             } else {
-                row["name"].as_str() == Some(&key.session)
+                current_name(row)
+                    || (!current_only
+                        && (row["journal_name"].as_str() == Some(&key.session)
+                            || row["launch_label"].as_str() == Some(&key.session)
+                            || row["legacy_shadow"]["name"].as_str() == Some(&key.session)))
             }
         };
         let mut found = self.bindings.iter().filter(matches);
@@ -91,27 +105,7 @@ impl Machines {
                 session_id: identity(row),
             });
         }
-        // A legacy task has no ID. Only a unique retained original label can
-        // recover an old rename, and an exact current name takes precedence.
-        if key.session_id.is_empty() {
-            let mut aliases = self.bindings.iter().filter(|row| {
-                row["journal_name"].as_str() == Some(&key.session)
-                    || row["launch_label"].as_str() == Some(&key.session)
-                    || row["legacy_shadow"]["name"].as_str() == Some(&key.session)
-            });
-            if let Some(row) = aliases.next() {
-                if aliases.next().is_some() {
-                    return None;
-                }
-                return Some(SessionKey {
-                    machine: key.machine.clone(),
-                    session: row["name"].as_str()?.into(),
-                    session_id: identity(row),
-                });
-            }
-            return Some(key.clone()); // existing name-only tasks remain readable
-        }
-        None
+        by_name.then(|| key.clone()) // existing name-only tasks remain readable
     }
 }
 
@@ -140,6 +134,7 @@ mod tests {
             selves: vec!["local".into()],
             peers: BTreeMap::from([("remote".into(), "remote-node".into())]),
             bindings,
+            bindings_complete: true,
         }
     }
 

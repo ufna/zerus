@@ -850,6 +850,7 @@ mod tests {
             selves: vec![],
             peers: BTreeMap::new(),
             bindings: vec![],
+            bindings_complete: true,
         };
         let result = |state: &str, error: &str, _: &TaskDoc| -> Result<Value> {
             Ok(json!({"state": state, "error": error}))

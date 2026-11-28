@@ -173,6 +173,58 @@ class TaskCommands(Fixture):
         self.assertFalse(missing["target"]["resolved"])
         self.assertIn("no longer exists", self.hgs("send", task["ref"], ok=False))
 
+    def test_legacy_task_does_not_adopt_a_reused_session_name(self):
+        before, after = "codex/renamefixture/before", "codex/renamefixture/after"
+        legacy = self.add("Legacy target without a session ID", "--target", before)
+        self.assertFalse(legacy["target"].get("session_id"))
+        original = str(uuid.uuid4())
+        agent_record(self.state, self.env, before, "original", launch_id=original)
+        pinned = self.add("Pinned to the original launch", "--target", before)
+        renamed = subprocess.run([str(HGS), "rename", before, after], env=self.env,
+                                 capture_output=True, text=True, timeout=15)
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        routed = self.hgs("get", legacy["ref"])["task"]["target"]
+        self.assertEqual((routed["session"], routed["session_id"]), (after, "launch_id:" + original))
+
+        replacement = str(uuid.uuid4())
+        agent_record(self.state, self.env, before, "replacement", launch_id=replacement)
+        self.assertIn("no longer exists", self.hgs("send", legacy["ref"], ok=False))
+        unresolved = self.hgs("get", legacy["ref"])["task"]["target"]
+        self.assertEqual(unresolved["session"], before)
+        self.assertFalse(unresolved["resolved"])
+        self.assertFalse(unresolved.get("session_id"))
+        listed = self.hgs("list", "--project", "orchard", "--stage", "todo")["tasks"]
+        targets = {row["id"]: row["target"] for row in listed}
+        self.assertEqual(targets[legacy["id"]], unresolved)
+        self.assertEqual((targets[pinned["id"]]["session"], targets[pinned["id"]]["session_id"]),
+                         (after, "launch_id:" + original))
+
+        if os.geteuid() != 0:
+            binding = self.state / (hashlib.sha256(after.encode()).hexdigest() + ".json")
+            original_record = binding.read_bytes()
+            mode = binding.stat().st_mode & 0o777
+            binding.chmod(0)
+            try:
+                with self.assertRaises(PermissionError):
+                    binding.read_bytes()
+                read = self.hgs("get", legacy["ref"])["task"]["target"]
+                edited = self.hgs("edit", legacy["ref"], text="Unrelated description edit")["task"]
+                refused = self.hgs("send", legacy["ref"], ok=False)
+                choice = self.add("Explicit durable selection", "--target", before,
+                                  "--session-id", "launch_id:" + replacement)
+            finally:
+                binding.chmod(mode)
+            self.assertEqual(binding.read_bytes(), original_record)
+            self.assertEqual(self.hgs("get", legacy["ref"])["task"]["target"], unresolved)
+            self.assertEqual(read, unresolved)
+            self.assertEqual(edited["target"], unresolved)
+            self.assertIn("no longer exists", refused)
+            self.assertEqual(choice["target"]["session_id"], "launch_id:" + replacement)
+
+        reassigned = self.hgs("target", legacy["ref"], before)["task"]["target"]
+        self.assertEqual((reassigned["session"], reassigned["session_id"]),
+                         (before, "launch_id:" + replacement))
+
     def test_a_large_saved_record_still_routes_by_identity(self):
         # A live run keeps up to 128 shell jobs with their full heredoc commands.
         launch = str(uuid.uuid4())

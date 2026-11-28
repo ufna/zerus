@@ -1249,8 +1249,8 @@ pub(crate) fn task_reply_receipt(name: &str, request: &Value) -> Result<Option<V
 
 /// Task routing uses saved identity metadata only: no provider inspection,
 /// history, process reconciliation or native API calls for each task row.
-pub(crate) fn task_bindings() -> Result<Vec<Value>> {
-    task_bindings_in(&root())
+pub(crate) fn task_bindings() -> Result<TaskBindingInventory> {
+    task_binding_inventory_in(&root())
 }
 
 /// How a session command carries the identities it expects (zerus-ucck P3c).
@@ -1623,15 +1623,27 @@ impl<'de> serde::Deserialize<'de> for TaskBinding {
     }
 }
 
+pub(crate) struct TaskBindingInventory {
+    pub rows: Vec<Value>,
+    pub complete: bool,
+}
+
+#[cfg(test)]
+pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
+    Ok(task_binding_inventory_in(root)?.rows)
+}
+
 /// [`task_bindings`] below the state directory `root`. A record that cannot be
-/// read is reported and skipped; one removed meanwhile is skipped silently.
+/// read is reported. Any unreadable or disappearing record leaves an incomplete
+/// inventory, so it cannot establish that a name has only one claimant.
 /// One buffer, bounded by the session graph's record limit, serves every
 /// record: a record it indexes also routes tasks.
-pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
+fn task_binding_inventory_in(root: &Path) -> Result<TaskBindingInventory> {
     use std::fs;
     let limit = session_graph::MAX_RECORD;
     let mut bytes = Vec::new();
     let mut rows = Vec::new();
+    let mut complete = true;
     for name in storage::BINDING_DIRS {
         let directory = root.join(name);
         let entries = match fs::read_dir(directory) {
@@ -1639,7 +1651,11 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.to_string()),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
             let path = entry.path();
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let hashed = stem.len() == 64 && stem.bytes().all(|c| c.is_ascii_hexdigit());
@@ -1648,7 +1664,10 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
             let row = (|| -> Result<Option<Value>> {
                 let file = match crate::platform::no_follow(fs::OpenOptions::new().read(true)).open(&path) {
                     Ok(file) => file,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        complete = false;
+                        return Ok(None);
+                    }
                     Err(error) => return Err(error.to_string()),
                 };
                 let metadata = file.metadata().map_err(|e| e.to_string())?;
@@ -1667,11 +1686,14 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
             match row {
                 Ok(Some(row)) => rows.push(row),
                 Ok(None) => {}
-                Err(error) => eprintln!("hgs: cannot read {} for task routing: {error}", path.display()),
+                Err(error) => {
+                    complete = false;
+                    eprintln!("hgs: cannot read {} for task routing: {error}", path.display());
+                }
             }
         }
     }
-    Ok(rows)
+    Ok(TaskBindingInventory { rows, complete })
 }
 
 /// Compatibility entry point used by `hgs __state` and the legacy hook shim.
