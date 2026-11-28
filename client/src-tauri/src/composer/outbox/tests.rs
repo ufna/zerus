@@ -155,6 +155,66 @@ fn ordinary_terminal_send_offers_while_working_and_never_overtakes_an_unknown_he
 }
 
 #[test]
+fn guarded_claude_send_keeps_terminal_commands_in_the_exact_editor_draft() {
+    let root = dir("guarded-claude-terminal-command");
+    let store = drafts(&root);
+    let (c, fake) = send_hub_on(&store);
+    let target = target_session("claude");
+    let view = present(&c, &fake, &target, "claude");
+    let mut inspect = details(&target, "claude", true, Some(false));
+    inspect["terminal_native_accept_supported"] = json!(true);
+    c.observe(&state(inspect));
+    let file = root.join("context.txt");
+    std::fs::write(&file, b"synthetic attachment").unwrap();
+    c.attach_paths(view.handle, vec![file], Default::default());
+    let attached = until(&c, |v| v.attachments.len() == 1 && v.can_send);
+    let files = c.lock().composers[&attached.key].draft.attachments.clone();
+    let reference = &files[0].reference;
+    let name = target.name.clone();
+    *lock(&fake.outcome) = Box::new(move |_, id| Outcome::Done {
+        receipt: json!({"status":"submitted","request_id":id,"name":name,
+            "run_id":"run-1","conversation_id":"conv-1"}),
+        cleanup: None,
+    });
+
+    for command in ["  /fixture-review", "\t!fixture-shell"] {
+        let before = c.current().unwrap();
+        let text = format!("{command} {reference}");
+        let response = c.send_message(before.handle, before.rev + 1, before.text_epoch,
+            text.clone(), 12, 3);
+        assert!(matches!(response, SendReply::Notice { text, error: true }
+            if text.contains("in Terminal")), "terminal command must be refused before queue admission");
+        let after = c.current().unwrap();
+        assert_eq!((&after.text, after.position, after.anchor), (&text, 12, 3));
+        assert_eq!(after.text_epoch, before.text_epoch + 1);
+        assert_eq!(after.attachments, attached.attachments);
+        assert!(after.waiting_in_zerus.is_empty());
+        store.flush();
+        let saved = zerus_client_core::drafts::read_draft(store.root(), &after.key);
+        assert_eq!(saved.draft.draft.text, text);
+        assert_eq!(saved.draft.draft.attachments, files);
+        assert!(saved.draft.outbox.is_empty());
+        assert!(lock(&fake.calls).is_empty());
+    }
+
+    // A nested absolute path is ordinary message text, not a slash command.
+    let plain = format!("/work/example/context.txt uses {reference}");
+    let before = c.current().unwrap();
+    let response = c.send_message(before.handle, before.rev + 1, before.text_epoch,
+        plain.clone(), 0, 0);
+    let SendReply::Accepted { view, waiting: false } = response else {
+        panic!("expected the normal guarded offer for the replacement draft");
+    };
+    let original = &view.waiting_in_zerus[0];
+    until(&c, |v| v.waiting_in_zerus.is_empty());
+    let calls = lock(&fake.calls);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].2, original.request_id);
+    assert!(matches!(&calls[0].1, Action::SendWhenNativeAccepts { text, attachments }
+        if text == &plain && attachments == &files));
+}
+
+#[test]
 fn ordinary_send_starts_the_exact_guarded_offer_before_the_busy_native_turn_ends() {
     for agent in ["opencode", "dsh"] {
         let root = dir("native-queue-ordinary-send");
