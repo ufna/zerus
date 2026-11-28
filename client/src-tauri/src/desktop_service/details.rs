@@ -13,6 +13,9 @@ mod tests;
 
 #[derive(Default)]
 pub(super) struct Hub {
+    // Per-fixture observation after a real pre-spawn capacity refusal.
+    #[cfg(test)]
+    pub(super) admission_refused: Option<Box<dyn FnOnce() + Send>>,
     git_rows: Vec<zerus_client_core::git::RowInterest>,
     git_bindings: BTreeMap<Key, Vec<git::Binding>>,
     lease: Option<Lease>,
@@ -970,6 +973,18 @@ async fn control_request(
         let Some(attempt) = retry else {
             return result;
         };
+        #[cfg(test)]
+        {
+            let observed = shared
+                .details
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .admission_refused
+                .take();
+            if let Some(observed) = observed {
+                observed();
+            }
+        }
         // Admission failed before a helper existed; this is not an uncertain
         // request replay. Keep the original ID and spend the existing budget.
         tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt))).await;
