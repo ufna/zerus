@@ -95,7 +95,7 @@ impl Selected {
 
 /// One local, exact receipt read. Reuse the sealed desktop read Context, not
 /// a Terminate selection/confirmation or any writer-registration route.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn check_claude_delivery(
     service: Arc<Service>,
     target: &zerus_client_core::Target,

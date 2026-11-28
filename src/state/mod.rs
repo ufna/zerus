@@ -19,7 +19,7 @@ mod claude_statusline;
 mod claude_subagents;
 mod attachments;
 mod delivery;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use delivery::scoped_claude_outbox_status;
 mod receipt_index;
 mod computer_files;
