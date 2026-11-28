@@ -1133,13 +1133,13 @@ pub async fn composer_check_delivery(
             return Ok(DeliveryObservation::Unresolved);
         };
         let composers = state.inner().clone();
-        return Ok(tauri::async_runtime::spawn_blocking(move || {
+        Ok(tauri::async_runtime::spawn_blocking(move || {
             composers.check_delivery(handle, &request_id, move |target, action, id, source| {
                 crate::desktop_service::termination_outcome::check_claude_delivery(
                     service, target, action, id, source,
                 )
             })
-        }).await.unwrap_or(DeliveryObservation::Unresolved));
+        }).await.unwrap_or(DeliveryObservation::Unresolved))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
