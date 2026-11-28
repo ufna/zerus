@@ -13,7 +13,6 @@ vi.hoisted(() => {
 vi.mock("../../bridge", () => ({
   composerDismissCompactionNotice: vi.fn(async () => {}),
   composerCheckDelivery: vi.fn(async () => {}),
-  composerSkipWaiting: vi.fn(async () => {}),
   terminalConnect: vi.fn(async () => {}),
   terminalWrite: vi.fn(async () => {}),
   terminalPasteImage: vi.fn(async () => {}),

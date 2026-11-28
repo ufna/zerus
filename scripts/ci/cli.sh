@@ -5,6 +5,13 @@ cd "$(dirname "$0")/../.."
 phase=${1:-all}
 case "$phase" in all|debug|remaining) ;; *) echo "Unknown CLI phase" >&2; exit 2 ;; esac
 mkdir -p artifacts/test-results
+# Apple's default TMPDIR uses /var -> /private/var. Select its real directory
+# before allocating fixtures: pinned no-link readers must receive the same
+# canonical paths as native configuration, not a system alias. Tests still
+# construct their own symlink/refusal cases; production readers stay strict.
+if [ "$(uname -s)" = Darwin ]; then
+    export TMPDIR="$(python3 -c 'from pathlib import Path; import tempfile; print(Path(tempfile.gettempdir()).resolve(strict=True))')"
+fi
 # Tests launched from an agent must not inherit its account/run selection.
 while IFS= read -r variable; do
     case "$variable" in HGS_*) unset "$variable" ;; esac
