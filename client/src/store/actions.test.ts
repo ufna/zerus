@@ -11,6 +11,7 @@ import { emptyBatch, type Action, type Batch, type Details, type Outcome, type R
 vi.mock("../bridge", () => ({
   runAction: vi.fn(),
   terminationCleanupConfirm: vi.fn(),
+  terminationCleanupCancel: vi.fn(),
   inspectSession: vi.fn(),
   pendingReadMarks: vi.fn(),
   attentionMarks: vi.fn(async () => ({ marks: {}, replies: {} })),
@@ -50,6 +51,8 @@ beforeEach(() => {
   vi.setSystemTime(1_790_000_000_000);
   mocked.runAction.mockReset();
   mocked.terminationCleanupConfirm.mockReset();
+  mocked.terminationCleanupCancel.mockReset();
+  mocked.terminationCleanupCancel.mockResolvedValue(undefined);
   mocked.inspectSession.mockReset();
   mocked.pendingReadMarks.mockReset();
   mocked.sessionReference.mockReset();
