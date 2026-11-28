@@ -24,6 +24,8 @@ use crate::identity::Platform;
 #[path = "instance_guard.rs"]
 mod canonical;
 
+const CANONICAL_GUI_NAME: &str = "hgs-tray";
+
 /// The line a start sends to the running instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Activation {
@@ -1258,18 +1260,15 @@ pub fn claim(
     reply: Option<Reply>,
     admitted: impl FnOnce(),
 ) -> Claim {
-    let directory = match canonical::directory_for(
-        measurement_start(),
-        std::env::var_os("ZERUS_CLIENT_GUARD_ROOT").as_deref(),
-    ) {
-        Ok(directory) => directory,
-        Err(error) => {
-            let failed = Claim::Failed(error.to_string());
-            crate::startup_log::guard(&failed);
-            return failed;
-        }
-    };
-    claim_in(name, label, activation, reply, &directory, admitted)
+    claim_in(
+        name,
+        label,
+        activation,
+        reply,
+        &canonical::directory(),
+        Platform::current(),
+        admitted,
+    )
 }
 
 fn claim_in(
@@ -1278,9 +1277,19 @@ fn claim_in(
     activation: Activation,
     reply: Option<Reply>,
     directory: &Path,
+    platform: Platform,
     admitted: impl FnOnce(),
 ) -> Claim {
-    let result = claim_inner(name, label, activation, reply, directory, admitted);
+    let allow_private_root = platform != Platform::Mac || name != CANONICAL_GUI_NAME;
+    let result = match canonical::directory_for(
+        directory,
+        measurement_start(),
+        std::env::var_os("ZERUS_CLIENT_GUARD_ROOT").as_deref(),
+        allow_private_root,
+    ) {
+        Ok(directory) => claim_inner(name, label, activation, reply, &directory, admitted),
+        Err(error) => Claim::Failed(error.to_string()),
+    };
     crate::startup_log::guard(&result);
     result
 }
@@ -1294,7 +1303,7 @@ fn claim_inner(
     admitted: impl FnOnce(),
 ) -> Claim {
     let forwards = !measurement_start();
-    let guard = if name == "hgs-tray" {
+    let guard = if name == CANONICAL_GUI_NAME {
         match canonical_claim(directory, activation.clone(), forwards) {
             Ok(CanonicalClaim::Owner(guard)) => Some(guard),
             Ok(CanonicalClaim::Forwarded) => return Claim::Forwarded,
