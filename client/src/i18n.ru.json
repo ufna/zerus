@@ -5417,7 +5417,6 @@
   "was stopped by its provider's policy": "остановлен из-за правил провайдера",
   "winget carries stable releases only. Choose the stable channel for its update command.": "В winget есть только стабильные выпуски. Выберите стабильный канал, чтобы получить команду обновления.",
   "winget package %1\nPortable Windows build %2": "Пакет winget %1\nПереносимая сборка для Windows %2",
-  "winget: %1": "winget: %1",
   "worktree %1": "рабочее дерево %1",
   "you": "вы",
   "you accept": "принимаете вы",
