@@ -94,7 +94,8 @@ object NativeSendOutcome {
         val index=state.outgoing.indices.singleOrNull { state.outgoing[it].requestId==captured.requestId } ?: return state
         val row=state.outgoing[index]
         if(row.status !in setOf("sending","uncertain") || row.target!=captured.target || row.createdAt!=captured.createdAt || row.nativeSendIntent!=intent || !intent.matches(row)) return state
-        val next=if(result.string("status")=="not_offered") row.copy(status="failed",nativeSendProof=proof,error="The computer rejected this message. Review it before trying again.")
+        val next=if(result.string("status")=="not_offered") row.copy(status="failed",nativeSendProof=proof,
+                error=result.string("reason").ifBlank { "The computer rejected this message. Review it before trying again." })
             else row.copy(status="submitted",nativeSendProof=proof,submittedAt=result.getDouble("submitted_at"),submittedText=row.text,error="")
         return state.copy(outgoing=state.outgoing.mapIndexed { at,current -> if(at==index) next else current })
     }

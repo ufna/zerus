@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -87,6 +88,7 @@ private val TerminalForeground = Color(0xFFD4D4D4)
         var fontSize by remember(target) { mutableFloatStateOf(13f) }
         var dangerousKey by remember(target) { mutableStateOf<Pair<String,String>?>(null) }
         var reviewInput by remember(target) { mutableStateOf<SessionAction?>(null) }
+        var dismissOutgoingWarning by remember(target) { mutableStateOf<OutgoingMessage?>(null) }
         var link by remember(target) { mutableStateOf<TerminalLinkChoice?>(null) }
         var now by remember(target) { mutableLongStateOf(SystemClock.elapsedRealtime()) }
         val current = model.terminalState?.takeIf { it.string("name") == target.session && it.string("run_id") == target.run && it.string("conversation_id") == target.conversation }
@@ -157,6 +159,12 @@ private val TerminalForeground = Color(0xFFD4D4D4)
                         if(action.status in listOf("failed","reviewed")) TextButton(onClick = { model.restoreTerminalInput(action) }) { Text("Restore input") }
                     }
                 }
+                model.outgoing.lastOrNull { it.belongsTo(target) && it.blocksSending }?.takeIf { it.status == "uncertain" }?.let { message ->
+                    TerminalOutgoingRecovery(message,
+                        checking = "outgoing:${message.requestId}" in model.receiptFlights,
+                        dismissing = "dismiss:${message.requestId}" in model.receiptFlights,
+                        onCheck = { model.checkOutgoing(message) }, onDismiss = { dismissOutgoingWarning = message })
+                }
                 TerminalInputEditor(model,target,selecting,fresh) { key ->
                     if(key in listOf("C-c","C-d")) current?.string("terminal_binding_id")?.let { dangerousKey = key to it }
                     else model.terminalInput(target,key = key)
@@ -183,6 +191,32 @@ private val TerminalForeground = Color(0xFFD4D4D4)
                 dangerousKey = null
             },enabled = model.terminalState?.string("terminal_binding_id") == binding && model.terminalReason(target).isBlank()) { Text("Send $key") } },
             dismissButton = { TextButton(onClick = { dangerousKey = null }) { Text("Cancel") } }) }
+        dismissOutgoingWarning?.let { message -> ZerusAlertDialog(onDismissRequest = { dismissOutgoingWarning = null },
+            title = { Text("Dismiss delivery warning?") },
+            text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("This only removes the warning from this phone. Delivery may still be confirmed later.")
+                val preview = message.text.ifBlank { message.attachments.joinToString { it.name } }
+                if (preview.isNotBlank()) SelectionContainer { Text(preview, maxLines = 6, overflow = TextOverflow.Ellipsis) }
+            } },
+            confirmButton = { TextButton(onClick = { model.dismissOutgoing(message); dismissOutgoingWarning = null },
+                enabled = "dismiss:${message.requestId}" !in model.receiptFlights) { Text("Dismiss warning") } },
+            dismissButton = { TextButton(onClick = { dismissOutgoingWarning = null }) { Text("Cancel") } }) }
+    }
+}
+
+/** Recovery actions for the exact saved outgoing original that blocks the live parent Terminal. */
+@Composable private fun TerminalOutgoingRecovery(message: OutgoingMessage, checking: Boolean, dismissing: Boolean, onCheck: () -> Unit, onDismiss: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Previous message not confirmed", color = MaterialTheme.colorScheme.tertiary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            Text(message.text.ifBlank { message.attachments.joinToString { it.name } }, maxLines = 1,
+                overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onCheck, enabled = !checking && !dismissing) { Text("Check delivery") }
+                TextButton(onClick = onDismiss, enabled = !dismissing && !checking) { Text("Dismiss") }
+            }
+        }
     }
 }
 
