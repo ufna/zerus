@@ -212,6 +212,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
   const [starting, setStarting] = createSignal(false);
   /** The disabled Send's hint (Qt shows the status as a tooltip at the editor). */
   const [hint, setHint] = createSignal<string | undefined>();
+  const [queuedAnnouncement, setQueuedAnnouncement] = createSignal<number>();
   let rev = 0;
   let epoch = 0;
   let dirty = false;
@@ -407,7 +408,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
       case "accepted":
         if (opening() > 0 || r.view.handle !== h) break;
         if (r.view.text_epoch > epoch) apply(r.view);
-        if (r.waiting && r.view.text_epoch === epoch) showHint(tr("Queued in Zerus."));
+        if (r.waiting) setQueuedAnnouncement(h);
         break;
       case "cold": setDialog({ kind: "cold", token: r.token, prompt: r.prompt }); break;
       case "start": setDialog({ kind: "start", token: r.token, question: r.question }); break;
@@ -482,6 +483,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     }
     hintTimer?.();
     setHint(undefined);
+    setQueuedAnnouncement(undefined);
     // Locked before the flush awaits, so a second Enter meanwhile sends nothing.
     calling.add(h);
     let r: SendReply;
@@ -512,7 +514,8 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   return {
     view, text, selection, dialog, locked, operationLocked, ordinaryInputHeld, sendEnabled, pushEnabled, queue, held: heldNow, hint,
-    waitingMessages, removeWaiting, removedWaiting,
+    waitingMessages, removeWaiting, removedWaiting, opening: () => opening() > 0,
+    queuedAnnouncement: () => queuedAnnouncement() !== undefined && queuedAnnouncement() === handle(),
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),
     apply, receive,

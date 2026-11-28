@@ -230,12 +230,17 @@ export interface LocalItem {
   /** Retry and Delete for a definite failure; Check and Delete for an uncertain one. */
   actions: ("retry" | "inspect" | "delete")[];
   inspectLabel: string;
+  /** Terminal-only local rows are actionable only on their original live target. */
+  terminalTarget?: { run: string; conversation: string };
   /** Per file: whether it can be opened (Qt's request_id or local_path rule). */
   available: boolean[];
 }
 
 /** The open composer that owns the exact queued request's actions. */
-export type OutboxItem = import("../../types").WaitingMessage & { handle: number };
+export type OutboxItem = import("../../types").WaitingMessage & {
+  handle: number;
+  blockedBy?: { requestId: string; preview: string };
+};
 
 export interface InboxItem {
   state: "queued" | "not_delivered";

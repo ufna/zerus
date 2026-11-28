@@ -14,7 +14,6 @@ use zerus_client_core::{Action, Outcome, Target, ViewRow};
 
 const CHECK_INTERVAL: f64 = 3.0;
 const BUSY: &str = "The draft could not be queued. Its text is still in the editor.";
-const TERMINAL_SUBMITTED: &str = "Submitted to terminal";
 pub(super) fn reserved(c: &Composer) -> bool {
     c.outbox
         .first()
@@ -219,14 +218,6 @@ fn provider_queue(agent: &str) -> bool {
 }
 
 impl Context {
-    pub(super) fn submission_notice(&self, composer: &Composer) -> Option<&'static str> {
-        let (submission, notice) = composer.last_submission.as_ref()?;
-        (composer.outbox.is_empty()
-            && !self.awaiting_outbox_details
-            && self.details.as_deref().is_some_and(|details| self.exact_outbox_details(details))
-            && *submission == target(self)).then_some(*notice)
-    }
-
     pub(super) fn outbox_candidate(&self) -> bool {
         self.session.subagent.is_none()
             && !self.session.archived()
@@ -908,11 +899,6 @@ impl Composers {
                     zerus_client_core::actions::claude_outbox_prompt(receipt).is_none()
                 }));
         let codex_queued = exact && receipt.is_some_and(zerus_client_core::actions::codex_outbox_submitted);
-        let notice = if codex_queued {
-            Some(zerus_client_core::source!("Queued in Codex"))
-        } else {
-            terminal_only.then_some(TERMINAL_SUBMITTED)
-        };
         let native_accepted = exact && receipt.is_some_and(|receipt| {
             receipt["kimi_outbox"] == true || (receipt["claude_outbox"] == true && receipt["native"] == "queue")
         });
@@ -967,7 +953,6 @@ impl Composers {
                     c.outbox = entries;
                     // Confirmed queue admission frees the next FIFO head immediately.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
-                    c.last_submission = notice.map(|text| (entry.target.clone(), text));
                     if terminal_only {
                         c.terminal_only_outbox.push_back((
                             entry.target.clone(),

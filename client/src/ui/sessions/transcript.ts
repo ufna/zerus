@@ -14,7 +14,8 @@ import { earlierInputRefusal } from "./send-error";
 const LOCAL_FILES = Symbol("local attachment presentation");
 // Likewise only the service's own route read supplies a route line, never a journal event.
 const ROUTE = Symbol("question route line");
-type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"]; [ROUTE]?: RouteLine };
+const TERMINAL_ACK = Symbol("known transport-only acknowledgement");
+type DisplayEvent = ActivityEvent & { [LOCAL_FILES]?: LocalMessage["attachments"]; [ROUTE]?: RouteLine; [TERMINAL_ACK]?: true };
 const routeOf = (e: ActivityEvent) => (e as DisplayEvent)[ROUTE];
 
 // Journal events as the Activity items of the approved design, after the
@@ -389,6 +390,7 @@ export function localItem(row: LocalMessage, summary?: Record<string, unknown>):
     actions,
     inspectLabel: summary?.backend === "agy" ? tr("Check Activity")
       : summary?.native_ui_available === true ? tr("Check native UI") : tr("Check Terminal"),
+    terminalTarget: row.source === "zerus_terminal_status" ? { run: row.run_id, conversation: row.conversation_id } : undefined,
     available: row.attachments.map(localFileAvailable),
   };
 }
@@ -847,7 +849,7 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
       if (role === "user" && agyOffer(e)) {
         receiptUnconfirmed = delivery !== "submitted";
         receipt = receiptUnconfirmed ? tr("Delivery not confirmed") : tr("Sent");
-      } else if (role === "user" && e.source === "hgs_delivery" && e.claude_queued_outbox === true) {
+      } else if (role === "user" && e.source === "hgs_delivery" && (e.claude_queued_outbox === true || (e as DisplayEvent)[TERMINAL_ACK])) {
         receipt = tr("Submitted to terminal");
       } else if (delivery === "queued" || delivery === "not_delivered") {
         receipt = delivery === "queued" ? tr("Queued") : tr("Not delivered");
@@ -907,12 +909,13 @@ function transcriptItems(events: readonly ActivityEvent[], summary?: Record<stri
   return items;
 }
 
-type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id">;
+type OutboxIdentity = Pick<OutboxItem, "run_id" | "conversation_id"> & { terminalOnly?: "queue" | "local" };
 interface OriginalChanges {
   removed?: readonly string[];
   removedNative?: readonly string[];
   terminalOnly?: readonly TerminalOutboxReceipt[];
-  composerOnly?: readonly string[];
+  /** Selected live target, independent of the history frame being painted. */
+  terminalScope?: OutboxIdentity;
 }
 
 /** Only a bound receipt can take over a queued row's display identity. */
@@ -951,9 +954,13 @@ function bindOriginals(events: readonly ActivityEvent[], targets: ReadonlyMap<st
   }
   const adopted = new Map<number, string>();
   const hidden = new Set<number>();
+  const terminalCopies = new Set<number>();
   for (const [request, indices] of matches) {
     const native = indices.filter(i => events[i].source !== "hgs_delivery");
     const candidates = native.length ? native : indices;
+    if (targets.get(request)?.terminalOnly) {
+      for (const index of indices) if (events[index].source === "hgs_delivery") terminalCopies.add(index);
+    }
     if (new Set(candidates.map(i => eventKey(events[i]))).size !== 1) {
       conflicts.add(`local-${request}`);
       continue;
@@ -962,8 +969,10 @@ function bindOriginals(events: readonly ActivityEvent[], targets: ReadonlyMap<st
     for (const index of indices) if (index !== candidates[0]) hidden.add(index);
   }
   return events.flatMap((event, index) => {
+    if (hidden.has(index)) return [];
     const id = adopted.get(index);
-    return hidden.has(index) ? [] : [id ? { ...event, activity_display_key: id } : event];
+    const copy: DisplayEvent = terminalCopies.has(index) ? { ...event, [TERMINAL_ACK]: true } : event;
+    return [id ? { ...copy, activity_display_key: id } : copy];
   });
 }
 
@@ -1002,7 +1011,7 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
   const projected = new Map<string, ActivityItem>();
   const ordinary: TranscriptItem[] = [];
   const insertion = new Map<string, number>();
-  const queues = new Set<string>();
+  const originals = new Map<string, ActivityItem>();
   for (const item of items) {
     if (!outgoing(item) || (!active.has(item.id) && !positions.has(item.id))) {
       ordinary.push(item);
@@ -1010,17 +1019,28 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
       const previous = projected.get(item.id);
       if (!previous || evidenceOrder(item) > evidenceOrder(previous)) projected.set(item.id, item);
       if (!insertion.has(item.id) || item.outbox || terminalReceipt(item)) insertion.set(item.id, ordinary.length);
-      if (item.outbox || terminalReceipt(item)) queues.add(item.id);
+      if (item.outbox || terminalReceipt(item)) originals.set(item.id, item);
     }
   }
-  for (const [id, at] of active) {
+  // An undated legacy head has no wall-clock anchor. Place it with the
+  // next dated FIFO entry rather than after that entry and newer history.
+  const nextQueueTime = new Map<string, number>();
+  let nextDated = 0;
+  for (const [id, row] of [...originals].reverse()) {
+    if (!row.outbox) continue;
+    const at = active.get(id) ?? 0;
+    if (at > 0) nextDated = at;
+    else if (nextDated > 0) nextQueueTime.set(id, nextDated);
+  }
+  for (const [id, queuedAt] of active) {
+    const at = nextQueueTime.get(id) ?? queuedAt;
     const item = projected.get(id);
     if (item && !positions.has(id)) {
       let index = insertion.get(id) ?? ordinary.length;
       let awaitingHistory = !ordinary.length;
       // A restored queue can arrive after a newer reply or a context placeholder.
       // Use provider timestamps for placement; they never bind a receipt.
-      if (queues.has(id) && at > 0) {
+      if (originals.has(id) && at > 0) {
         const prior = ordinary.findLastIndex(row => {
           const time = times.get(row.id) ?? 0;
           return time > 0 && time <= at;
@@ -1030,7 +1050,9 @@ function placeOriginals(positions: Map<string, OriginalRow>, items: readonly Tra
         if (awaitingHistory && ordinary[0]?.kind === "context") index = 1;
       }
       const anchors = ordinary.slice(Math.max(0, index - 8), index).reverse().map(item => item.id);
-      positions.set(id, { item, anchors, index, at, awaitingHistory });
+      // Seed the original time and file metadata even if the exact journal
+      // copy was already present on the first frame.
+      positions.set(id, { item: originals.get(id) ?? item, anchors, index, at, awaitingHistory });
     }
   }
   const indexOf = new Map(ordinary.map((item, index) => [item.id, index]));
@@ -1096,19 +1118,27 @@ export function createTranscriptProjection() {
       const nativeDiscarded = new Set(changes.removedNative);
       local = local.filter(row => !discarded.has(row.id));
       given = given.filter(event => !nativeDiscarded.has(opencodePromptId(event) ?? ""));
+      const scope = changes.terminalScope;
+      if (scope) {
+        const foreign = (row: OutboxIdentity) => row.run_id !== scope.run_id || row.conversation_id !== scope.conversation_id;
+        for (const [id, row] of recent) if (row.source === "zerus_terminal_status" && foreign(row)) discarded.add(id);
+        for (const [id, row] of outboxRequests) if (row.terminalOnly && foreign(row)) discarded.add(id);
+      }
       for (const id of discarded) recent.delete(id);
       const sent = new Set(local.filter(row => row.status === "sent").map(row => row.id));
       const queued = outbox.filter(row => !sent.has(row.request_id) && !discarded.has(row.request_id));
-      const terminal = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
+      const terminalOnly = (changes.terminalOnly ?? []).filter(row => !discarded.has(row.request_id)
         && !!row.run_id && !!row.conversation_id);
-      const terminalOnly = terminal.filter(row => !row.delivery_in_composer);
-      for (const row of terminalOnly) outboxRequests.set(row.request_id, row);
       for (const item of outbox) if (!item.target_changed && !discarded.has(item.request_id)) {
         outboxRequests.set(item.request_id, { run_id: item.run_id, conversation_id: item.conversation_id });
       }
       for (const row of local) if (row.source !== "hgs_voice" && (row.status !== "error" || row.uncertain)) {
-        outboxRequests.set(row.id, { run_id: row.run_id, conversation_id: row.conversation_id });
+        outboxRequests.set(row.id, { run_id: row.run_id, conversation_id: row.conversation_id,
+          terminalOnly: row.source === "zerus_terminal_status" ? "local" : undefined });
       }
+      for (const row of terminalOnly) outboxRequests.set(row.request_id, {
+        run_id: row.run_id, conversation_id: row.conversation_id, terminalOnly: "queue",
+      });
       for (const id of discarded) outboxRequests.delete(id);
       const live = new Set([...outbox.map(row => row.request_id), ...local.map(row => row.id),
         ...terminalOnly.map(row => row.request_id)]);
@@ -1129,8 +1159,26 @@ export function createTranscriptProjection() {
       // journal event. Keep that one row through the handoff, without actions.
       const waiting = missing.filter(row => !bound.has(`local-${row.id}`));
       const bindingOnly = missing.filter(row => bound.has(`local-${row.id}`));
-      const exact = new Set([...outboxRequests.keys(), ...recent.keys(), ...terminal.map(row => row.request_id), ...changes.composerOnly ?? []]);
-      const provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary, undefined, exact));
+      const exact = new Set([...outboxRequests.keys(), ...recent.keys()]);
+      let provider = agyDelivery(mergeAttachmentMessages(mergeProvider(mergeMessages(given, summary), summary), summary, undefined, exact));
+      // The direct terminal row can retire against an exact attachment receipt
+      // before any matching prompt event appears in the journal window.
+      const attachmentPage = Array.isArray(summary?.attachment_messages) ? summary.attachment_messages as ActivityEvent[] : [];
+      if (attachmentPage.length) {
+        const recorded = new Set(provider.flatMap(event => {
+          const id = outboxReceiptId(event), target = id && outboxRequests.get(id);
+          return id && target && exactOutboxScope(event, target, summary) ? [id] : [];
+        }));
+        const copies = new Map<string, ActivityEvent | undefined>();
+        for (const event of attachmentPage) {
+          const id = outboxReceiptId(event), target = id && outboxRequests.get(id);
+          if (!id || !target || target.terminalOnly !== "local" || recorded.has(id)
+            || event.source !== "hgs_delivery" || !exactOutboxScope(event, target, summary)
+            || !event.attachments?.length || !receiptFiles(id, event.attachments)) continue;
+          copies.set(id, copies.has(id) ? undefined : event);
+        }
+        if (copies.size) provider = [...provider, ...[...copies.values()].filter(event => event !== undefined)];
+      }
       const conflicts = new Set<string>();
       const keyFor = (event: ActivityEvent, key: string) =>
         JSON.stringify([event.run_id ?? summary?.run_id, event.conversation_id ?? summary?.conversation_id, key]);

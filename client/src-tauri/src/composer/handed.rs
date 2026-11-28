@@ -594,7 +594,7 @@ impl Composers {
                     composer.uncertain = false;
                     composer.error = false;
                     composer.checkpoint = None;
-                    composer.notice = "Submitted to terminal".into();
+                    composer.notice.clear();
                     // Only the unchanged draft was the message.
                     if send::message_digest(&composer.draft.text, &composer.draft.attachments)
                         == plan.message_sha256()

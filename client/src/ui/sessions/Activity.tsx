@@ -443,23 +443,34 @@ function AttachmentCard(props: { file: ItemAttachment; scope?: AttachmentScope }
 // (ActivityView.cpp:1059-1068, SessionsWindow.cpp messageAction 4470-4527).
 
 /** The row whose Delete waits for its confirmation, and its Delete button, which the focus returns to on Cancel. */
-const [deleting, setDeleting] = createSignal<{ id: string; handle: number; from: HTMLElement }>();
+const [deleting, setDeleting] = createSignal<{ local: LocalItem; handle: number; from: HTMLElement }>();
 
-export function LocalActions(props: { local: LocalItem }) {
+function localActionCurrent(local: LocalItem, handle: number | undefined) {
+  const view = composer.view(), target = local.terminalTarget;
+  if (handle === undefined || view?.handle !== handle) return false;
+  if (!target) return true;
+  const row = selected();
+  return !!row && !!target.run && activity.target()?.id === row.key && !subagentOpen()
+    && row.runId === target.run && (row.conversationId ?? "") === target.conversation
+    && localRows(activity, row).some(message => message.id === local.id
+      && message.source === "zerus_terminal_status" && message.status === "error");
+}
+
+function LocalActions(props: { local: LocalItem }) {
   // Retry stays focusable while off and says why (Rust refuses it while the composer is busy).
   const reason = (action: LocalItem["actions"][number]) => (action === "retry" ? retryReason(composer.view(), composer.operationLocked()) : "");
+  const handle = composer.view()?.handle;
+  const current = () => localActionCurrent(props.local, handle);
   const run = (action: LocalItem["actions"][number], from: HTMLElement) => {
-    const id = props.local.id;
-    if (reason(action)) return;
-    if (action === "retry") void composer.localRetry(id);
-    else if (action === "delete") {
-      const handle = composer.view()?.handle;
-      if (handle !== undefined) setDeleting({ id, handle, from });
-    }
+    const local = props.local;
+    if (handle === undefined || !current() || reason(action)) return;
+    if (action === "retry") void composer.localRetry(local.id);
+    else if (action === "delete") setDeleting({ local, handle, from });
     else {
       const showNativeUi = nativeRoute(selected());
       const followed = activity.target();
-      void composer.localInspect(id).then((routed) => {
+      void composer.localInspect(local.id).then((routed) => {
+        if (!localActionCurrent(local, handle)) return;
         if (routed?.kind === "activity") {
           if (activity.refresh(followed, routed.run_id, routed.conversation_id)) {
             notify("info", tr("Refreshing Activity. Check the recorded messages before retrying."));
@@ -478,12 +489,14 @@ export function LocalActions(props: { local: LocalItem }) {
     ? (earlierInputRefusal(props.local.error) ? tr("Retry this message") : tr("Retry"))
     : action === "delete" ? tr("Delete") : props.local.inspectLabel);
   return (
-    <div class="act-local-actions">
-      <For each={props.local.actions}>{(action) => (
-        <button type="button" class="btn small" aria-disabled={reason(action) ? "true" : undefined} title={reason(action) || undefined}
-          onClick={(e) => run(action, e.currentTarget)}>{label(action)}</button>
-      )}</For>
-    </div>
+    <Show when={current()}>
+      <div class="act-local-actions">
+        <For each={props.local.actions}>{(action) => (
+          <button type="button" class="btn small" aria-disabled={reason(action) ? "true" : undefined} title={reason(action) || undefined}
+            onClick={(e) => run(action, e.currentTarget)}>{label(action)}</button>
+        )}</For>
+      </div>
+    </Show>
   );
 }
 
@@ -493,7 +506,7 @@ function LocalDeleteDialog() {
   createEffect(() => {
     if (!el) return;
     const original = deleting();
-    if (!original || original.handle !== composer.view()?.handle) {
+    if (!original || !localActionCurrent(original.local, original.handle)) {
       if (original) setDeleting(undefined);
       if (el.open) el.close();
       return;
@@ -511,7 +524,7 @@ function LocalDeleteDialog() {
   const confirm = () => {
     const original = deleting();
     setDeleting(undefined);
-    if (original && original.handle === composer.view()?.handle) void composer.localDelete(original.id);
+    if (original && localActionCurrent(original.local, original.handle)) void composer.localDelete(original.local.id);
     focusTranscript();
   };
   return (
@@ -672,7 +685,8 @@ function Item(props: {
       <ToolRow item={it} open={open()} onToggle={toggleOpen} shown={(index) => props.shown?.(index)}
         onMore={(index) => props.onMore?.(index)} process={props.process} />
     }>
-      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} classList={{ inherited: !!it.inherited, "act-outbox": !!it.outbox }}>
+      <article class={`act-msg k-${it.kind}`} id={`item-${it.id}`} data-blocked-by-request={it.outbox?.blockedBy?.requestId}
+        classList={{ inherited: !!it.inherited, "act-outbox": !!it.outbox }}>
         <header>
           <b>{it.label ?? (it.kind === "user" ? tr("You") : it.kind === "agent" ? tr("Agent") : it.sender ?? "Zerus")}</b>
           <Show when={it.outbox} fallback={
@@ -761,7 +775,9 @@ export function localRows(source: ActivitySource, s: Session | undefined): reado
   const key = draftKey({ computer: s.computer, key: s.catalogKey, name: s.name, archive_id: s.state === "archived" ? s.archiveId ?? null : null,
     session_id: s.sessionId ?? null });
   // A held "Compact and continue" message shows as its pending entry instead (zerus-pabah).
-  return v.key === key ? withoutHeld(v.local, v.held).filter(row => row.source !== "zerus_terminal_status") : [];
+  return v.key === key ? withoutHeld(v.local, v.held).filter(row => row.source !== "zerus_terminal_status"
+    || (v.loaded && !composer.opening() && !v.subagent && s.state !== "archived" && source.target()?.id === s.key
+      && row.run_id === s.runId && row.conversation_id === (s.conversationId ?? ""))) : [];
 }
 
 /** Scrolling near the top reads the previous page, unless one is loading or none is left. */
@@ -813,7 +829,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const local = createMemo(() => localRows(source(), s()), undefined, { equals: (a, b) => a === b || (a.length === 0 && b.length === 0) });
   const mainComposer = createMemo(() => {
     const row = s(), view = composer.view();
-    if (!row || !view?.loaded || source().readOnly || row.state === "archived" || subagentOpen()
+    if (!row || !view?.loaded || composer.opening() || source().readOnly || row.state === "archived" || subagentOpen()
       || view.subagent || source().target()?.id !== row.key) return undefined;
     const key = draftKey({ computer: row.computer, key: row.catalogKey, name: row.name, session_id: row.sessionId ?? null, archive_id: null });
     return view.key === key ? view : undefined;
@@ -821,11 +837,15 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const outbox = createMemo((): readonly OutboxItem[] => {
     const view = mainComposer(), row = s();
     if (!view || !row) return [];
-    return composer.waitingMessages().filter(item => !item.delivery_in_composer).map((item) => ({
+    const queue = composer.waitingMessages();
+    const head = queue[0];
+    return queue.map((item, index) => ({
       ...item,
       handle: view.handle,
-      can_check_terminal: item.can_check_terminal === true && !!item.run_id && !!item.conversation_id
+      can_check_terminal: item.can_check_terminal === true && !item.target_changed && !!item.run_id && !!item.conversation_id
         && item.run_id === row.runId && item.conversation_id === row.conversationId,
+      blockedBy: index > 0 && item.state === "waiting" && head?.state === "unknown"
+        ? { requestId: head.request_id, preview: head.preview } : undefined,
     }));
   });
   const project = createActivityProjections();
@@ -849,10 +869,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
       {
         removed: [...(queueRemoval?.key === composerView?.key ? queueRemoval?.ids ?? [] : []), ...(removed?.requests ?? [])],
         removedNative: removed?.native,
-        composerOnly: composerView && [
-          ...composer.waitingMessages().filter(row => row.delivery_in_composer).map(row => row.request_id),
-          ...composerView.local.filter(row => row.source === "zerus_terminal_status").map(row => row.id),
-        ],
+        terminalScope: { run_id: s()?.runId, conversation_id: s()?.conversationId ?? "" },
         terminalOnly: composerView?.terminal_only_outbox?.filter(receipt =>
           receipt.run_id === s()?.runId && receipt.conversation_id === s()?.conversationId),
       });
@@ -1272,7 +1289,10 @@ export function ActivityView(props: { source?: ActivitySource }) {
     });
     onCleanup(() => cancelAnimationFrame(frame));
   });
-  createEffect(on([local, outbox], ([rows, queued]) => {
+  createEffect(on([local, outbox, mainComposer], ([rows, queued, primary]) => {
+    // An opening main composer has no queue snapshot yet. Its first loaded
+    // snapshot is a baseline, not a new send that can dismiss a search hit.
+    if (!subagentOpen() && !primary) { sendIds = undefined; return; }
     const sends = newLocalSends(sendIds, [...rows.map((row) => row.id), ...queued.map((row) => row.request_id)]);
     sendIds = sends.baseline;
     if (sends.added.length) jumpToLatest();
@@ -1329,6 +1349,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     <ActivitySession.Provider value={fileSession}>
     <ActivityLayoutHeld.Provider value={layoutHeld}>
     <div class="activity" style={{ position: "relative" }}>
+      <span class="sr-only" role="status">{mainComposer() && composer.queuedAnnouncement() ? tr("Queued in Zerus") : ""}</span>
       <Show when={!placed()}>
         <div class="act-col" style={{ position: "absolute", inset: "0", "min-height": "0", "pointer-events": "none", "z-index": "1" }} role="status">
           <div class="act-label eyebrow">{tr("Recorded activity — messages and tool excerpts")}</div>

@@ -927,9 +927,18 @@ it("preserves an original with transport-only acknowledgement and leaves unrelat
   expect(projection.build([before, unbound], scope, [], [], [], accepted)).toMatchObject([
     { id: "s1" }, { id: "local-first", body: "same", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
   ]);
-  const proved = { ...unbound, source: "hgs_delivery", message_id: outbox.request_id };
-  expect(projection.build([before, proved], scope, [], [], [], accepted)).toMatchObject([
-    { id: "s1" }, { id: "local-first", receipt: "Sent" },
+  const transport = { ...unbound, seq: 3, source: "hgs_delivery", message_id: outbox.request_id };
+  expect(projection.build([before, unbound, transport], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Submitted to terminal" }, { id: "s2", receipt: "Sent" },
+  ]);
+  const bound = { ...unbound, seq: 4, claude_outbox_request_id: outbox.request_id, claude_prompt_id: "exact-prompt" };
+  const original = () => ({ id: "local-first", receipt: "Submitted to terminal" });
+  const foreign = { ...bound, conversation_id: "successor" };
+  expect(projection.build([before, unbound, transport, foreign], scope, [], [], [], accepted)[1]).toMatchObject(original());
+  const conflict = { ...bound, seq: 5, claude_prompt_id: "conflicting-prompt" };
+  expect(projection.build([before, unbound, transport, bound, conflict], scope, [], [], [], accepted)[1]).toMatchObject(original());
+  expect(projection.build([before, unbound, transport, bound], scope, [], [], [], accepted)).toMatchObject([
+    { id: "s1" }, { id: "local-first", receipt: "Sent" }, { id: "s2", receipt: "Sent" },
   ]);
 });
 
@@ -942,19 +951,54 @@ it("keeps the full bounded page of hydrated transport acknowledgements eligible 
     seq: 42, detail: "equal", at: 201 };
   const rows = createTranscriptProjection().build([exact], scope, [], [], [], { terminalOnly });
   expect(rows).toHaveLength(64);
-  expect(rows[0]).toMatchObject({ id: "local-receipt-0", receipt: "Sent" });
+  expect(rows[0]).toMatchObject({ id: "local-receipt-0", receipt: "Submitted to terminal" });
   expect(rows[1]).toMatchObject({ id: "local-receipt-1", receipt: "Submitted to terminal" });
 });
 
-it("uses only native articles for a composer-only acknowledgement and independent equal input", () => {
+it("projects a direct terminal acknowledgement from the exact attachment receipt after the local row retires", () => {
+  const projection = createTranscriptProjection();
+  const scope = { run_id: "r", conversation_id: "c" };
+  const file = { request_id: "original", index: 0, name: "report.txt", mime: "text/plain", bytes: 3, reference: "" };
+  const original = local("sending", false, { ...scope, id: "original", source: "zerus_terminal_status", attachments: [file] });
+  const manual = { ...scope, type: "UserPromptSubmit", seq: 42, detail: original.text, at: original.submitted_at + 2 };
+  projection.build([manual], scope, [original]);
+  const copy = { ...scope, type: "UserPromptSubmit", source: "hgs_delivery", message_id: original.id,
+    detail: original.text, submitted_text: original.text, attachments: [file], at: original.submitted_at + 1 };
+  expect(projection.build([manual], { ...scope, attachment_messages: [copy] })).toMatchObject([
+    { id: "local-original", body: original.text, receipt: "Submitted to terminal", attachments: [{ name: file.name }] },
+    { id: "s42", receipt: "Sent" },
+  ]);
+});
+
+it("keeps an undated FIFO head ahead of a dated follower when Activity hydrates with newer history", () => {
+  const scope = { run_id: "r", conversation_id: "c" };
+  const head = { ...scope, handle: 1, request_id: "head", state: "unknown", preview: "first", delivery_in_composer: true } as const;
+  const follower = { ...head, request_id: "follower", state: "waiting", preview: "second", queued_at: 200 } as const;
+  const recent = { ...scope, type: "AgentMessage", seq: 42, detail: "newer", at: 250 };
+  expect(createTranscriptProjection().build([recent], scope, [], [], [head, follower]).map(row => row.id))
+    .toEqual(["local-head", "local-follower", "s42"]);
+});
+
+it("moves the terminal acknowledgement without consuming independent equal native input", () => {
   const projection = createTranscriptProjection();
   const scope = { run_id: "run", conversation_id: "conversation" };
   const terminalOnly = [{ ...scope, request_id: "original", preview: "equal", queued_at: 200,
     attachments: [{ name: "report.txt" }], delivery_in_composer: true }];
   const native = { ...scope, type: "UserPromptSubmit", seq: 1, detail: "equal", at: 201 };
-  expect(projection.build([], scope, [], [], [], { terminalOnly })).toEqual([]);
-  expect(projection.build([native], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }]);
+  const original = { id: "local-original", body: "equal", receipt: "Submitted to terminal",
+    attachments: [{ name: "report.txt" }] };
+  expect(projection.build([], scope, [], [], [], { terminalOnly })).toMatchObject([original]);
+  expect(projection.build([native], scope, [], [], [], { terminalOnly })).toMatchObject([original, { id: "s1" }]);
   const manual = { ...native, seq: 2, at: 204 };
   projection.reset();
-  expect(projection.build([native, manual], scope, [], [], [], { terminalOnly })).toMatchObject([{ id: "s1" }, { id: "s2" }]);
+  const rows = projection.build([native, manual], scope, [], [], [], { terminalOnly });
+  expect(rows).toMatchObject([original, { id: "s1" }, { id: "s2" }]);
+  expect(rows.slice(1).every(row => !("attachments" in row) || !row.attachments?.length)).toBe(true);
+
+  const copy = { ...native, seq: 3, at: 202, source: "hgs_delivery", message_id: "original" };
+  projection.reset();
+  const hydrated = projection.build([native, copy, manual], scope, [], [], [], { terminalOnly });
+  expect(hydrated).toMatchObject([original, { id: "s1" }, { id: "s2" }]);
+  expect((hydrated[0] as ActivityItem).at).toBe((rows[0] as ActivityItem).at);
+  expect(projection.build([native, copy, manual], scope)).toMatchObject([original, { id: "s1" }, { id: "s2" }]);
 });

@@ -8,7 +8,7 @@ import { pageHidden } from "../../store/visibility";
 import { flag } from "../../store/settings";
 import { subagentOpen } from "../../store/ui";
 import { Icon } from "../lib/icons";
-import { composer, draftKey } from "../../store/composer";
+import { composer } from "../../store/composer";
 import { suggestions, suggestedInput } from "../../store/suggestions";
 import { contentScale, selected } from "../../store/ui";
 import { computerFresh, computerOffline } from "../../store/catalog";
@@ -21,7 +21,6 @@ import { snapshotOf } from "./actions-ui";
 import { markReadChip, runMarkRead } from "./mark-entries";
 import { ModelSettingsButton } from "./ModelSettings";
 import { DeliveryHistoryHint } from "./DeliveryHistoryHint";
-import { ComposerDeliveryStatus } from "./ComposerDeliveryStatus";
 import { AttachmentsChip } from "./Attachments";
 import { RecoveryChip } from "./RecoveryChip";
 import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
@@ -124,13 +123,6 @@ export function Composer() {
   const voice = createVoice(voicePort);
   onCleanup(() => { void voice.close(); });
   const child = () => !!v()?.subagent;
-  const deliveryView = () => {
-    const row = s(), view = v();
-    if (!row || !view?.loaded || row.state === "archived" || view.subagent || subagentOpen()) return undefined;
-    const key = draftKey({ computer: row.computer, name: row.name, key: row.catalogKey,
-      session_id: row.sessionId ?? null, archive_id: null });
-    return key === view.key ? view : undefined;
-  };
   // Reference an existing file (zerus-5wmh.13.5): bound to the draft it opened on.
   const [reference, setReference] = createSignal<DraftBinding & { target: ReferenceTarget }>();
   const openReference = () => {
@@ -336,7 +328,6 @@ export function Composer() {
         onBlur={() => { void composer.flush(); }} onKeyDown={onKey} onBeforeInput={continueList} onPaste={onPaste} />
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <DeliveryHistoryHint view={v()} text={composer.text()} shown={input()} />
-      <ComposerDeliveryStatus view={deliveryView()} run={s()?.runId} conversation={s()?.conversationId} focus={() => editor.focus()} />
       <Show when={input() && status().multiline}>
         <div class="cmp-draft-status" classList={{ error: status().error, dismissible: !!status().compactionNoticeId }}>
           <span role="status">{status().text}</span>

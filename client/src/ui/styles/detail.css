@@ -355,11 +355,6 @@
   .file-reference-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .file-reference-row .field { flex: 1; min-width: 0; }
   .file-reference .dlg-detail.error { color: var(--z-color-danger); }
-  .cmp-delivery { font-size: var(--fs-xs); color: var(--z-color-text-2); }
-  .cmp-delivery > summary { cursor: pointer; }
-  .cmp-delivery-list { max-height: 11rem; overflow: auto; margin: 4px 0; padding: 0; list-style: none; }
-  .cmp-delivery-list > li { padding: 6px 4px; border-top: 1px solid var(--z-color-border); }
-  .cmp-delivery-list p { margin: 4px 0; }
 
   .cmp-status { font-size: var(--fs-xs); color: var(--z-color-dim); }
   .cmp-model { gap: 4px; max-width: 330px; font-size: var(--fs-xs); }
