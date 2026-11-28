@@ -2035,6 +2035,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         composer::saved::draft_capture_retry,
         composer::send::send_message,
         composer::outbox::composer_remove_waiting,
+        composer::outbox::composer_check_delivery,
         composer::queue::queue_send_now,
         composer::queue::send_push,
         composer::send::send_answer,

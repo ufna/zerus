@@ -21,6 +21,8 @@ mod pin;
 mod point;
 mod question;
 pub(super) use admission::Wait as QuestionAdmission;
+#[cfg(target_os = "linux")]
+pub(super) use point::observe_claude_outbox;
 pub(super) use point::{
     claude_outbox_prompt, claude_outbox_status, claude_prompt_uuid, delivery_binding, delivery_receipt,
     dsh_outbox_original, terminal_outbox_status,

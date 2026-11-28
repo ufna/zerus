@@ -277,16 +277,22 @@ pub(in crate::state) fn claude_outbox_prompt(receipt: &Value) -> Option<&str> {
         .filter(|id| uuid(id))
 }
 
+fn terminal_outbox_identity(name: &str, query: &OutboxQuery) -> bool {
+    (name.starts_with("codex/") || name.starts_with("kimi/") || name.starts_with("claude/"))
+        && bounded_identity(name, 512)
+        && uuid(&query.request_id)
+        && bounded_identity(&query.expected_run_id, 128)
+        && !query.expected_run_id.is_empty()
+        && bounded_identity(&query.expected_conversation_id, 512)
+        && !query.expected_conversation_id.is_empty()
+        && hex(&query.input_sha256)
+}
+
 /// Read an exact terminal refusal or Kimi terminal submission. The original
 /// input digest binds the attachments and message for either answer.
 pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
-    use zerus_client_core::desktop::deferred_send::Refusal;
     let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid terminal outbox query")?;
-    if !(name.starts_with("codex/") || name.starts_with("kimi/") || name.starts_with("claude/")) || !bounded_identity(name, 512)
-        || !uuid(&query.request_id) || !bounded_identity(&query.expected_run_id, 128)
-        || query.expected_run_id.is_empty() || !bounded_identity(&query.expected_conversation_id, 512)
-        || query.expected_conversation_id.is_empty() || !hex(&query.input_sha256)
-    {
+    if !terminal_outbox_identity(name, &query) {
         return Err("Invalid terminal outbox identity".into());
     }
     let bytes = original_bytes(state, Source::Terminal, &query.request_id)
@@ -315,7 +321,12 @@ pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: 
             }
         }
     }
-    let refusal = Refusal::from_cli_record(&bytes).map_err(str::to_owned)?;
+    terminal_outbox_refusal_from_bytes(name, &query, &bytes)
+}
+
+fn terminal_outbox_refusal_from_bytes(name: &str, query: &OutboxQuery, bytes: &[u8]) -> Result<Value> {
+    use zerus_client_core::desktop::deferred_send::Refusal;
+    let refusal = Refusal::from_cli_record(bytes).map_err(str::to_owned)?;
     if refusal.request_id != query.request_id || refusal.session != name
         || refusal.run_id != query.expected_run_id || refusal.conversation_id != query.expected_conversation_id
         || refusal.input_sha256 != query.input_sha256
@@ -327,7 +338,7 @@ pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: 
         outbox_waiting: Option<bool>,
         terminal_native_accept: Option<bool>,
     }
-    let gate: QueueGate = serde_json::from_slice(&bytes).map_err(|_| "Invalid terminal refusal")?;
+    let gate: QueueGate = serde_json::from_slice(bytes).map_err(|_| "Invalid terminal refusal")?;
     if name.starts_with("claude/") && gate.terminal_native_accept != Some(true) {
         return Err("Original Claude delivery is unconfirmed".into());
     }
@@ -343,18 +354,48 @@ pub(in crate::state) fn terminal_outbox_status(state: &Path, name: &str, bytes: 
         "reason":refusal.reason}))
 }
 
+fn claude_outbox_identity(name: &str, query: &OutboxQuery) -> bool {
+    name.starts_with("claude/")
+        && terminal_outbox_identity(name, query)
+        && uuid(&query.expected_run_id)
+        && uuid(&query.expected_conversation_id)
+}
+
 /// Read one final native Claude receipt. No transcript search, pane input,
 /// or replay can result from a missing or non-final receipt.
 pub(in crate::state) fn claude_outbox_status(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
     let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid Claude outbox query")?;
-    if !name.starts_with("claude/") || !bounded_identity(name, 512)
-        || !uuid(&query.request_id) || !uuid(&query.expected_run_id)
-        || !uuid(&query.expected_conversation_id) || !hex(&query.input_sha256)
-    {
+    if !claude_outbox_identity(name, &query) {
         return Err("Invalid Claude outbox identity".into());
     }
     let receipt = original(state, Source::Terminal, &query.request_id)
         .map_err(|_| "Original Claude delivery is unconfirmed")?;
+    claude_outbox_submission(name, &query, receipt)
+}
+
+/// The explicit check classifies one bounded snapshot. In particular a failure
+/// to prove submission cannot trigger a second open to look for refusal.
+#[cfg(target_os = "linux")]
+pub(in crate::state) fn observe_claude_outbox(state: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
+    let query: OutboxQuery = serde_json::from_slice(bytes).map_err(|_| "Invalid Claude outbox query")?;
+    // Typed terminal refusals retain their existing bounded identity rules;
+    // positive Claude receipts additionally require canonical run/CID UUIDs.
+    if !name.starts_with("claude/") || !terminal_outbox_identity(name, &query) {
+        return Err("Invalid Claude outbox identity".into());
+    }
+    let original = original_bytes(state, Source::Terminal, &query.request_id)
+        .map_err(|_| "Original Claude delivery is unconfirmed")?;
+    if claude_outbox_identity(name, &query) {
+        if let Ok(receipt) = decode_metadata(&original, Source::Terminal, &query.request_id) {
+            if let Ok(submission) = claude_outbox_submission(name, &query, receipt) {
+                return Ok(submission);
+            }
+        }
+    }
+    terminal_outbox_refusal_from_bytes(name, &query, &original)
+}
+
+fn claude_outbox_submission(name: &str, query: &OutboxQuery, receipt: Original) -> Result<Value> {
     if !receipt.claude_outbox || receipt.status != "submitted" || receipt.transport != "terminal"
         || receipt.request_id != query.request_id || receipt.name != name
         || receipt.run_id != query.expected_run_id || receipt.conversation_id != query.expected_conversation_id
