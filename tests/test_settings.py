@@ -16,12 +16,15 @@ AGENT = AGENT.replace("'\\x1b[28;1H   \\x1b[49m\\x1b[29;1H  GPT-6-Astra ' + effo
 AGENT = AGENT.replace("    os.write(1, screen.encode())", r'''
     if stage:
         names = ['GPT-6-Astra', 'GPT-6-Sol'] if stage == 'model' else ['Low', 'Medium', 'High', 'Extra high', 'More reasoning…']
+        if stage == 'model' and (root / 'model-description-prefix').exists(): names = ['GPT-6-Astra', 'GPT-6-Astra Mini']
         if stage == 'advanced': names = ['Max', 'Ultra']
         selected = choice if stage == 'model' else effort_choice
         title = 'Select Model and Effort' if stage == 'model' else 'Select Reasoning Level for GPT-6-Sol'
         if stage == 'advanced': title = 'Advanced Reasoning'
         screen = '\x1b[2J\x1b[10;1H  ' + title + '\r\n\r\n'
-        for i, n in enumerate(names): screen += ('› ' if i == selected else '  ') + str(i+1) + '. ' + n + '\r\n'
+        for i, n in enumerate(names):
+            detail = '  GPT-6-Sol compatible' if stage == 'model' and i == 0 and (root / 'model-description-prefix').exists() else ''
+            screen += ('› ' if i == selected else '  ') + str(i+1) + '. ' + n + detail + '\r\n'
         screen += '\r\n  enter select · esc back' if stage == 'model' else '\r\n  enter default · s session · esc back'
     os.write(1, screen.encode())''')
 AGENT = AGENT.replace("        if agent=='codex' and key in", "        if stage and key == b'\\x1b[B':\n          if stage=='model': choice=(choice+1)%2\n          elif stage=='advanced': effort_choice=(effort_choice+1)%2\n          else: effort_choice=(effort_choice+1)%5\n          show()\n        elif agent=='codex' and key in")
@@ -90,6 +93,13 @@ class SessionSettings(test_effort.EffortTransport):
         p['model']='gpt-6-astra';self.assertIn('already used',self.settings(p,False))
         self.assertEqual(self.cache.read_bytes(),before)
         self.assertFalse((self.root/'.codex/config.toml').exists())
+
+    def test_description_prefix_never_applies_a_different_model(self):
+        (self.root/'model-description-prefix').touch()
+        p=self.payload('low');p['model']='gpt-6-sol'
+        result=self.settings(p,success=False)
+        self.assertIn('not offered',result)
+        self.assertNotIn(b's',self.received())
 
     def fresh(self):
         self.conversation_id=''
