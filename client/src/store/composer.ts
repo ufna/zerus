@@ -71,7 +71,7 @@ export interface ComposerPort {
   attach(handle: number, paths: string[], start: number, end: number): Promise<void>;
   pasteImage(handle: number, png: Uint8Array, start: number, end: number): Promise<void>;
   send(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
-  removeWaiting(handle: number, requestId: string): Promise<ComposerView>;
+  removeWaiting(handle: number, requestId: string, intent?: import("../types").WaitingRemovalIntent): Promise<ComposerView>;
   push(handle: number, rev: number, epoch: number, text: string, position: number, anchor: number): Promise<SendReply>;
   sendNow(queueId: string | null): Promise<boolean>;
   answer(token: number, answer: Answer): Promise<SendReply>;
@@ -447,12 +447,18 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
     catch (e) { notices("error", typeof e === "string" ? e : e instanceof Error ? e.message : String(e), true); return false; }
   }
 
-  async function removeWaiting(h: number, requestId: string) {
+  const skipWaitingBinding = (h: number, requestId: string) => {
+    const current = view(), binding = current?.skip_waiting;
+    return h === handle() && binding?.handle === h && opening() === 0 && binding?.key === current?.key
+      && binding?.queue[0]?.[0] === requestId ? binding : undefined;
+  };
+
+  async function removeWaiting(h: number, requestId: string, intent?: import("../types").WaitingRemovalIntent) {
     if (h !== handle() || operationLocked()) return;
     const key = view()?.key;
     calling.add(h);
     try {
-      const next = await port.removeWaiting(h, requestId);
+      const next = intent ? await port.removeWaiting(h, requestId, intent) : await port.removeWaiting(h, requestId);
       if (h === handle() && opening() === 0 && key === next.key && h === next.handle) batch(() => {
         if (!next.waiting_in_zerus?.some(row => row.request_id === requestId)) {
           const prior = removedWaiting();
@@ -514,7 +520,7 @@ export function createComposer(port: ComposerPort, timers: Timers = realTimers, 
 
   return {
     view, text, selection, dialog, locked, operationLocked, ordinaryInputHeld, sendEnabled, pushEnabled, queue, held: heldNow, hint,
-    waitingMessages, removeWaiting, removedWaiting, opening: () => opening() > 0,
+    waitingMessages, removeWaiting, skipWaitingBinding, removedWaiting, opening: () => opening() > 0,
     queuedAnnouncement: () => queuedAnnouncement() !== undefined && queuedAnnouncement() === handle(),
     /** The status line: Qt's order, with the composer's own error and the typed length. */
     status: (): StatusLine => statusLine(view(), error(), tooLong(), hasContent()),

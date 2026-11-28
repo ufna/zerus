@@ -2,7 +2,7 @@
 //! in the queue together. Only a durably reserved head can reach native Send.
 use super::send::{Context, SendReply, exact_input_details, first_input_details};
 use super::{Composer, Composers, Hub, MAX_TEXT_BYTES};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use tauri::State as TauriState;
@@ -80,6 +80,25 @@ pub struct EntryView {
     pub can_check_terminal: bool,
     pub can_check_delivery: bool,
     pub delivery_in_composer: bool,
+}
+
+/// A bounded, read-only confirmation binding. It never authorizes an offer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkipWaiting {
+    pub handle: u64,
+    pub key: String,
+    pub target: Target,
+    pub selection_epoch: u64,
+    pub route_revision: u64,
+    pub queue_revision: u64,
+    pub queue: Vec<(String, State)>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitingRemovalIntent {
+    SkipUnknown { binding: SkipWaiting },
 }
 
 /// Presentation evidence from a transport acknowledgement with no native
@@ -534,6 +553,7 @@ impl Composers {
                 let view = match result {
                     Ok(()) => {
                         c.outbox = stored.outbox;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                         c.draft = stored.draft;
                         c.position = 0;
                         c.anchor = 0;
@@ -868,6 +888,7 @@ impl Composers {
         }
         c.queue_writing = true;
         c.outbox[0].state = State::Reserved;
+        c.outbox_revision = c.outbox_revision.wrapping_add(1);
         let route_revision = hub.outbox_route_revision;
         let me = self.clone();
         self.0.store.save_outbox(&key, c.outbox.clone(), {
@@ -880,6 +901,7 @@ impl Composers {
                 c.queue_writing = false;
                 if let Err(error) = saved {
                     c.outbox[0].state = State::Waiting;
+                    c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     c.storage_error = Some(error);
                     drop(hub);
                     me.outbox_changed();
@@ -1058,14 +1080,17 @@ impl Composers {
                         // The on-disk reservation is still held. A failed
                         // write never makes an offered request eligible again.
                         c.outbox[0].state = State::Unknown;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     } else {
                         c.outbox = entries;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     }
                     c.storage_error = Some(error);
                 } else {
                     // Publish the pending-to-sent handoff together. A
                     // catalog update during the write keeps the head visible.
                     c.outbox = entries;
+                    c.outbox_revision = c.outbox_revision.wrapping_add(1);
                     // Confirmed queue admission frees the next FIFO head immediately.
                     c.queue_check_at = if next_ready { me.now() } else { me.now() + CHECK_INTERVAL };
                     if terminal_only {
@@ -1126,20 +1151,70 @@ pub async fn composer_remove_waiting(
     state: TauriState<'_, Composers>,
     handle: u64,
     request_id: String,
+    intent: Option<WaitingRemovalIntent>,
 ) -> Result<super::ComposerView, String> {
     let (tx, rx) = oneshot::channel();
-    state.remove_waiting(handle, &request_id, tx);
+    match intent {
+        None => state.remove_waiting(handle, &request_id, tx),
+        Some(intent) => state.remove_waiting_intent(handle, &request_id, Some(intent), tx),
+    }
     rx.await.map_err(|_| BUSY.to_owned())?
 }
 
 impl Composers {
+    pub(super) fn skip_waiting_binding(&self, hub: &Hub) -> Option<SkipWaiting> {
+        let key = hub.open_key.as_ref()?;
+        let c = hub.composers.get(key)?;
+        let ctx = self.context(hub)?;
+        let head = c.outbox.first()?;
+        if hub.closed || !c.loaded || c.renaming || c.busy() || c.queue_writing || c.outbox_damaged
+            || c.storage_error.is_some() || c.outbox.len() < 2 || head.state != State::Unknown
+            || !ctx.online || ctx.awaiting_outbox_details || ctx.session.archived()
+            || ctx.session.subagent.is_some() || head.draft_key != *key
+            || head.catalog_key != ctx.session.key || head.target != target(&ctx)
+            || head.target.run_id.is_empty() || head.target.conversation_id.is_empty()
+            || ctx.row.name != head.target.name
+            || ctx.row.run_id.as_deref() != Some(head.target.run_id.as_str())
+            || ctx.row.conversation_id.as_deref() != Some(head.target.conversation_id.as_str())
+        {
+            return None;
+        }
+        Some(SkipWaiting {
+            handle: c.handle, key: key.clone(), target: head.target.clone(),
+            selection_epoch: hub.selection_epoch, route_revision: hub.outbox_route_revision,
+            queue_revision: c.outbox_revision,
+            queue: c.outbox.iter().map(|row| (row.request_id.clone(), row.state)).collect(),
+        })
+    }
+
     fn remove_waiting(
         &self,
         handle: u64,
         request_id: &str,
         done: oneshot::Sender<Result<super::ComposerView, String>>,
     ) {
+        self.remove_waiting_intent(handle, request_id, None, done);
+    }
+
+    fn remove_waiting_intent(
+        &self,
+        handle: u64,
+        request_id: &str,
+        intent: Option<WaitingRemovalIntent>,
+        done: oneshot::Sender<Result<super::ComposerView, String>>,
+    ) {
         let mut hub = self.lock();
+        if let Some(WaitingRemovalIntent::SkipUnknown { binding }) = intent {
+            // Check while holding the same lock that enters the durable removal.
+            // A stale Skip is refused, never retried as a generic removal.
+            if binding.handle != handle
+                || binding.queue.first().is_none_or(|(id, _)| id != request_id)
+                || self.skip_waiting_binding(&hub).as_ref() != Some(&binding)
+            {
+                let _ = done.send(Err(BUSY.into()));
+                return;
+            }
+        }
         let key = hub.open_key.clone();
         let Some(c) = Self::editable(&mut hub, handle)
             .filter(|c| key.as_ref() == Some(&c.key) && !reserved(c) && !c.queue_writing)
@@ -1168,6 +1243,7 @@ impl Composers {
                 let reply = match result {
                     Ok(()) => {
                         c.outbox = entries;
+                        c.outbox_revision = c.outbox_revision.wrapping_add(1);
                         c.queue_check_at = me.now() + CHECK_INTERVAL;
                         me.view_of(&hub, &key).ok_or_else(|| BUSY.into())
                     }

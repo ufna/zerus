@@ -1,5 +1,5 @@
 import { pasteNative, samePaste, type PasteBinding } from "../ui/sessions/paste-files";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createRoot } from "solid-js";
 import { createComposer, draftKey, nameDraftKey, EDIT_MS, flushWhenHidden, MAX_TEXT_BYTES, reportVisibility, statusLine, TOO_LONG, type ComposerPort, type Images, type Notices } from "./composer";
 import { isEmptyBatch, type ComposerView, type SendReply, type SessionRef } from "../types";
@@ -1476,5 +1476,27 @@ describe("the Composer's Zerus queue", () => {
       expect(c.text()).toBe("second draft");
       expect(c.waitingMessages()).toEqual([]);
     });
+  });
+});
+
+
+it("forwards the exact native Skip intent once and preserves the queue after refusal", async () => {
+  const f = fakes();
+  const original = { request_id: "original", run_id: "run-1", conversation_id: "conv-1", state: "unknown" as const, preview: "same" };
+  const follower = { ...original, request_id: "follower", state: "waiting" as const };
+  const binding = { handle: 1, key: KEY, target: { computer: "studio", name: SESSION.name, run_id: "run-1", conversation_id: "conv-1" },
+    selection_epoch: 3, route_revision: 2, queue_revision: 1, queue: [["original", "unknown"], ["follower", "waiting"]] } as import("../types").SkipWaiting;
+  const remove = vi.fn(async () => { throw new Error("Stale Skip refused"); });
+  await createRoot(async (dispose) => {
+    try {
+      const c = createComposer({ ...f.port, removeWaiting: remove }, f.timers, undefined, f.notify);
+      c.apply(view({ waiting_in_zerus: [original, follower], skip_waiting: binding }));
+      expect(c.skipWaitingBinding(1, "original")).toEqual(binding);
+      const intent = { kind: "skip_unknown", binding } as const;
+      await c.removeWaiting(1, "original", intent);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(1, "original", intent);
+      expect(c.waitingMessages()).toEqual([original, follower]);
+      expect(f.calls.filter((call) => call.startsWith("send ") || call.startsWith("send-now "))).toEqual([]);
+    } finally { dispose(); }
   });
 });
