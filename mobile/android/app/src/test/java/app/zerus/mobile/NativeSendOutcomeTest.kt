@@ -53,6 +53,17 @@ class NativeSendOutcomeTest {
             assertTrue(NativeSendOutcome.confirmed(sent));assertEquals("submitted",sent.recover().status)
         }
     }
+    @Test fun notOfferedSettlesWithTheExactNativeRefusalReasonInsteadOfGenericWording() {
+        for(v in vectors()) {
+            val (row,_,intent)=fixture(v);val result=v.getJSONObject("not_sent")
+            val proof=NativeSendOutcome.proof(result.string("request_id"),intent,result)!!
+            val kept=NativeSendOutcome.settle(MessageState(outgoing=listOf(row)),row,proof,100,99).outgoing.single()
+            assertEquals("failed",kept.status);assertFalse(kept.blocksSending)
+            assertEquals(result.string("reason"),kept.error)
+            assertFalse(kept.error.startsWith("The computer rejected"))
+            assertEquals(row.text,kept.text);assertEquals(row.attachments,kept.attachments);assertEquals(row.requestId,kept.requestId)
+        }
+    }
     @Test fun corruptMissingForeignAndLegacyNegativesStayUnknownWithTheSameUuid() {
         val v=vectors().first();val (row,_,intent)=fixture(v);val good=v.getJSONObject("not_sent")
         for(k in listOf("schema","request_id","binding","binding_sha256","status","proof","reason")) assertNull(k,NativeSendOutcome.proof(row.requestId,intent,JSONObject(good.toString()).put(k,if(k=="reason") JSONObject.NULL else "changed")))
