@@ -86,8 +86,10 @@ impl Captured {
     }
 
     fn open_code_archive(&self) -> bool {
-        matches!(self.action, Action::Archive) && self.target.name.starts_with("opencode/")
-            && !self.target.conversation_id.is_empty() && self.state == "running"
+        matches!(self.action, Action::Archive)
+            && self.target.name.starts_with("opencode/")
+            && !self.target.conversation_id.is_empty()
+            && self.state == "running"
     }
 
     fn archive_id(&self) -> Option<&str> {
@@ -154,8 +156,11 @@ impl Captured {
             && text("run_id") == self.target.run_id
             && text("conversation_id") == self.target.conversation_id
             && lifecycle
-            && (!self.open_code_archive() || (text("backend") == "opencode"
-                && value["allowed_actions"].as_array().is_some_and(|actions| actions.iter().any(|op| op == "archive"))))
+            && (!self.open_code_archive()
+                || (text("backend") == "opencode"
+                    && value["allowed_actions"]
+                        .as_array()
+                        .is_some_and(|actions| actions.iter().any(|op| op == "archive"))))
             && text("archive_id") == self.archive_id().unwrap_or("")
     }
 

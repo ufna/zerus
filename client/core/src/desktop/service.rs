@@ -383,7 +383,8 @@ impl State {
             retained_source_import: None,
             epoch: Some(epoch.into()),
             generation: Some(generation),
-            verified_send_supported: value["native_readiness"]["version"] == super::verified_send::VERSION
+            verified_send_supported: value["native_readiness"]["version"]
+                == super::verified_send::VERSION
                 && value["native_readiness"]["send"] == true,
             background,
             fleet_computers: checked_connections(&value["background_runtime"], epoch),

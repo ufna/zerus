@@ -11,6 +11,16 @@ vi.hoisted(() => {
   vi.stubGlobal("window", { document: { addEventListener: () => {} }, addEventListener: () => {} });
 });
 vi.mock("../../bridge", () => ({
+  composerDismissCompactionNotice: vi.fn(async () => {}),
+  composerCheckDelivery: vi.fn(async () => {}),
+  terminalConnect: vi.fn(async () => {}),
+  terminalWrite: vi.fn(async () => {}),
+  terminalPasteImage: vi.fn(async () => {}),
+  terminalResize: vi.fn(async () => {}),
+  terminalAck: vi.fn(async () => {}),
+  terminalDisconnect: vi.fn(async () => {}),
+  terminalRetarget: vi.fn(async () => {}),
+  terminalShown: vi.fn(async () => {}),
   // The task store reads further board pages through this bridge call.
   readTaskPage: vi.fn(async () => ({ tasks: [], page: { next: null } })),
   // The native workspace store, loaded by the session entry points.

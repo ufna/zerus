@@ -1,4 +1,4 @@
-use super::{MAX_MANIFEST, queue_dir, read_bounded};
+use super::{queue_dir, read_bounded, MAX_MANIFEST};
 use serde_json::Value;
 use std::{fs, path::Path};
 
@@ -100,9 +100,9 @@ impl Scan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Target;
     use crate::drafts::folder;
     use crate::drafts::outbox::{self, Entry, State};
+    use crate::Target;
     use std::collections::HashSet;
 
     #[test]

@@ -201,15 +201,8 @@ pub(in crate::state) fn record_hook(record: &mut Value, event: &Value) -> Option
     if kind != "TurnStarted" || event["origin_kind"] != "user" || !matching_prompt(record, event) {
         return None;
     }
-    let Some(after) = pending(record) else {
-        return None;
-    };
-    let Some(id) = event["turn_id"]
-        .as_u64()
-        .filter(|id| *id <= i64::MAX as u64)
-    else {
-        return None;
-    };
+    let after = pending(record)?;
+    let id = event["turn_id"].as_u64().filter(|id| *id <= i64::MAX as u64)?;
     if after.is_some_and(|floor| id <= floor) {
         return None;
     }

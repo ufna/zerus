@@ -1,12 +1,12 @@
 //! Drafts waiting in Zerus to enter a particular native conversation.
 use super::{
-    MAX_MANIFEST, atomic_write, folder, not_saved, private, prune_blobs, read_attachments,
-    read_bounded, write_attachments,
+    atomic_write, folder, not_saved, private, prune_blobs, read_attachments, read_bounded,
+    write_attachments, MAX_MANIFEST,
 };
-use crate::Target;
 use crate::attachments::{Attachment, MAX_TOTAL_BYTES};
+use crate::Target;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -229,7 +229,8 @@ pub(super) fn decode(path: &Path, value: &Value) -> Option<Vec<Entry>> {
         let state = serde_json::from_value(row["state"].clone()).ok()?;
         let target: Target = serde_json::from_value(row["target"].clone()).ok()?;
         entries.push(Entry {
-            delivery_in_composer: row["delivery_in_composer"].as_bool()
+            delivery_in_composer: row["delivery_in_composer"]
+                .as_bool()
                 .unwrap_or_else(|| target.name.starts_with("codex/")),
             request_id: row["request_id"].as_str()?.into(),
             queued_at: row["queued_at"].as_f64().and_then(enqueue_time),
@@ -253,7 +254,7 @@ pub(super) fn decode(path: &Path, value: &Value) -> Option<Vec<Entry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::drafts::{StoredDraft, load_once, save_editable};
+    use crate::drafts::{load_once, save_editable, StoredDraft};
 
     const KEY: &str = "\ncodex/example";
     const ID: &str = "a0000000-0000-4000-8000-000000000001";

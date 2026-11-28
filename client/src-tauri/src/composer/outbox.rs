@@ -60,7 +60,9 @@ pub(super) enum ManualSend {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryObservation {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Accepted,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     NoInput,
     Unresolved,
 }
@@ -1131,13 +1133,13 @@ pub async fn composer_check_delivery(
             return Ok(DeliveryObservation::Unresolved);
         };
         let composers = state.inner().clone();
-        return Ok(tauri::async_runtime::spawn_blocking(move || {
+        Ok(tauri::async_runtime::spawn_blocking(move || {
             composers.check_delivery(handle, &request_id, move |target, action, id, source| {
                 crate::desktop_service::termination_outcome::check_claude_delivery(
                     service, target, action, id, source,
                 )
             })
-        }).await.unwrap_or(DeliveryObservation::Unresolved));
+        }).await.unwrap_or(DeliveryObservation::Unresolved))
     }
     #[cfg(not(target_os = "linux"))]
     {

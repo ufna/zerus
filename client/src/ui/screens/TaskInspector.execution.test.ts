@@ -101,11 +101,19 @@ it("shows the saved acceptance criterion beside the review owner", () => {
   expect(assignment?.textContent).toContain("Acceptance criterion: Approve the sample output");
 });
 
+// Older peers omit report-bound quick-review metadata. Keep their reviewer
+// compatibility assertions separate from the current native projection below.
+const legacyReview = <T extends { quick_review_status?: unknown; review_report_id?: unknown }>(row: T) => {
+  const { quick_review_status: _status, review_report_id: _report, ...legacy } = row;
+  return legacy;
+};
+
 it.each([
   ["en", "Review assignment", "Acceptance criterion: Check the fixture", "Your decision", "Coordinator or reviewer next", "Coordinator to triage"],
   ["ru", "Кто проверяет", "Критерий приёмки: Check the fixture", "Вам на решение", "Дальше проверяет координатор или ревьюер", "Координатору нужно уточнить, что дальше"],
-] as const)("uses the native detail projection and keeps only the criterion on stale reads in %s", async (locale, heading, criterion, person, technical, triage) => {
-  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+] as const)("uses the legacy detail projection and keeps only the criterion on stale reads in %s", async (locale, heading, criterion, person, technical, triage) => {
+  const { details: current } = (await import("./fixtures/task-review-projected.json")).default;
+  const details = current.map(legacyReview);
   state.locale = locale;
   state.project = "example-project";
   const expected = [person, technical, triage, undefined, triage, triage];
@@ -133,7 +141,8 @@ it.each([
 
 
 it("keeps the prior review owner hidden across superseded detail reads", async () => {
-  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+  const { details: current } = (await import("./fixtures/task-review-projected.json")).default;
+  const details = current.map(legacyReview);
   const { createSignal } = await import("solid-js");
   const old = details[1], done = { ...old, stage: "done", review_assignment: undefined };
   state.project = old.project;
@@ -167,8 +176,9 @@ it("keeps the prior review owner hidden across superseded detail reads", async (
 it.each([
   ["en", "Choose next reviewer", "Acceptance criterion", "Save reviewer"],
   ["ru", "Выбрать следующего проверяющего", "Критерий приёмки", "Сохранить проверяющего"],
-] as const)("classifies a settled ordinary report with its exact revision in %s", async (locale, chooseLabel, criterionLabel, saveLabel) => {
-  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+] as const)("classifies a legacy settled ordinary report with its exact revision in %s", async (locale, chooseLabel, criterionLabel, saveLabel) => {
+  const { details: current } = (await import("./fixtures/task-review-projected.json")).default;
+  const details = current.map(legacyReview);
   const before = { ...details[2], review_lane: "triage", review_editable: true, history_revision: "a".repeat(64) };
   const after = { ...before, review_lane: "person", history_revision: "b".repeat(64),
     review_assignment: { owner: "person", criterion: "Read the release output" } };
@@ -196,6 +206,38 @@ it.each([
   expect(host.querySelector(".tv-review-editor")).toBeNull();
   expect(host.querySelector(".tv-stage")?.classList.contains("st-review")).toBe(true);
   expect(host.textContent).toContain("Read the release output");
+});
+
+it.each(["en", "ru"] as const)("renders the current native review projection and disables stale verdicts in %s", async (locale) => {
+  const { details } = (await import("./fixtures/task-review-projected.json")).default;
+  state.locale = locale;
+  state.project = "example-project";
+  const heading = locale === "en" ? "Review outcome" : "Итог проверки";
+  const needed = locale === "en" ? "Review needed" : "Нужна проверка";
+  const reconcile = locale === "en" ? "Review history must be reconciled before a verdict can be recorded." : "Чтобы записать итог проверки, сначала сверьте историю.";
+  const edit = locale === "en" ? "Record review outcome…" : "Записать итог проверки…";
+  for (const n of [0, 1, 2, 4, 5]) {
+    state.read.mockResolvedValueOnce(details[n]);
+    const host = mount(details[n], true);
+    await tick();
+    const outcome = () => host.querySelector(`[aria-label="${heading}"]`);
+    expect(outcome()).not.toBeNull();
+    const button = () => [...outcome()!.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === edit);
+    if (n < 3) {
+      expect(outcome()?.textContent).toContain(needed);
+      expect(button()?.disabled).toBe(false);
+      state.read.mockRejectedValueOnce(new Error("fixture refresh failed"));
+      taskDetails.refresh(); await tick();
+      expect(host.querySelector("[role=alert]")?.textContent).toContain("fixture refresh failed");
+      expect(button()?.disabled).toBe(true);
+    } else {
+      expect(outcome()?.textContent).toContain(reconcile);
+      expect(button()).toBeUndefined();
+    }
+    expect(state.classify).not.toHaveBeenCalled();
+    expect(state.quickReview).not.toHaveBeenCalled();
+    dispose?.(); host.remove();
+  }
 });
 
 it.each([
@@ -314,7 +356,7 @@ it.each(["en", "ru"] as const)("shows native Team facts only from the selected T
   expect(active.textContent).toContain("fixture-current-holder");
   expect(active.textContent).not.toContain("past-holder");
   expect(active.textContent).toContain(locale === "en" ? "Team stage: Submitted" : "Этап команды:");
-  expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Руководитель команды");
+  expect(active.textContent).toContain(locale === "en" ? "Phase acceptance: Team lead" : "Кто принимает фазу: Лид команды");
   expect(active.textContent).not.toContain(locale === "en" ? "Accept result" : "Принять результат");
   state.setTeamFailure(true); await tick();
   expect(active.textContent).not.toContain("fixture-current-holder");

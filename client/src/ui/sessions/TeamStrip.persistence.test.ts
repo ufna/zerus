@@ -39,15 +39,15 @@ describe("the ordinary children control owns the durable team fold", () => {
     expect(view.onOpenTeam).toHaveBeenCalledOnce();
     expect(view.store.teamCollapsed(key)).toBe(false);
     expect(backing.settings[view.store.COLLAPSED_TEAMS]).toBeUndefined();
-    view.host.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+    view.host.querySelector<HTMLButtonElement>(".sc-team[aria-expanded], .cc-team[aria-expanded]")!.click();
     await Promise.resolve(); await Promise.resolve();
     expect(backing.settings[view.store.COLLAPSED_TEAMS]).toBe(JSON.stringify([`${lead.machine}\n${sessionId}`]));
     view.dispose(); vi.resetModules();
     view = await mount(true);
     expect(view.store.teamCollapsed(key)).toBe(true);
-    expect(view.host.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("false");
+    expect(view.host.querySelector(".sc-team[aria-expanded], .cc-team[aria-expanded]")?.getAttribute("aria-expanded")).toBe("false");
     expect(view.host.querySelector("[data-team-strip] [aria-expanded]")).toBeNull();
-    view.host.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+    view.host.querySelector<HTMLButtonElement>(".sc-team[aria-expanded], .cc-team[aria-expanded]")!.click();
     await Promise.resolve(); await Promise.resolve();
     expect(backing.settings[view.store.COLLAPSED_TEAMS]).toBe("[]");
     view.dispose();

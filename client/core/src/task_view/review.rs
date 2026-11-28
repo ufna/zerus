@@ -34,18 +34,25 @@ pub(crate) fn present_review(task: &mut Map<String, Value>) {
         || team.is_some()
         || invalid
         || task.contains_key("execution_unavailable")
-        || !task.get("history_revision").and_then(Value::as_str).is_some_and(crate::tasks_write::valid_revision)
+        || !task
+            .get("history_revision")
+            .and_then(Value::as_str)
+            .is_some_and(crate::tasks_write::valid_revision)
     {
         task.remove("review_editable");
     }
 
-    let team_routed = team.is_some() || invalid
+    let team_routed = team.is_some()
+        || invalid
         || task.get("review_lane").and_then(Value::as_str) == Some("team")
         || task.get("quick_review_status").and_then(Value::as_str) == Some("team");
     let ordinary_report = task.get("stage").and_then(Value::as_str) == Some("review")
         && !team_routed
         && !task.contains_key("execution_unavailable")
-        && task.get("history_revision").and_then(Value::as_str).is_some_and(crate::tasks_write::valid_revision);
+        && task
+            .get("history_revision")
+            .and_then(Value::as_str)
+            .is_some_and(crate::tasks_write::valid_revision);
     crate::task_quick_review::present(task, ordinary_report, team_routed);
 
     let assignment = task.remove("review_assignment");

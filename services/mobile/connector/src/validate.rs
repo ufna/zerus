@@ -585,7 +585,6 @@ pub fn validate(
     }
 }
 
-
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
@@ -595,7 +594,10 @@ mod retirement_tests {
         let saved = "agy/example/retired";
         for operation in ["send", "send_outcome", "settings", "restore", "terminate"] {
             assert!(retired_antigravity_write(operation, saved), "{operation}");
-            assert!(!retired_antigravity_write(operation, "opencode/example/gemini"));
+            assert!(!retired_antigravity_write(
+                operation,
+                "opencode/example/gemini"
+            ));
         }
         for operation in ["inspect", "history", "history_projection", "send_receipt"] {
             assert!(!retired_antigravity_write(operation, saved), "{operation}");

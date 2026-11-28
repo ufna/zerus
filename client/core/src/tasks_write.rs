@@ -76,7 +76,9 @@ fn words(items: &[&str]) -> Vec<String> {
 
 pub(crate) fn valid_revision(revision: &str) -> bool {
     revision.len() == 64
-        && revision.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 impl TaskCall {
@@ -92,7 +94,14 @@ impl TaskCall {
     pub fn invocation(&self) -> Invocation {
         let long = matches!(
             self.args.first().map(String::as_str),
-            Some("send" | "cancel" | "cancel-execution" | "start-deliver" | "message" | "message-reviewed")
+            Some(
+                "send"
+                    | "cancel"
+                    | "cancel-execution"
+                    | "start-deliver"
+                    | "message"
+                    | "message-reviewed"
+            )
         );
         let mut args = vec!["task".to_owned()];
         args.extend(self.args.iter().cloned());
@@ -118,12 +127,17 @@ impl TaskCall {
             || !matches!(owner, "person" | "technical" | "unspecified")
             || (owner == "unspecified") != criterion.is_empty()
             || criterion.len() > 512
-            || criterion.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+            || criterion.chars().any(|ch| {
+                ch.is_control() || matches!(ch, '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
         {
             return Err("Invalid review assignment.".into());
         }
         Ok(Self::new(
-            with_project(words(&["review-owner", task, owner, "--expect-revision", revision]), project),
+            with_project(
+                words(&["review-owner", task, owner, "--expect-revision", revision]),
+                project,
+            ),
             criterion,
         ))
     }
@@ -526,13 +540,18 @@ pub fn message_call(
     ]);
     if let Some(value) = intent.get("review") {
         let guard = serde_json::from_value::<crate::task_quick_review::ReportGuard>(value.clone())
-            .ok().filter(|guard| guard.valid() && intent["mode"] == "reopen")
+            .ok()
+            .filter(|guard| guard.valid() && intent["mode"] == "reopen")
             .ok_or("The saved rework report guard is invalid. Nothing was submitted.")?;
         // An older hgs must refuse before it can interpret this as a generic
         // reopen whose admission never checked the report.
         args[0] = "message-reviewed".into();
-        args.extend(["--expect-history-revision".into(), guard.history_revision,
-                     "--expect-report-id".into(), guard.report_id]);
+        args.extend([
+            "--expect-history-revision".into(),
+            guard.history_revision,
+            "--expect-report-id".into(),
+            guard.report_id,
+        ]);
     }
     if recovery {
         args.push("--recover-only".into());

@@ -86,7 +86,11 @@ pub fn block_reason(facts: &BlockFacts, details: Option<&Value>) -> Option<Strin
 
 /// Only the local Desktop Send host supplies independently matched native
 /// identity for these exact details. Other callers keep the ordinary gate.
-pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, verified: bool) -> Option<String> {
+pub fn block_reason_with_readiness(
+    facts: &BlockFacts,
+    details: Option<&Value>,
+    verified: bool,
+) -> Option<String> {
     let block = |reason: &str| Some(reason.to_owned());
     if facts.cmd == "agy" {
         return block(crate::launch::ANTIGRAVITY_RETIRED);
@@ -133,7 +137,9 @@ pub fn block_reason_with_readiness(facts: &BlockFacts, details: Option<&Value>, 
             "Waiting for the agent to finish starting. Open Terminal to check login or setup.",
         );
     }
-    if text(details, "runtime_state") != "live" || (!verified && text(details, "process_state") != "running") {
+    if text(details, "runtime_state") != "live"
+        || (!verified && text(details, "process_state") != "running")
+    {
         return block("The agent is not running. Resume it before sending.");
     }
     let opencode = facts.cmd == "opencode";
@@ -280,9 +286,7 @@ pub fn can_start_stopped(session: &Session, busy: bool) -> bool {
         && !session.run_id.is_empty()
         && matches!(session.process_state.as_str(), "" | "exited")
         && (matches!(session.cmd.as_str(), "codex" | "claude" | "kimi")
-            || (session.native_resume
-                && session.resumable
-                && !session.conversation_id.is_empty()))
+            || (session.native_resume && session.resumable && !session.conversation_id.is_empty()))
         && !session.terminating
         && !busy
 }
@@ -518,8 +522,7 @@ impl StartSend {
                 && can_start_stopped(current, busy)
                 && start_choice_available(current, self.choice)
         });
-        if !ok || !same || evidence_differs(evidence, &original.run_id, &original.conversation_id)
-        {
+        if !ok || !same || evidence_differs(evidence, &original.run_id, &original.conversation_id) {
             return Step::Cancelled(
                 "Starting was cancelled. Your draft was kept without sending.".into(),
             );
@@ -541,7 +544,10 @@ impl StartSend {
                 if self.session.native_resume {
                     let original = &self.session;
                     let Some(run) = crate::actions::native_resume_result_run(
-                        receipt, &original.name, &original.run_id, &original.conversation_id,
+                        receipt,
+                        &original.name,
+                        &original.run_id,
+                        &original.conversation_id,
                     ) else {
                         return Step::Cancelled(CHANGED.into());
                     };
@@ -577,10 +583,18 @@ impl StartSend {
         }
         let run = text(details, "run_id");
         let conversation = text(details, "conversation_id");
-        if self.phase != StartPhase::Waiting || pending || run.is_empty() || run == self.session.run_id {
+        if self.phase != StartPhase::Waiting
+            || pending
+            || run.is_empty()
+            || run == self.session.run_id
+        {
             return Step::Idle;
         }
-        if self.resumed_run.as_deref().is_some_and(|resumed| resumed != run) {
+        if self
+            .resumed_run
+            .as_deref()
+            .is_some_and(|resumed| resumed != run)
+        {
             return Step::Cancelled(CHANGED.into());
         }
         let same_conversation = conversation == self.session.conversation_id;
@@ -612,9 +626,13 @@ impl StartSend {
             && text(details, "error").is_empty()
             && details["previous_message_pending"] != true
             && !details["input_queue"].is_object()
-            && !details["pending_questions"].as_array().is_some_and(|questions| {
-                questions.iter().any(|question| question.is_object() && question["optional"] != true)
-            })
+            && !details["pending_questions"]
+                .as_array()
+                .is_some_and(|questions| {
+                    questions
+                        .iter()
+                        .any(|question| question.is_object() && question["optional"] != true)
+                })
             && (!self.session.native_resume || flag(details, "send_available"))
             && input_ready
             && !terminating
@@ -991,7 +1009,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn opencode_and_busy_agents() {
         let (mut facts, base) = ready();
@@ -1257,24 +1274,55 @@ mod continuation_tests {
         assert_eq!(question.options[0].choice, StartChoice::Resume);
         assert!(question.informative.english().contains("65%"));
 
-        let begin = |choice| StartSend::begin(
-            &session, Some(&session), false, choice, draft(), &draft(), 0.0,
-        );
+        let begin = |choice| {
+            StartSend::begin(
+                &session,
+                Some(&session),
+                false,
+                choice,
+                draft(),
+                &draft(),
+                0.0,
+            )
+        };
         assert!(begin(StartChoice::Fresh).is_err());
         assert!(begin(StartChoice::ResumeCompact).is_err());
         let (mut start, _) = begin(StartChoice::Resume).unwrap();
-        assert_eq!(start.prepared(true, Some(&session), None, false), Step::Run(Action::ResumeNativeForSend));
+        assert_eq!(
+            start.prepared(true, Some(&session), None, false),
+            Step::Run(Action::ResumeNativeForSend)
+        );
         let mut details = ready("run-2", "conv-1");
-        assert_eq!(start.inspected(&details, &draft(), false, false, 1.0), Step::Idle);
-        assert!(matches!(start.clone().start_finished(&Outcome::Done { receipt: Value::Null, cleanup: None }), Step::Cancelled(_)));
+        assert_eq!(
+            start.inspected(&details, &draft(), false, false, 1.0),
+            Step::Idle
+        );
+        assert!(matches!(
+            start.clone().start_finished(&Outcome::Done {
+                receipt: Value::Null,
+                cleanup: None
+            }),
+            Step::Cancelled(_)
+        ));
         start.start_finished(&Outcome::Done {
             receipt: json!({"result_target":{"run_id":"run-2","conversation_id":"conv-1","name":session.name}}),
             cleanup: None,
         });
-        assert!(matches!(start.clone().inspected(&ready("run-3", "conv-1"), &draft(), false, false, 2.0), Step::Cancelled(_)));
-        assert_eq!(start.inspected(&details, &draft(), false, false, 2.0), Step::Idle);
+        assert!(matches!(
+            start
+                .clone()
+                .inspected(&ready("run-3", "conv-1"), &draft(), false, false, 2.0),
+            Step::Cancelled(_)
+        ));
+        assert_eq!(
+            start.inspected(&details, &draft(), false, false, 2.0),
+            Step::Idle
+        );
         details["send_available"] = json!(true);
-        assert!(matches!(start.inspected(&details, &draft(), false, false, 3.0), Step::Send { .. }));
+        assert!(matches!(
+            start.inspected(&details, &draft(), false, false, 3.0),
+            Step::Send { .. }
+        ));
     }
 
     #[test]

@@ -230,7 +230,11 @@ impl LocalMessages {
     /// receipt projection as an ordinary message. Its file metadata comes
     /// from the original entry. It has no editable-draft or cache path.
     pub fn sent_from_outbox(&mut self, key: &str, entry: &Entry, outcome: &Outcome, now: f64) {
-        let files = entry.attachments.iter().map(|file| json!(file.info())).collect();
+        let files = entry
+            .attachments
+            .iter()
+            .map(|file| json!(file.info()))
+            .collect();
         let source = if entry.target.name.starts_with("codex/")
             && matches!(outcome, Outcome::Done { receipt, .. } if crate::actions::codex_outbox_submitted(receipt))
         {
@@ -366,17 +370,23 @@ impl LocalMessages {
                     }
                 }
                 if row.source.as_deref() == Some(CODEX_QUEUE_SOURCE) {
-                    row.message_id = receipt["native_queued_message_id"].as_str().map(str::to_owned);
+                    row.message_id = receipt["native_queued_message_id"]
+                        .as_str()
+                        .map(str::to_owned);
                 }
                 if row.source.as_deref() == Some(CLAUDE_OUTBOX_SOURCE)
-                    && receipt["status"] == "submitted" && request == row.id
-                    && receipt["run_id"] == row.run_id && receipt["conversation_id"] == row.conversation_id
+                    && receipt["status"] == "submitted"
+                    && request == row.id
+                    && receipt["run_id"] == row.run_id
+                    && receipt["conversation_id"] == row.conversation_id
                 {
-                    row.message_id = crate::actions::claude_outbox_prompt(receipt).map(str::to_owned);
+                    row.message_id =
+                        crate::actions::claude_outbox_prompt(receipt).map(str::to_owned);
                 }
                 if row.source.as_deref() == Some(DSH_OUTBOX_SOURCE)
                     && crate::actions::dsh_outbox_submitted(receipt)
-                    && request == row.id && receipt["run_id"] == row.run_id
+                    && request == row.id
+                    && receipt["run_id"] == row.run_id
                     && receipt["conversation_id"] == row.conversation_id
                 {
                     row.message_id = receipt["native_message_id"].as_str().map(str::to_owned);
@@ -439,15 +449,25 @@ impl LocalMessages {
             if row.source.as_deref() == Some(CODEX_QUEUE_SOURCE) {
                 // A later native turn can have a different ID and identical text.
                 // Retain this bounded bridge until the durable receipt is visible.
-                let shown = details["codex_queued_messages"].as_array().is_some_and(|messages| {
-                    messages.iter().any(|event| event["type"] == "CodexQueueReceipt"
-                        && event["source"] == "hgs_delivery" && event["status"] == "submitted"
-                        && event["transport"] == "codex_queue" && event["request_id"] == row.id
-                        && event["message_id"] == row.id && event["detail"] == row.text
-                        && event["attachments"].is_array() && row.message_id.is_some()
-                        && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
-                        && event["native_queued_message_id"].as_str() == row.message_id.as_deref())
-                });
+                let shown = details["codex_queued_messages"]
+                    .as_array()
+                    .is_some_and(|messages| {
+                        messages.iter().any(|event| {
+                            event["type"] == "CodexQueueReceipt"
+                                && event["source"] == "hgs_delivery"
+                                && event["status"] == "submitted"
+                                && event["transport"] == "codex_queue"
+                                && event["request_id"] == row.id
+                                && event["message_id"] == row.id
+                                && event["detail"] == row.text
+                                && event["attachments"].is_array()
+                                && row.message_id.is_some()
+                                && event["run_id"] == row.run_id
+                                && event["conversation_id"] == row.conversation_id
+                                && event["native_queued_message_id"].as_str()
+                                    == row.message_id.as_deref()
+                        })
+                    });
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -461,29 +481,59 @@ impl LocalMessages {
                 return !shown;
             }
             if row.source.as_deref() == Some(CLAUDE_OUTBOX_SOURCE) {
-                let Some(id) = row.message_id.as_deref() else { return true; };
+                let Some(id) = row.message_id.as_deref() else {
+                    return true;
+                };
                 let shown = row.status == Status::Sent
-                    && (row.attachments.is_empty() || details["attachment_messages"].as_array()
-                        .is_some_and(|messages| messages.iter().any(|event| {
-                            event["message_id"] == row.id && claude_outbox_echo(row, event, id)
-                        })))
-                    && events.iter().filter(|event| claude_outbox_echo(row, event, id)).take(2).count() == 1;
+                    && (row.attachments.is_empty()
+                        || details["attachment_messages"]
+                            .as_array()
+                            .is_some_and(|messages| {
+                                messages.iter().any(|event| {
+                                    event["message_id"] == row.id
+                                        && claude_outbox_echo(row, event, id)
+                                })
+                            }))
+                    && events
+                        .iter()
+                        .filter(|event| claude_outbox_echo(row, event, id))
+                        .take(2)
+                        .count()
+                        == 1;
                 result.removed += usize::from(shown);
                 return !shown;
             }
             if row.source.as_deref() == Some(DSH_OUTBOX_SOURCE) {
-                let Some(id) = row.message_id.as_deref() else { return true; };
-                let exact = |event: &Value| event["dsh_message_id"] == id
-                    && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id;
+                let Some(id) = row.message_id.as_deref() else {
+                    return true;
+                };
+                let exact = |event: &Value| {
+                    event["dsh_message_id"] == id
+                        && event["run_id"] == row.run_id
+                        && event["conversation_id"] == row.conversation_id
+                };
                 let shown = row.status == Status::Sent
-                    && (row.attachments.is_empty() || details["attachment_messages"].as_array()
-                        .is_some_and(|messages| messages.iter().any(|event| {
-                            event["dsh_outbox"] == true && event["message_id"] == row.id && exact(event)
-                        })))
-                    && events.iter().filter(|event| {
-                        event["type"] == "UserPromptSubmit" && event["source"] == "dsh_native"
-                            && event["dsh_request_id"] == row.id && exact(event)
-                    }).take(2).count() == 1;
+                    && (row.attachments.is_empty()
+                        || details["attachment_messages"]
+                            .as_array()
+                            .is_some_and(|messages| {
+                                messages.iter().any(|event| {
+                                    event["dsh_outbox"] == true
+                                        && event["message_id"] == row.id
+                                        && exact(event)
+                                })
+                            }))
+                    && events
+                        .iter()
+                        .filter(|event| {
+                            event["type"] == "UserPromptSubmit"
+                                && event["source"] == "dsh_native"
+                                && event["dsh_request_id"] == row.id
+                                && exact(event)
+                        })
+                        .take(2)
+                        .count()
+                        == 1;
                 result.removed += usize::from(shown);
                 return !shown;
             }
@@ -520,17 +570,23 @@ impl LocalMessages {
             if !row.attachments.is_empty() {
                 return true;
             }
-            let shown = events.iter().filter(|event| {
-                event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
-                    && ((event["type"] == "UserPromptSubmit"
-                        && event["source"] == "hgs_delivery"
-                        && event["message_id"] == row.id)
-                        || (event["type"] == "TurnStarted"
-                            && event["turn_origin"] == "user"
-                            && event["kimi_request_id"] == row.id
-                            && event["kimi_turn_id"].is_u64()
-                            && event["kimi_conversation_id"] == row.conversation_id))
-            }).take(2).count() == 1;
+            let shown = events
+                .iter()
+                .filter(|event| {
+                    event["run_id"] == row.run_id
+                        && event["conversation_id"] == row.conversation_id
+                        && ((event["type"] == "UserPromptSubmit"
+                            && event["source"] == "hgs_delivery"
+                            && event["message_id"] == row.id)
+                            || (event["type"] == "TurnStarted"
+                                && event["turn_origin"] == "user"
+                                && event["kimi_request_id"] == row.id
+                                && event["kimi_turn_id"].is_u64()
+                                && event["kimi_conversation_id"] == row.conversation_id))
+                })
+                .take(2)
+                .count()
+                == 1;
             result.removed += usize::from(shown);
             !shown
         });
@@ -629,9 +685,11 @@ impl LocalMessages {
 }
 
 fn claude_outbox_echo(row: &LocalMessage, event: &Value, id: &str) -> bool {
-    event["type"] == "UserPromptSubmit" && event["claude_prompt_id"] == id
+    event["type"] == "UserPromptSubmit"
+        && event["claude_prompt_id"] == id
         && event["claude_outbox_request_id"] == row.id
-        && event["run_id"] == row.run_id && event["conversation_id"] == row.conversation_id
+        && event["run_id"] == row.run_id
+        && event["conversation_id"] == row.conversation_id
         && event["agent_id"].as_str().unwrap_or("").is_empty()
         && event["origin"].as_str().unwrap_or("").is_empty()
         && matches!(event["turn_origin"].as_str(), None | Some("" | "user"))
@@ -693,8 +751,25 @@ mod tests {
         let native = "00000002-2222-4444-8888-000000000002";
         let mut receipt = json!({"transport":"codex_queue","status":"submitted","codex_outbox":true,
             "request_id":id,"native_queued_message_id":native,"run_id":"run-1","conversation_id":"conv-1"});
-        messages.sending(KEY, id, None, "same", &[file("note.txt")], "run-1", "conv-1", 100.0, Some(CODEX_QUEUE_SOURCE));
-        messages.finished(KEY, id, &Outcome::Done { receipt: receipt.clone(), cleanup: None });
+        messages.sending(
+            KEY,
+            id,
+            None,
+            "same",
+            &[file("note.txt")],
+            "run-1",
+            "conv-1",
+            100.0,
+            Some(CODEX_QUEUE_SOURCE),
+        );
+        messages.finished(
+            KEY,
+            id,
+            &Outcome::Done {
+                receipt: receipt.clone(),
+                cleanup: None,
+            },
+        );
         let echo = json!({"type":"UserPromptSubmit","detail":"same","at":100});
         let details = json!({"run_id":"run-1","conversation_id":"conv-1","attachment_messages":[{"message_id":id}]});
         assert_eq!(messages.reconcile(KEY, &details, &[echo]).removed, 0);
@@ -706,12 +781,27 @@ mod tests {
         receipt["message_id"] = json!(id);
         receipt["detail"] = json!("same");
         receipt["attachments"] = json!(row.attachments);
-        for (key, wrong) in [("request_id","other"), ("native_queued_message_id","other"), ("run_id","other"), ("conversation_id","other")] {
+        for (key, wrong) in [
+            ("request_id", "other"),
+            ("native_queued_message_id", "other"),
+            ("run_id", "other"),
+            ("conversation_id", "other"),
+        ] {
             let mut other = receipt.clone();
             other[key] = json!(wrong);
-            assert_eq!(messages.reconcile(KEY, &json!({"codex_queued_messages":[other]}), &[]).removed, 0);
+            assert_eq!(
+                messages
+                    .reconcile(KEY, &json!({"codex_queued_messages":[other]}), &[])
+                    .removed,
+                0
+            );
         }
-        assert_eq!(messages.reconcile(KEY, &json!({"codex_queued_messages":[receipt]}), &[]).removed, 1);
+        assert_eq!(
+            messages
+                .reconcile(KEY, &json!({"codex_queued_messages":[receipt]}), &[])
+                .removed,
+            1
+        );
     }
 
     #[test]
@@ -829,7 +919,7 @@ mod tests {
         ] {
             let result = messages.reconcile(KEY, &details, events);
             assert_eq!(result.removed, 0);
-                assert_eq!(messages.rows(KEY)[0].id, "current");
+            assert_eq!(messages.rows(KEY)[0].id, "current");
             assert!(messages.rows(KEY)[0].uncertain);
         }
         let mut confirmed = offer;
@@ -896,8 +986,10 @@ mod tests {
         send(&mut messages, "r1", "after resume", &[]);
         messages.rebind_run(KEY, "r1", "run-2");
         messages.finished(KEY, "r1", &ok);
-        let shown = [json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":"r1",
-            "run_id":"run-2","conversation_id":"conv-1","detail":"after resume","at":101.0})];
+        let shown = [
+            json!({"type":"UserPromptSubmit","source":"hgs_delivery","message_id":"r1",
+            "run_id":"run-2","conversation_id":"conv-1","detail":"after resume","at":101.0}),
+        ];
         messages.reconcile(KEY, &resumed, &shown);
         assert!(messages.rows(KEY).is_empty());
         // Another request's row is never rebound.
@@ -990,7 +1082,14 @@ mod tests {
         );
         // A distinct ordinary Send leaves the equal-text original uncertain.
         messages.sending(KEY, "3", None, "hello", &[], "run-1", "conv-1", 102.0, None);
-        assert_eq!(messages.rows(KEY).iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["2", "3"]);
+        assert_eq!(
+            messages
+                .rows(KEY)
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["2", "3"]
+        );
         assert!(!messages.delete(KEY, "3"), "a sending row is not deleted");
         // A complete uncertain line of its own is shown as is: still
         // uncertain and never retried, without the direct path's prefix.
@@ -1106,10 +1205,21 @@ mod tests {
         let details = json!({"run_id":"run-1","conversation_id":"conv-1"});
         let mut messages = LocalMessages::default();
         send(&mut messages, "1", "a\tb\tc", &[]);
-        messages.finished(KEY, "1", &Outcome::Uncertain { detail: "lost response".into() });
+        messages.finished(
+            KEY,
+            "1",
+            &Outcome::Uncertain {
+                detail: "lost response".into(),
+            },
+        );
         let prompt = json!({"type":"TurnStarted","detail":"a    b    c","turn_origin":"user",
             "run_id":"run-1","conversation_id":"conv-1","kimi_conversation_id":"conv-1","kimi_turn_id":7});
-        assert_eq!(messages.reconcile(KEY, &details, &[prompt.clone()]).removed, 0);
+        assert_eq!(
+            messages
+                .reconcile(KEY, &details, std::slice::from_ref(&prompt))
+                .removed,
+            0
+        );
         let mut exact = prompt;
         exact["kimi_request_id"] = json!("1");
         let mut foreign = exact.clone();
