@@ -19,14 +19,20 @@ pub fn directory() -> PathBuf {
     }))
 }
 
-/// The guard directory of this start. Only a measurement start
-/// (`ZERUS_CLIENT_PERF`) may name a private root (`ZERUS_CLIENT_GUARD_ROOT`,
-/// absolute); `acquire` applies the same ownership and mode checks there.
-/// Every other start keeps the canonical directory whatever its environment,
-/// so a changed HOME or TMPDIR still cannot create a second GUI (zerus-5a99f).
-pub fn directory_for(measurement: bool, root: Option<&std::ffi::OsStr>) -> io::Result<PathBuf> {
-    match root.filter(|root| !root.is_empty()) {
-        Some(root) if measurement => {
+/// Ordinary starts always use the canonical directory. On platforms that
+/// allow private measurement roots, `acquire` applies the same ownership and
+/// mode checks there. A canonical macOS GUI always needs the per-UID guard.
+pub fn directory_for(
+    canonical: &Path,
+    measurement: bool,
+    root: Option<&std::ffi::OsStr>,
+    allow_private_root: bool,
+) -> io::Result<PathBuf> {
+    match root.filter(|root| measurement && !root.is_empty()) {
+        Some(_) if !allow_private_root => Err(io::Error::other(
+            "Remove ZERUS_CLIENT_GUARD_ROOT to start the canonical macOS Zerus GUI",
+        )),
+        Some(root) => {
             let root = PathBuf::from(root);
             if !root.is_absolute() {
                 return Err(io::Error::other(
@@ -35,7 +41,7 @@ pub fn directory_for(measurement: bool, root: Option<&std::ffi::OsStr>) -> io::R
             }
             Ok(root)
         }
-        _ => Ok(directory()),
+        _ => Ok(canonical.to_path_buf()),
     }
 }
 
@@ -138,20 +144,29 @@ mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
     #[test]
-    fn only_a_measurement_start_names_a_private_guard_root() {
+    fn only_a_measurement_start_with_private_root_support_can_use_it() {
+        let canonical = directory();
         let private = std::ffi::OsStr::new("/tmp/zguard-private");
         assert_eq!(
-            directory_for(true, Some(private)).unwrap(),
-            PathBuf::from("/tmp/zguard-private")
+            directory_for(&canonical, true, Some(private), true).unwrap(),
+            PathBuf::from(private)
         );
-        // An ordinary start ignores it: a changed environment still finds the owner.
-        assert_eq!(directory_for(false, Some(private)).unwrap(), directory());
-        assert_eq!(directory_for(true, None).unwrap(), directory());
+        assert!(directory_for(&canonical, true, Some(private), false).is_err());
+        // Ordinary starts ignore the override, even on macOS.
         assert_eq!(
-            directory_for(true, Some(std::ffi::OsStr::new(""))).unwrap(),
-            directory()
+            directory_for(&canonical, false, Some(private), false).unwrap(),
+            canonical
         );
-        assert!(directory_for(true, Some(std::ffi::OsStr::new("relative/root"))).is_err());
+        assert_eq!(
+            directory_for(&canonical, true, None, false).unwrap(),
+            canonical
+        );
+        assert_eq!(
+            directory_for(&canonical, true, Some(std::ffi::OsStr::new("")), false).unwrap(),
+            canonical
+        );
+        let relative = std::ffi::OsStr::new("relative/root");
+        assert!(directory_for(&canonical, true, Some(relative), true).is_err());
     }
     #[test]
     fn canonical_lock_is_close_on_exec() {

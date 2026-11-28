@@ -321,10 +321,11 @@ Two rules keep tests away from it (zerus-5a99f):
   profile socket, it exits with code 3 and a message; nothing is sent. It never
   waits for the service socket. Ordinary starts keep the single-instance rule
   and forward as before.
-- Such a start may name a private guard root, `ZERUS_CLIENT_GUARD_ROOT=<absolute
-  0700 directory owned by the user>`, with the same ownership checks. Without
-  `ZERUS_CLIENT_PERF` the variable is ignored. On Windows a measurement start
-  fails while the canonical GUI runs; there is no private root.
+- On Linux such a start may name a private guard root,
+  `ZERUS_CLIENT_GUARD_ROOT=<absolute 0700 directory owned by the user>`, with the
+  same ownership checks. A canonical macOS measurement start with this override
+  exits with code 3 and asks you to remove it. On Windows there is no private
+  root. Ordinary starts ignore the override.
 
 Every app-starting smoke in `client/scripts` starts through
 `scripts/gui_sandbox.py`: bwrap with a private `/tmp`, `/run/user/<uid>`,

@@ -21,8 +21,12 @@ impl Drop for Child {
 }
 
 fn wait_for(path: &Path, child: &mut Child) {
+    wait_for_fixture(child, || path.exists());
+}
+
+fn wait_for_fixture(child: &mut Child, ready: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(8);
-    while !path.exists() {
+    while !ready() {
         assert!(
             child.0.try_wait().unwrap().is_none(),
             "fixture exited early"
@@ -39,34 +43,48 @@ fn launch_with_quit_hold(root: &Path, scope: &str, hold_after_quit: bool) -> Chi
     launch_as(root, scope, hold_after_quit, Measured::No)
 }
 
-/// A measurement start (`ZERUS_CLIENT_PERF`), with its canonical guard
-/// directory and, when given, another scope's profile (TMPDIR and runtime).
+/// A measurement start with optional private guard and inherited profile.
 enum Measured<'a> {
     No,
-    Yes { canonical: &'a str, profile_of: Option<&'a str> },
+    Yes {
+        platform: Platform,
+        private_guard: Option<&'a str>,
+        profile_of: Option<&'a str>,
+    },
 }
 
 fn launch_as(root: &Path, scope: &str, hold_after_quit: bool, measured: Measured) -> Child {
     let home = root.join(scope);
     fs::create_dir_all(home.join("tmp")).unwrap();
     fs::create_dir_all(home.join("runtime")).unwrap();
-    let (perf, canonical, profile) = match measured {
-        Measured::No => (false, "canonical", home.clone()),
-        Measured::Yes { canonical, profile_of } => {
-            (true, canonical, profile_of.map_or_else(|| home.clone(), |other| root.join(other)))
-        }
+    let (perf, platform, private_guard, profile) = match measured {
+        Measured::No => (false, Platform::current(), None, home.clone()),
+        Measured::Yes {
+            platform,
+            private_guard,
+            profile_of,
+        } => (
+            true,
+            platform,
+            private_guard.map(|guard| root.join(guard)),
+            profile_of.map_or_else(|| home.clone(), |other| root.join(other)),
+        ),
     };
     let control = root.join(format!("{scope}.json"));
     fs::write(
         &control,
         serde_json::to_vec(&serde_json::json!({
             "root": root, "scope": scope, "hold_after_quit":hold_after_quit,
-            "measured": perf, "canonical": canonical
+            "measured": perf, "mac": platform == Platform::Mac
         }))
         .unwrap(),
     )
     .unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
+    command.env_remove("ZERUS_CLIENT_GUARD_ROOT");
+    if let Some(guard) = private_guard {
+        command.env("ZERUS_CLIENT_GUARD_ROOT", guard);
+    }
     if perf {
         command.env("ZERUS_CLIENT_PERF", "auto");
     } else {
@@ -102,15 +120,21 @@ fn launch_fixture() {
     let control: serde_json::Value = serde_json::from_slice(&fs::read(control).unwrap()).unwrap();
     let root = Path::new(control["root"].as_str().unwrap());
     let scope = control["scope"].as_str().unwrap();
-    // The production startup path, with only the OS namespace supplied by
-    // the fixture. All temporary/configuration discovery remains real.
-    let canonical = root.join(control["canonical"].as_str().unwrap_or("canonical"));
+    // The production startup path with a private OS namespace. Select the
+    // guard policy explicitly so Linux can also exercise the macOS restriction.
+    let canonical = root.join("canonical");
+    let platform = if control["mac"] == true {
+        Platform::Mac
+    } else {
+        Platform::Linux
+    };
     let claimed = match claim_in(
         "hgs-tray",
         None,
         Activation::Sessions,
         None,
         &canonical,
+        platform,
         || {
             fs::write(root.join(format!("{scope}.effects")), b"renderer admitted").unwrap();
         },
@@ -195,14 +219,33 @@ fn a_measurement_start_never_forwards_to_a_gui_it_did_not_start() {
     // zerus-5a99f: a perf/test start finding the guard held exits failed and
     // sends nothing, at once, instead of activating the person's GUI.
     let started = Instant::now();
-    let mut measure = launch_as(&root, "measure", false, Measured::Yes { canonical: "canonical", profile_of: None });
+    let mut measure = launch_as(
+        &root,
+        "measure",
+        false,
+        Measured::Yes {
+            platform: Platform::current(),
+            private_guard: None,
+            profile_of: None,
+        },
+    );
     wait_for(&root.join("measure.failed"), &mut measure);
     assert!(measure.0.wait().unwrap().success());
-    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
     let why = fs::read_to_string(root.join("measure.failed")).unwrap();
-    assert!(why.contains("never forwards") && why.contains("is held"), "{why}");
+    assert!(
+        why.contains("never forwards") && why.contains("is held"),
+        "{why}"
+    );
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!root.join("first.activation").exists(), "the measurement start activated the owner");
+    assert!(
+        !root.join("first.activation").exists(),
+        "the measurement start activated the owner"
+    );
     assert!(!root.join("measure.ready").exists() && !root.join("measure.effects").exists());
     // An ordinary start keeps today's single-instance rule: it forwards.
     let mut second = launch(&root, "second");
@@ -224,18 +267,74 @@ fn a_measurement_start_with_a_private_guard_refuses_a_gui_at_its_profile_socket(
     // Its own guard root admits it, but it inherited the owner's TMPDIR and
     // runtime: the owner answers at that profile socket. It neither forwards
     // nor replaces that socket.
-    let mut measure = launch_as(&root, "measure", false, Measured::Yes { canonical: "private", profile_of: Some("first") });
+    let mut measure = launch_as(
+        &root,
+        "measure",
+        false,
+        Measured::Yes {
+            platform: Platform::Linux,
+            private_guard: Some("private"),
+            profile_of: Some("first"),
+        },
+    );
     wait_for(&root.join("measure.failed"), &mut measure);
     assert!(measure.0.wait().unwrap().success());
     let why = fs::read_to_string(root.join("measure.failed")).unwrap();
-    assert!(why.contains("never forwards") && why.contains("another GUI answers"), "{why}");
+    assert!(
+        why.contains("never forwards") && why.contains("another GUI answers"),
+        "{why}"
+    );
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!root.join("first.activation").exists(), "the measurement start activated the owner");
+    assert!(
+        !root.join("first.activation").exists(),
+        "the measurement start activated the owner"
+    );
     assert!(!root.join("measure.ready").exists() && !root.join("measure.effects").exists());
     // The owner still holds its profile socket and answers there.
     assert!(answers(&root.join("first/tmp/hgs-tray")));
     fs::write(root.join("first.stop"), b"").unwrap();
     assert!(owner.0.wait().unwrap().success());
+}
+
+#[test]
+fn a_canonical_mac_measurement_cannot_use_a_second_guard_root() {
+    let _process = crate::PROCESS_TREE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = private_root();
+    let mut owner = launch(&root, "first");
+    wait_for(&root.join("first.ready"), &mut owner);
+
+    let mut measure = launch_as(
+        &root,
+        "measure",
+        false,
+        Measured::Yes {
+            platform: Platform::Mac,
+            private_guard: Some("private"),
+            profile_of: None,
+        },
+    );
+    let refusal = root.join("measure.failed");
+    wait_for_fixture(&mut measure, || {
+        assert!(
+            !root.join("measure.effects").exists(),
+            "a second canonical GUI was admitted through a private guard"
+        );
+        refusal.exists()
+    });
+    assert!(measure.0.wait().unwrap().success());
+    let reason = fs::read_to_string(refusal).unwrap();
+    assert!(
+        reason.contains("Remove ZERUS_CLIENT_GUARD_ROOT"),
+        "{reason}"
+    );
+    assert!(!root.join("measure.ready").exists());
+    assert!(!root.join("private").exists());
+
+    fs::write(root.join("first.stop"), b"").unwrap();
+    assert!(owner.0.wait().unwrap().success());
+    assert!(!root.join("first.activation").exists());
 }
 
 #[test]
