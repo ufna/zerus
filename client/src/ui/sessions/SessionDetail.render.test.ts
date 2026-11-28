@@ -76,7 +76,7 @@ import { machineMeta } from "../../store/testing";
 import { listRows } from "./model";
 import { archive } from "../../store/archive";
 import { terminal } from "../../store/terminal";
-import { clearSearchPreview, setSearchPreview } from "../../store/searchSelection";
+import { clearSearchPreview, setSearchPreview, searchPreview } from "../../store/searchSelection";
 import type { SearchHit } from "../../store/content-search-model";
 import { emptyBatch, type ComposerView, type LocalMessage, type ViewRow } from "../../types";
 import { draftKey } from "../../store/draftKeys";
@@ -1448,4 +1448,135 @@ it("shows terminal-only Send recovery in Activity and uses guarded local actions
   expect(calls).not.toContainEqual(expect.objectContaining({ command: "local_delete" }));
   expect(host.querySelector<HTMLTextAreaElement>(".cmp-editor")?.value).toBe("Independent draft");
   expect(calls.filter(call => call.command === "send_message")).toHaveLength(1);
+});
+
+
+it("Plan queue production Activity reveals the unmounted exact original and cancels a stale jump", async () => {
+  // Happy DOM supplies geometry only. Activity, its real TanStack virtualizer,
+  // index, bridge, measured-offset path and reading anchor are not mocked.
+  const { loadMarkdown } = await import("./markdown"); await loadMarkdown();
+  const frames = new Map<number, FrameRequestCallback>(); let serial = 0;
+  vi.stubGlobal("requestAnimationFrame", (run: FrameRequestCallback) => { frames.set(++serial, run); return serial; });
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+  onTestFinished(() => { vi.unstubAllGlobals(); });
+  const scrollerOf = (node: HTMLElement) => node.matches(".act-scroll") ? node : node.closest<HTMLElement>(".act-scroll");
+  const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 700, width: 700, height, x: 0, y: top, toJSON() {} });
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  const spies: Array<{ mockRestore(): void }> = [
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function(this: HTMLElement) { return this.matches(".act-virtual-row") ? 500 : 400; }),
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(700),
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(400),
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(700),
+    vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function(this: HTMLElement) {
+      return Math.max(400, Number.parseFloat(this.querySelector<HTMLElement>(".act-virtual")?.style.minHeight ?? "0") + 46);
+    }),
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function(this: HTMLElement) {
+      const scroller = scrollerOf(this), row = this.closest<HTMLElement>(".act-virtual-row");
+      if (this.matches(".act-scroll")) return rect(0, 400);
+      if (row) return rect(46 + Number(row.dataset.start ?? 0) - (scroller?.scrollTop ?? 0), 500);
+      if (this.matches(".act-virtual")) return rect(46 - (scroller?.scrollTop ?? 0), Number.parseFloat(this.style.minHeight || "0"));
+      return originalRect.call(this);
+    }),
+  ];
+  const scrollWrites: Array<{ selected: string | undefined; top: number }> = [];
+  spies.push(vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function(this: HTMLElement, value?: ScrollToOptions | number) {
+    const top = typeof value === "object" ? value.top ?? 0 : value ?? 0;
+    if (this.matches(".act-scroll")) scrollWrites.push({ selected: selected()?.key, top });
+    this.scrollTop = Math.max(0, Math.min(top, this.scrollHeight - this.clientHeight));
+    queueMicrotask(() => this.dispatchEvent(new Event("scroll")));
+  }));
+  onTestFinished(() => spies.forEach(spy => spy.mockRestore()));
+  const paintUntil = async (predicate: () => boolean) => {
+    for (let n = 0; n < 80; n++) {
+      await flush(); const pending = [...frames.values()]; frames.clear();
+      pending.forEach(run => run(n * 16)); await flush();
+      if (predicate()) return;
+    }
+    throw Error("Production Activity did not reach the requested measured frame state");
+  };
+  const row = fixtureRow("Private original navigation"), one = uuid(99601), duplicate = uuid(99613);
+  const waiting = Array.from({ length: 16 }, (_, n) => ({ request_id: uuid(99601 + n),
+    preview: n === 0 || n === 12 ? "Same original text" : `Original ${n + 1}`,
+    state: n === 0 ? "unknown" as const : "waiting" as const,
+    run_id: row.run_id!, conversation_id: row.conversation_id! }));
+  const initial = { ...sessionComposer(row), waiting_in_zerus: waiting };
+  vi.mocked(bridge.composerOpen).mockImplementation(async selection => selection?.name === row.name ? initial : null);
+  const writes: string[] = [];
+  transport.composer = command => { writes.push(command); return undefined; };
+  await open(row);
+  const scroller = () => host.querySelector<HTMLElement>(".act-scroll")!;
+  const original = () => host.querySelector<HTMLElement>(`#item-local-${one}`);
+  const otherOriginal = () => host.querySelector<HTMLElement>(`#item-local-${duplicate}`);
+  const index = () => host.querySelector("[data-queue-index]");
+  await paintUntil(() => scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible"
+    && !original() && !!otherOriginal());
+  const before = { top: scroller().scrollTop, targetMounted: !!original(), duplicateMounted: !!otherOriginal(), rows: scroller().querySelectorAll(".act-virtual-row").length };
+  expect(before.targetMounted).toBe(false); expect(before.duplicateMounted).toBe(true);
+  expect(before.rows).toBeLessThan(16);
+  const first = () => index()!.querySelector<HTMLButtonElement>(`[data-queue-request="${one}"] button`)!;
+  const matching = { key: selected()!.key, run: row.run_id!, conversation: row.conversation_id!, query: "needle",
+    hit: { name: row.name!, run_id: row.run_id!, conversation_id: row.conversation_id!, archive_id: "", message_id: "fixture-preview",
+      at: 1793000000, role: "assistant", snippet: "needle", event: { seq: 1, type: "AgentMessage", detail: "Private needle preview" },
+      content_truncated: false, session: null, group: "" } as SearchHit };
+  onTestFinished(clearSearchPreview);
+  const settled = () => frames.size === 0 && scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible";
+  setSearchPreview(matching); await flush();
+  expect(host.querySelector(".search-preview")).not.toBeNull();
+  const previewDisabled = first().disabled;
+  first().click(); await flush();
+  expect(searchPreview()).toBe(matching); // index navigation never dismisses the reader's preview
+  clearSearchPreview();
+  await paintUntil(settled);
+  expect(original(), "a click during matching preview must not become a delayed reveal").toBeNull();
+  expect(previewDisabled).toBe(true);
+
+  // A valid click queued before preview entry must be invalidated without a selection change.
+  first().click(); await flush();
+  expect(frames.size).toBeGreaterThan(0);
+  setSearchPreview(matching); await flush();
+  expect(first().disabled).toBe(true);
+  expect(searchPreview()).toBe(matching);
+  clearSearchPreview();
+  await paintUntil(settled);
+  expect(original(), "entering matching preview must cancel the pending exact-row reveal").toBeNull();
+
+  // Another conversation's retained preview neither blocks nor gets cleared by this explicit jump.
+  const unrelated = { ...matching, conversation: "different-conversation" };
+  setSearchPreview(unrelated); await flush();
+  expect(first().disabled).toBe(false);
+  first().click();
+  await paintUntil(() => !!original() && Math.abs(original()!.getBoundingClientRect().top) <= 1);
+  expect(searchPreview()).toBe(unrelated);
+  const unrelatedPreviewPreserved = searchPreview() === unrelated;
+  const landedAnchorTop = original()!.getBoundingClientRect().top;
+  expect(original()!.id).toBe(`item-local-${one}`);
+  expect(original()!.textContent).toContain("Same original text");
+  expect(scroller().scrollTop).toBeLessThan(before.top);
+  expect(Math.abs(otherOriginal()?.getBoundingClientRect().top ?? Infinity)).toBeGreaterThan(1);
+  expect(writes).toEqual([]);
+
+  // Queue a second exact-row reveal, then switch before its RAF is delivered.
+  const second = index()!.querySelector<HTMLButtonElement>(`[data-queue-request="${duplicate}"] button`)!;
+  second.click(); await flush();
+  expect(frames.size).toBeGreaterThan(0);
+  const other = fixtureRow("Different private session"); const afterSwitch = scrollWrites.length;
+  await open(other);
+  // This selected source has no queued rows: publish its actual empty first page.
+  activity.applyActivity([{ computer: "", key: `run:${other.run_id}`, kind: "events", payload: { events: [], cursor: 0 } }]);
+  await paintUntil(() => selected()?.name === other.name && scroller().querySelector<HTMLElement>(".act-col")?.style.visibility === "visible");
+  expect(index()).toBeNull();
+  expect(original()).toBeNull(); expect(otherOriginal()).toBeNull();
+  expect(scrollWrites.slice(afterSwitch).every(write => write.top <= 400)).toBe(true);
+  expect(writes).toEqual([]);
+
+  await open(row);
+  receive({ ...emptyBatch(), composer: { ...initial, waiting_in_zerus: [
+    ...waiting, { ...waiting[1], request_id: uuid(99801), preview: "UNRELATED PRIVATE PREVIEW", conversation_id: "foreign" },
+  ] } }); await flush();
+  expect(index()?.querySelectorAll("li")).toHaveLength(16);
+  expect(index()?.textContent).not.toContain("UNRELATED PRIVATE PREVIEW");
+  receive({ ...emptyBatch(), composer: { ...initial, waiting_in_zerus: [] } }); await flush();
+  expect(index()).toBeNull();
+  expect(writes).toEqual([]);
+  console.log("PLAN_QUEUE_PRODUCTION_WITNESS=" + JSON.stringify({ before, revealed: `local-${one}`, duplicate: `local-${duplicate}`, exactAnchorTop: landedAnchorTop, staleJumpCancelled: true, matchingPreviewDisabled: previewDisabled, noDelayedPreviewReveal: true, previewEntryCancelledPendingJump: true, unrelatedPreviewPreserved, ipcWrites: writes.length }));
 });

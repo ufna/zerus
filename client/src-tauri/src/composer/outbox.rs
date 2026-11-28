@@ -486,6 +486,16 @@ impl Composers {
         {
             return Err(SendReply::Busy);
         }
+        // Claude FIFO offers are ordinary terminal messages. Reject commands
+        // before enqueue consumes the editor's exact draft.
+        if ctx.row.agent == "claude" && zerus_client_core::send::is_terminal_command(text) {
+            return Err(SendReply::Notice {
+                text: zerus_client_core::source!(
+                    "Not sent. Run slash or shell commands in Terminal."
+                ).into(),
+                error: true,
+            });
+        }
         if !outbox::capacity(&c.outbox, text, &c.draft.attachments) {
             return Err(SendReply::Notice {
                 text: "The local message queue is full. The draft is still in the editor.".into(),

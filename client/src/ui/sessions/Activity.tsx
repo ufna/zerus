@@ -1,3 +1,4 @@
+import { createQueuedOriginalNavigation } from "./queued-original-navigation";
 import { OutboxActions, OutboxHeader, OutboxScope } from "./OutboxMessage";
 import { earlierInputRefusal, EARLIER_INPUT_PENDING, sendErrorText } from "./send-error";
 import { OwnMessageBody } from "./OwnMessageBody";
@@ -1069,7 +1070,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
     reading.reset(); end.pin();
     scroller.scrollTo({ top: scroller.scrollHeight, behavior: "instant" });
   };
-  const [ownReveal, setOwnReveal] = createSignal<{ id: string; target: string | undefined }>();
+  const [ownReveal, setOwnReveal] = createSignal<{ id: string; target: string | undefined; current?: () => boolean }>();
   const [ownPivot, setOwnPivot] = createSignal<string>();
   const ownNavigation = createOwnMessageNavigation({
     source, items: () => view.items,
@@ -1087,9 +1088,9 @@ export function ActivityView(props: { source?: ActivitySource }) {
   // corrects it when the row mounts and receives its actual height.
   createEffect(() => {
     const request = ownReveal();
-    if (!request || request.target !== source().target()?.id || measuring().length || !markdownReady() || motion.active() || selectionInside()) return;
+    if (!request || request.current?.() === false || request.target !== source().target()?.id || measuring().length || !markdownReady() || motion.active() || selectionInside()) return;
     const frame = requestAnimationFrame(() => {
-      if (request.target !== source().target()?.id || request !== ownReveal()) return;
+      if (request.current?.() === false || request.target !== source().target()?.id || request !== ownReveal()) return;
       const key = `item-${request.id}`, offset = measuredOffset(key);
       if (offset === undefined) return;
       scroller.scrollTo({ top: scroller.scrollTop + offset, behavior: "instant" });
@@ -1099,6 +1100,25 @@ export function ActivityView(props: { source?: ActivitySource }) {
       setOwnReveal(undefined);
     });
     onCleanup(() => cancelAnimationFrame(frame));
+  });
+  createQueuedOriginalNavigation({
+    selection: () => {
+      const row = s(), view = mainComposer();
+      return row && view && row.runId && row.conversationId ? {
+        sessionKey: row.key, draftKey: view.key, handle: view.handle,
+        runId: row.runId, conversationId: row.conversationId,
+      } : undefined;
+    },
+    originals: outbox,
+    ready: () => placed() && !preview() && !restoring() && !layoutHeld()
+      && !motion.active() && !selectionInside() && !measuring().length && markdownReady(),
+    reveal: (id, current) => {
+      const request = { id, target: source().target()?.id, current };
+      ownNavigation.reset(); setRestoring(undefined);
+      end.release(); setFollowing(false); reading.remember();
+      setOwnReveal(request);
+      return () => { if (ownReveal() === request) setOwnReveal(undefined); };
+    },
   });
   const showsReply = (key: string, reply: string) => {
     const shown = source();
