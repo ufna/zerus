@@ -60,7 +60,9 @@ pub(super) enum ManualSend {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryObservation {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Accepted,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     NoInput,
     Unresolved,
 }

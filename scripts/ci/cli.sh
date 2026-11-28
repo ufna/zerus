@@ -5,13 +5,13 @@ cd "$(dirname "$0")/../.."
 phase=${1:-all}
 case "$phase" in all|debug|remaining) ;; *) echo "Unknown CLI phase" >&2; exit 2 ;; esac
 mkdir -p artifacts/test-results
-# Apple's default TMPDIR uses /var -> /private/var. Select its real directory
-# before allocating fixtures: pinned no-link readers must receive the same
-# canonical paths as native configuration, not a system alias. Tests still
-# construct their own symlink/refusal cases; production readers stay strict.
+# Apple's TMPDIR has a /var alias and can exceed native Unix socket limits.
+# Allocate one short private canonical fixture root. Never remove retained
+# fixture data on exit: only an empty root is retired; VM disposal owns the rest.
 if [ "$(uname -s)" = Darwin ]; then
-    TMPDIR="$(python3 -c 'from pathlib import Path; import tempfile; print(Path(tempfile.gettempdir()).resolve(strict=True))')"
-    export TMPDIR
+    cli_fixture_tmp="$(python3 -c 'from pathlib import Path; import tempfile; print(Path(tempfile.mkdtemp(prefix="zerus-cli-", dir="/tmp")).resolve(strict=True))')"
+    trap 'rmdir "$cli_fixture_tmp" 2>/dev/null || true' EXIT
+    export TMPDIR="$cli_fixture_tmp"
 fi
 # Tests launched from an agent must not inherit its account/run selection.
 while IFS= read -r variable; do
