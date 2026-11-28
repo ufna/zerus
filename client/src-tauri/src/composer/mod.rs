@@ -363,6 +363,8 @@ pub struct ComposerView {
     pub earlier_input_held: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting_in_zerus: Vec<outbox::EntryView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_waiting: Option<outbox::SkipWaiting>,
     /// Exact transport acknowledgements without an identifiable native message.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub terminal_only_outbox: Vec<outbox::TerminalReceiptView>,
@@ -496,6 +498,8 @@ pub(crate) struct Composer {
     queue_editing: bool,
     queue_writing: bool,
     queue_check_at: f64,
+    /// In-memory generation for explicit Skip confirmations; not a dispatch permit.
+    outbox_revision: u64,
     /// The desktop service still reported this draft's send in progress:
     /// it is checked again, read-only (zerus-5wmh.66.4.4).
     pub(crate) handed: Option<handed::Handed>,
@@ -547,6 +551,7 @@ impl Composer {
             queue_editing: false,
             queue_writing: false,
             queue_check_at: 0.0,
+            outbox_revision: 0,
             handed: None,
             probed: false,
             offer: None,
@@ -674,6 +679,8 @@ pub(crate) struct Hub {
     order: VecDeque<String>,
     pub(crate) open: Option<SessionRef>,
     pub(crate) open_key: Option<String>,
+    /// Invalidates an outstanding Skip confirmation across selection round-trips.
+    selection_epoch: u64,
     next_handle: u64,
     last_view: Option<ComposerView>,
     /// The change counts the last view and the last draft keys were taken
@@ -909,6 +916,9 @@ impl Composers {
     pub fn open(&self, session: Option<SessionRef>) -> Option<ComposerView> {
         let mut hub = self.lock();
         let next = session.as_ref().map(session_draft_key);
+        if hub.open.as_ref() != session.as_ref() {
+            hub.selection_epoch = hub.selection_epoch.wrapping_add(1);
+        }
         self.push_selection(&mut hub, next.as_deref());
         let Some(session) = session else {
             hub.open = None;
@@ -1061,6 +1071,7 @@ impl Composers {
         composer.checkpoint = stored.checkpoint.map(|checkpoint| *checkpoint);
         composer.earlier_input_hold = stored.earlier_input_hold;
         composer.outbox = stored.outbox;
+        composer.outbox_revision = composer.outbox_revision.wrapping_add(1);
         if composer.outbox.first().is_some_and(outbox::can_probe) {
             self.0.opened.notify_all();
         }
@@ -2017,6 +2028,8 @@ impl Composers {
             previous_message_pending: session.previous_message_pending,
             earlier_input_held: session.earlier_input_held,
             waiting_in_zerus: outbox::view(&composer.outbox, key, context.as_ref()),
+            skip_waiting: (hub.open_key.as_deref() == Some(key))
+                .then(|| self.skip_waiting_binding(hub)).flatten(),
             terminal_only_outbox: context.as_ref().map_or_else(Vec::new, |ctx| {
                 composer.terminal_only_outbox.iter().filter(|(target, _)| {
                     target.computer == ctx.session.computer && target.name == ctx.session.name

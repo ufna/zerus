@@ -1084,8 +1084,8 @@ export const composerClearControl = (session: SessionRef) =>
 export const composerTab = (tab: ComposerTab) => (inTauri() ? invoke<void>("composer_tab", { tab }) : Promise.resolve());
 export const sendMessage = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
   desktop<SendReply>("send_message", { handle, rev, epoch, text, position, anchor });
-export const composerRemoveWaiting = (handle: number, requestId: string) =>
-  desktop<ComposerView>("composer_remove_waiting", { handle, request_id: requestId });
+export const composerRemoveWaiting = (handle: number, requestId: string, intent?: import("./types").WaitingRemovalIntent) =>
+  desktop<ComposerView>("composer_remove_waiting", intent ? { handle, request_id: requestId, intent } : { handle, request_id: requestId });
 export const composerCheckDelivery = (handle: number, requestId: string) =>
   desktop<import("./types").DeliveryObservation>("composer_check_delivery", { handle, request_id: requestId });
 export const sendPush = (handle: number, rev: number, epoch: number, text: string, position: number, anchor: number) =>
