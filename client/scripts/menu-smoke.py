@@ -27,8 +27,9 @@ parser.add_argument("--xvfb-child", action="store_true", help=argparse.SUPPRESS)
 parser.add_argument("--paint-column", type=int, metavar="X",
                     help="check the presented frames of a page that reports `morphs` (a 4 px column at X through "
                          "a magenta collapsing card must never grow again, row-collapse-smoke), `landings` (a magenta "
-                         "reading anchor must keep its top while an older page lands, activity-older-smoke) or `opens` "
-                         "(the magenta loading heading and the cyan placed heading never in one frame, activity-open-smoke) "
+                         "reading anchor must keep its top while an older page lands, activity-older-smoke), `switches` "
+                         "(a cyan Latest row or magenta restored anchor never moves after reveal, activity-position-smoke), "
+                         "`opens` (the magenta loading heading and the cyan placed heading never in one frame, activity-open-smoke) "
                          "or `shows` (a magenta card, once fully painted, is never drawn dimmer again, task-view-flicker-smoke "
                          "and entrance-survey-smoke)")
 parser.add_argument("--paint-row", type=int, metavar="Y",
@@ -232,6 +233,38 @@ def painted_once(frames, opens, height):
             "paint_failures": failures}
 
 
+def painted_switches(frames, switches, height):
+    """The first revealed Latest row or restored reading row stays put through
+    its initial page and measured layout; semantic placement is checked in JS."""
+    cases, failures = [], []
+    for switch in switches:
+        start, end = switch["at"] / 1000, switch["through"] / 1000
+        marker = switch["marker"]
+
+        def top(data):
+            stride = len(data) // height
+            for y in range(height):
+                b, g, r = data[y * stride + 4], data[y * stride + 5], data[y * stride + 6]
+                if marker == "M" and r > 200 and g < 60 and b > 200:
+                    return y
+                if marker == "C" and r < 60 and g > 200 and b > 200:
+                    return y
+            return None
+
+        shown = [(t, top(data)) for t, data in frames if start <= t <= end]
+        revealed = [(t, place) for t, place in shown if place is not None]
+        first = revealed[0][1] if revealed else None
+        moved = [{"ms": round((t - start) * 1000), "top": place}
+                 for t, place in revealed[1:] if abs(place - first) > 2] if first is not None else []
+        cases.append({"label": switch["label"], "painted_frames": len(shown), "first_top": first,
+                      "last_top": revealed[-1][1] if revealed else None, "moved": moved[:5]})
+        if not revealed:
+            failures.append(f"{switch['label']}: no painted placement marker")
+        elif moved:
+            failures.append(f"{switch['label']}: {len(moved)} painted frames moved the revealed row")
+    return {"paint_switches": cases, "paint_failures": failures}
+
+
 def painted_steady(frames, shows, ends, height):
     """Once an opened magenta card (a Task View result, an entrance) is fully painted, no later
     presented frame of that open draws it dimmer: no blink after it appeared."""
@@ -377,6 +410,9 @@ with tempfile.TemporaryDirectory(prefix="zerus-menu-") as scratch, ExitStack() a
     if args.paint_column is not None and "opens" in result:
         result = {**result, **painted_once(painted, result["opens"], PAINT_HEIGHT)}
         result["failures"] = result.get("failures", []) + result.pop("paint_failures")
+    elif args.paint_column is not None and "switches" in result:
+        result = {**result, **painted_switches(painted, result["switches"], PAINT_HEIGHT)}
+        result["failures"] = result.get("failures", []) + result.pop("paint_failures")
     elif args.paint_column is not None and "shows" in result:
         result = {**result, **painted_steady(painted, result["shows"], result.get("ends", []), PAINT_HEIGHT)}
         result["failures"] = result.get("failures", []) + result.pop("paint_failures")
@@ -392,6 +428,8 @@ with tempfile.TemporaryDirectory(prefix="zerus-menu-") as scratch, ExitStack() a
     if args.paint_column is None and "shows" in result:
         # Its pass is the painted check; without the column it would pass unseen.
         result["failures"] = result.get("failures", []) + ["this page reports `shows`: run it with --paint-column"]
+    if args.paint_column is None and "switches" in result:
+        result["failures"] = result.get("failures", []) + ["this page reports `switches`: run it with --paint-column"]
     print(json.dumps({**result, **display_info, "real_display": args.real_display,
                       "webkit": f"{WebKit2.get_major_version()}.{WebKit2.get_minor_version()}.{WebKit2.get_micro_version()}"}, indent=2))
     raise SystemExit(1 if result.get("failures") else 0)
