@@ -92,7 +92,7 @@ fn group_cleanup_keeps_the_original_leader_reserved_until_reap() {
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(test_unreaped(group.child));
+        assert!(test_unreaped(group.child.id()));
         let status = group.finish().unwrap();
         assert_eq!(status.code(), Some(exit.into()));
         assert!(group.reaped && !group.lost);
@@ -131,7 +131,7 @@ fn a_lost_original_wait_suppresses_every_later_group_or_pid_stop() {
     // A private competing wait of this SAME known original, with no PID reuse.
     // The test-only native veto prevents any bad mutation from signalling it.
     group.child.wait().unwrap();
-    assert!(!test_unreaped(group.child));
+    assert!(!test_unreaped(group.child.id()));
     assert!(group.exited().is_err());
     assert!(group.lost);
     for _ in 0..3 {
@@ -160,7 +160,7 @@ fn a_live_original_helper_is_stopped_before_the_wait_releases_its_identity() {
     assert_eq!(group.signals, 1);
     group.stop().unwrap();
     assert_eq!(group.signals, 1);
-    assert!(!test_unreaped(group.child));
+    assert!(!test_unreaped(group.child.id()));
 }
 
 fn policy_probe(case: &str, root: &Path) {

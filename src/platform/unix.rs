@@ -29,6 +29,9 @@ use std::{
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod helper_group;
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod codex_image;
+
 pub fn prepare_environment() {
     let home = env::var("HOME").unwrap_or_default();
     env::set_var(
@@ -1346,10 +1349,32 @@ pub(crate) fn run_bounded_in_turn(
         }
         command.spawn().map_err(RunError::Spawn)?
     };
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let mut group = helper_group::Group::new(&mut child);
+    collect_bounded(
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        &mut group,
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        &mut child,
+        stdout,
+        stderr,
+        limits,
+        deadline,
+        cancelled,
+    )
+}
+
+fn collect_bounded(
+    #[cfg(any(target_os = "linux", target_os = "macos"))] group: &mut helper_group::Group<'_>,
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))] child: &mut Child,
+    mut stdout: impl Read + AsRawFd,
+    mut stderr: impl Read + AsRawFd,
+    limits: [usize; 2],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> std::result::Result<(ExitStatus, Vec<u8>, Vec<u8>), RunError> {
     for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
         // Both pipes must be drained while the child runs, including large outputs.
         unsafe {
